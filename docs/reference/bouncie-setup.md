@@ -292,3 +292,82 @@ connection. Reconnect from Step 5.
 **The one thing to watch for:** if the map stops showing positions, check
 Settings → Accounts before assuming the trackers are at fault. A revoked or
 expired grant and a dead device look the same from the outside.
+
+---
+
+# Phase 3b: the visit timeline (the second clock)
+
+## What this is
+
+The crew clock in and out by hand, and that stays the payroll record. The visit
+timeline is a SEPARATE record of the same day, built from where the vans actually
+were, so the two can be compared. It answers "how long did that job really take"
+and "did they double back".
+
+The two are never merged. `vehicle_visits` has no link into `shifts` or
+`job_segments`, so GPS cannot reach payroll even by accident.
+
+## Apply the migration
+
+`migrations/2026-08-27-vehicle-visits.sql`. Two new tables, `job_geozones` and
+`vehicle_visits`. Nothing existing is altered, and unlike the OAuth migration
+this one has no trigger, so it needs no separate decision.
+
+Confirm with:
+
+```sql
+select table_name from information_schema.tables
+where table_schema = 'public' and table_name in ('job_geozones', 'vehicle_visits');
+```
+
+## Nothing happens until geofences exist
+
+The timeline only fills in once zones are armed, and arming needs the OAuth
+connection from phase 3a. Until then these tables stay empty and that is correct,
+not broken.
+
+## Reading it
+
+Every arrival is a row. A visit still in progress has `exited_at` empty, which is
+normal during the day.
+
+```sql
+select v.entered_at, v.exited_at, veh.label, v.kind, v.job_id
+from vehicle_visits v
+join vehicles veh on veh.id = v.vehicle_id
+order by v.entered_at desc
+limit 50;
+```
+
+## What it does NOT tell you, and this matters
+
+**The van is not the person.** A crew member can still be working after the van
+leaves, and the van can sit somewhere while nobody is working. When the GPS
+record and the manual clock disagree, the honest reading is "these two differ,
+find out why", not "the crew got it wrong".
+
+Legitimate reasons the two differ, none of them anyone's fault:
+
+- Someone is dropped off and the van leaves.
+- The crew finishes inside after the van is loaded and moved.
+- Two crew in one van, one stays on after the other drives off.
+- Signal loss in a driveway or behind a house.
+- A van parked out of geofence range on a long street.
+
+**Before this is ever used in a conversation about someone's hours, tell the crew
+it exists, what it records, and that it is a cross-check rather than the clock
+they are paid from.** Finding out afterwards that a second record has been kept
+is how a scheduling tool turns into a trust problem.
+
+## Known gaps, recorded rather than hidden
+
+- **Nothing closes a stale visit.** A device unplugged mid-job leaves a visit
+  open indefinitely. It will read as "still there" until someone notices.
+- **An exit arriving before its own entry is dropped.** It happens after a device
+  regains signal and dumps buffered events. The raw event is still stored, so it
+  can be reprocessed later.
+- **Silent skips.** An event for an unknown zone, an unregistered device, or an
+  exit with no matching arrival is logged and dropped. If a job has no timeline,
+  the server log says why.
+- **No retention limit.** These tables grow forever, in line with the
+  keep-everything decision. Tracked as ledger row 415.
