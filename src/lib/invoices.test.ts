@@ -987,7 +987,48 @@ describe('getInvoiceDetail', () => {
     });
     sbRef.current = fake.client;
     const d = await getInvoiceDetail('i1');
-    expect(d?.lastMarkerOverride).toEqual({ by: 'new@x.com', at: '2026-08-03T00:00:00Z' });
+    expect(d?.lastMarkerOverride).toEqual({
+      by: 'new@x.com',
+      at: '2026-08-03T00:00:00Z',
+      action: 'mark-reconciled',
+      fromTotal: null,
+      toTotal: null,
+    });
+  });
+
+  it('lastMarkerOverride carries fromTotal/toTotal for a resync entry, and action:null for a legacy entry with none', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 0, status: 'paid' }],
+      quotes: [
+        {
+          id: 'q1',
+          customer_name: 'Alice',
+          is_test: false,
+          approval_snapshot: {
+            markerOverrides: [
+              { by: 'legacy@x.com', at: '2026-08-01T00:00:00Z', invoiceId: 'i1' },
+              {
+                action: 'resync',
+                by: 'jason@yulelovelights.com',
+                at: '2026-08-02T00:00:00Z',
+                invoiceId: 'i1',
+                fromTotal: 2000,
+                toTotal: 2500,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const d = await getInvoiceDetail('i1');
+    expect(d?.lastMarkerOverride).toEqual({
+      by: 'jason@yulelovelights.com',
+      at: '2026-08-02T00:00:00Z',
+      action: 'resync',
+      fromTotal: 2000,
+      toTotal: 2500,
+    });
   });
 
   it('lastMarkerOverride is null with no override history', async () => {
