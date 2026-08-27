@@ -16,6 +16,34 @@ export function portalVisibilityPatch(
     : { portalShowSatelliteView: visible };
 }
 
+/**
+ * Row 429 — the confirm shown before a visibility change on a quote the
+ * customer has already APPROVED.
+ *
+ * Deliberately a confirm and NOT a freeze. Everything the customer actually
+ * agreed to — the design geometry, the photo, the satellite trace, the price —
+ * is frozen by rows 367/427. These two switches only decide which IMAGES their
+ * portal displays: they can show less, or restore what was there, but they
+ * cannot show a different job. Freezing them would leave a booked customer's
+ * portal stuck with a confusing or wrong-house image whose only remedy is
+ * decline → revive → edit → re-send, i.e. destroying a real approval to fix a
+ * picture, which nobody would do. Row 370 already made the same call: it built
+ * an AUDIT TRAIL for these toggles rather than a gate, and a trail is something
+ * you build for an action you intend to keep allowing.
+ *
+ * What was missing was deliberateness. The confirm supplies it, the row-370
+ * trail records who answered yes, and the capability survives.
+ *
+ * Exported so the wording is testable without a DOM (this repo has no React
+ * component test harness — ledger row 259).
+ */
+export function portalVisibilityConfirmMessage(kind: VisibilityKind, visible: boolean): string {
+  const what = kind === 'street' ? 'house design' : 'satellite plan';
+  return visible
+    ? `This customer has already approved this quote. Showing the ${what} again will change what they see on their portal. Continue?`
+    : `This customer has already approved this quote. Hiding the ${what} will change what they see on their portal. Continue?`;
+}
+
 export async function persistPortalImageVisibility(
   designId: string,
   patch: Partial<DesignPortalVisibility>,
@@ -50,10 +78,17 @@ export function PortalImageVisibilityControls({
   portalShowSatelliteView,
   hasStreetImage,
   hasSatelliteImage,
+  customerApproved = false,
 }: DesignPortalVisibility & {
   designId: string;
   hasStreetImage: boolean;
   hasSatelliteImage: boolean;
+  /**
+   * Row 429: the customer has approved this quote, so a visibility change moves
+   * something they have already seen. Same predicate as the design freeze
+   * (`customer_approved_at` set, is_test exempt) — see the caller.
+   */
+  customerApproved?: boolean;
 }) {
   const router = useRouter();
   const [visibility, setVisibility] = useState({
@@ -74,6 +109,11 @@ export function PortalImageVisibilityControls({
 
   async function setPortalVisibility(kind: VisibilityKind, visible: boolean) {
     if (inFlightRef.current) return;
+    // Row 429: PRE-FLIGHT, before the optimistic state update and before any
+    // request — so a decline changes absolutely nothing, not even the checkbox.
+    // (Row 405's lesson: a confirm placed after the first mutation leaves the
+    // caller unpicking consequences one by one.)
+    if (customerApproved && !window.confirm(portalVisibilityConfirmMessage(kind, visible))) return;
     inFlightRef.current = true;
     const previous = visibility;
     setVisibility({ ...previous, [kind]: visible });
@@ -120,6 +160,13 @@ export function PortalImageVisibilityControls({
         public referral page or the sample-homes gallery, which are governed
         separately.
       </p>
+      {customerApproved && (
+        <p className="text-xs text-amber-700 mb-3">
+          This customer has <strong>already approved</strong> this quote. These switches still work —
+          the design, measurements and price are locked, but which images their portal shows is not —
+          and every change is recorded against the quote.
+        </p>
+      )}
       <div className="space-y-3">
         <label className={`flex items-start gap-3 ${hasStreetImage ? 'cursor-pointer' : 'text-gray-400'}`}>
           <input

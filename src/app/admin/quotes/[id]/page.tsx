@@ -382,6 +382,10 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             designId={design.id}
             portalShowStreetView={design.portalShowStreetView}
             portalShowSatelliteView={design.portalShowSatelliteView}
+            // Row 429: same predicate as the design freeze (rows 367/427) — an
+            // approved, non-test quote. These toggles stay ALLOWED (they are
+            // presentational, and row 370 audits them), but they ask first.
+            customerApproved={!!quote.customer_approved_at && !quote.is_test}
             hasStreetImage={design.hasStreetImage}
             hasSatelliteImage={design.hasSatelliteImage}
           />

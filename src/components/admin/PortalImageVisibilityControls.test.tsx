@@ -7,6 +7,7 @@ import {
   PortalImageVisibilityControls,
   persistPortalImageVisibility,
   portalVisibilityPatch,
+  portalVisibilityConfirmMessage,
 } from './PortalImageVisibilityControls';
 
 const DESIGN_ID = '11111111-1111-1111-1111-111111111111';
@@ -103,5 +104,52 @@ describe('portal image visibility transport', () => {
     await expect(
       persistPortalImageVisibility(DESIGN_ID, { portalShowStreetView: false }, malformed),
     ).rejects.toThrow(/could not confirm/i);
+  });
+});
+
+// Row 429 — the confirm on an APPROVED quote.
+//
+// Deliberately a confirm and not a freeze: these switches are presentational
+// (the design, measurements and price are frozen by rows 367/427), row 370
+// already audits them, and gating them would leave a booked customer's portal
+// stuck with a bad image whose only remedy is destroying a real approval.
+//
+// The component itself has no test harness (ledger row 259 — this repo has no
+// React DOM testing), so the WORDING is what can be pinned here. It is the
+// whole value of the change: a confirm that does not say what is about to
+// change is just an extra click.
+describe('portalVisibilityConfirmMessage (row 429)', () => {
+  it('names the customer approval, the specific image, and the direction', () => {
+    const hidingStreet = portalVisibilityConfirmMessage('street', false);
+    expect(hidingStreet).toContain('already approved');
+    expect(hidingStreet).toContain('house design');
+    expect(hidingStreet).toContain('Hiding');
+
+    const showingSatellite = portalVisibilityConfirmMessage('satellite', true);
+    expect(showingSatellite).toContain('already approved');
+    expect(showingSatellite).toContain('satellite plan');
+    expect(showingSatellite).toContain('Showing');
+  });
+
+  it('says what the customer sees, not what the database does', () => {
+    // Staff read this on a phone. It must not name a column or a table — the
+    // S50 lesson about fixing a false claim by replacing it with jargon.
+    for (const kind of ['street', 'satellite'] as const) {
+      for (const visible of [true, false]) {
+        const msg = portalVisibilityConfirmMessage(kind, visible);
+        expect(msg).toContain('their portal');
+        // "house design" is the staff-facing NAME of the image on this very
+        // control, not jargon — an earlier version of this assertion excluded
+        // the word "design" outright and failed on correct copy.
+        expect(msg).not.toMatch(/portal_show|quotes\.|designs\.|column|jsonb|api\//i);
+        expect(msg.endsWith('Continue?')).toBe(true);
+      }
+    }
+  });
+
+  it('distinguishes the two images from each other', () => {
+    expect(portalVisibilityConfirmMessage('street', false)).not.toBe(
+      portalVisibilityConfirmMessage('satellite', false),
+    );
   });
 });
