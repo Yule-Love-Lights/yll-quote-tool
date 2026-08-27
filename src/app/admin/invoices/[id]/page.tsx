@@ -25,6 +25,36 @@ const money = (n: number | null | undefined) =>
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 
+/**
+ * Row 388 fix-round delta-verify (MED): the resync route computes — and unit
+ * tests — `audited: false` on three separate failure paths, but NOTHING
+ * rendered it, so a staffer saw the identical "Resynced" whether the audit
+ * entry landed or silently failed. That defeats the owner-visible trail the
+ * admin HIGH asked for, and a returned field no consumer reads is this
+ * repo's inert-fix class. Pure + exported so the wording is TESTED rather
+ * than hoped, mirroring cancelActionMessage on the job detail page (this
+ * repo's pattern for a fetch-response-driven string, no jsdom needed).
+ *
+ * The audit warning is deliberately gated on `changed !== false` too: a
+ * no-op resync writes nothing, so it has nothing to audit and must not warn
+ * about a missing trail for a change that never happened.
+ */
+export function resyncActionMessage(
+  body: { invoicedTotal?: number; changed?: boolean; audited?: boolean },
+  fmtMoney: (n: number) => string = money,
+): string {
+  const head =
+    body.changed === false
+      ? 'Already in sync — nothing changed.'
+      : body.invoicedTotal != null
+        ? `Resynced — invoice now totals ${fmtMoney(body.invoicedTotal)}.`
+        : 'Resynced.';
+  const auditFailed = body.changed !== false && body.audited === false;
+  return auditFailed
+    ? `${head} ⚠️ The money change was applied, but recording who did it FAILED — note this manually.`
+    : head;
+}
+
 export default function InvoiceDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -174,23 +204,12 @@ export default function InvoiceDetailPage() {
         code?: string;
         invoicedTotal?: number;
         changed?: boolean;
+        audited?: boolean;
       };
       if (!res.ok) {
         throw new Error(body.error ?? 'Failed');
       }
-      setResyncMsg({
-        // FIX 3 (staff MED 2, no-op honesty): the route returns changed:false
-        // (no write) when the invoice already matches the agreed total —
-        // say so plainly instead of claiming a resync that never happened.
-        text:
-          body.changed === false
-            ? 'Already in sync — nothing changed.'
-            : body.invoicedTotal != null
-              ? `Resynced — invoice now totals ${money(body.invoicedTotal)}.`
-              : 'Resynced.',
-        ok: true,
-        forId: id,
-      });
+      setResyncMsg({ text: resyncActionMessage(body), ok: true, forId: id });
       await load();
     } catch (err) {
       setResyncMsg({ text: err instanceof Error ? err.message : 'Failed', ok: false, forId: id });
