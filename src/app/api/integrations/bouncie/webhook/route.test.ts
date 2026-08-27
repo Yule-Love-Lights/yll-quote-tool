@@ -133,12 +133,12 @@ describe('ROW 403 CONSTRAINT (f) — off-hours tagging', () => {
     expect(insertedRow().occurred_off_hours).toBe(false);
   });
 
-  it('tags a late-night event as OFF-hours, so a purge job can find it', async () => {
-    // The truck goes home with an employee. This is the row that records their
-    // private evening, and it has to be findable without re-parsing payloads.
+  it('tags a late-night event as in-hours too, per the always-open decision', async () => {
+    // Naldo 2026-08-27: always open, keep all data. The column still gets a real
+    // value on every row, so narrowing the policy later needs only the constant.
     const body = JSON.stringify({ eventType: 'tripEnd', end: { timestamp: '2026-08-27T03:00:00.000Z' } });
     await POST(makeReq(body, { authorization: SECRET }));
-    expect(insertedRow().occurred_off_hours).toBe(true);
+    expect(insertedRow().occurred_off_hours).toBe(false);
   });
 
   it('stores NULL, not false, when the event carried no usable timestamp', async () => {

@@ -32,19 +32,26 @@ import { etHour } from '@/lib/dashboard/inbox/normalize';
 /**
  * When the company may see where its vehicles are. Row 403 constraint (f).
  *
- * ONE PLACE, on purpose. The truck goes home with an employee, so every event
- * outside this window is a record of that person's private movements. This is a
- * BUSINESS POLICY, not a technical constant: widen it, narrow it, or split it by
- * day here, and every stored row and any future purge job follows.
+ * NALDO'S DECISION, 2026-08-27: "keep all data, we are always open." The company
+ * runs at all hours in season, so there is no window during which a vehicle's
+ * position is out of scope, and nothing is deleted or redacted on a schedule.
+ * `0` to `24` means exactly that: `isOffHours` returns false for every real
+ * timestamp, and `occurred_off_hours` is false on every row it tags.
  *
- * The default is deliberately generous to the business, because installs really
- * do run late and run weekends in season, and a window that is too tight would
- * mislabel real work as private. It is NOT a considered privacy decision yet —
- * Naldo has not set the hours. Treat it as a placeholder that fails toward
- * capturing work, and revisit before anything reads or deletes on the strength
- * of it.
+ * THE MECHANISM STAYS ON PURPOSE, even though it currently classifies nothing.
+ * It is the single place that decision lives. If the policy ever narrows — a
+ * quiet window, a retention cutoff, a rule about the truck that goes home with
+ * an employee — this constant is the only edit, and every row already carries
+ * the column a purge job would need. Deleting the mechanism because today's
+ * answer is "all of it" would mean rebuilding it under time pressure later.
+ *
+ * Worth stating plainly for whoever reads this next: one vehicle goes home with
+ * a crew member, so with this window every evening and weekend trip is stored
+ * indefinitely at rooftop precision. That is the owner's call and it is recorded
+ * here rather than left implicit. Tell the crew what is captured, in writing,
+ * before the devices go in.
  */
-export const BUSINESS_HOURS = { startHourEt: 6, endHourEt: 21 } as const;
+export const BUSINESS_HOURS = { startHourEt: 0, endHourEt: 24 } as const;
 
 /**
  * True when an event happened OUTSIDE business hours, undefined when the event
