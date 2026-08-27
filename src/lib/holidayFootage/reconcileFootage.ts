@@ -147,3 +147,43 @@ export function mergeHolidayFootageBaseline(
   });
   return next;
 }
+
+// Row 209: a STREET-photo (re)analyze (analyze-photo — no satellite payload,
+// see QuoteBuilder's applyAnalysisResult / the #97+#190 guards above it in
+// that file) carries its own AI TEXT ESTIMATE for santas/gingerbread
+// footage. Product ruling (Jason, 2026-08-26): drawn-geometry-DERIVED
+// footage — anything the reconcile above has already stamped from real
+// satellite lines, OR a staff override sitting on top of it — wins over that
+// text estimate whenever satellite lines exist for the field. The street
+// analyzer never touches satelliteSantasLines/satelliteGingerbreadLines
+// itself (guarded above it), so the reconcile effect's dependency array
+// never moves and can't self-correct a clobber — the gate has to live at
+// THIS write, not rely on the effect noticing later. A field with no
+// satellite lines drawn yet is unaffected: the AI estimate is the only
+// measurement that exists, so it applies exactly as before.
+export type AnalysisFootageField = 'santasFootage' | 'gingerbreadFootage';
+
+export function reconcileAnalysisFootage(input: {
+  aiSantasFootage: number;
+  aiGingerbreadFootage: number;
+  hasSatelliteSantasLines: boolean;
+  hasSatelliteGingerbreadLines: boolean;
+  /**
+   * Fix round (staff lens MED): lines alone are not a measurement. The
+   * manual-satellite flow (#9) has staff trace lines with NO scale
+   * (satelliteFeetPerPixel null, "for training value") and type footage by
+   * hand — the derive effect bails on null scale, so nothing was ever
+   * DERIVED from those lines and the AI estimate must still apply. A field
+   * is protected only when its lines exist AND the satellite has a real
+   * scale, i.e. exactly when the derive effect would have produced the
+   * number the ruling protects.
+   */
+  satelliteHasScale: boolean;
+}): Partial<Record<AnalysisFootageField, number>> {
+  const out: Partial<Record<AnalysisFootageField, number>> = {};
+  const santasProtected = input.hasSatelliteSantasLines && input.satelliteHasScale;
+  const gingerbreadProtected = input.hasSatelliteGingerbreadLines && input.satelliteHasScale;
+  if (!santasProtected) out.santasFootage = input.aiSantasFootage;
+  if (!gingerbreadProtected) out.gingerbreadFootage = input.aiGingerbreadFootage;
+  return out;
+}
