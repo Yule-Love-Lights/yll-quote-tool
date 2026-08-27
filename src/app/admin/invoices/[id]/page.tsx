@@ -473,7 +473,22 @@ export default function InvoiceDetailPage() {
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Customer</h2>
-              <p className="text-gray-800 font-medium">{data.customerName ?? '—'}</p>
+              {/* Row 418 sweep: link to the customer profile (mirrors
+                  /admin/invoices' list idiom — customerRouteId rule; a walk-in
+                  with no id stays plain text). */}
+              <p className="text-gray-800 font-medium">
+                {data.customerRouteId ? (
+                  <Link
+                    href={`/customers/${encodeURIComponent(data.customerRouteId)}`}
+                    className="hover:underline"
+                    style={{ color: 'var(--op-primary)' }}
+                  >
+                    {data.customerName ?? '—'}
+                  </Link>
+                ) : (
+                  data.customerName ?? '—'
+                )}
+              </p>
               {data.customerAddress && <p className="text-sm text-gray-500">{data.customerAddress}</p>}
               <p className="text-sm text-gray-500">
                 {[data.customerPhone, data.customerEmail].filter(Boolean).join(' · ') || '—'}

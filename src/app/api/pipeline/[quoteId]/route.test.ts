@@ -155,6 +155,7 @@ describe('GET /api/pipeline/[quoteId]', () => {
         packageId: 'B',
         itemCount: 2,
         savedAt: '2026-08-01T00:00:00Z',
+        staffSet: false,
       });
     });
 
@@ -173,6 +174,33 @@ describe('GET /api/pipeline/[quoteId]', () => {
         packageId: 'D',
         itemCount: 3,
         savedAt: '2026-08-02T00:00:00Z',
+        staffSet: false,
+      });
+    });
+
+    // Row 324 fix round (admin lens MED): a selection written by staff-selection/
+    // route.ts carries browsing_selection.staffSet — the summary must surface
+    // that so PipelineActionsMenu doesn't present a colleague's preselect as
+    // the customer's own choice.
+    it('flags staffSet:true when the browsing_selection was staff-preselected (row 324)', async () => {
+      getQuoteRawMock.mockResolvedValueOnce({
+        ...approvedQuoteRow,
+        customer_approved_at: null,
+        status: 'declined',
+        browsing_selection: {
+          packageId: 'B',
+          selectedItemIds: ['a', 'b'],
+          staffSet: { by: 'operator@example.com', at: '2026-08-01T00:00:00Z' },
+        },
+        browsing_selection_updated_at: '2026-08-01T00:00:00Z',
+      });
+      const res = await GET(req, ctx());
+      const json = await res.json();
+      expect(json.staleBrowsingSelection).toEqual({
+        packageId: 'B',
+        itemCount: 2,
+        savedAt: '2026-08-01T00:00:00Z',
+        staffSet: true,
       });
     });
 

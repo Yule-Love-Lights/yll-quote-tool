@@ -24,6 +24,7 @@ import {
   appendRetiredTxn,
   mergeInvoicesNewestFirst,
   reconcileInvoice,
+  serviceTypesForQuotes,
   setInvoiceStatus,
   setInvoiceTaxOverride,
   type InvoiceRow,
@@ -804,6 +805,35 @@ describe('setInvoiceTaxOverride', () => {
   });
 });
 
+// Row 419 fix (premerge staff lens MED): the profile page tops up its
+// quote→service map with this lookup for invoices whose quote fell outside
+// the 500-cap dashboard list. Raw column values ride through (the badge
+// applies the holiday default itself); an unknown id is simply absent.
+describe('serviceTypesForQuotes', () => {
+  it('maps each found quote to its raw service_type, omitting unknown ids', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        { id: 'q1', service_type: 'permanent' },
+        { id: 'q2', service_type: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const got = await serviceTypesForQuotes(['q1', 'q2', 'q-missing']);
+    expect(got.get('q1')).toBe('permanent');
+    expect(got.has('q2')).toBe(true);
+    expect(got.get('q2')).toBeNull();
+    expect(got.has('q-missing')).toBe(false);
+  });
+
+  it('returns an empty map for no ids or no client, never throws', async () => {
+    const fake = makeFakeSupabase({ quotes: [] });
+    sbRef.current = fake.client;
+    expect((await serviceTypesForQuotes([])).size).toBe(0);
+    sbRef.current = null;
+    expect((await serviceTypesForQuotes(['q1'])).size).toBe(0);
+  });
+});
+
 describe('getInvoiceDetail', () => {
   it('returns the invoice + joined customer + linked job number/status', async () => {
     const fake = makeFakeSupabase({
@@ -822,6 +852,26 @@ describe('getInvoiceDetail', () => {
       jobNumber: 1000,
       jobStatus: 'requires_invoicing',
     });
+  });
+
+  // Row 418 sweep: the customer-name link on /admin/invoices/[id] routes by
+  // this field — HL contact id first, then the invoice's own customer_id, then
+  // the quote's, then null (plain-text walk-in).
+  it('resolves customerRouteId: HL contact id > invoice customer_id > quote customer_id > null', async () => {
+    const cases: Array<{ hl: string | null; invCust: string | null; qCust: string | null; want: string | null }> = [
+      { hl: 'hl-1', invCust: 'inv-cust', qCust: 'quote-cust', want: 'hl-1' },
+      { hl: null, invCust: 'inv-cust', qCust: 'quote-cust', want: 'inv-cust' },
+      { hl: null, invCust: null, qCust: 'quote-cust', want: 'quote-cust' },
+      { hl: null, invCust: null, qCust: null, want: null },
+    ];
+    for (const c of cases) {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', customer_id: c.invCust, total: 1000, balance: 500, status: 'draft' }],
+        quotes: [{ id: 'q1', customer_name: 'Alice', highlevel_contact_id: c.hl, customer_id: c.qCust }],
+      });
+      sbRef.current = fake.client;
+      expect((await getInvoiceDetail('i1'))?.customerRouteId).toBe(c.want);
+    }
   });
 
   // #177 fix 4: the linked quote's stamped deposit_amount_usd is threaded through

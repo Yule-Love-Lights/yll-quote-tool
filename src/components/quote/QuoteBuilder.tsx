@@ -80,6 +80,7 @@ import {
   reconcileHolidayFootageField,
   deriveHolidayFootageBaseline,
   mergeHolidayFootageBaseline,
+  reconcileAnalysisFootage,
   type HolidayFootageBaseline,
   type HolidayFootageFieldKey,
   type HolidayFieldReconcileResult,
@@ -90,7 +91,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
-import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, type QuoteEditDraft } from '@/lib/quoteEditDraft';
+import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, quoteEditDraftLifecycle, type QuoteEditDraft } from '@/lib/quoteEditDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
 import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
@@ -996,20 +997,37 @@ export default function QuoteBuilder({
   // the draft is dropped (the server wins) and the operator is TOLD - a
   // silent drop is indistinguishable from the tool eating their work.
   const [editDraftDiscardedNotice, setEditDraftDiscardedNotice] = useState(false);
+  // Row 420: the sibling notice for a draft discarded because the quote's
+  // LIFECYCLE moved (approved / booked / declined since the stash) — a
+  // different fact than "someone edited the form", so it gets its own words.
+  const [editDraftLifecycleNotice, setEditDraftLifecycleNotice] = useState(false);
   // The stable id of the quote being edited — initialQuote's, not savedQuoteId
   // (declared further down, and identical in edit mode anyway: savedQuoteId is
   // seeded from this exact value and never changes for an existing quote).
   const editQuoteId = initialQuote?.quoteId ?? null;
+  // Row 420: the lifecycle this session's stashes are bound to. Mount-time
+  // server truth, like lastPersistedForm — if the customer approves or books
+  // WHILE the operator edits, the stash carries the pre-approval stamp and
+  // the NEXT reopen (which loads the fresh row) discards it, which is the
+  // point: a draft never outlives the order state it was priced against.
+  const editLifecycle = initialQuote
+    ? quoteEditDraftLifecycle({
+        status: initialQuote.status ?? null,
+        approvedAt: initialQuote.approvedAt ?? null,
+        depositPaidAt: initialQuote.depositPaidAt ?? null,
+      })
+    : '';
   useEffect(() => {
     if (!editMode || !editQuoteId) return;
     sweepQuoteEditDrafts();
     // lastPersistedForm at mount IS the server truth (seeded from the Server
     // Component prop) — exactly the base a restorable draft must match.
-    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm);
+    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm, editLifecycle);
     // queueMicrotask defers the setState out of the effect body, the same
     // idiom the new-quote draft-restore effect above uses for the identical
     // react-hooks/set-state-in-effect error-level rule.
     if (draft === 'server-moved') queueMicrotask(() => setEditDraftDiscardedNotice(true));
+    else if (draft === 'lifecycle-moved') queueMicrotask(() => setEditDraftLifecycleNotice(true));
     else if (draft) queueMicrotask(() => setEditDraftOffer(draft));
     // Mount-only by design: a draft can only be offered against the freshly
     // loaded row, never against mid-session state.
@@ -1028,7 +1046,7 @@ export default function QuoteBuilder({
       // localStorage on every keystroke of a footage number, short enough that
       // a tab discard moments after typing still has the edit.
       const t = setTimeout(() => {
-        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm);
+        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle);
       }, 800);
       return () => clearTimeout(t);
     }
@@ -1045,7 +1063,7 @@ export default function QuoteBuilder({
     // the offer is resolved - restored, discarded, or displaced by a real
     // edit - every successful Calculate wipes the stash here.
     if (userTouched && !editDraftOffer) clearQuoteEditDraft(editQuoteId);
-  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer]);
+  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer, editLifecycle]);
   // Premerge technical-lens HIGH: the debounce's cleanup CANCELS a pending
   // stash, and this component's whole premise is that an in-app next/link
   // click unmounts it with no event — so typing a footage number and clicking
@@ -1063,7 +1081,7 @@ export default function QuoteBuilder({
   useEffect(() => {
     stashFlushRef.current =
       editMode && editQuoteId && hasUnsavedEdits
-        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm)
+        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle)
         : null;
   });
   useEffect(() => {
@@ -1323,14 +1341,41 @@ export default function QuoteBuilder({
   // src/lib/quoteDraft.ts.
   const draftActive = draftAutosaveActive({ editMode, isTest, savedQuoteId });
   const [draftRestored, setDraftRestored] = useState(false);
+  // Row 206: a stale draft withheld because a lead prefill was applied — see
+  // the effect below. Separate flag from draftRestored (different fact,
+  // different copy): this one never touches form state at all.
+  const [draftWithheldByPrefill, setDraftWithheldByPrefill] = useState(false);
   const draftRestoreTriedRef = useRef(false);
 
   // Restore once on mount: a blank new builder + a saved draft → prefill the
   // customer block + service type. queueMicrotask defers the setState out of
   // the effect body (react-hooks/set-state-in-effect is at error here).
+  //
+  // Row 206: an incoming lead prefill (?name=/?serviceType=/?ghlContactId=,
+  // src/app/admin/leads' "Create quote" link) means the operator is starting
+  // from a KNOWN lead. customerIsEmpty(form.customer) below only catches a
+  // prefill that carried contact fields — applyPrefill already wrote them
+  // into form.customer before this effect ever runs (see the useState
+  // initializer above). A prefill that carried ONLY serviceType and/or
+  // ghlContactId (no name/phone/email/address) leaves form.customer empty,
+  // so without this guard a week-old draft for a DIFFERENT customer would
+  // restore right over it — clobbering the prefill's serviceType, and
+  // leaving the picked-contact chip (seeded from prefill.ghlContactId,
+  // independent of the customer fields) pointing at one customer while the
+  // restored fields show another. Skip the restore whenever a prefill was
+  // applied at all, regardless of which fields it carried — the draft itself
+  // is left in storage untouched (only the RESTORE is skipped), so a later
+  // plain /quote/new visit with no prefill can still recover it; deleting a
+  // real draft just because someone opened a prefill link would be its own
+  // data loss (row 206's own text). Told, not silent, per the rows 413/420
+  // convention: a withheld draft still gets a dismissible grey notice.
   useEffect(() => {
     if (!draftActive || draftRestoreTriedRef.current) return;
     draftRestoreTriedRef.current = true;
+    if (prefill) {
+      if (loadQuoteDraft()) queueMicrotask(() => setDraftWithheldByPrefill(true));
+      return;
+    }
     const draft = loadQuoteDraft();
     if (!draft) return;
     // Only restore (and only then show the note) when the block is genuinely
@@ -3170,16 +3215,35 @@ export default function QuoteBuilder({
   const applyAnalysisResult = (data: AnalysisResponse) => {
     if (!data.result) return; // fail-safe: analyzer was unavailable, nothing to seed
     const r = data.result;
-    // The AI's footage estimates pre-fill the inputs; satellite lines (when
-    // present) take over via the measurement effect, and staff can always type.
+    // Row 209: drawn satellite geometry outranks the AI's street-photo text
+    // estimate. A street-only analyze (analyze-photo) never touches
+    // satelliteSantasLines/satelliteGingerbreadLines (the #97/#190 guards
+    // below), so if satellite lines already exist for a field, the
+    // measurement effect (~line 1990) is already the sole authority over its
+    // billed footage — its dependency array never moves on a street
+    // re-analyze, so it can't self-correct a clobber from this write. The
+    // gate (reconcileAnalysisFootage) has to live right here, at the write.
+    const footageFromAnalysis = reconcileAnalysisFootage({
+      aiSantasFootage: r.santasFootage,
+      aiGingerbreadFootage: r.gingerbreadFootage,
+      hasSatelliteSantasLines: satelliteSantasLines.length > 0,
+      hasSatelliteGingerbreadLines: satelliteGingerbreadLines.length > 0,
+      // Fix round (staff MED): scale-less manual-satellite lines (#9, traced
+      // "for training value") derive nothing — same bail the measurement
+      // effect makes — so they must not suppress the AI estimate.
+      satelliteHasScale: satelliteFeetPerPixel != null,
+    });
+    // The AI's footage estimates pre-fill the inputs (only when no satellite
+    // geometry already exists for that field — see above); satellite lines
+    // (when present) take over via the measurement effect, and staff can
+    // always type.
     setForm(f => ({
       ...f,
-      santasFootage: r.santasFootage,
+      ...footageFromAnalysis,
       santasDifficulty: r.santasDifficulty,
       // #102: a fresh AI analysis sets a PRESET difficulty, so clear any stale
       // custom $/ft on these two types — keeps the difficulty + rate consistent.
       santasCustomRate: 0,
-      gingerbreadFootage: r.gingerbreadFootage,
       gingerbreadDifficulty: r.gingerbreadDifficulty,
       gingerbreadCustomRate: 0,
     }));
@@ -3268,7 +3332,20 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
-    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    // Row 209: tell the operator when a field's footage was deliberately
+    // NOT taken from this analysis, so a number that looks unchanged after
+    // "Re-analyze" reads as intentional rather than as a stale UI.
+    // Field names match the ON-SCREEN labels (admin + staff lens LOWs: the
+    // old note said "gingerbread" for the field labelled "Ridge + Sides").
+    const keptFootageFields = [
+      footageFromAnalysis.santasFootage === undefined ? 'front gutterline' : null,
+      footageFromAnalysis.gingerbreadFootage === undefined ? 'ridge + sides' : null,
+    ].filter((label): label is string => label != null);
+    const keptFootageNote =
+      keptFootageFields.length > 0
+        ? ` Footage for ${keptFootageFields.join(' + ')} kept from the drawn satellite lines — this analysis's street estimate was not applied. (Want the street estimate instead? Delete those satellite lines and re-analyze, or type the number directly.)`
+        : '';
+    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})${keptFootageNote}`);
     const photoNeedsSave = !!(
       data.photoBase64 &&
       data.photoMediaType &&
@@ -5661,6 +5738,32 @@ export default function QuoteBuilder({
           </div>
         )}
 
+        {/* Row 420: sibling of the notice above, for a draft discarded because
+            the quote's LIFECYCLE moved (approved / booked / declined since the
+            stash). Different words on purpose: the form the draft was priced
+            against may be untouched — what moved is the order's state, and
+            restoring old numbers onto it is exactly what was refused. */}
+        {editDraftLifecycleNotice && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-2.5 flex items-start gap-2 text-xs"
+            style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+            role="status"
+          >
+            <span className="flex-1">
+              Unsaved edits from an earlier visit were found, but they could not be safely
+              re-applied - this quote&apos;s status has moved since they were made (approved, booked,
+              declined), or they predate the status check - so they were discarded.
+            </span>
+            <button
+              type="button"
+              className="font-semibold underline"
+              onClick={() => setEditDraftLifecycleNotice(false)}
+            >
+              OK
+            </button>
+          </div>
+        )}
+
         {/* PS-G2: booked-order banner — persistent so it's visible whether the
             operator arrives here to re-price or just to look. Re-pricing here
             (Calculate) only updates the number; it does NOT record the
@@ -5888,6 +5991,44 @@ export default function QuoteBuilder({
                 </button>
               </div>
             )}
+            {/* Row 206: a saved draft existed but was left untouched because a
+                lead prefill was applied here — grey/dismissible, same
+                convention as rows 413/420 (nothing is wrong, nothing was
+                lost; the draft is still sitting in storage for a plain
+                /quote/new visit). No Clear button: this notice never touched
+                the draft, so there's nothing here to undo. */}
+            {draftWithheldByPrefill && (
+              <div
+                className="flex items-center justify-between gap-3 mb-3 rounded-md border px-3 py-2 text-xs"
+                style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+                role="status"
+              >
+                <span>
+                  A saved draft from an earlier, unfinished quote was found, but this quote was
+                  started from a lead — so the draft was left untouched instead of overwriting
+                  these fields. To get back to it, open{' '}
+                  {/* A plain <a>, NOT next/link: this navigates to the SAME
+                      route minus the ?prefill params, and the restore effect
+                      is mount-once — a client transition would keep this
+                      component instance alive and never re-offer the draft.
+                      A full load guarantees a fresh mount (and the row-406
+                      beforeunload warning still guards unsaved typing). */}
+                  {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full
+                      document load is REQUIRED here, see comment above */}
+                  <a href="/quote/new" className="font-semibold underline">
+                    + New quote
+                  </a>{' '}
+                  directly (without a lead) and it will be offered there.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDraftWithheldByPrefill(false)}
+                  className="font-semibold underline whitespace-nowrap"
+                >
+                  OK
+                </button>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={lbl} htmlFor="customer-name">Name</label>
@@ -6101,30 +6242,18 @@ export default function QuoteBuilder({
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handlePullSatellite}
-                    disabled={lookingUp || loading || !form.customer.address.trim()}
-                    title={
-                      form.customer.address.trim()
-                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
-                        : 'Enter the property address above first.'
-                    }
-                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
-                  >
-                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLookupAddress}
-                    disabled={lookingUp || loading || !form.customer.address.trim()}
-                    title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-                  >
-                    {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
-                  </button>
-                </div>
+                {/* Jason (2026-08-26): "Pull satellite" moved DOWN to the
+                    manual satellite-photo row — it belongs with the satellite
+                    slot it fills, not beside the full auto-measure. */}
+                <button
+                  type="button"
+                  onClick={handleLookupAddress}
+                  disabled={lookingUp || loading || !form.customer.address.trim()}
+                  title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
+                </button>
               </div>
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
@@ -6133,7 +6262,7 @@ export default function QuoteBuilder({
                     ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the bistro runs on the Satellite tab.'
                     : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
                 {' '}
-                {'No Street View at the address? Use "Pull satellite" instead — just the satellite image + scale, instant, then upload your own front photo below.'}
+                {'No Street View at the address? Use the "Pull satellite" button in the satellite section below — just the satellite image + scale, instant, then upload your own front photo.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -6213,13 +6342,32 @@ export default function QuoteBuilder({
                 <label className="block text-xs font-medium text-gray-500 mb-1">
                   Satellite photo (optional) — screenshot from Google Maps top-down
                 </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleSatelliteSelect}
-                  disabled={loading}
-                  className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSatelliteSelect}
+                    disabled={loading}
+                    className="block flex-1 min-w-[14rem] text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                  />
+                  {/* Jason (2026-08-26): moved here from the Google-Maps box
+                      header — this button FILLS this satellite slot (image +
+                      real scale, instant, no AI), so it lives beside it. Same
+                      handler, same gating, pure relocation. */}
+                  <button
+                    type="button"
+                    onClick={handlePullSatellite}
+                    disabled={lookingUp || loading || !form.customer.address.trim()}
+                    title={
+                      form.customer.address.trim()
+                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
+                        : 'Enter the property address above first.'
+                    }
+                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
+                  </button>
+                </div>
                 {satellitePreview != null && satelliteFeetPerPixel == null && (
                   <p className="mt-1 text-xs text-amber-700">
                     Manual satellite has no known scale — trace the roofline on the Satellite tab for

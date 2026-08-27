@@ -12,16 +12,30 @@ const root = resolve(__dirname, '../../..');
 const builder = readFileSync(resolve(root, 'src/components/quote/QuoteBuilder.tsx'), 'utf8');
 
 describe('edit-mode autosave is actually wired (row 413)', () => {
-  it('stashes the dirty form against the exact last-persisted base', () => {
+  it('stashes the dirty form against the exact last-persisted base AND the mount lifecycle', () => {
     // The base is what makes restore safe: quoteEditDraft refuses the draft
     // unless the server row still serializes to it. Stashing against anything
-    // else (say, the current form) would break that CAS-style check.
-    expect(builder).toContain('saveQuoteEditDraft(editQuoteId, form, lastPersistedForm)');
+    // else (say, the current form) would break that CAS-style check. Row 420
+    // adds the lifecycle stamp — stashing without it would leave the draft
+    // offerable on a quote that has since been approved or booked.
+    expect(builder).toContain('saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle)');
   });
 
   it('offers the draft against the mount-time server truth, never mid-session state', () => {
-    expect(builder).toContain('loadQuoteEditDraft(editQuoteId, lastPersistedForm)');
+    expect(builder).toContain('loadQuoteEditDraft(editQuoteId, lastPersistedForm, editLifecycle)');
     expect(builder).toContain('sweepQuoteEditDrafts()');
+  });
+
+  it('row 420: the lifecycle stamp is built from the saved quote\'s own state fields', () => {
+    // status + customer_approved_at + deposit_paid_at — the three fields
+    // /approve and the deposit webhook write. Building it from anything else
+    // (or hardcoding it) would make the lifecycle CAS inert.
+    expect(builder).toMatch(/quoteEditDraftLifecycle\(\{\s*status: initialQuote\.status \?\? null,\s*approvedAt: initialQuote\.approvedAt \?\? null,\s*depositPaidAt: initialQuote\.depositPaidAt \?\? null,\s*\}\)/);
+  });
+
+  it('row 420: a lifecycle-mismatched draft surfaces its own notice', () => {
+    expect(builder).toContain("if (draft === 'lifecycle-moved') queueMicrotask(() => setEditDraftLifecycleNotice(true));");
+    expect(builder).toContain('{editDraftLifecycleNotice && (');
   });
 
   it('clears the stash only after a save made the form clean, never on an untouched mount', () => {
@@ -45,7 +59,7 @@ describe('edit-mode autosave is actually wired (row 413)', () => {
     // in-app next/link click unmounts within the 800ms window — the original
     // row-406 loss reintroduced. The unmount flush is ref-based on purpose: a
     // cleanup-flush on the debounce effect would fire per keystroke.
-    expect(builder).toMatch(/stashFlushRef\.current =\s+editMode && editQuoteId && hasUnsavedEdits/);
+    expect(builder).toMatch(/stashFlushRef\.current =\s+editMode && editQuoteId && hasUnsavedEdits\s+\? \(\) => saveQuoteEditDraft\(editQuoteId, form, lastPersistedForm, editLifecycle\)/);
     // …and the assignment lives inside an effect, not render (react-compiler rule).
     expect(builder).toMatch(/useEffect\(\(\) => \{\s+stashFlushRef\.current =/);
     expect(builder).toMatch(/return \(\) => \{\s+stashFlushRef\.current\?\.\(\);/);

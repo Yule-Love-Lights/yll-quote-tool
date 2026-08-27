@@ -16,7 +16,7 @@ import { canTransition, type JobStatus } from './jobStatus';
 import { getInvoiceByJob, type InvoiceRow } from './invoices';
 import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
-import { asServiceType } from './serviceType';
+import { asServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
 import type { AmendmentTrailEntry } from './amend';
 import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 
@@ -170,6 +170,12 @@ export type JobAdminCard = {
   // quote's, since the job row is the more direct source once backfilled.
   highlevelContactId: string | null;
   customerId: string | null;
+  // Row 419: the linked quote's service line for the list's Service chip.
+  // A quote with a NULL service_type reads as the default (holiday, the DB
+  // backfill rule); null here means NO linked quote at all — the job's own
+  // `type` can't recover it (bistro jobs are 'one_off' too), so the list
+  // renders an em dash rather than guessing.
+  serviceType: string | null;
 };
 
 /**
@@ -188,12 +194,12 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null }
+    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null; serviceType: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id, service_type')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
@@ -203,6 +209,7 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       is_nce: boolean | null;
       highlevel_contact_id: string | null;
       customer_id: string | null;
+      service_type: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
@@ -211,6 +218,7 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
         isNce: !!q.is_nce,
         highlevelContactId: q.highlevel_contact_id ?? null,
         customerId: q.customer_id ?? null,
+        serviceType: q.service_type ?? null,
       });
     }
   }
@@ -231,6 +239,9 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
       highlevelContactId: c?.highlevelContactId ?? null,
       customerId: j.customer_id ?? c?.customerId ?? null,
+      // Quote present + NULL column = the default (backfill rule); no quote =
+      // genuinely unknown, stays null.
+      serviceType: c ? (c.serviceType ?? DEFAULT_SERVICE_TYPE) : null,
     };
   });
 }
@@ -254,6 +265,12 @@ export type JobDetail = {
   customerEmail: string | null;
   customerPhone: string | null;
   customerAddress: string | null;
+  // Row 418: the id that routes to /customers/[id] (same rule as
+  // src/lib/dashboard/customers.ts customerRouteId — highlevel_contact_id,
+  // else customer_id, preferring the job's OWN customer_id over the linked
+  // quote's, mirroring listJobsForBilling). null for an identity-less walk-in,
+  // whose name stays plain text.
+  customerRouteId: string | null;
   isTest: boolean;
   // #199: the linked quote's NCE tag — drives the NceBadge on the detail header.
   isNce: boolean;
@@ -306,10 +323,12 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let intendedDepositUsd: number | null = null;
   let amendments: AmendmentTrailEntry[] = [];
   let lightColorLabel: string | null = null;
+  let quoteHlContactId: string | null = null;
+  let quoteCustomerId: string | null = null;
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, service_type, deposit_amount_usd, approval_snapshot')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, service_type, deposit_amount_usd, approval_snapshot, highlevel_contact_id, customer_id')
       .eq('id', job.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -321,6 +340,8 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         service_type: string | null;
         deposit_amount_usd: number | null;
         approval_snapshot: { amendments?: AmendmentTrailEntry[]; customerSelection?: { colorSchemeId?: string; customPattern?: string[] } } | null;
+        highlevel_contact_id: string | null;
+        customer_id: string | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -331,6 +352,8 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       isNce = !!data.is_nce;
       quoteServiceType = data.service_type ?? null;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
+      quoteHlContactId = data.highlevel_contact_id ?? null;
+      quoteCustomerId = data.customer_id ?? null;
       amendments = Array.isArray(data.approval_snapshot?.amendments)
         ? data.approval_snapshot.amendments
         : [];
@@ -350,6 +373,11 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
     customerEmail,
     customerPhone,
     customerAddress,
+    // Row 418: HL contact id first (preserves the CRM-linked URL), then the
+    // job's own customer_id (Phase 5), then the linked quote's — the same
+    // precedence listJobsForBilling's highlevelContactId/customerId pair
+    // resolves to at the link site.
+    customerRouteId: quoteHlContactId ?? job.customer_id ?? quoteCustomerId,
     isTest,
     isNce,
     quoteServiceType,
