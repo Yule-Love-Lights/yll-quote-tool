@@ -22,6 +22,22 @@ type Props = {
    *  (defensive — the two service types never coexist on one form). */
   bistroOnly?: boolean;
   /**
+   * Row 367 — the design's post-approval freeze. True when the linked quote
+   * already carries a customer approval and is not a booked order (the SAME
+   * predicate as QuoteBuilder's `postApprovalFrozen` and /api/quote's own
+   * approval gate). The editor blocks saving and says so; the server enforces
+   * it independently in `PUT /api/designs/[id]`, so a stale tab that mounted
+   * before the approval still finds out on its next save. Presentation only —
+   * never the sole guard.
+   */
+  locked?: boolean;
+  /**
+   * Row 367 — fired when the SERVER refuses a scene save because the linked
+   * quote is customer-approved, i.e. this editor mounted unlocked and found
+   * out afterwards. Lets the host page self-correct the rest of its controls.
+   */
+  onDesignLocked?: () => void;
+  /**
    * Handed a flush() that synchronously persists a pending debounced scene save
    * (#8 Stage A) — the parent awaits it before training capture / pricing so
    * neither reads a stale scene. Called with null on unmount. Re-fires on each
@@ -68,7 +84,7 @@ type PhotoTab = { id: string | null; title: string };
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly, locked, onDesignLocked }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
@@ -90,10 +106,16 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   const removePhotoItemsRef = useRef<((photoId: string, serverVersion?: number | null) => void) | null>(null);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
   // (a new callback identity each render would needlessly remount the editor).
+  // Kept in a ref for the same reason as onReady: a new identity each render
+  // must not remount the editor.
+  const onDesignLockedRef = useRef(onDesignLocked);
   const onReadyRef = useRef(onReady);
   useEffect(() => {
     onReadyRef.current = onReady;
   }, [onReady]);
+  useEffect(() => {
+    onDesignLockedRef.current = onDesignLocked;
+  }, [onDesignLocked]);
 
   // Load the photo tab list (base + extras). Re-runs after add/rename/delete.
   const refreshPhotoTabs = async (id: string): Promise<PhotoTab[] | null> => {
@@ -162,6 +184,8 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         activePhotoId,
         permanentOnly,
         bistroOnly,
+        locked,
+        onLocked: () => onDesignLockedRef.current?.(),
       });
       if (cancelled) {
         handle?.();
@@ -190,7 +214,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       onReadyRef.current?.(null, null);
       handle?.();
     };
-  }, [designId, activePhotoId, permanentOnly, bistroOnly]);
+  }, [designId, activePhotoId, permanentOnly, bistroOnly, locked]);
 
   // ─── #13 photo strip actions ───
   const switchPhoto = async (id: string | null) => {
@@ -233,6 +257,14 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
 
   // Rename a tab — id null = the base photo (PATCHes the literal "base").
   const renamePhoto = async (id: string | null, currentTitle: string) => {
+    // Row 367 delta-verify round 2 MED: rename is reached by double-clicking a
+    // tab, so there is no control to disable — refuse here instead. The route
+    // enforces the same freeze; this just avoids prompting for a title the
+    // server will throw away.
+    if (locked) {
+      alert('This design is locked — the customer already approved it, so photo names cannot be changed.');
+      return;
+    }
     const title = window.prompt('Photo name (empty for the default):', currentTitle);
     if (title === null) return;
     await fetch(`/api/designs/${designId}/photos/${id ?? 'base'}`, {
@@ -263,13 +295,40 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       }
       const res = await fetch(`/api/designs/${designId}/photos/${id}`, { method: 'DELETE' });
       if (!res.ok) {
-        alert("Couldn't delete the photo.");
+        // Row 367 delta-verify round 2 MED: this route enforces the SAME freeze
+        // and answers with the SAME `design-locked` code as the scene write, so
+        // a generic "Couldn't delete the photo." here was both unhelpful and a
+        // missed self-correction — the rest of the page kept its editable money
+        // controls after the server had already said the quote is approved.
+        const err = await res.json().catch(() => ({}));
+        if (err?.code === 'design-locked') {
+          alert(typeof err.error === 'string' ? err.error : 'This design is locked — the customer already approved it.');
+          onDesignLockedRef.current?.();
+        } else {
+          alert("Couldn't delete the photo.");
+        }
         return;
       }
       // #741 defect 3: report any mini group the server's prune just orphaned
       // (a "Curtain — 6 strings" line can vanish with this deleted photo) so
       // the parent can warn staff the same way it already does for #255.
       const data = await res.json().catch(() => ({}));
+      // Row 367: the photo is gone but its drawn items are NOT. Say so plainly;
+      // the alternative (a silent success) leaves invisible items still
+      // billing. Two causes, two remedies — 'locked' is permanent, 'unverified'
+      // was a read that failed and may work on a fresh delete of another photo.
+      if (data.sceneNotPruned === 'locked' || data.sceneNotPruned === 'unverified') {
+        alert(
+          data.sceneNotPruned === 'locked'
+            ? 'The photo was deleted, but the items drawn on it could NOT be removed — the customer ' +
+              'approved this quote while the delete was running, so the design is now locked. Those ' +
+              'items are still on the quote. Tell the office before sending anything else.'
+            : 'The photo was deleted, but the items drawn on it could NOT be removed — the server ' +
+              "could not check this quote's approval state. Those items are still on the quote. " +
+              'Reload and check the design before sending anything.',
+        );
+        onDesignLockedRef.current?.();
+      }
       onPrunedMiniGroups?.(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
       if (activePhotoId === id) {
         // #741 defects 1/2: the editor is mounted ON the deleted photo — its
@@ -388,6 +447,17 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         className="flex items-center justify-between gap-2 px-3 border-b border-[#2e3340] bg-[#1a1d24]"
       >
         <span className="text-xs font-medium text-[#9aa3b2]">Design editor</span>
+        {/* Row 367: staff see the freeze BEFORE they draw, not after a refused
+            save. The editor-core banner still fires if a save is refused (a
+            stale tab), but this is the one that prevents wasted work. */}
+        {locked && (
+          <span
+            className="text-xs font-medium rounded px-2 py-0.5 border border-amber-700 bg-[#2a2117] text-amber-300 whitespace-nowrap"
+            title="The customer already approved this quote, so the design they signed off on is locked. To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)"
+          >
+            🔒 Approved — locked
+          </span>
+        )}
         <div className="flex items-center gap-2">
           <Link href="/settings" target="_blank" className={barBtn}>
             ⚙ Settings
@@ -444,7 +514,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
                     // this, two overlapping deletes on two different tabs each
                     // force their own corrective save (removePhotoItems), racing
                     // two full-scene PUTs the server resolves by arrival order.
-                    disabled={photoBusy}
+                    disabled={photoBusy || locked}
                     onClick={(e) => {
                       e.stopPropagation();
                       void deletePhoto(tab.id!, tab.title);
@@ -459,7 +529,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
           <button
             type="button"
             className={`${barBtn} whitespace-nowrap`}
-            disabled={photoBusy}
+            disabled={photoBusy || locked}
             onClick={() => addFileRef.current?.click()}
             title="Add another photo of this house (side, backyard, garage…) — drawn items on it are quoted too; no AI analyze"
           >

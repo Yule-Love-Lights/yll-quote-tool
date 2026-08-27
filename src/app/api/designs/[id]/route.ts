@@ -23,6 +23,7 @@ import {
   type DesignPortalVisibility,
 } from '@/lib/designs';
 import { clampBrightness } from '@/lib/design/photoBrightness';
+import { SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -144,15 +145,6 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     let portalVisibility: DesignPortalVisibility | null = null;
     let newVersion: number | undefined;
     if (scene !== undefined) {
-      // Row 348 (admin LOW): clamp brightness before persisting. `lightScale`
-      // does NOT need the same treatment here — every render path already
-      // clamps it on READ via `normalizeLightScale` (editor.ts's
-      // `activeLightScale()`, render-readonly.ts:89), so a raw out-of-range
-      // stored value self-corrects and adding a write-time clamp too would
-      // be redundant machinery. Brightness has no such read-time guard
-      // anywhere (see photoBrightness.ts's `clampBrightness` doc comment),
-      // so an unclamped value would persist and paint an opaque tint over
-      // the whole design on every render path, portal included.
       const rawScene = scene as DesignScene;
       const normalizedScene: DesignScene = {
         ...rawScene,
@@ -183,6 +175,27 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       };
       const outcome = await updateDesignSceneGuarded(id, normalizedScene, version as number | null | undefined);
       if (!outcome.ok) {
+        // Row 367: the shared writer refused because the linked quote carries
+        // a frozen (customer-approved) agreement. Distinguishable `code` so
+        // the editor tells this apart from the row-260 CAS conflict below —
+        // the conflict's remedy is "reload", which here would loop staff back
+        // into the same lock.
+        if (outcome.reason === 'locked') {
+          return NextResponse.json(
+            { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
+            { status: 409 },
+          );
+        }
+        // Row 367: the freeze state could not be READ. Not a lock (a transient
+        // blip must not permanently block this editor, nor claim a live quote
+        // is approved) and not a licence to write — a retryable 5xx keeps the
+        // edit queued for the editor's own backoff retry.
+        if (outcome.reason === 'unverified') {
+          return NextResponse.json(
+            { error: "Could not verify this design's approval state — not saved. Retrying." },
+            { status: 500 },
+          );
+        }
         if (outcome.reason === 'conflict') {
           // Distinguishable body (`conflict: true`) so the editor can tell
           // this apart from an ordinary save failure and block-and-offer-

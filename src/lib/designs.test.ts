@@ -31,6 +31,24 @@ vi.mock('./supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 
+// Row 367: designs.ts's shared scene writer now consults the post-approval
+// freeze before it writes. Mocked here so the row-260 CAS suite below stays
+// about the compare-and-swap (the freeze's own lookup issues two extra
+// queries, which the sequencing test asserts against); the row-367 suite at
+// the bottom drives this mock directly. Default = unlocked, i.e. the
+// pre-row-367 behaviour every existing test was written against.
+const { readSceneLockMock } = vi.hoisted(() => ({
+  readSceneLockMock: vi.fn(async (): Promise<{ ok: true; locked: boolean } | { ok: false }> => ({
+    ok: true,
+    locked: false,
+  })),
+}));
+
+vi.mock('@/lib/design/sceneFreeze', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/design/sceneFreeze')>()),
+  readSceneLock: readSceneLockMock,
+}));
+
 import {
   uploadDesignPhoto,
   uploadDesignSatellite,
@@ -56,6 +74,7 @@ const oversizedBase64 = Buffer.alloc(11 * 1024 * 1024, 1).toString('base64');
 
 describe('design upload size cap (audit #22)', () => {
   beforeEach(() => {
+  readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
     sharpMock.mockClear();
     // A truthy stub is enough — the size guard runs before any storage/DB call.
     sbRef.current = {};
@@ -1513,5 +1532,178 @@ describe('isValidDesignId (W2-029)', () => {
     expect(isValidDesignId(undefined)).toBe(false);
     expect(isValidDesignId('')).toBe(false);
     expect(isValidDesignId(12345)).toBe(false);
+  });
+});
+
+// ── Row 367: the post-approval freeze lives in the SHARED writer ─────────────
+// Four premerge lenses independently found that gating only the PUT route
+// missed seed-analysis, seed-roofline and the photo-delete prune, which all
+// call this function directly. Gating here covers them by construction — and
+// covers a route added tomorrow. These are the load-bearing tests for that.
+describe('updateDesignSceneGuarded — post-approval freeze (row 367)', () => {
+  const scene = { items: [], yardsticks: [] } as unknown as Parameters<typeof updateDesignSceneGuarded>[1];
+
+  it('refuses a frozen design with reason "locked", and issues NO write', async () => {
+    const calls: string[] = [];
+    sbRef.current = {
+      from(table: string) {
+        calls.push(table);
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => { calls.push('UPDATE'); return b; },
+          maybeSingle: async () => ({ data: null, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+        };
+        return b;
+      },
+    };
+    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: true });
+
+    const outcome = await updateDesignSceneGuarded('d1', scene, 5);
+
+    expect(outcome).toEqual({ ok: false, reason: 'locked' });
+    // The whole point: the refusal happens BEFORE the CAS, so nothing is
+    // written and no version is burned.
+    expect(calls).not.toContain('UPDATE');
+  });
+
+  it('refuses with reason "unverified" when the freeze state could not be read', async () => {
+    // Distinct from 'locked' on purpose: callers turn this into a retryable
+    // 5xx, never a 409. A transient read failure must not manufacture a
+    // permanent lock, and must not wave the write through either.
+    const calls: string[] = [];
+    sbRef.current = {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => { calls.push('UPDATE'); return b; },
+          maybeSingle: async () => ({ data: null, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+        };
+        return b;
+      },
+    };
+    readSceneLockMock.mockResolvedValueOnce({ ok: false });
+
+    const outcome = await updateDesignSceneGuarded('d1', scene, 5);
+
+    expect(outcome).toEqual({ ok: false, reason: 'unverified' });
+    expect(calls).not.toContain('UPDATE');
+  });
+
+  it('writes normally when the design is not frozen', async () => {
+    sbRef.current = {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => b,
+          maybeSingle: async () => ({ data: { version: 5 }, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [{ version: 6 }], error: null }),
+        };
+        return b;
+      },
+    };
+
+    const outcome = await updateDesignSceneGuarded('d1', scene, 5);
+
+    expect(outcome).toEqual({ ok: true, version: 6 });
+  });
+});
+
+// ── Row 367 delta-verify HIGH: the prune loop must treat the new outcomes as
+// TERMINAL. Before this, 'locked'/'unverified' fell through to the loop's
+// `continue` (the CAS-conflict path), burned all five retries, threw into an
+// outer catch that only logs — and the function still answered `ok: true`.
+// The photo's storage object and extra_photos entry are already deleted by
+// then, so the deleted photo's scene items survived, invisible and still
+// billing: the exact #741 class this prune exists to prevent.
+describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryable', () => {
+  // Delta-verify HIGH on the fix round: 'locked'/'unverified' used to fall
+  // through to the loop's `continue` (the CAS-conflict path), burn all five
+  // retries, throw into an outer catch that only logs — and the function still
+  // answered a clean `ok: true`. The photo's storage object and extra_photos
+  // entry are already gone by then, so the deleted photo's scene items
+  // survived, invisible and still billing: the #741 class this prune exists to
+  // prevent. Driven through the REAL guard (readSceneLock is the suite's mock),
+  // not by stubbing updateDesignSceneGuarded, so the whole path is exercised.
+  const P = '33333333-3333-4333-8333-333333333333';
+
+  function fixture() {
+    return makeExtrasSb({
+      extra_photos: [{ id: P, path: `${ID}/extra-${P}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [{ id: 'i1', kind: 'wreath', photoId: P }] },
+    });
+  }
+
+  it('reports sceneNotPruned:locked instead of a clean success, and leaves the items in place', async () => {
+    const { client, state } = fixture();
+    sbRef.current = client;
+    // The quote was approved between the route's pre-flight check and here.
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    // Honest on both counts: the photo IS gone (storage + extra_photos already
+    // written), and the caller is TOLD the drawn items survived.
+    expect(result.ok).toBe(true);
+    expect(result.sceneNotPruned).toBe('locked');
+    expect(state.removedPaths).toEqual([[`${ID}/extra-${P}.jpg`]]);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['i1']); // un-pruned, on purpose
+  });
+
+  it("reports sceneNotPruned:'unverified' when the freeze state could not be read", async () => {
+    // Delta-verify round 2 MED: this is a failure surface the freeze check
+    // ITSELF added, so folding it into the pre-existing silent 'error' path
+    // would be inheriting a swallow rather than accepting one. Staff get the
+    // same "the photo went, its items did not" warning, with its own cause.
+    const { client, state } = fixture();
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: false });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    expect(result.ok).toBe(true);
+    expect(result.sceneNotPruned).toBe('unverified');
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['i1']); // un-pruned
+  });
+
+  it('applies the same rule to the brightness-only prune branch', async () => {
+    // A photo with a per-photo brightness override but NO items drawn on it
+    // takes a different write inside the same loop. A mutation probe showed
+    // that branch's terminal handling was UNCOVERED — removing it left every
+    // test green — so this pins it rather than trusting the two branches to
+    // stay in step.
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: P, path: `${ID}/extra-${P}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [], extraPhotoBrightness: { [P]: 30 } },
+    });
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    expect(result.ok).toBe(true);
+    expect(result.sceneNotPruned).toBe('locked');
+    // the override survives, un-pruned, exactly like items would
+    const scene = state.row.scene as { extraPhotoBrightness?: Record<string, number> };
+    expect(scene.extraPhotoBrightness?.[P]).toBe(30);
+  });
+
+  it('reports nothing on the ordinary unfrozen path', async () => {
+    const { client, state } = fixture();
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    expect(result.ok).toBe(true);
+    expect(result.sceneNotPruned).toBeUndefined();
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items).toHaveLength(0); // pruned, as always
   });
 });
