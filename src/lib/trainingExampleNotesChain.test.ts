@@ -1,13 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Proves the WHOLE "what did the AI get wrong" chain, not just one hop:
-//   1. captureTrainingExample stores a staff-typed note (sanitized: capped,
-//      control chars stripped, no other mangling of ordinary text).
-//   2. exampleToFewShot reads that stored row back as aiFailureNotes.
-//   3. buildFewShotMessages (photoAnalysis.ts) renders aiFailureNotes into the
-//      actual assembled prompt text sent to the model.
+// Proves the WHOLE "what did the AI get wrong" chain, not just one hop, for
+// BOTH verticals (holiday and permanent each have their own separate capture
+// → few-shot pipeline — see AGENTS.md's #141 note):
+//   1. captureTrainingExample / capturePermanentTrainingExample stores a
+//      staff-typed note (sanitized: capped, control chars stripped, no other
+//      mangling of ordinary text).
+//   2. exampleToFewShot / rowToPermanentFewShot reads that stored row back as
+//      aiFailureNotes / notes.
+//   3. buildFewShotMessages (photoAnalysis.ts) / buildPermanentFewShotMessages
+//      (permanent/fewShot.ts) renders the note into the actual assembled
+//      prompt text sent to the model.
 // A field that saves but never reaches step 3 is worthless — this is the
-// test that would fail if that were true.
+// test that would fail if that were true. (It did, for permanent — a review
+// caught that the permanent half was captured/displayed but never wired into
+// its prompt; the second describe block below is the regression test.)
 
 const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
@@ -27,6 +34,9 @@ vi.mock('./embeddings', () => ({ embedImage: async () => null }));
 import { captureTrainingExample, exampleToFewShot, type TrainingExampleRow } from './trainingExamples';
 import { buildFewShotMessages } from './photoAnalysis';
 import type { Scene } from './design/sceneTypes';
+import { capturePermanentTrainingExample } from './permanent/trainingExamples';
+import type { PermanentTrainingExampleRow } from './permanent/trainingExamples';
+import { rowToPermanentFewShot, buildPermanentFewShotMessages } from './permanent/fewShot';
 
 const SIMPLE_SCENE: Scene = {
   yardsticks: [],
@@ -171,6 +181,101 @@ describe('the "what did the AI get wrong" chain: capture → aiFailureNotes → 
     expect(fewShot.aiFailureNotes).toBeNull();
 
     const messages = await buildFewShotMessages([fewShot]);
+    const assistantMsg = messages.find((m) => m.role === 'assistant')!;
+    const text = (assistantMsg.content[0] as { text: string }).text;
+    expect(text).not.toContain('Known AI pitfall');
+  });
+});
+
+function rowFromPermanentUpsert(upserted: Record<string, unknown>): PermanentTrainingExampleRow {
+  return {
+    id: 'ex-1',
+    created_at: upserted.created_at as string,
+    updated_at: upserted.created_at as string,
+    quote_id: upserted.quote_id as string,
+    design_id: upserted.design_id as string,
+    source: upserted.source as 'manual' | 'auto-send',
+    excluded: false,
+    notes: upserted.notes as string | null,
+    address: upserted.address as string | null,
+    street_photo_base64: upserted.street_photo_base64 as string | null,
+    street_media_type: upserted.street_media_type as string | null,
+    satellite_photo_base64: upserted.satellite_photo_base64 as string,
+    satellite_media_type: upserted.satellite_media_type as string,
+    satellite_feet_per_pixel: upserted.satellite_feet_per_pixel as number | null,
+    original_analysis: upserted.original_analysis as Record<string, unknown> | null,
+    final_satellite_lines: upserted.final_satellite_lines as PermanentTrainingExampleRow['final_satellite_lines'],
+    final_street_runs: upserted.final_street_runs as PermanentTrainingExampleRow['final_street_runs'],
+    final_inputs: upserted.final_inputs as PermanentTrainingExampleRow['final_inputs'],
+  };
+}
+
+// Regression test for the permanent-lighting half of the same chain — a
+// review found this half was captured/sanitized/displayed but the note never
+// reached the permanent analyzer's few-shot prompt (fewShot.ts hardcoded
+// `notes: ''` in the assistant turn regardless of what staff typed).
+describe('the permanent-lighting "what did the AI get wrong" chain: capture → notes → prompt text', () => {
+  beforeEach(() => {
+    quoteRef.current = null;
+    designRef.current = null;
+    sbRef.current = null;
+  });
+
+  const PERMANENT_DESIGN = {
+    id: 'design-1',
+    scene: { yardsticks: [], items: [] },
+    photo_path: null,
+    photo_w: null,
+    photo_h: null,
+    satellite_path: 'sat.jpg',
+    satellite_lines: { front: [{ points: [[0, 0], [1, 1]], label: 'front eave' }], left: [], right: [], back: [] },
+  };
+
+  it('a normal staff-typed note captured at correction time reaches the assembled permanent few-shot prompt text verbatim', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', service_type: 'permanent', inputs: {} };
+    designRef.current = PERMANENT_DESIGN;
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    const typedNote = 'traced the left roofline as one run — it is actually two separate runs with a gap';
+    const captureResult = await capturePermanentTrainingExample({ quoteId: 'q1', source: 'manual', notes: typedNote });
+    expect(captureResult).toEqual({ id: 'ex-1' });
+
+    // Step 1: the note landed in the DB write exactly as typed.
+    const upserted = getUpsertedRow()!;
+    expect(upserted.notes).toBe(typedNote);
+
+    // Step 2: reading that row back projects notes through unchanged.
+    const row = rowFromPermanentUpsert(upserted);
+    const fewShot = rowToPermanentFewShot(row)!;
+    expect(fewShot).not.toBeNull();
+    expect(fewShot.notes).toBe(typedNote);
+
+    // Step 3: the assembled prompt (what actually gets sent to the model)
+    // contains the note text inside the assistant turn's JSON payload.
+    const messages = await buildPermanentFewShotMessages([fewShot]);
+    const assistantMsg = messages.find((m) => m.role === 'assistant')!;
+    const text = (assistantMsg.content[0] as { text: string }).text;
+    expect(text).toContain(typedNote);
+    expect(text).toContain('Known AI pitfall on this house:');
+  });
+
+  it('no note typed (skipped) leaves the projected notes null and the prompt carries no pitfall line', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', service_type: 'permanent', inputs: {} };
+    designRef.current = PERMANENT_DESIGN;
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    await capturePermanentTrainingExample({ quoteId: 'q1', source: 'manual' }); // no notes at all — optional means optional
+
+    const upserted = getUpsertedRow()!;
+    expect(upserted.notes).toBeNull();
+
+    const row = rowFromPermanentUpsert(upserted);
+    const fewShot = rowToPermanentFewShot(row)!;
+    expect(fewShot.notes).toBeNull();
+
+    const messages = await buildPermanentFewShotMessages([fewShot]);
     const assistantMsg = messages.find((m) => m.role === 'assistant')!;
     const text = (assistantMsg.content[0] as { text: string }).text;
     expect(text).not.toContain('Known AI pitfall');
