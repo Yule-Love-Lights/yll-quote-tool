@@ -1,4 +1,13 @@
 -- =====================================================================
+-- ⚠️ SUPERSEDED — DO NOT APPLY. Never reached any database.
+--
+-- Replaced by 2026-08-28-vehicle-visits-polling.sql on Naldo's 2026-08-27 call:
+-- customer coordinates stay inside the quote tool, so there are no Bouncie
+-- geofences, no job_geozones table, and no per-vehicle zone bookkeeping. The
+-- schedule is the watch list, read at poll time. Kept for history only.
+-- =====================================================================
+
+-- =====================================================================
 -- job_geozones gets the vehicle it belongs to (ledger row 403, phase 3c).
 --
 -- WHY. A Bouncie geozone is PER-DEVICE: `POST /v1/application-geozones` takes an

@@ -444,3 +444,39 @@ a timeline.
 to a job the crew never attended. Before anyone compares GPS against the manual
 clock, they need to know which jobs are untrackable, or an address-quality
 problem will look like a crew problem.
+
+---
+
+# DESIGN CHANGE, 2026-08-27: polling replaced geofences
+
+Naldo asked the right question: why would the customers' home coordinates go to
+Bouncie when the quote tool is the one doing the tracking? They should not, and
+now they do not. Everything above about Bouncie geofences, arming, retiring and
+orphaned zones is HISTORY — none of it runs.
+
+**How it works now.** A cron polls Bouncie every 2 minutes for each van's
+position (one API call for the whole fleet) and does the proximity maths inside
+the quote tool, against coordinates that never leave our database. The schedule
+is the watch list: the jobs assigned for the day, plus the depot at 6 Birch
+Road. Nothing about any customer is ever sent to Bouncie.
+
+**What this replaced, and why it is better.**
+- No zones to create, retire, leak, or reconcile in a vendor account.
+- The overlap rule (several houses on one street) is our code: nearest wins
+  today, and the scheduler's day-order becomes the tie-break when that ships.
+- The poll doubles as the OAuth keep-alive, so the grant cannot die of disuse.
+- A van's "no signal" state is explicit: positions carry Bouncie's own
+  timestamp, a stale one counts as no signal, and silence NEVER closes a visit,
+  because a device that fell quiet at a job has not left the job.
+
+**The 15-minute rule.** Naldo, 2026-08-27: a stop under 15 minutes is not a
+real visit. Short stays are recorded and flagged `below_min_dwell` rather than
+deleted, so drive-bys stay visible as the data that tunes the radius.
+
+**Migrations.** Apply `2026-08-28-vehicle-visits-polling.sql`. Do NOT apply the
+two superseded 2026-08-27 geofence migrations; their files say so at the top.
+
+**To switch it on**: the phase-3a OAuth variables, the migration above, and the
+new cron deploys with the code (`/api/ops/vehicle-poll`, every 2 minutes,
+CRON_SECRET-guarded). Until the OAuth variables exist the cron is a dormant
+no-op by design.
