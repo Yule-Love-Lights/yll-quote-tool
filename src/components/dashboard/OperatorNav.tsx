@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 
 type NavItem = { label: string; href: string; match: OperatorArea[] };
@@ -14,7 +14,11 @@ type NavItem = { label: string; href: string; match: OperatorArea[] };
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/', match: ['home'] },
   { label: 'Inbox', href: '/inbox', match: ['inbox'] },
-  { label: 'Leads', href: '/admin/leads', match: ['leads'] },
+  // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
+  // page and everything behind it stay live — reachable by URL and from any
+  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
+  // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
+  // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
@@ -39,6 +43,17 @@ function NavBadge({ count, overdue }: { count: number; overdue: boolean }) {
   );
 }
 
+// Ledger #347 fix round (staff-lens MED + LOW): the session state is one of
+// three things, not two. "unknown" is the state before the first
+// GET /api/auth/session answer lands (or after a transient failure — see the
+// effect below), and it renders THE SAME as "signedIn": the Sign-out slot
+// stays visible and reserves its layout space the whole time, so mounting
+// this nav fresh on 56 separate page files never shifts every other nav link
+// sideways once the fetch resolves. Only a POSITIVE "signedOut" answer hides
+// it (via CSS visibility, which keeps the reserved space AND drops the
+// button from hit-testing/tab order — no separate disabled handling needed).
+type SessionState = 'unknown' | 'signedIn' | 'signedOut';
+
 export function OperatorNav({
   active,
   inboxOpenLeads = 0,
@@ -54,6 +69,57 @@ export function OperatorNav({
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const isActive = (item: NavItem) => item.match.includes(active);
+
+  // This nav is shared chrome rendered on every operator page, several of
+  // which do not fetch the operator session themselves — so it has no
+  // server-provided session state to start from. It used to render "Sign
+  // out" unconditionally, which lied on a signed-out browser (nothing to
+  // sign out of). It is confirmed via GET /api/auth/session, which reports
+  // the true session state directly (never through the dormancy-aware
+  // requireOperator()) so this stays honest even while the gate is
+  // deliberately off.
+  //
+  // A 401 from /api/auth/session is a REAL, meaningful answer (the perimeter
+  // itself says "no session") and is treated as signedOut, not as an error.
+  // A genuine network/server hiccup is retried once and otherwise leaves the
+  // state at 'unknown' — it must never flip a real session to signedOut just
+  // because one fetch blipped, which would silently strand a signed-in
+  // staffer with no way to sign out until their next page load.
+  const [sessionState, setSessionState] = useState<SessionState>('unknown');
+  useEffect(() => {
+    let cancelled = false;
+
+    const check = (attempt: number): void => {
+      fetch('/api/auth/session')
+        .then(res => {
+          if (res.status === 401) return { signedIn: false }; // real answer, not a failure
+          if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
+          return res.json() as Promise<{ signedIn?: boolean }>;
+        })
+        .then(body => {
+          if (!cancelled) setSessionState(body.signedIn === true ? 'signedIn' : 'signedOut');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (attempt < 1) {
+            check(attempt + 1); // one retry on a transient failure
+          }
+          // Retry exhausted: leave sessionState at 'unknown'. Per the bias
+          // above, 'unknown' renders the same as 'signedIn' (visible) —
+          // showing Sign out to someone with no session is harmless (the
+          // logout call just no-ops and redirects to /login); hiding it from
+          // someone who IS signed in is the outcome to avoid.
+        });
+    };
+    check(0);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Only a CONFIRMED signedOut hides the control. 'unknown' stays visible.
+  const hideSignOut = sessionState === 'signedOut';
 
   const linkStyle = (item: NavItem) =>
     isActive(item)
@@ -94,7 +160,12 @@ export function OperatorNav({
             md (768px): the 9-item row needs ~832px, so at md it overflowed the
             viewport → horizontal page scroll on iPad portrait (#56, S22). 768–1023
             uses the hamburger below. */}
-        <ul className="hidden lg:flex items-center gap-1 text-sm">
+        {/* gap-0.5, not gap-1 (premerge staff MED on this PR): with the "+ New
+            quote" CTA added, the row overflowed 1024px by ~20px whenever the
+            Inbox badge showed — measured in headless Chromium, the exact
+            iPad-width horizontal-scroll class #56/S22 fixed. Ten gaps × 2px
+            saved = exactly the overflow. */}
+        <ul className="hidden lg:flex items-center gap-0.5 text-sm">
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
@@ -103,7 +174,29 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          {/* "+ New quote" (Jason, 2026-08-26): the dashboard header's CTA,
+              duplicated here for one-click access from every page. The
+              homepage copy stays — this is an addition, not a move. Styled
+              as the CTA it is, not a nav tab, so it never takes the
+              active-tab highlight (that is Quotes' job for /quote/*). */}
           <li>
+            {/* px-2.5 (not the tabs' px-3): 4px of extra headroom on top of
+                the gap fix above, so the 1024px fit isn't zero-margin. */}
+            <Link
+              href="/quote/new"
+              className="px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
+          {/* Always mounted (ledger #347 fix round) — reserves its layout
+              width so every link to its left never jumps once the session
+              check resolves. `visibility: hidden` (not a conditional
+              unmount) keeps the space, drops it from hit-testing, AND
+              removes it from the tab order — no separate disabled handling
+              needed. */}
+          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
             <button
               type="button"
               onClick={signOut}
@@ -136,6 +229,18 @@ export function OperatorNav({
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* "+ New quote" first in the mobile menu — same one-click-access
+              ask as the desktop CTA above. */}
+          <li>
+            <Link
+              href="/quote/new"
+              onClick={() => setOpen(false)}
+              className="flex items-center px-4 py-3 text-sm font-semibold border-b"
+              style={{ borderColor: 'var(--op-border)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link
@@ -154,7 +259,11 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
-          <li>
+          {/* Same always-mounted / visibility-hidden treatment as the
+              desktop copy above — this dropdown only opens on a click, so it
+              is not the layout-shift MED, but it stays tri-state-consistent
+              with its sibling rather than reintroducing the two-state bug. */}
+          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
             <button
               type="button"
               onClick={() => {

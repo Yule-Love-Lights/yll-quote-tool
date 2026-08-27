@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { DEFAULT_PERMANENT_BISTRO_RATES, type PermanentBistroRates } from '@/lib/permanentBistro/types';
+import { SkeletonBar } from '@/components/ui/LoadingSkeleton';
 
 type Status = 'loading' | 'idle' | 'saving' | 'saved' | 'error';
 
@@ -120,7 +121,25 @@ export function PermanentBistroRatesSettings() {
   }
 
   if (status === 'loading') {
-    return <p className="text-sm text-gray-500">Loading bistro lighting rates…</p>;
+    // Row 410: this panel replaced one bare line with a heading, an
+    // explanation and a two-column grid of rate fields — the whole settings
+    // page jumped. The skeleton mirrors that layout at its real heights.
+    return (
+      <div role="status" aria-busy="true" className="space-y-4">
+        <div>
+          <SkeletonBar className="h-5 w-56" />
+          <SkeletonBar className="h-8 mt-1.5" />
+        </div>
+        {/* Row 410 fix round (staff lens LOW): THREE cards, matching this
+            panel's three real sections — not EventRatesSettings' four. */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <SkeletonBar className="h-36" />
+          <SkeletonBar className="h-36" />
+          <SkeletonBar className="h-36" />
+        </div>
+        <span className="sr-only">Loading bistro lighting rates…</span>
+      </div>
+    );
   }
 
   return (

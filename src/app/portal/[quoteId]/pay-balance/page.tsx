@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { friendlyPortalError, nceBalanceBlockedError } from '@/components/portal/friendlyError';
+import { friendlyPortalError, invoiceStaleError, nceBalanceBlockedError } from '@/components/portal/friendlyError';
 import { track } from '@/lib/analytics/posthog';
 import { categorizeApproveError, type ApproveErrorCategory } from '@/lib/analytics/errorCategory';
 
@@ -68,6 +68,19 @@ export default function PayBalancePage() {
       if (!res.ok && body.code === 'nce') {
         setError(nceBalanceBlockedError());
         setBusy(false);
+        return;
+      }
+      // Row 378 — the invoice no longer reconciles with the order's agreed
+      // total, so the server refused rather than charge a figure it can't
+      // stand behind. Same dead-end posture as the NCE branch above: retrying
+      // can never succeed until a human reconciles the invoice, so name the
+      // real state instead of the generic "please try again" copy. Unlike the
+      // NCE branch this IS a defect condition rather than an expected one, so
+      // it still reports pay_balance_error for the funnel.
+      if (!res.ok && body.code === 'invoice-stale') {
+        setError(invoiceStaleError());
+        setBusy(false);
+        track('pay_balance_error', buildPayBalanceErrorProperties(quoteId, res.status, new Error('invoice-stale')));
         return;
       }
       if (!res.ok || !body.redirectUrl) throw new Error('unavailable');

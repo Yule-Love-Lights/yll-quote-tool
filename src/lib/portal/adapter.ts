@@ -78,6 +78,17 @@ type ApprovalSnapshotJson = {
     version?: number;
   };
   amendments?: AmendmentTrailEntry[];
+  // Row 344 — the full pricing result as it existed at approval time (mirrors
+  // /api/quotes/[id]/approve's own ApprovalSnapshot.pricing field, which this
+  // narrow view previously omitted entirely). quoteRowToPortalQuote reads this
+  // as the ONE basis for line-item prices/packages/charges on an approved
+  // quote instead of the live, still-changing row.result — see the
+  // `frozenPricing` computation below for why. Optional/back-compat: absent
+  // on a staff-approve() snapshot written before row 344 (that route now also
+  // freezes it — see its own comment) and on any snapshot from before this
+  // field was read here; both degrade to the live row.result, exactly like
+  // every other optional field in this type.
+  pricing?: QuoteResult | null;
 };
 
 // Ledger row 239 — shape stored in the `browsing_selection` jsonb column by
@@ -97,6 +108,10 @@ type BrowsingSelectionJson = {
   colorSchemeId?: string;
   customPattern?: string[];
   permanentEffect?: string;
+  // Ledger row 324 — additive provenance marker the staff-selection route
+  // stamps; a plain customer autosave never writes this key. See
+  // PortalBrowsingSelection.staffSet.
+  staffSet?: { by: string | null; at: string };
 };
 
 // Shape of a `quotes` row pulled with the columns the portal needs.
@@ -634,7 +649,23 @@ function buildBrowsingSelection(row: QuoteRowForPortal): PortalBrowsingSelection
       : {}),
     ...(isPermanentEffect(raw.permanentEffect) ? { permanentEffect: raw.permanentEffect } : {}),
     savedAt: row.browsing_selection_updated_at ?? '',
+    ...(raw.staffSet && typeof raw.staffSet === 'object' ? { staffSet: raw.staffSet } : {}),
   };
+}
+
+// Row 344 — the customer-ACCEPTED amendment (if any), or undefined. Shared by
+// quoteRowToPortalQuote's frozen-pricing basis (which line items/packages/
+// charges to render — see `frozenPricing` below) and buildApproval's totalUsd
+// resolution just below, so the two can never disagree about which basis is
+// authoritative: the ORIGINAL approval_snapshot.pricing (never touched again,
+// even across amendments — see amend/route.ts's own comment), or the live
+// row.result the amend route re-priced and recorded against. Computed once,
+// read by both call sites — the S42 "make surfaces agree by construction"
+// pattern, not two independent re-derivations that could drift apart.
+function latestAcceptedAmendment(row: QuoteRowForPortal): AmendmentTrailEntry | undefined {
+  if (!row.customer_approved_at) return undefined;
+  const amendment = latestConsentAmendment(row.approval_snapshot?.amendments);
+  return amendment?.consent?.status === 'accepted' ? amendment : undefined;
 }
 
 function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): PortalApproval | undefined {
@@ -654,8 +685,12 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
     );
   }
   const packageId = (sel?.packageId ?? pickFallbackApprovalPackageId(packages)) as PackageId;
+  // The latest amendment regardless of consent state (needed below for the
+  // pending/declined card) — and the accepted one specifically (needed for
+  // totalUsd just below), via the SAME shared predicate quoteRowToPortalQuote
+  // uses for its frozen-pricing basis (see latestAcceptedAmendment's comment).
   const amendment = latestConsentAmendment(snap?.amendments);
-  const acceptedAmendment = amendment?.consent?.status === 'accepted' ? amendment : undefined;
+  const acceptedAmendment = latestAcceptedAmendment(row);
   // Once re-consent is accepted, the amended total is the durable customer
   // agreement. Keep the booked portal aligned with billing instead of falling
   // back to the original approval total after the pending card disappears.
@@ -803,6 +838,25 @@ export function deriveIsBooked(args: {
   return isApproved && (isPaid || isPortalActionable(quoteStatus));
 }
 
+// Ledger row 324 fix round (customer MED): whether to show the "your
+// installer set these starting choices" line on the portal. Gated on BOTH
+// staffSet (the current selection was set by staff-selection/route.ts, not
+// a genuine customer edit) AND the customer having viewed before (viewedAt
+// — the #68 view receipt, same signal StaffPreselectBar uses for its
+// overwrite confirm) — a first-ever view has nothing "replaced" to explain.
+//
+// Self-clears without any extra machinery here: quote.browsingSelection is
+// undefined once approved (see quoteRowToPortalQuote), and the customer's
+// own next autosave (/api/quotes/[id]/selection) overwrites browsing_selection
+// WITHOUT a staffSet key (see that route's own comment) — so the NEXT page
+// load reads staffSet:false on its own, no live tracking needed here.
+export function showStaffPreselectNotice(
+  browsingSelection: Pick<PortalBrowsingSelection, 'staffSet'> | undefined,
+  viewedAt: string | undefined,
+): boolean {
+  return !!browsingSelection?.staffSet && !!viewedAt;
+}
+
 // Seed the SelectionProvider package/item selection. On an approved (locked)
 // portal we prefer the FROZEN snapshot over the recommendation/staff default so
 // the display matches what the customer signed:
@@ -904,10 +958,37 @@ export type AdapterInput = {
 };
 
 export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuote | null {
-  // Without a pricing result there's nothing to show — caller should 404.
-  if (!row.result) return null;
+  // Row 344 — ONE basis for every priced surface below (line items, packages,
+  // charges, the approval-gate minimum): the FROZEN pricing result from
+  // approval_snapshot.pricing when this quote is approved, never the live
+  // row.result, which keeps changing as staff edit the scene/footage after
+  // approval (row.result is the "what would this quote cost if re-run today"
+  // figure — exactly the number that used to leak into individual line-item
+  // prices while the approval badge showed the frozen total instead).
+  //
+  // Two carve-outs, both load-bearing:
+  //   • No live accepted amendment: an amendment's `new_total` is computed
+  //     from row.result AT THE MOMENT it's recorded (amend/route.ts), and
+  //     approval_snapshot.pricing is the ORIGINAL pre-amendment snapshot —
+  //     it is never overwritten, even across amendments (see that route's
+  //     own comment). So once an amendment is accepted, row.result (not the
+  //     stale original snapshot) is the customer's current committed basis —
+  //     matching buildApproval's own totalUsd precedence below exactly
+  //     (latestAcceptedAmendment is the SAME function both call, so the two
+  //     can never pick different bases).
+  //   • snapshot.pricing missing: a staff-approve() snapshot is deliberately
+  //     minimal (no pricing frozen — see that route's own comment) and any
+  //     approval recorded before this field was read here also lacks it.
+  //     Both degrade to the live row.result, i.e. today's pre-fix behavior —
+  //     no regression, just not yet the fix.
+  const frozenPricing =
+    row.customer_approved_at && !latestAcceptedAmendment(row) ? (row.approval_snapshot?.pricing ?? null) : null;
+  // Without a pricing result (frozen or live) there's nothing to show —
+  // caller should 404.
+  if (!frozenPricing && !row.result) return null;
+  const effectiveResult = frozenPricing ?? row.result!;
 
-  const { lineItems, roofline } = buildPortalLineItems(row.result, row.inputs);
+  const { lineItems, roofline } = buildPortalLineItems(effectiveResult, row.inputs);
   // The $1,000 gate threshold (minimumOrderSubtotal) sums only ONE roofline —
   // never both options — so a quote with Santa's + Gingerbread isn't double-
   // counted into clearing a minimum the customer can only pick one roofline for.
@@ -939,14 +1020,14 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // chargesFromResult's own comment (derivePackages.ts) for why the live
   // input must win over a possibly-stale result.depositRate.
   const allPackages = isLegacyRebook
-    ? derivePackagesLegacyRebook(lineItems, row.result, row.inputs?.depositPercent)
+    ? derivePackagesLegacyRebook(lineItems, effectiveResult, row.inputs?.depositPercent)
     : isPermanent
-      ? derivePackagesPermanent(lineItems, row.result, row.inputs?.depositPercent)
+      ? derivePackagesPermanent(lineItems, effectiveResult, row.inputs?.depositPercent)
       : isEvent
-        ? derivePackagesEvent(lineItems, row.result, row.inputs?.depositPercent)
+        ? derivePackagesEvent(lineItems, effectiveResult, row.inputs?.depositPercent)
         : isPermanentBistro
-          ? derivePackagesPermanentBistro(lineItems, row.result, row.inputs?.depositPercent)
-          : derivePackages(lineItems, row.result, roofline, row.inputs?.depositPercent);
+          ? derivePackagesPermanentBistro(lineItems, effectiveResult, row.inputs?.depositPercent)
+          : derivePackages(lineItems, effectiveResult, roofline, row.inputs?.depositPercent);
   // The approval gate threshold — hoisted (was inline in the return below) so
   // the package filter next uses the IDENTICAL value the approve gate enforces.
   // $1,000 for holiday/event, the permanent quote's FROZEN rate-snapshot
@@ -965,9 +1046,9 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     : minimumOrderSubtotal(
         tierLineItems,
         isPermanent
-          ? (row.result.permanentRatesSnapshot?.minimumJobAmount ?? 2500)
+          ? (effectiveResult.permanentRatesSnapshot?.minimumJobAmount ?? 2500)
           : isPermanentBistro
-            ? (row.result.permanentBistroRatesSnapshot?.minimum ?? 0)
+            ? (effectiveResult.permanentBistroRatesSnapshot?.minimum ?? 0)
             : undefined,
       );
   // #134 (Jason S24): hide any package tile the customer can't approve AS
@@ -992,7 +1073,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // { ...jobCharges, manualDiscount }` below) — SelectionContext reads
   // jobCharges.depositRate directly as the customer's displayed pre-approval
   // deposit rate, so this is the critical call site for the NCE-tag-inert bug.
-  const jobCharges = chargesFromResult(row.result, row.inputs?.depositPercent);
+  const jobCharges = chargesFromResult(effectiveResult, row.inputs?.depositPercent);
   const defaultOnFees =
     (jobCharges.rush.defaultOn ? jobCharges.rush.amount : 0) +
     (jobCharges.takedown.defaultOn ? jobCharges.takedown.amount : 0);
@@ -1079,7 +1160,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // Event Lighting (#96): the soft "add if you'd like" suggestions — popular
   // add-ons not already on the quote (event quotes only).
   const evSuggestions =
-    row.service_type === 'event' && row.result ? eventSuggestions(row.result) : [];
+    row.service_type === 'event' ? eventSuggestions(effectiveResult) : [];
 
   return {
     id: row.id,
@@ -1150,5 +1231,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       status: row.status ?? null,
     }) as string,
     declineReason: row.decline_reason ?? null,
+    // Ledger row 324 — raw #68 view receipt, not the derived status (see PortalQuote.viewedAt).
+    ...(row.viewed_at ? { viewedAt: row.viewed_at } : {}),
   };
 }

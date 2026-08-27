@@ -194,19 +194,7 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         rec.staleBrowsingSelection
       ) {
         const sel = rec.staleBrowsingSelection;
-        const what =
-          sel.packageId && sel.packageId !== 'D'
-            ? `Package ${sel.packageId}`
-            : `${sel.itemCount} custom item${sel.itemCount === 1 ? '' : 's'}`;
-        // LOW (staff+customer, row 340): status-appropriate wording — this
-        // quote may never have been declined at all (abandoned = the
-        // customer just never came back), and a missing savedAt used to
-        // fall back to literally "before they declined" even then.
-        const priorState = rec.quoteStatus === 'declined' ? 'declined' : 'the quote went abandoned';
-        const savedLabel = sel.savedAt ? `saved ${new Date(sel.savedAt).toLocaleDateString()}` : 'saved earlier';
-        const keepIt = window.confirm(
-          `Heads up: this customer has a saved selection from before ${priorState} (${what}, ${savedLabel}). Send will reopen their portal on it.\n\nOK = keep it and send. Cancel = decide whether to clear it instead.`,
-        );
+        const keepIt = window.confirm(staleSelectionConfirmMessage(sel, rec.quoteStatus));
         if (!keepIt) {
           // LOW (row 340): the clear is PERMANENT — this route is the only
           // copy of the selection (browsing_selection has no history/undo).
@@ -476,6 +464,52 @@ const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled])';
 // on (a typo'd string literal in only one place would still type-check).
 type MenuContentKey = 'loading' | 'ready' | 'error';
 
+// Fix round 3 (Finding LOW, PR #926): pure extraction of the cancel alert
+// string, mirroring ColorRequestPanel.tsx's applyOutcomeFromResponse — this
+// repo's pattern for testing a fetch-response-driven string without
+// jsdom/testing-library. Null when there's no note to show (mirrors the
+// `if (body.note) alert(...)` gate this replaces). Widened to cue on
+// `stockNeedsAttention` (a stock-reversal caveat — most importantly the
+// PENDING_STOCK_SNAPSHOT refusal note) in addition to `refundNeeded`, mirroring
+// admin/jobs/[id]/page.tsx's cancelActionMessage.
+// Row 324 fix round (admin lens MED): the "Send will reopen their portal on
+// a saved selection" confirm's wording — extracted (mirrors cancelAlertMessage
+// above; this repo has no jsdom/testing-library setup) so it's testable
+// without a render, and so staffSet's wording can't silently drift from what
+// staleBrowsingSelection's own comment (route.ts) promises: a staff-set
+// selection is NOT presented as the customer's own choice, but the warning
+// still fires either way — the portal reseeds from it regardless of who set
+// it.
+export function staleSelectionConfirmMessage(
+  sel: { packageId: string | null; itemCount: number; savedAt: string | null; staffSet: boolean },
+  quoteStatus: 'declined' | 'abandoned',
+): string {
+  const what =
+    sel.packageId && sel.packageId !== 'D'
+      ? `Package ${sel.packageId}`
+      : `${sel.itemCount} custom item${sel.itemCount === 1 ? '' : 's'}`;
+  // LOW (staff+customer, row 340): status-appropriate wording — this quote
+  // may never have been declined at all (abandoned = the customer just
+  // never came back), and a missing savedAt used to fall back to literally
+  // "before they declined" even then.
+  const priorState = quoteStatus === 'declined' ? 'declined' : 'the quote went abandoned';
+  const savedLabel = sel.savedAt ? `saved ${new Date(sel.savedAt).toLocaleDateString()}` : 'saved earlier';
+  const whoSet = sel.staffSet
+    ? 'a starting selection your team set'
+    : `a saved selection from before ${priorState}`;
+  return `Heads up: this customer has ${whoSet} (${what}, ${savedLabel}). Send will reopen their portal on it.\n\nOK = keep it and send. Cancel = decide whether to clear it instead.`;
+}
+
+export function cancelAlertMessage(body: {
+  refundNeeded?: boolean;
+  stockNeedsAttention?: boolean;
+  note?: string;
+}): string | null {
+  if (!body.note) return null;
+  const cue = body.refundNeeded || body.stockNeedsAttention ? '⚠️ ' : '';
+  return `${cue}Order cancelled. ${body.note}`;
+}
+
 export function PipelineActionsMenu({
   quoteId,
   onDone,
@@ -714,6 +748,19 @@ export function PipelineActionsMenu({
         alert((body as { error?: string }).error ?? 'Action failed');
       }
       if (res && res.ok) {
+        // Row 329 fix: cancel's response carries a `note` (refund-due caveat,
+        // the stock-returned line, or the legacy-snapshot-reconstruction
+        // caveat) that this generic success path used to drop silently. This
+        // menu backs cancel on FOUR surfaces (admin/quotes, admin/jobs list,
+        // admin/invoices, customers/[contactId]); only admin/jobs/[id]'s own
+        // cancelOrder (not this component) ever surfaced it. Same idiom as
+        // that page: a ⚠️ cue when a refund is due, the note appended (now via
+        // cancelAlertMessage — see its doc comment for fix round 3).
+        if (action.kind === 'cancel') {
+          const body = await res.json().catch(() => ({}));
+          const msg = cancelAlertMessage(body);
+          if (msg) alert(msg);
+        }
         closeAndReset();
         onDone?.();
       }

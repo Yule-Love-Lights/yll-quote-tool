@@ -142,17 +142,40 @@ export async function recordMaterialActuals(
 
   // Baseline: if prep never ran (stockDecrementedAt null), nothing was ever
   // deducted for this job, so every actual is a full deduction (empty estimate
-  // list). Otherwise the baseline is the same projected BOM prep used.
+  // list). Otherwise the baseline is what prep ACTUALLY took off the shelf.
   //
-  // KNOWN LIMITATION (owner-lens review, 2026-07-22): prepareJobMaterials does
-  // not persist what it actually deducted, so this baseline is re-derived from
-  // the design as it stands NOW. If the design changed between prep and
-  // completion (a colour swap, an added strand, a change order), the true-up is
-  // measured against today's projection rather than what really came off the
-  // shelf. Recording the baseline on each row below at least makes the
-  // comparison auditable after the fact; anchoring it properly means persisting
-  // prep's deductions, which touches the prep path and is tracked separately.
-  let estimated = wo.materials.materials.map((m) => ({ sku: m.sku, qty: m.qty }));
+  // Row 383 — the KNOWN LIMITATION recorded here on 2026-07-22 is now fixed.
+  // It read: "prepareJobMaterials does not persist what it actually deducted,
+  // so this baseline is re-derived from the design as it stands NOW ... the
+  // true-up is measured against today's projection rather than what really came
+  // off the shelf ... anchoring it properly means persisting prep's deductions,
+  // which touches the prep path and is tracked separately." Row 325 (PR #926)
+  // shipped exactly that: `jobs.stock_deductions`, the per-prep snapshot, which
+  // arrives on the work order as `wo.job.stockDeductions`.
+  //
+  // This is not only an audit improvement, it corrects real stock math. The
+  // snapshot records what was DEDUCTED, and computeStockDeductions floors that
+  // at available stock (`after = max(0, onHand - qty)`), so a job prepped while
+  // short took LESS off the shelf than the projection claims. Concrete case:
+  // need 5, on hand 2 -> prep deducts 2. Crew reports 5 used. Against today's
+  // live projection the delta is 5-5 = 0 and nothing moves, leaving 3 units
+  // never deducted; against the snapshot it is 2-5 = -3 and the missing 3 come
+  // off. The old baseline also drifted whenever the design changed between prep
+  // and completion (a colour swap, an added strand, a change order).
+  //
+  // Three states, per row 325's own contract (jobs.ts):
+  //   StockDeduction[]        - the accurate snapshot. Use it.
+  //   PENDING_STOCK_SNAPSHOT  - prepped by current code, snapshot write never
+  //                             landed. Ambiguous, so fall back.
+  //   null                    - prepped before the column existed (legacy).
+  //                             Fall back.
+  // Both fallbacks keep the pre-row-383 behaviour rather than inventing a
+  // figure, which is the same posture cancel takes on those two states.
+  const prepSnapshot = wo.job.stockDeductions;
+  const haveExactBaseline = Array.isArray(prepSnapshot);
+  let estimated = haveExactBaseline
+    ? prepSnapshot.map((d) => ({ sku: d.sku, qty: d.deducted }))
+    : wo.materials.materials.map((m) => ({ sku: m.sku, qty: m.qty }));
   // True when the estimate below is the one prep actually deducted against, so
   // an empty list means a bad read rather than "nothing was ever deducted".
   let preppedBaseline = !!wo.job.stockDecrementedAt;
@@ -200,7 +223,13 @@ export async function recordMaterialActuals(
   // what prep already took off the shelf: a silent double deduction, the exact
   // failure that makes stock numbers un-trustworthy. Record the submission,
   // leave stock alone, and say so.
-  if (preppedBaseline && !estimated.length) {
+  // Row 383: an empty EXACT snapshot is trustworthy — it means prep genuinely
+  // deducted nothing (every sku untracked, or nothing was in stock). Treating
+  // that as "unavailable" would silently skip the true-up on a job whose crew
+  // usage really should come off now. The distrust below is aimed at the
+  // FALLBACK path, where an empty list is indistinguishable from
+  // getJobWorkOrder having swallowed a sub-read to an empty default.
+  if (preppedBaseline && !estimated.length && !haveExactBaseline) {
     await insertActualRows(db, jobId, lines, recordedBy, new Map());
     return { ok: true, alreadyDone: false, trueUps: [], skipped: [], baselineUnavailable: true };
   }

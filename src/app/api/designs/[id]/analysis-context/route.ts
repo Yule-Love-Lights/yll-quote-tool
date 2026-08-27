@@ -22,6 +22,7 @@ import {
   isValidDesignId,
 } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { refuseIfFrozen } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -58,6 +59,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isValidDesignId(id)) {
     return NextResponse.json({ error: 'Invalid design id' }, { status: 400 });
   }
+
+  // Row 427: this write swaps the SATELLITE IMAGE, which the portal renders
+  // under the customer's roofline trace (SatelliteRoofView). The trace itself
+  // stays editable by Jason's ruling; the picture beneath it does not.
+  const frozen = await refuseIfFrozen(id);
+  if (frozen) return frozen;
 
   let body: Record<string, unknown>;
   try {

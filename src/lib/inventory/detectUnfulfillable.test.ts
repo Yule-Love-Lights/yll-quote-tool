@@ -9,6 +9,8 @@ const mini = (id: string, colors: string[], surface = 'bush', groupId?: string):
   ({ kind: 'strand', id, surface, colorPattern: colors, stringCount: 1, points: [0, 0, 1, 1], bulbType: 'mini', spacingIn: 6, drawingStyle: 'solid', groupId, yardstickId: null }) as unknown as SceneItem;
 const area = (id: string, colors: string[], surface = 'bush', groupId?: string): SceneItem =>
   ({ kind: 'miniArea', id, surface, shape: 'box', colorPattern: colors, stringCount: 1, groupId, yardstickId: null }) as unknown as SceneItem;
+const group = (id: string, colors: string[]): SceneItem =>
+  ({ kind: 'miniGroup', id, surface: 'railing', memberIds: [], colorPattern: colors, stringCount: 3, yardstickId: null }) as unknown as SceneItem;
 
 // minis offer all palette colors; spritzers offer only 6 (no orange/yellow/purple/teal).
 const SPRITZER_24 = ['warm-white', 'cool-white', 'red', 'green', 'blue', 'pink'];
@@ -42,6 +44,11 @@ describe('detectUnfulfillable', () => {
     expect(ids([mini('m1', ['red', 'green', 'cool-white'])])).toEqual([]); // Grinch mini strand
   });
 
+  it('validates a mini group against its authored pattern', () => {
+    expect(ids([group('bad-group', ['red', 'blue', 'pink'])])).toEqual(['bad-group']);
+    expect(ids([group('grinch-group', ['red', 'green', 'cool-white'])])).toEqual([]);
+  });
+
   it('flags a multi-color SPRITZER whose pattern has a mini strand but NO spritzer strand (Ocean)', () => {
     // Ocean has a mini strand but no spritzer strand → a single Ocean spritzer can't be built.
     expect(ids([sp('s1', ['teal', 'blue', 'cool-white'])])).toEqual(['s1']);
@@ -59,8 +66,8 @@ describe('detectUnfulfillable', () => {
 // #840 review fix: targets() skipped a grouped STRAND (`if (item.groupId)
 // continue`) but had no such guard for a grouped scattershot (miniArea) —
 // an individually-unfulfillable grouped member would get flagged even though
-// group members are meant to be invisible to per-item checks (the group
-// bills/colors as a unit, "members carry colors; bills as default").
+// group members are meant to be invisible to per-item checks (the group owns
+// the authoritative billed color pattern).
 describe('detectUnfulfillable — grouped members are invisible (#240)', () => {
   // red+blue+pink: proven unfulfillable above (no stocked strand, and offered
   // as solids doesn't help a multi-color pattern — see the multi-color tests).

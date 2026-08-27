@@ -50,3 +50,26 @@ export function viewOnlyStaleTabError(phone: string = portalPhone()): string {
 export function nceBalanceBlockedError(phone: string = portalPhone()): string {
   return `This balance is handled through your NCE trade account — nothing is due here. Text us at ${phone} with any questions.`;
 }
+
+/**
+ * Stale invoice balance (row 378) — the amount on the invoice no longer
+ * reconciles with the order's current agreed total, so the pay-balance route
+ * refuses rather than charge a figure we can't stand behind (code
+ * 'invoice-stale'). Same "name the real state, don't say retry" posture as
+ * viewOnlyStaleTabError/nceBalanceBlockedError: retrying cannot succeed until
+ * a human reconciles the invoice.
+ *
+ * The wording deliberately does NOT claim "we've notified our team" even
+ * though the route does fire a staff alert — that alert is best-effort (it
+ * no-ops when the Telegram bot is dormant or unconfigured), and customer copy
+ * must never assert something the system might not have done. It states what
+ * has to happen and hands the customer a channel that always works.
+ *   invoiceStaleError()
+ *   → "We need to confirm the final amount on this order before taking payment — please text us at … and we'll get it sorted right away."
+ */
+export function invoiceStaleError(phone: string = portalPhone()): string {
+  return (
+    `We need to confirm the final amount on this order before taking payment — ` +
+    `please text us at ${phone} and we'll get it sorted right away.`
+  );
+}

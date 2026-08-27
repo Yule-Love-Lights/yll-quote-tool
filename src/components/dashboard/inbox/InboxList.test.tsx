@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage, replyRowAction, replyOutcomeMessage, isRefusalStatus } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -599,6 +599,27 @@ describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
   });
 });
 
+// Row 392: isRefusalStatus is the exact gate act() uses to tell a CAS refusal
+// (the row genuinely moved out from under it — dismiss/route.ts's own 409)
+// apart from a plain backend failure (503) or a network throw, which is what
+// decides whether act() restores the row + refusedIds it (this row's note
+// must survive) versus falling through to the old refresh()-only path.
+describe('isRefusalStatus (row 392 — distinguishing a CAS refusal from a backend failure)', () => {
+  it('409 is a refusal', () => {
+    expect(isRefusalStatus(409)).toBe(true);
+  });
+
+  it('503 is not a refusal — the item is unchanged server-side, refresh() already handles it', () => {
+    expect(isRefusalStatus(503)).toBe(false);
+  });
+
+  it('200/404/500 are not refusals either', () => {
+    expect(isRefusalStatus(200)).toBe(false);
+    expect(isRefusalStatus(404)).toBe(false);
+    expect(isRefusalStatus(500)).toBe(false);
+  });
+});
+
 // Row 321: badges an isColorRequest row so it's visually distinct before
 // Handled/Mark completed can silently bury a still-pending colour request.
 // The click-then-confirm-then-act flow itself can't be driven without jsdom
@@ -650,5 +671,44 @@ describe('retiresFollowUp (row 309 — which actions can retire a due follow-up)
   it('is false for handled and followed — neither is a terminal transition', () => {
     expect(retiresFollowUp('/api/dashboard/handled')).toBe(false);
     expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
+  });
+});
+
+// Fix round 3 (MED): this file was the THIRD, unaudited ReplyComposer
+// consumer — onComposerSent ignored the outcome entirely and removed the row
+// on ANY send, including 'error', where the write's outcome is unconfirmed
+// and the item is most likely still genuinely 'unresponded'. Pure-function
+// coverage of the DECISION, mirroring InWorksSection.test.tsx's identical
+// coverage of its own copy — the useState wiring itself stays untested (no
+// jsdom in this repo, same constraint as every other stateful branch here).
+describe('replyRowAction (fix round 3 — what a reply outcome does to the row)', () => {
+  it('resolved leaves the open queue immediately — the item is no longer unresponded', () => {
+    expect(replyRowAction('resolved')).toBe('move');
+  });
+
+  it('refused (a genuine CAS refusal) flags AND removes the row — but only once dismissed, never synchronously', () => {
+    expect(replyRowAction('refused')).toBe('flag-and-remove');
+  });
+
+  it('error (an unknown failure, not a refusal) flags the row but KEEPS it — removing would hide a still-open lead from the primary open queue', () => {
+    expect(replyRowAction('error')).toBe('flag-and-keep');
+  });
+});
+
+describe('replyOutcomeMessage (fix round 3 — worded identically to InWorksSection.tsx)', () => {
+  it('refused reads as a settled fact: the item really was resolved elsewhere', () => {
+    const msg = replyOutcomeMessage('refused').toLowerCase();
+    expect(msg).toContain('already resolved');
+    expect(msg).not.toContain("couldn't confirm");
+  });
+
+  it('error reads as a genuine unknown, not a confirmed resolution — must not claim the item was resolved', () => {
+    const msg = replyOutcomeMessage('error').toLowerCase();
+    expect(msg).toContain("couldn't confirm");
+    expect(msg).not.toContain('already resolved');
+  });
+
+  it('the two messages are different strings — a staffer must not see the same note for both', () => {
+    expect(replyOutcomeMessage('refused')).not.toBe(replyOutcomeMessage('error'));
   });
 });

@@ -125,6 +125,7 @@ import {
   DELIVERY_TIMEOUT_ERROR_PREFIX,
   fetchLatestDeliveryOutcomes,
 } from '@/lib/quoteDeliveries';
+import { queueQuoteBuildSessionCompletion } from '@/lib/quoteBuildTiming';
 
 export const runtime = 'nodejs';
 
@@ -370,12 +371,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const retryDelivery = req.nextUrl.searchParams.get('retryDelivery') != null;
 
   // Task 10 — Send channel split: accept an optional body { channel?: 'email' | 'sms' | 'both' }.
-  // Default is 'both' (back-compat — the admin Send button posts no body).
+  // Default is 'both' for callers that omit channel (including older clients).
   // Guard against a double-read: the body is only ever read once here.
   // Row 340: also accepts `clearBrowsingSelection?: { expectedUpdatedAt: string | null }`
   // — see the route header. Read here (not deferred to the isRevive branch
   // below) so both fields come from the ONE body read.
-  let sendBody: { channel?: unknown; clearBrowsingSelection?: unknown } = {};
+  let sendBody: { channel?: unknown; clearBrowsingSelection?: unknown; quoteBuildTimerId?: unknown } = {};
   try { sendBody = await req.json(); } catch { sendBody = {}; }
   const channel = (sendBody.channel === 'sms' || sendBody.channel === 'email' || sendBody.channel === 'both')
     ? sendBody.channel
@@ -389,6 +390,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   })();
   const doSms   = channel === 'both' || channel === 'sms';
   const doEmail = channel === 'both' || channel === 'email';
+  const quoteBuildTimerId =
+    typeof sendBody.quoteBuildTimerId === 'string' && UUID_RE.test(sendBody.quoteBuildTimerId)
+      ? sendBody.quoteBuildTimerId
+      : null;
 
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await withDbTimeout((signal) =>
@@ -451,6 +456,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // quoteStatus.ts. 'cancelled' is excluded (post-booking; refunds are
   // manual, rebook-only).
   const isRevive = canRevive(currentStatus);
+  const isFirstSend = quote.quote_sent_at == null && !isResend && !isRevive;
 
   // Money guard, fail closed: a revivable status shouldn't carry a paid
   // deposit (the decline routes guard their write on deposit_paid_at IS
@@ -1140,6 +1146,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       console.warn('[api/quotes/:id/send] tag propagation failed (non-fatal):', err);
     }
   };
+
+  if (isFirstSend && !quote.is_test) {
+    queueQuoteBuildSessionCompletion({ quoteId: id, timerId: quoteBuildTimerId, sentAt });
+  }
 
   // #264 round 2, FIX 1 (HIGH): tagPropagation is NOT the rare path round 1's
   // brief assumed — prod: 149/182 sent quotes (82%) carry legacy_rebook=true,

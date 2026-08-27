@@ -279,6 +279,53 @@ describe('buildNeedsAction — collect-balance', () => {
     expect(items).toHaveLength(1);
     expect(items[0].kind).toBe('collect-balance');
   });
+
+  // Row 389 (S49): a stale invoice's balance is a frozen, unreconciled
+  // figure — the nag must say so rather than presenting it as gospel.
+  it('flags a STALE invoice in the detail copy instead of presenting the balance as gospel', () => {
+    const items = buildNeedsAction(
+      makeInput({
+        quotes: [makeQuote({ id: 'q26' })],
+        jobs: [{ id: 'j7', quote_id: 'q26', status: 'requires_invoicing', created_at: daysAgo(5) }],
+        invoices: [
+          {
+            id: 'inv7',
+            job_id: 'j7',
+            quote_id: 'q26',
+            status: 'awaiting_payment',
+            balance: 700,
+            created_at: daysAgo(3),
+            stale: true,
+          },
+        ],
+      }),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].detail).toContain('$700');
+    expect(items[0].detail).toMatch(/unreconciled/i);
+  });
+
+  it('does NOT mention "unreconciled" for an ordinary (non-stale) invoice', () => {
+    const items = buildNeedsAction(
+      makeInput({
+        quotes: [makeQuote({ id: 'q27' })],
+        jobs: [{ id: 'j8', quote_id: 'q27', status: 'requires_invoicing', created_at: daysAgo(5) }],
+        invoices: [
+          {
+            id: 'inv8',
+            job_id: 'j8',
+            quote_id: 'q27',
+            status: 'awaiting_payment',
+            balance: 900,
+            created_at: daysAgo(3),
+            stale: false,
+          },
+        ],
+      }),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].detail).not.toMatch(/unreconciled/i);
+  });
 });
 
 // ─── Terminal / is_test exclusions ───────────────────────────────────────────

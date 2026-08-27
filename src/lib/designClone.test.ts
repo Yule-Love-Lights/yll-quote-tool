@@ -167,6 +167,24 @@ describe('cloneDesignToNewQuote', () => {
     expect(clone.seed_analysis).toEqual(SOURCE.seed_analysis);
   });
 
+  it('resets hidden portal imagery to visible on the new quote', async () => {
+    const fake = makeFake({
+      source: {
+        ...SOURCE,
+        portal_show_street_view: false,
+        portal_show_satellite_view: false,
+      },
+      objects: [],
+    });
+    sbRef.current = fake.client;
+
+    const res = await cloneDesignToNewQuote('src-quote', 'new-quote');
+    const clone = fake.designs.find((d) => d.id === res!.id)!;
+
+    expect(clone.portal_show_street_view).toBe(true);
+    expect(clone.portal_show_satellite_view).toBe(true);
+  });
+
   it('returns null when the source quote has no design', async () => {
     const fake = makeFake({ source: null });
     sbRef.current = fake.client;

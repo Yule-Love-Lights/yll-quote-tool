@@ -32,6 +32,29 @@ export const BUSINESS_RULES = {
     hard: 12,
   },
 
+
+
+  // The difficulty a roofline (Santa's front line and Gingerbread ridge+sides)
+  // STARTS at, everywhere it can start: a new quote's form, and the customer's
+  // self-serve estimate. Easy = $8/ft.
+  //
+  // Jason, 2026-08-27: an analysis used to be able to move this on its own —
+  // the AI returns its own difficulty read and both the builder and the
+  // self-serve estimator adopted it, so the same house could quote at $10/ft
+  // just because a photo was re-analyzed. Roofline difficulty is now a purely
+  // MANUAL decision: nothing but a staff member picking a value in the
+  // dropdown changes it. Exported so the three places that need a starting
+  // value cannot drift into disagreeing about what it is.
+  //
+  // Used for the read-side fallbacks too (quoteForm's `?? ...`, QuoteBuilder's
+  // OVERRIDE_ID_TO_RATE). The first draft of this change deliberately left those
+  // at 'medium', reasoning that they describe legacy quotes already PRICED at
+  // medium and that moving them would re-price history on reopen. Measured
+  // instead of argued: 187 of 187 holiday quotes in production store both
+  // difficulty keys, so that fallback is unreachable for real data and the
+  // population it was protecting does not exist. One value everywhere beats a
+  // second one guarding nothing.
+  rooflineDefaultDifficulty: 'easy' as const,
   // Stake Lighting (independent staked ground runs) — its OWN per-ft rate table,
   // distinct from the roofline rates above (Naldo, 2026-06-26).
   stakeLightingRates: {
@@ -1107,4 +1130,26 @@ export function computeTotalsTail(
     depositAmount,
     balanceDue,
   };
+}
+
+// Row 409 — the NCE (barter/trade network) deposit rule's percent, in ONE place.
+// #199 set this default when the NCE tag goes on; three call sites carried the
+// bare literal 40 (the nce route, QuoteBuilder's prefill, and this rule's own
+// description) which is how a rule number drifts. Nothing ENFORCES it — Jason
+// ruled 2026-08-25 that a sent quote may legitimately sit off it (row 409) — so
+// this is the number surfaces COMPARE against, not one they impose.
+export const NCE_DEPOSIT_PERCENT = 40;
+
+// Row 409 — the live (pre-approval) deposit rate a quote is actually charged
+// at, resolved in ONE place so every surface that shows it agrees with the one
+// that charges it by construction. Precedence is chargesFromResult's, which is
+// what the portal and the approve route price from: a staff-set
+// inputs.depositPercent wins, else the rate frozen into result at pricing time,
+// else the business default. An APPROVED quote's frozen
+// approval_snapshot.customerSelection.depositRate outranks all of this and is
+// applied by the caller (see resolveQuoteDepositRate in src/lib/quotes.ts).
+export function liveDepositRate(depositPercent?: number, resultRate?: number | null): number {
+  return typeof depositPercent === 'number'
+    ? effectiveDepositRate(depositPercent)
+    : (resultRate ?? BUSINESS_RULES.depositPercentage);
 }

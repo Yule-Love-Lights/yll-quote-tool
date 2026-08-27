@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { isStale } from '@/lib/dashboard/inbox/lifecycle';
-import { ReplyComposer } from './ReplyComposer';
+import { ReplyComposer, type ReplySentOutcome } from './ReplyComposer';
 
 const SOURCE_LABEL: Record<string, string> = {
   ghl: 'GHL',
@@ -61,6 +61,38 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
     return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
   }
   return rejectionError || 'Something went wrong — try again.';
+}
+
+/** Fix round 2 (MED): what to DO with a row for each ReplySentOutcome
+ *  (ReplyComposer.tsx) — pure so this decision (previously untested — the
+ *  whole reason this fix round exists) is directly unit-testable without
+ *  jsdom, same as this file's other pure exports.
+ *  'move' — the ordinary case: the row's true bucket is now "awaiting".
+ *  'flag-and-remove' — a genuine CAS refusal (real evidence the item was
+ *    resolved elsewhere): the row DOES leave the section, but only once the
+ *    operator has seen why and dismissed the note — never silently.
+ *  'flag-and-keep' — an unknown failure (not a refusal): removing the row
+ *    would hide work that may still be open, so it stays in place, flagged. */
+export function replyRowAction(outcome: ReplySentOutcome): 'move' | 'flag-and-remove' | 'flag-and-keep' {
+  switch (outcome) {
+    case 'resolved':
+      return 'move';
+    case 'refused':
+      return 'flag-and-remove';
+    case 'error':
+      return 'flag-and-keep';
+  }
+}
+
+/** Fix round 2 (MED): the dismissable note's wording for the two non-'move'
+ *  outcomes — deliberately worded differently (see replyRowAction's doc): a
+ *  refusal is a settled fact ("already resolved"), an error is a genuine
+ *  unknown ("couldn't confirm"). Pure + exported for the same no-jsdom reason
+ *  as this file's other message helpers (completeConfirmMessage etc). */
+export function replyOutcomeMessage(outcome: 'refused' | 'error'): string {
+  return outcome === 'refused'
+    ? 'Reply sent — but this item was already resolved by someone else in the meantime. Dismiss to remove it from this list.'
+    : "Reply sent, but we couldn't confirm this item's status update — it may still need attention. Check it directly.";
 }
 
 /** Row 309: a local copy of InboxList.tsx's own retiresFollowUp (kept
@@ -178,6 +210,13 @@ export function InWorksSection({
   // Row 311 fix-round FIX 3: a definite server rejection's own error text —
   // mirrors InboxList.tsx's own rejectionErrors. See errorNoteFor above.
   const [rejectionErrors, setRejectionErrors] = useState<Record<string, string>>({});
+  // Fix round 2 (MED): marks a row flagged via a reply's 'refused' outcome
+  // (replyRowAction === 'flag-and-remove') — dismissError checks this to
+  // decide whether dismissing the note should ALSO remove the row (a genuine
+  // CAS refusal, so the row really is terminal) or just clear the note and
+  // leave the row in place (every other errorIds use, including a reply's
+  // 'error' outcome, where the row's true state is unknown, not resolved).
+  const [refusedIds, setRefusedIds] = useState<Record<string, boolean>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // #307: "Handled" starts collapsed; "Needs a look" always renders expanded
   // (there's no toggle for it). Both are views over the SAME handledItems
@@ -291,10 +330,20 @@ export function InWorksSection({
   // the only ways to clear a row's error were retrying that exact row (via
   // act()) or the accidental cross-row steal this fix removes. Row 311: also
   // clears the lock, matching InboxList.tsx's dismissError.
-  function dismissError(itemId: string) {
+  function dismissError(itemId: string, group?: 'awaiting' | 'handled') {
+    // Fix round 2 (MED): capture BEFORE clearing — a row flagged
+    // 'flag-and-remove' (a reply's genuine CAS refusal) never got removed at
+    // send-time; it waits for the operator to see the note and dismiss it,
+    // which is when the delayed removal actually happens. Every other
+    // dismissError caller (a thrown/rejected act() call, or a reply's
+    // 'error' outcome) never sets refusedIds, so this is a no-op for them —
+    // the row just stays put with its note cleared, exactly as before.
+    const shouldRemove = !!refusedIds[itemId];
     setErrorIds((prev) => withRowFlagCleared(prev, itemId));
     setUnreachableActions((prev) => omitKey(prev, itemId));
     setRejectionErrors((prev) => omitKey(prev, itemId));
+    setRefusedIds((prev) => omitKey(prev, itemId));
+    if (shouldRemove && group) removeFromGroup(itemId, group);
   }
 
   // #307 review fix 1: the "Mark completed" click handler. For a flagged row,
@@ -403,7 +452,7 @@ export function InWorksSection({
                 <span>{errorNoteFor(unreachableActions[item.id], rejectionErrors[item.id])}</span>
                 <button
                   type="button"
-                  onClick={() => dismissError(item.id)}
+                  onClick={() => dismissError(item.id, group)}
                   className="underline"
                   style={{ color: '#dc2626' }}
                 >
@@ -435,6 +484,24 @@ export function InWorksSection({
                 Reply in Gmail
               </span>
             ) : (
+              // Fix round 2 delta-verify LOW (decided, not fixed): after an
+              // 'error' outcome (onSent below) this button stays live and
+              // un-disabled — the operator CAN reopen the composer and send a
+              // second message before the first send's status write is
+              // confirmed. Left live on purpose rather than adding a
+              // dedicated per-row lock: (1) the note's own copy leads with
+              // "Reply sent" — a careful reader has no reason to read this as
+              // "try again"; (2) the server's REPLY_CLAIM_WINDOW_MS 20s claim
+              // guard (reply/route.ts) already blocks a genuine rapid
+              // double-click regardless of this button's disabled state; (3)
+              // reopening always mounts a FRESH, blank composer (composerFor
+              // toggling to null unmounts it) — there is no pre-filled
+              // duplicate text one click away, only real re-typing/re-AI-draft
+              // friction; (4) the residual — an inattentive operator
+              // deliberately re-sending after >20s — costs the customer one
+              // extra text, not money or data corruption, and a dedicated
+              // lock flag would add real machinery (a new per-row map, wiring
+              // in two files) for a narrow, already-mitigated risk.
               <button
                 type="button"
                 onClick={() => setComposerFor(composerFor === item.id ? null : item.id)}
@@ -473,13 +540,32 @@ export function InWorksSection({
             itemId={item.id}
             source={item.source}
             channel={item.channel}
-            onSent={() => {
+            onSent={(outcome) => {
               setComposerFor(null);
-              // A sent reply stamps the item handled + followed (snoozed awaiting
-              // their reply) — its true group is always "awaiting" afterward. On an
-              // already-awaiting row this is a no-op (it must NOT disappear); on a
-              // handled row it moves there instead of vanishing.
-              moveGroup(item.id, group, 'awaiting');
+              if (outcome === 'resolved') {
+                // A sent reply stamps the item handled + followed (snoozed awaiting
+                // their reply) — its true group is always "awaiting" afterward. On an
+                // already-awaiting row this is a no-op (it must NOT disappear); on a
+                // handled row it moves there instead of vanishing.
+                moveGroup(item.id, group, 'awaiting');
+                return;
+              }
+              // Fix round 2 (MED): the message went out and can't be unsent either
+              // way, but 'refused' (a genuine CAS refusal — real evidence the item
+              // was resolved elsewhere) and 'error' (an unknown failure) get
+              // different treatment — see replyRowAction's own doc. Neither
+              // silently disappears the row: both use this section's existing
+              // error/dismiss idiom (errorIds/rejectionErrors + the Dismiss
+              // button) so the operator sees WHY, instead of the row just
+              // vanishing (or, for 'error', staying invisible as still-open work).
+              setErrorIds((prev) => withRowFlagSet(prev, item.id));
+              setRejectionErrors((prev) => ({ ...prev, [item.id]: replyOutcomeMessage(outcome) }));
+              if (replyRowAction(outcome) === 'flag-and-remove') {
+                // 'refused' only: the row DOES leave the section, but only once
+                // the operator dismisses the note (dismissError's shouldRemove
+                // branch) — never synchronously/silently here.
+                setRefusedIds((prev) => withRowFlagSet(prev, item.id));
+              }
             }}
           />
         )}

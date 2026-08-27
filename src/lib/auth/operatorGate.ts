@@ -82,6 +82,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
   '/api/integrations/whatsapp/webhook', // Twilio WhatsApp webhook (signature-verified in the route, #82)
   '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified in the route, #82 alt channel)
+  '/api/integrations/bouncie/webhook', // Bouncie fleet-GPS webhook (shared-secret verified in the route, row 403 phase 2) — a Bouncie request carries no operator session, so without this entry the perimeter 401s it before the route's own secret check runs. Capture-only: the route writes to vehicle_events and nothing else, never to job_segments/shifts/jobs (constraint (a): GPS never writes payroll).
   '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82 auto-PO)
   '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82 low-stock alarm)
   '/api/dashboard/ghl/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 inbox safety-net poll)

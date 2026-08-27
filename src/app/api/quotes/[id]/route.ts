@@ -74,7 +74,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     return NextResponse.json(
       {
         error:
-          `This quote is ${row!.deposit_paid_at ? 'booked (deposit paid)' : 'customer-approved'} — deleting it also erases its job, invoice, and payment record. To confirm, send header x-confirm-delete-booked: ${DELETE_BOOKED_CONFIRM}`,
+          `This quote is ${row!.deposit_paid_at ? 'booked (deposit paid)' : 'customer-approved'} — deleting it also erases its job, invoice, payment record, and every internal staff note on it. To confirm, send header x-confirm-delete-booked: ${DELETE_BOOKED_CONFIRM}`,
         code: 'confirm-required',
       },
       { status: 428 }, // Precondition Required
