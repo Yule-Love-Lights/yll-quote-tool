@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { verifyBouncieSecret, bodyHash, parseBouncieEvent, isBouncieWebhookConfigured, isOffHours } from './bouncie';
+import {
+  verifyBouncieSecret,
+  bodyHash,
+  parseBouncieEvent,
+  isBouncieWebhookConfigured,
+  isOffHours,
+  BUSINESS_HOURS,
+} from './bouncie';
 
 describe('verifyBouncieSecret', () => {
   const secret = 'a-long-shared-secret-value';
@@ -193,28 +200,32 @@ describe('occurredAt for the non-trip events', () => {
 });
 
 describe('isOffHours — row 403 constraint (f)', () => {
-  // ET, so a UTC timestamp is 4 or 5 hours ahead depending on DST.
-  it('counts a mid-afternoon workday event as in-hours', () => {
+  // NALDO'S DECISION 2026-08-27: the company is always open and keeps all data,
+  // so BUSINESS_HOURS spans the full day and nothing classifies as off-hours.
+  // These tests pin that decision rather than the arithmetic: if someone narrows
+  // the window later, they should have to come here and say so on purpose.
+  it('spans the whole day', () => {
+    expect(BUSINESS_HOURS.startHourEt).toBe(0);
+    expect(BUSINESS_HOURS.endHourEt).toBe(24);
+  });
+
+  it('treats a workday afternoon as in-hours', () => {
     expect(isOffHours('2026-08-26T18:00:00.000Z')).toBe(false); // 14:00 ET
   });
 
-  it('counts a late-evening event as OFF-hours', () => {
-    expect(isOffHours('2026-08-27T03:00:00.000Z')).toBe(true); // 23:00 ET
+  it('treats a late evening as in-hours too, because we are always open', () => {
+    expect(isOffHours('2026-08-27T03:00:00.000Z')).toBe(false); // 23:00 ET
   });
 
-  it('counts an overnight event as OFF-hours', () => {
-    expect(isOffHours('2026-08-26T07:00:00.000Z')).toBe(true); // 03:00 ET
+  it('treats the middle of the night as in-hours', () => {
+    expect(isOffHours('2026-08-26T07:00:00.000Z')).toBe(false); // 03:00 ET
   });
 
   it('returns undefined — not false — when there is no timestamp', () => {
-    // "We do not know when this happened" must not default into the keep pile.
+    // Still distinct from "in hours". A future purge job must be forced to
+    // decide about an event whose time we never learned.
     expect(isOffHours(undefined)).toBeUndefined();
     expect(isOffHours('not a date')).toBeUndefined();
   });
 
-  it('uses ET, not UTC, so the boundary does not drift with the season', () => {
-    // 10:00 ET in August (UTC-4) and in January (UTC-5) are both in-hours.
-    expect(isOffHours('2026-08-26T14:00:00.000Z')).toBe(false);
-    expect(isOffHours('2026-01-26T15:00:00.000Z')).toBe(false);
-  });
 });
