@@ -6360,7 +6360,14 @@ export default function QuoteBuilder({
                 type="file"
                 accept="image/*"
                 onChange={handlePhotoSelect}
-                disabled={loading}
+                // Row 427b, found by a live prod check on approved quote #1290:
+                // the satellite upload beside it was gated and this one was
+                // not. A chosen photo flows through the eager design effect to
+                // POST /api/designs/[id]/photo, which the freeze now refuses —
+                // so staff could pick a file and get nothing but a swallowed
+                // failure. Same door as the camera moves, one input over.
+                disabled={loading || postApprovalFrozen}
+                title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
               {photoPreview && photoFile && (
