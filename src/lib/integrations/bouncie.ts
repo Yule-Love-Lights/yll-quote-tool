@@ -45,11 +45,18 @@ import { etHour } from '@/lib/dashboard/inbox/normalize';
  * the column a purge job would need. Deleting the mechanism because today's
  * answer is "all of it" would mean rebuilding it under time pressure later.
  *
- * Worth stating plainly for whoever reads this next: one vehicle goes home with
- * a crew member, so with this window every evening and weekend trip is stored
- * indefinitely at rooftop precision. That is the owner's call and it is recorded
- * here rather than left implicit. Tell the crew what is captured, in writing,
- * before the devices go in.
+ * SO BE CLEAR ABOUT WHAT IS AND IS NOT PROTECTED RIGHT NOW. With this window,
+ * `occurred_off_hours` is false on every row and NOTHING is excluded, redacted or
+ * expired. One vehicle goes home with a crew member, so every evening and
+ * weekend trip is stored indefinitely at rooftop precision. Constraint (f)
+ * ("off-hours location is not the company's to see") describes an INTENTION that
+ * this configuration deliberately switches off; it is not a protection the code
+ * is currently providing. Saying otherwise anywhere would be describing a
+ * safeguard that does not exist.
+ *
+ * That is the owner's decision and it is recorded rather than left implicit.
+ * What it makes more important, not less: tell the crew what is captured, in
+ * writing, before the devices go in.
  */
 export const BUSINESS_HOURS = { startHourEt: 0, endHourEt: 24 } as const;
 

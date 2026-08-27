@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 type MockTables = {
   zone: null | { id: string; kind: 'job' | 'depot'; job_id: string | null };
   vehicle: null | { id: string };
-  openVisit: null | { id: string };
+  openVisit: null | { id: string; entered_at: string };
   insertError: null | { code?: string; message: string };
   updateError: null | { message: string };
   inserted: Record<string, unknown>[];
@@ -117,8 +117,8 @@ describe('parseGeozoneEvent', () => {
     expect(parseGeozoneEvent(geozonePayload({}, { event: 'EXIT' }), 'e', null)?.direction).toBe('EXIT');
   });
 
-  it('accepts userGeozone as well as applicationGeozone', () => {
-    expect(parseGeozoneEvent(geozonePayload({ eventType: 'userGeozone' }), 'e', null)).not.toBeNull();
+  it('IGNORES userGeozone, which are personal zones rather than job sites', () => {
+    expect(parseGeozoneEvent(geozonePayload({ eventType: 'userGeozone' }), 'e', null)).toBeNull();
   });
 
   it('returns null for a non-geofence event rather than guessing', () => {
@@ -171,7 +171,7 @@ describe('recordGeozoneVisit', () => {
   });
 
   it('closes the open visit on EXIT', async () => {
-    tables.openVisit = { id: 'visit-1' };
+    tables.openVisit = { id: 'visit-1', entered_at: '2026-08-27T14:00:00.000Z' };
     expect(await recordGeozoneVisit(exit)).toEqual({ action: 'closed', visitId: 'visit-1' });
     expect(tables.updated[0]).toMatchObject({ exited_at: '2026-08-27T16:30:00.000Z', exit_event_id: 'evt-2' });
   });
@@ -191,6 +191,25 @@ describe('recordGeozoneVisit', () => {
   it('ignores a device that is not a registered vehicle', async () => {
     tables.vehicle = null;
     expect(await recordGeozoneVisit(enter)).toEqual({ action: 'ignored', reason: 'unregistered vehicle' });
+  });
+
+  // THE DUPLICATE-ARRIVAL DEFECT (S68 technical lens, HIGH).
+  it('REFUSES to open a second visit while one is already open for that zone', async () => {
+    // Bouncie's overlapping streams deliver the same physical arrival twice as
+    // two DIFFERENT events. Opening both left the single real EXIT closing only
+    // the newer one, orphaning the older as permanently open — silently wrong
+    // data in the table whose whole job is to be trustworthy.
+    tables.openVisit = { id: 'visit-1', entered_at: '2026-08-27T14:00:00.000Z' };
+    expect(await recordGeozoneVisit(enter)).toEqual({ action: 'ignored', reason: 'already inside this zone' });
+    expect(tables.inserted).toHaveLength(0);
+  });
+
+  it('IGNORES an exit timestamped before the arrival it would close', async () => {
+    // Out-of-order noise from a reconnect burst. Writing it would produce a
+    // negative duration, which looks like data rather than a gap.
+    tables.openVisit = { id: 'visit-1', entered_at: '2026-08-27T18:00:00.000Z' };
+    expect(await recordGeozoneVisit(exit)).toEqual({ action: 'ignored', reason: 'exit predates the open visit' });
+    expect(tables.updated).toHaveLength(0);
   });
 
   it('DROPS an exit with no matching arrival rather than inventing a duration', async () => {
@@ -216,7 +235,7 @@ describe('recordGeozoneVisit', () => {
 
   // ROW 403 CONSTRAINT (a).
   it('NEVER touches shifts or job_segments', async () => {
-    tables.openVisit = { id: 'visit-1' };
+    tables.openVisit = { id: 'visit-1', entered_at: '2026-08-27T14:00:00.000Z' };
     await recordGeozoneVisit(enter);
     await recordGeozoneVisit(exit);
     expect(tables.touched).not.toContain('shifts');

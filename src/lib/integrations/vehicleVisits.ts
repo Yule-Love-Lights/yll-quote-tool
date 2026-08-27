@@ -45,8 +45,13 @@ export function parseGeozoneEvent(
 ): GeozoneEventFacts | null {
   if (!payload || typeof payload !== 'object') return null;
   const b = payload as Record<string, unknown>;
+  // APPLICATION zones only, deliberately. `userGeozone` events come from zones
+  // the vehicle owner created in their OWN Bouncie app — around a relative's
+  // house, a child's school, wherever. Those are personal, they are not company
+  // job sites, and recording them here would quietly turn a work timeline into a
+  // record of somebody's private geography. Found by the S68 privacy lens.
   const type = typeof b.eventType === 'string' ? b.eventType : '';
-  if (type !== 'applicationGeozone' && type !== 'userGeozone') return null;
+  if (type !== 'applicationGeozone') return null;
 
   const zone = b.geozone && typeof b.geozone === 'object' ? (b.geozone as Record<string, unknown>) : null;
   const bouncieGeozoneId = typeof zone?.id === 'string' ? zone.id.trim() : '';
@@ -111,6 +116,32 @@ export async function recordGeozoneVisit(facts: GeozoneEventFacts): Promise<Visi
   if (!vehicle) return { action: 'ignored', reason: 'unregistered vehicle' };
 
   if (facts.direction === 'ENTER') {
+    // A vehicle cannot arrive somewhere it has not left. Bouncie's documented
+    // duplicate pattern is NOT byte-identical redelivery — those are already
+    // dropped a layer up by the body hash on `vehicle_events`. It is two
+    // SEPARATE deliveries of the same physical arrival, from the overlapping
+    // real-time and periodic streams or from a reconnect burst. Those differ in
+    // bytes, so they reach here as two distinct events.
+    //
+    // Without this check each one opened its own visit, and the single real EXIT
+    // then closed whichever was entered most recently, orphaning the other as
+    // permanently open. In the table whose entire job is to be a trustworthy
+    // independent record, that is silently wrong data with no error anywhere.
+    // Found by the S68 technical lens.
+    const { data: alreadyOpen } = await sb
+      .from('vehicle_visits')
+      .select('id, entered_at')
+      .eq('vehicle_id', vehicle.id)
+      .eq('geozone_id', zone.id)
+      .is('exited_at', null)
+      .order('entered_at', { ascending: false })
+      .limit(1)
+      .returns<{ id: string; entered_at: string }[]>();
+    const open = alreadyOpen?.[0];
+    if (open) {
+      return { action: 'ignored', reason: 'already inside this zone' };
+    }
+
     const { data, error } = await sb
       .from('vehicle_visits')
       .insert({
@@ -136,19 +167,27 @@ export async function recordGeozoneVisit(facts: GeozoneEventFacts): Promise<Visi
   // EXIT: close the most recent still-open visit for this vehicle and zone.
   const { data: open } = await sb
     .from('vehicle_visits')
-    .select('id')
+    .select('id, entered_at')
     .eq('vehicle_id', vehicle.id)
     .eq('geozone_id', zone.id)
     .is('exited_at', null)
     .order('entered_at', { ascending: false })
     .limit(1)
-    .returns<{ id: string }[]>();
+    .returns<{ id: string; entered_at: string }[]>();
   const visit = open?.[0];
 
   // An EXIT with no matching arrival is genuinely possible — the zone may have
   // been armed while the van was already inside it. Recording a visit with no
   // entry time would invent a duration, so this is dropped rather than guessed.
   if (!visit) return { action: 'ignored', reason: 'exit without an open visit' };
+
+  // An EXIT timestamped BEFORE the arrival it would close is out-of-order noise
+  // from a reconnect burst, not a departure. Writing it would produce a visit
+  // that ended before it began, and a negative duration is worse than a missing
+  // one — it looks like data rather than a gap.
+  if (Date.parse(facts.occurredAt) < Date.parse(visit.entered_at)) {
+    return { action: 'ignored', reason: 'exit predates the open visit' };
+  }
 
   const { error } = await sb
     .from('vehicle_visits')
