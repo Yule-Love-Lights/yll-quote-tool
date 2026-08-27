@@ -480,3 +480,19 @@ two superseded 2026-08-27 geofence migrations; their files say so at the top.
 new cron deploys with the code (`/api/ops/vehicle-poll`, every 2 minutes,
 CRON_SECRET-guarded). Until the OAuth variables exist the cron is a dormant
 no-op by design.
+
+---
+
+# The fleet page
+
+`/admin/fleet` (office only). Three things on one screen:
+
+1. **Where each van is now**, with a live link to a map. A stale position says
+   "no signal since <time>, position unknown, not parked" — it never pretends a
+   quiet device is a parked van.
+2. **The crew clock** for the day — the payroll record, read-only here.
+3. **The GPS timeline** — every visit, with duration, and short stays marked
+   "under 15 min, likely a pass-by".
+
+The page carries its own warning, on purpose: the van is not the person. A gap
+between the two clocks is a question to ask, never an answer.
