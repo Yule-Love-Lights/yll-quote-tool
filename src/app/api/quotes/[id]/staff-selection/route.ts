@@ -147,7 +147,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // `.is('customer_approved_at', null)` re-asserts, on the write itself, the
   // same condition the fetch above just saw — see the route header.
-  const { error: updateErr } = await sb
+  //
+  // Fix-round MED (technical + admin lenses, converging on the same gap —
+  // sibling parity with approve/route.ts and staff-decline/route.ts, both of
+  // which `.select('id')` the guarded update and check affected rows): a lost
+  // TOCTOU race (an approval lands between the fetch above and this write)
+  // used to match zero rows and STILL return `{ok:true}` — the exact "quiet
+  // no-op" the route's own header says an explicit staff action must never
+  // produce. `.select('id')` + a zero-rows check resolves a lost race to the
+  // same 409 'locked' shape the pre-check above returns.
+  const { data: updatedRows, error: updateErr } = await sb
     .from('quotes')
     .update({
       browsing_selection: {
@@ -164,10 +173,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       browsing_selection_updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .is('customer_approved_at', null);
+    .is('customer_approved_at', null)
+    .select('id');
   if (updateErr) {
     console.error('[api/quotes/:id/staff-selection] update failed:', updateErr);
     return NextResponse.json({ error: `Failed to save selection: ${updateErr.message}` }, { status: 500 });
+  }
+
+  if (!updatedRows || updatedRows.length === 0) {
+    return NextResponse.json(
+      {
+        error: "This quote is already approved — the frozen order can't be pre-selected. Use Amend instead.",
+        code: 'locked',
+      },
+      { status: 409 },
+    );
   }
 
   return NextResponse.json({ ok: true });

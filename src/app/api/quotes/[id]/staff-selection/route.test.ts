@@ -26,6 +26,11 @@ const { requireOperatorMock, getOperatorMock, state } = vi.hoisted(() => ({
     } as QuoteRow | null,
     fetchErr: null as { message: string } | null,
     updateErr: null as { message: string } | null,
+    // Fix-round MED: the guarded update now `.select('id')`s its affected
+    // rows. Defaults to "the write matched one row" so every pre-existing
+    // test (which never cared about this) keeps passing; the new race test
+    // below sets this to [] to simulate a lost TOCTOU race.
+    updatedRows: [{ id: 'q1' }] as { id: string }[] | null,
     lastUpdatePayload: null as Record<string, unknown> | null,
     lastEqId: null as string | null,
     lastIsFilter: null as [string, unknown] | null,
@@ -52,9 +57,11 @@ vi.mock('@/lib/supabase', () => ({
           eq: (_col: string, id: string) => {
             state.lastEqId = id;
             return {
-              is: async (col: string, val: unknown) => {
+              is: (col: string, val: unknown) => {
                 state.lastIsFilter = [col, val];
-                return { error: state.updateErr };
+                return {
+                  select: async (_cols: string) => ({ data: state.updatedRows, error: state.updateErr }),
+                };
               },
             };
           },
@@ -92,6 +99,7 @@ beforeEach(() => {
   state.quote = { id: 'q1', customer_approved_at: null, deposit_paid_at: null, status: 'sent' };
   state.fetchErr = null;
   state.updateErr = null;
+  state.updatedRows = [{ id: 'q1' }];
   state.lastUpdatePayload = null;
   state.lastEqId = null;
   state.lastIsFilter = null;
@@ -246,5 +254,19 @@ describe('POST /api/quotes/[id]/staff-selection', () => {
     state.updateErr = { message: 'db exploded' };
     const res = await POST(makeReq(VALID_BODY), ctx());
     expect(res.status).toBe(500);
+  });
+
+  // Fix-round MED (technical + admin lenses): the pre-check above passed
+  // (quote.customer_approved_at was null at fetch time), but a concurrent
+  // approval landed before this write — the guarded `.is('customer_approved_at',
+  // null)` then matches zero rows. Without the affected-rows check this used
+  // to return {ok:true}, telling staff "Saved" when nothing was written.
+  it('409s "locked" (never a silent ok:true) when the guarded write matches zero rows — a lost TOCTOU race', async () => {
+    state.updatedRows = [];
+    const res = await POST(makeReq(VALID_BODY), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('locked');
+    expect(json.ok).toBeUndefined();
   });
 });
