@@ -1340,14 +1340,41 @@ export default function QuoteBuilder({
   // src/lib/quoteDraft.ts.
   const draftActive = draftAutosaveActive({ editMode, isTest, savedQuoteId });
   const [draftRestored, setDraftRestored] = useState(false);
+  // Row 206: a stale draft withheld because a lead prefill was applied — see
+  // the effect below. Separate flag from draftRestored (different fact,
+  // different copy): this one never touches form state at all.
+  const [draftWithheldByPrefill, setDraftWithheldByPrefill] = useState(false);
   const draftRestoreTriedRef = useRef(false);
 
   // Restore once on mount: a blank new builder + a saved draft → prefill the
   // customer block + service type. queueMicrotask defers the setState out of
   // the effect body (react-hooks/set-state-in-effect is at error here).
+  //
+  // Row 206: an incoming lead prefill (?name=/?serviceType=/?ghlContactId=,
+  // src/app/admin/leads' "Create quote" link) means the operator is starting
+  // from a KNOWN lead. customerIsEmpty(form.customer) below only catches a
+  // prefill that carried contact fields — applyPrefill already wrote them
+  // into form.customer before this effect ever runs (see the useState
+  // initializer above). A prefill that carried ONLY serviceType and/or
+  // ghlContactId (no name/phone/email/address) leaves form.customer empty,
+  // so without this guard a week-old draft for a DIFFERENT customer would
+  // restore right over it — clobbering the prefill's serviceType, and
+  // leaving the picked-contact chip (seeded from prefill.ghlContactId,
+  // independent of the customer fields) pointing at one customer while the
+  // restored fields show another. Skip the restore whenever a prefill was
+  // applied at all, regardless of which fields it carried — the draft itself
+  // is left in storage untouched (only the RESTORE is skipped), so a later
+  // plain /quote/new visit with no prefill can still recover it; deleting a
+  // real draft just because someone opened a prefill link would be its own
+  // data loss (row 206's own text). Told, not silent, per the rows 413/420
+  // convention: a withheld draft still gets a dismissible grey notice.
   useEffect(() => {
     if (!draftActive || draftRestoreTriedRef.current) return;
     draftRestoreTriedRef.current = true;
+    if (prefill) {
+      if (loadQuoteDraft()) queueMicrotask(() => setDraftWithheldByPrefill(true));
+      return;
+    }
     const draft = loadQuoteDraft();
     if (!draft) return;
     // Only restore (and only then show the note) when the block is genuinely
@@ -5928,6 +5955,44 @@ export default function QuoteBuilder({
                   className="font-semibold underline hover:text-blue-900 whitespace-nowrap"
                 >
                   Clear
+                </button>
+              </div>
+            )}
+            {/* Row 206: a saved draft existed but was left untouched because a
+                lead prefill was applied here — grey/dismissible, same
+                convention as rows 413/420 (nothing is wrong, nothing was
+                lost; the draft is still sitting in storage for a plain
+                /quote/new visit). No Clear button: this notice never touched
+                the draft, so there's nothing here to undo. */}
+            {draftWithheldByPrefill && (
+              <div
+                className="flex items-center justify-between gap-3 mb-3 rounded-md border px-3 py-2 text-xs"
+                style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+                role="status"
+              >
+                <span>
+                  A saved draft from an earlier, unfinished quote was found, but this quote was
+                  started from a lead — so the draft was left untouched instead of overwriting
+                  these fields. To get back to it, open{' '}
+                  {/* A plain <a>, NOT next/link: this navigates to the SAME
+                      route minus the ?prefill params, and the restore effect
+                      is mount-once — a client transition would keep this
+                      component instance alive and never re-offer the draft.
+                      A full load guarantees a fresh mount (and the row-406
+                      beforeunload warning still guards unsaved typing). */}
+                  {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full
+                      document load is REQUIRED here, see comment above */}
+                  <a href="/quote/new" className="font-semibold underline">
+                    + New quote
+                  </a>{' '}
+                  directly (without a lead) and it will be offered there.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDraftWithheldByPrefill(false)}
+                  className="font-semibold underline whitespace-nowrap"
+                >
+                  OK
                 </button>
               </div>
             )}
