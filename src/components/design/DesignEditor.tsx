@@ -257,6 +257,14 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
 
   // Rename a tab — id null = the base photo (PATCHes the literal "base").
   const renamePhoto = async (id: string | null, currentTitle: string) => {
+    // Row 367 delta-verify round 2 MED: rename is reached by double-clicking a
+    // tab, so there is no control to disable — refuse here instead. The route
+    // enforces the same freeze; this just avoids prompting for a title the
+    // server will throw away.
+    if (locked) {
+      alert('This design is locked — the customer already approved it, so photo names cannot be changed.');
+      return;
+    }
     const title = window.prompt('Photo name (empty for the default):', currentTitle);
     if (title === null) return;
     await fetch(`/api/designs/${designId}/photos/${id ?? 'base'}`, {
@@ -287,23 +295,39 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       }
       const res = await fetch(`/api/designs/${designId}/photos/${id}`, { method: 'DELETE' });
       if (!res.ok) {
-        alert("Couldn't delete the photo.");
+        // Row 367 delta-verify round 2 MED: this route enforces the SAME freeze
+        // and answers with the SAME `design-locked` code as the scene write, so
+        // a generic "Couldn't delete the photo." here was both unhelpful and a
+        // missed self-correction — the rest of the page kept its editable money
+        // controls after the server had already said the quote is approved.
+        const err = await res.json().catch(() => ({}));
+        if (err?.code === 'design-locked') {
+          alert(typeof err.error === 'string' ? err.error : 'This design is locked — the customer already approved it.');
+          onDesignLockedRef.current?.();
+        } else {
+          alert("Couldn't delete the photo.");
+        }
         return;
       }
       // #741 defect 3: report any mini group the server's prune just orphaned
       // (a "Curtain — 6 strings" line can vanish with this deleted photo) so
       // the parent can warn staff the same way it already does for #255.
       const data = await res.json().catch(() => ({}));
-      // Row 367 delta-verify HIGH: the photo is gone but its drawn items are
-      // NOT — the quote was approved between the route's pre-flight check and
-      // its scene prune. Say so plainly; the alternative (a silent success)
-      // leaves invisible items still billing.
-      if (data.sceneLocked === true) {
+      // Row 367: the photo is gone but its drawn items are NOT. Say so plainly;
+      // the alternative (a silent success) leaves invisible items still
+      // billing. Two causes, two remedies — 'locked' is permanent, 'unverified'
+      // was a read that failed and may work on a fresh delete of another photo.
+      if (data.sceneNotPruned === 'locked' || data.sceneNotPruned === 'unverified') {
         alert(
-          'The photo was deleted, but the items drawn on it could NOT be removed — ' +
-          'the customer approved this quote while the delete was running, so the design is now locked. ' +
-          'Those items are still on the quote. Tell the office before sending anything else.',
+          data.sceneNotPruned === 'locked'
+            ? 'The photo was deleted, but the items drawn on it could NOT be removed — the customer ' +
+              'approved this quote while the delete was running, so the design is now locked. Those ' +
+              'items are still on the quote. Tell the office before sending anything else.'
+            : 'The photo was deleted, but the items drawn on it could NOT be removed — the server ' +
+              "could not check this quote's approval state. Those items are still on the quote. " +
+              'Reload and check the design before sending anything.',
         );
+        onDesignLockedRef.current?.();
       }
       onPrunedMiniGroups?.(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
       if (activePhotoId === id) {
@@ -490,7 +514,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
                     // this, two overlapping deletes on two different tabs each
                     // force their own corrective save (removePhotoItems), racing
                     // two full-scene PUTs the server resolves by arrival order.
-                    disabled={photoBusy}
+                    disabled={photoBusy || locked}
                     onClick={(e) => {
                       e.stopPropagation();
                       void deletePhoto(tab.id!, tab.title);
@@ -505,7 +529,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
           <button
             type="button"
             className={`${barBtn} whitespace-nowrap`}
-            disabled={photoBusy}
+            disabled={photoBusy || locked}
             onClick={() => addFileRef.current?.click()}
             title="Add another photo of this house (side, backyard, garage…) — drawn items on it are quoted too; no AI analyze"
           >

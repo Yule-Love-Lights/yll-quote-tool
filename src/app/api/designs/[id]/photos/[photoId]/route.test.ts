@@ -21,8 +21,8 @@ const { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTi
       ok: boolean;
       prunedMiniGroups: { surface: string | null; stringCount: number }[];
       version: number | null;
-      // Row 367: set when the scene prune was refused by the freeze.
-      sceneLocked?: boolean;
+      // Row 367: set when the scene prune did not happen, and why.
+      sceneNotPruned?: 'locked' | 'unverified';
     }> => ({
       ok: true,
       prunedMiniGroups: [],
@@ -198,18 +198,33 @@ describe('post-approval freeze (row 367)', () => {
 // success (the client alerts staff on this flag; a silent 200 would leave
 // invisible items still billing).
 describe('DELETE — surfaces a scene prune blocked by the freeze (row 367)', () => {
-  it('passes sceneLocked through on the 200', async () => {
+  it("passes sceneNotPruned:'locked' through on the 200", async () => {
     removeDesignExtraPhoto.mockResolvedValueOnce({
       ok: true,
       prunedMiniGroups: [],
       version: null,
-      sceneLocked: true,
+      sceneNotPruned: 'locked' as const,
     });
     const res = await DELETE(makeReq(), {
       params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }),
     });
     expect(res.status).toBe(200);
-    expect((await res.json()).sceneLocked).toBe(true);
+    expect((await res.json()).sceneNotPruned).toBe('locked');
+  });
+
+  it("passes sceneNotPruned:'unverified' through too", async () => {
+    // Delta-verify round 2 MED: the unverified cause must reach staff as well,
+    // not be folded into the pre-existing silent path.
+    removeDesignExtraPhoto.mockResolvedValueOnce({
+      ok: true,
+      prunedMiniGroups: [],
+      version: null,
+      sceneNotPruned: 'unverified' as const,
+    });
+    const res = await DELETE(makeReq(), {
+      params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }),
+    });
+    expect((await res.json()).sceneNotPruned).toBe('unverified');
   });
 
   it('omits the flag entirely on an ordinary delete', async () => {
@@ -217,6 +232,6 @@ describe('DELETE — surfaces a scene prune blocked by the freeze (row 367)', ()
       params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }),
     });
     expect(res.status).toBe(200);
-    expect((await res.json()).sceneLocked).toBeUndefined();
+    expect((await res.json()).sceneNotPruned).toBeUndefined();
   });
 });

@@ -1638,7 +1638,7 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
     });
   }
 
-  it('reports sceneLocked instead of a clean success, and leaves the items in place', async () => {
+  it('reports sceneNotPruned:locked instead of a clean success, and leaves the items in place', async () => {
     const { client, state } = fixture();
     sbRef.current = client;
     // The quote was approved between the route's pre-flight check and here.
@@ -1649,13 +1649,52 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
     // Honest on both counts: the photo IS gone (storage + extra_photos already
     // written), and the caller is TOLD the drawn items survived.
     expect(result.ok).toBe(true);
-    expect(result.sceneLocked).toBe(true);
+    expect(result.sceneNotPruned).toBe('locked');
     expect(state.removedPaths).toEqual([[`${ID}/extra-${P}.jpg`]]);
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     expect(items.map(i => i.id)).toEqual(['i1']); // un-pruned, on purpose
   });
 
-  it('leaves sceneLocked false on the ordinary unfrozen path', async () => {
+  it("reports sceneNotPruned:'unverified' when the freeze state could not be read", async () => {
+    // Delta-verify round 2 MED: this is a failure surface the freeze check
+    // ITSELF added, so folding it into the pre-existing silent 'error' path
+    // would be inheriting a swallow rather than accepting one. Staff get the
+    // same "the photo went, its items did not" warning, with its own cause.
+    const { client, state } = fixture();
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: false });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    expect(result.ok).toBe(true);
+    expect(result.sceneNotPruned).toBe('unverified');
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['i1']); // un-pruned
+  });
+
+  it('applies the same rule to the brightness-only prune branch', async () => {
+    // A photo with a per-photo brightness override but NO items drawn on it
+    // takes a different write inside the same loop. A mutation probe showed
+    // that branch's terminal handling was UNCOVERED — removing it left every
+    // test green — so this pins it rather than trusting the two branches to
+    // stay in step.
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: P, path: `${ID}/extra-${P}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [], extraPhotoBrightness: { [P]: 30 } },
+    });
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    expect(result.ok).toBe(true);
+    expect(result.sceneNotPruned).toBe('locked');
+    // the override survives, un-pruned, exactly like items would
+    const scene = state.row.scene as { extraPhotoBrightness?: Record<string, number> };
+    expect(scene.extraPhotoBrightness?.[P]).toBe(30);
+  });
+
+  it('reports nothing on the ordinary unfrozen path', async () => {
     const { client, state } = fixture();
     sbRef.current = client;
     readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
@@ -1663,7 +1702,7 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
     const result = await removeDesignExtraPhoto(ID, P);
 
     expect(result.ok).toBe(true);
-    expect(result.sceneLocked).toBe(false);
+    expect(result.sceneNotPruned).toBeUndefined();
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     expect(items).toHaveLength(0); // pruned, as always
   });

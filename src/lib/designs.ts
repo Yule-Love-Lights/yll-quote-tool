@@ -1255,15 +1255,25 @@ type RemoveDesignExtraPhotoResult = {
    *  "Save blocked — reload" banner, discarding a live edit. Handing the new
    *  version back lets the client adopt it instead. */
   version: number | null;
-  /** Row 367 delta-verify HIGH: the scene prune was REFUSED because the design
-   *  became frozen (the quote was approved) between this route's pre-flight
-   *  check and the prune itself. The photo's storage object and its
-   *  `extra_photos` entry are already gone by then, so failing the request
-   *  would be a lie — but silently returning a clean `ok: true` was worse: the
-   *  deleted photo's scene items survive, invisible and still billing, which is
-   *  the exact #741 class this prune exists to prevent. Surfaced to the caller
-   *  so staff are told instead of nothing happening. */
-  sceneLocked?: boolean;
+  /** Row 367: the scene prune did NOT happen, and why. The photo's storage
+   *  object and its `extra_photos` entry are already gone by the time the prune
+   *  runs, so failing the request would be a lie — but silently returning a
+   *  clean `ok: true` is worse: the deleted photo's scene items survive,
+   *  invisible and still billing, which is the exact #741 class this prune
+   *  exists to prevent.
+   *
+   *    'locked'      the quote was approved between the route's pre-flight
+   *                  check and the prune. Nothing staff can do; the items stay.
+   *    'unverified'  the freeze state could not be READ (a transient DB
+   *                  failure inside the check). Delta-verify round 2 MED: this
+   *                  is a failure surface the freeze check itself ADDED, so
+   *                  folding it into the pre-existing silent `'error'` path
+   *                  would be inheriting a swallow rather than accepting one.
+   *
+   *  A plain `'error'` (the CAS write itself failing) keeps its pre-existing
+   *  behaviour — logged, not surfaced — because that predates this work and
+   *  widening it is a separate decision. */
+  sceneNotPruned?: 'locked' | 'unverified';
 };
 const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [], version: null };
 
@@ -1333,7 +1343,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   const MAX_SCENE_PRUNE_RETRIES = 5;
   let prunedMiniGroups: PrunedMiniGroupReport[] = [];
   let prunedVersion: number | null = null;
-  let sceneLocked = false; // row 371: see RemoveDesignExtraPhotoResult
+  let sceneNotPruned: 'locked' | 'unverified' | undefined; // row 371: see RemoveDesignExtraPhotoResult
   try {
     let settled = false;
     for (let attempt = 0; attempt < MAX_SCENE_PRUNE_RETRIES && !settled; attempt++) {
@@ -1375,10 +1385,12 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
           settled = true;
           break;
         }
-        if (outcome.reason === 'locked') { sceneLocked = true; settled = true; break; }
-        if (outcome.reason === 'error' || outcome.reason === 'unverified') {
-          throw new Error(`scene prune write failed (${outcome.reason})`);
+        if (outcome.reason === 'locked' || outcome.reason === 'unverified') {
+          sceneNotPruned = outcome.reason;
+          settled = true;
+          break;
         }
+        if (outcome.reason === 'error') throw new Error('scene prune write failed');
         continue; // 'conflict' — retry from a fresh read
       }
       const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
@@ -1415,10 +1427,12 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       // function still answered `ok: true` while the deleted photo's scene
       // items survived. A freeze will not clear by retrying, and an
       // unverifiable read is not a race either.
-      if (outcome.reason === 'locked') { sceneLocked = true; settled = true; break; }
-      if (outcome.reason === 'error' || outcome.reason === 'unverified') {
-        throw new Error(`scene prune write failed (${outcome.reason})`);
+      if (outcome.reason === 'locked' || outcome.reason === 'unverified') {
+        sceneNotPruned = outcome.reason;
+        settled = true;
+        break;
       }
+      if (outcome.reason === 'error') throw new Error('scene prune write failed');
       // 'conflict' — another writer (an editor autosave, a re-seed) won the
       // race; loop and retry from a fresh read.
     }
@@ -1427,7 +1441,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }
 
-  return { ok: true, prunedMiniGroups, version: prunedVersion, sceneLocked };
+  return { ok: true, prunedMiniGroups, version: prunedVersion, sceneNotPruned };
 }
 
 // Rename the BASE photo (#13) — null/empty clears back to "Photo 1".
