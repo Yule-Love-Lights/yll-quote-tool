@@ -2957,6 +2957,30 @@ heads-up), the wrap MED (row 356), the wrap LOW (row 357).
 
 **NEXT (S69).** (1) Row 435 is ANSWERED, not open: the estimator has no traffic, so the work is a launch. Originally: grep Vercel logs for `[selfServe] recordSelfServeEstimate failed` and settle whether the estimator has genuinely had no completed submissions or the insert is broken. (2) The six dead worktrees were pruned at this wrap. (3) Ask Jason why #948 was closed, so the next close does not repeat it. Next free ledger #: **437**.
 
+---
+
+**POST-CLOSE DELTA (same conversation, same session number, 2026-08-27).**
+
+**The canonical fix MERGED and is verified live in prod.** PR #1012 merged at master `c1946b75` on Naldo's explicit go, after a pre-merge re-check (branch 4 ahead / 0 behind, MERGEABLE and CLEAN, CI gates and Vercel both green, rows still free). Prod was then polled until it actually served the tag rather than assumed: `<link rel="canonical" href="https://quote.yulelovelights.com/estimate"/>` is live on the real page. The S68 record landed with it, so this session is on master.
+
+**GATES at `c1946b75`** (fresh worktree, `npm ci`): tsc 0 errors, lint 0 errors with the same 19 pre-existing warnings, **452 files / 8167 tests**. Still valid at `caaa2c12`, which changed no code.
+
+**SESSION REVIEW: full four lenses**, because the canonical fix shipped without a pre-merge lens round. **Technical PASS 0 · Admin PASS 0 · Customer PASS, 1 MED + 1 LOW · Staff CONCERNS, 1 HIGH + 2 MED.** Every finding is PRE-EXISTING on the surface around the change; the 7-line diff itself came back clean from all four. Every load-bearing claim was re-verified by the seat rather than taken on the agent's word, which is the standing rule and it mattered: the staff lens surfaced a structural fact I had not checked.
+
+**THE HIGH (row 437), flagged to Naldo directly per the review gate.** The dashboard self-serve tile cannot tell a working feature from a broken one. `loadSelfServeMetrics` returns the identical `EMPTY_METRICS` from six paths, and `SelfServeMetricsCard.tsx:26` prints one sentence for all of them. The part I had missed until the lens found it: the card renders UNCONDITIONALLY at `page.tsx:117` with no feature-flag guard, so the estimator being switched off looks exactly like the estimator being live with no customers. This is the tile someone would watch to judge a launch, and row 435 just established there is nothing to watch yet.
+
+**The other findings, rows 438 and 439.** The `meta.source = 'self_serve_estimate'` marker is written on every self-serve quote and read NOWHERE (zero grep hits across admin, quote and dashboard components), so a public lead looks like an abandoned staff draft even though the route's own comment says staff must confirm each one. And the indexable page has no nav, no footer, no YLL phone number (the only `tel:` is the customer's own input) and no OG or Twitter card. Both were harmless while nothing linked to the page; the launch is what converts them into losses.
+
+**Dispositions:** all three DEFERRED to ledger rows rather than fixed. Reason: every one is on already-merged work, none is a regression from this session, and 437 in particular is a design change to a dashboard surface rather than a patch. Fixing them inside a docs close would be scope creep on code nobody reviewed for that purpose.
+
+**HYGIENE.** Eight worktrees pruned across the session: six verified-dead ones plus this session's own two. No stashes, nothing unpushed, every remaining worktree clean except `yll-wt/s68-geo`, which holds a concurrent session's live GPS work and was left untouched.
+
+**A NAMING COLLISION WORTH RECORDING, not worth unwinding.** A concurrent session ran the Bouncie GPS phase-3 work and labelled itself S68 as well: master's rows 430-432 read "the S68 fleet-GPS deferrals". It never wrote an `S68-naldo.md` fragment, which is why every collision check this session ran came back clean. So the two collide only in prose, never in files, and the S69 close already covers that work. Left as-is deliberately; renumbering merged rows would invalidate live references for no gain.
+
+**ENDING STATE.** master `caaa2c12`, gates green. Rows **437-439** minted, counter to **440**. Next free ledger #: **440**.
+
+**NEXT.** The estimator's open work is a LAUNCH, not a fix: link or embed `/estimate` from the marketing site, and fix row 439's cold-landing gaps in the same pass. Row 437 should land before anyone reads that tile as evidence of anything.
+
 ### Naldo S69 — 2026-08-24→27 — the open-PR backlog cleared: 12 PRs merged, 7 closed, and every one of the session's worst defects was in my own work
 
 > A cleanup session that turned into a defect hunt. The ask was "clean up open PRs and the ledger"; the value was in what the reviews caught before it shipped. Started at 24 open PRs, ended at 16 (and 7 of those arrived from other sessions while this one ran). Master `27df2103` at close. Gates: tsc 0 · lint 0 errors (19 warnings) · vitest **8137 / 450 files**.
