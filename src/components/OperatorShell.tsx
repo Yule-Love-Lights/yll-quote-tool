@@ -3,6 +3,8 @@ import { MarkStaffDevice } from './MarkStaffDevice';
 
 export type OperatorArea =
   | 'home'
+  | 'office'
+  | 'management'
   | 'inbox'
   | 'insights'
   | 'quotes'
