@@ -95,7 +95,6 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/inbox', // #58 operator-only open-items feed
       '/api/dashboard/handled', // #58 operator action
       '/api/dashboard/dismiss', // #58 operator action
-      '/api/dashboard/followup', // #58 operator action (mark follow-up done)
       '/api/inventory/materials', // sibling inventory route — must stay operator-only
     ]) {
       expect(isPublicPath(p), p).toBe(false);

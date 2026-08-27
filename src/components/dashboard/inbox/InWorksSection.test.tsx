@@ -488,13 +488,52 @@ describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
 // retires a pending follow-up, so act()'s router.refresh() is gated on this
 // predicate rather than firing after every successful action. Mirrors
 // InboxList.test.tsx's own coverage of its identical local copy.
-describe('retiresFollowUp (row 309 — which action can retire a due follow-up)', () => {
-  it('is true for completed — the only terminal transition this file can produce', () => {
+describe('retiresFollowUp (rows 309/430 — which action can retire a due follow-up)', () => {
+  it('is true for completed — the terminal transition this file can produce', () => {
     expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
   });
 
-  it('is false for followed — not a terminal transition', () => {
-    expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
+  // Row 430: markItemFollowed now closes the item's quote_sent_no_reply nag,
+  // so Followed retires one too. This assertion was toBe(false) and had to
+  // flip with the behaviour — the refresh keeps this section's own
+  // server-rendered "N follow-ups due" count honest after the click.
+  it('is true for followed — row 430 made it close the nag', () => {
+    expect(retiresFollowUp('/api/dashboard/followed')).toBe(true);
+  });
+});
+
+// Row 430 (premerge staff + customer lenses, MED, converged): the deleted
+// strip carried a COUNT; the pills that replaced it carry none. This is
+// listDueFollowUps' exact uncapped total, rendered beside the bucket heading.
+describe('the awaiting bucket shows how many follow-ups are due (row 430)', () => {
+  const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
+
+  it('renders the due count beside the heading', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} followUpsDue={31} />,
+    );
+    expect(html).toContain('Awaiting their reply (1)');
+    expect(html).toContain('31 follow-ups due');
+  });
+
+  it('says follow-up, singular, for exactly one', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} followUpsDue={1} />,
+    );
+    expect(html).toContain('1 follow-up due');
+    expect(html).not.toContain('1 follow-ups due');
+  });
+
+  // null is the failed-read case and 0 is a genuinely clear board: neither may
+  // render a number, and null must never render as "0 follow-ups due".
+  it('renders no count when the read failed or nothing is due', () => {
+    for (const value of [null, 0] as const) {
+      const html = renderToStaticMarkup(
+        <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} followUpsDue={value} />,
+      );
+      expect(html).not.toContain('follow-up due');
+      expect(html).not.toContain('follow-ups due');
+    }
   });
 });
 

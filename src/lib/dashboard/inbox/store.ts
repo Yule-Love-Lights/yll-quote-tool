@@ -1368,6 +1368,41 @@ export async function markItemFollowed(
     return { ok: false, error: msg };
   }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
+  // Row 430 (premerge STAFF lens, HIGH): "I followed up" is the answer to
+  // "you should follow up", so it retires this item's due nag. Before this,
+  // the ONLY staff-initiated way to close a quote_sent_no_reply follow-up was
+  // the strip's Done button; row 430 deleted that strip, and every remaining
+  // close path is a system one (quoteFollowUpDecision's 'close' branch when
+  // the quote is approved or goes dead, sweepOrphanedFollowUps,
+  // sweepResolvedItemFollowUps) or a whole-conversation action
+  // (markItemCompleted / dismissItem, via closeFollowUpsForResolvedItem). A
+  // staffer who rings a customer and hears "still deciding" would have had
+  // nothing to click, and the "Follow-up due" pill that inherited the strip's
+  // signal would have stayed lit on that row until the deal itself ended —
+  // decaying into exactly the wallpaper the pill exists to avoid.
+  //
+  // Hung HERE rather than in the two routes so the two callers cannot drift:
+  // the manual Followed button (followed/route.ts) and a sent reply
+  // (reply/route.ts, allowRestamp) are both "staff acted on this
+  // conversation" and both must retire the nag. Reason-scoped, unlike
+  // closeFollowUpsForResolvedItem: the item is NOT terminal here, and it is
+  // specifically the no-reply chase that this action answers.
+  //
+  // The nag comes BACK, which is the point — this is a snooze, not a delete.
+  // ensureFollowUp re-arms it after RECHASE_QUIET_DAYS of silence, anchored on
+  // the follow_ups row's own updated_at, which this close bumps via the
+  // dashboard_set_updated_at trigger (see mayReChaseHandled's doc). One case
+  // re-arms sooner: an item still 'unresponded' is outside that skip set
+  // entirely, so its nag returns on the next reconcile tick. That is correct
+  // rather than a leak — 'unresponded' means the customer has written and is
+  // unanswered — and ingestTouch runs BEFORE ensureFollowUp in the same tick
+  // (sync.ts), so a quote item usually heals to 'handled' first anyway. Zero
+  // prod rows carry that shape today: all 33 items with a pending nag are
+  // 'handled' (measured 2026-08-27).
+  //
+  // Best-effort: closeFollowUp swallows its own errors and returns 0, so a
+  // failed close never fails the operator's Followed/reply action.
+  await closeFollowUp(itemId, FOLLOWUP_REASONS.quoteSentNoReply);
   return { ok: true };
 }
 
@@ -1855,7 +1890,7 @@ export async function ensureFollowUp(input: {
     // Row 390: the silence-start anchor, when this write IS a re-chase — kept
     // outside the `if` so it's undefined (never touched) rather than
     // possibly-stale for the ordinary first-nudge path. Persisted below as
-    // follow_ups.re_chase_since so FollowUpStrip can tell a re-chase apart
+    // follow_ups.re_chase_since so a reader can tell a re-chase apart
     // from a first-time nudge instead of rendering both identically.
     let reChaseSince: Date | null = null;
     if (itemStatus === 'handled') {
@@ -2601,7 +2636,9 @@ export type DueFollowUpsResult =
   | { ok: false; error: string };
 
 /**
- * Pending follow-ups due today or overdue (ET), for the top strip AND (#229)
+ * Pending follow-ups due today or overdue (ET). Row 430 deleted the top
+ * strip this fed; today it backs the "N follow-ups due" count beside the
+ * In-the-works awaiting bucket AND (#229)
  * the morning digest's named "overdue follow-ups" detail.
  *
  * #229 FIX 3 (round 3): a round-2 addition here flagged a follow-up as

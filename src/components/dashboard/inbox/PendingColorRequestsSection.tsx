@@ -7,7 +7,7 @@ import type { PendingColorRequestItem } from '@/lib/dashboard/inbox/types';
 // the inbox item Handled/Mark completed/dismissed can never make a request
 // vanish from here. Staff act on it from the linked quote admin page
 // (ColorRequestPanel) — this section is read-only by design, unlike
-// FollowUpStrip/InWorksSection which mutate inbox_items directly.
+// InWorksSection, which mutates inbox_items directly.
 function daysWaiting(requestedAt: string | null, nowMs: number): number | null {
   if (!requestedAt) return null;
   const ms = nowMs - new Date(requestedAt).getTime();

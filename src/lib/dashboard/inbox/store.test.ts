@@ -6231,6 +6231,10 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    // Row 430: markItemFollowed now closes the item's due nag on success, so
+    // this harness has to answer for follow_ups too - a real consequence of
+    // the new behaviour, not a fixture convenience.
+    const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder({ data: [{ id: 'fu-1' }], error: null });
     let inboxCallCount = 0;
     const from = (table: string) => {
       if (table === 'inbox_items') {
@@ -6238,10 +6242,42 @@ describe('markItemFollowed — status guard (row 306)', () => {
         return inboxCallCount === 1 ? priorBuilder : updateBuilder;
       }
       if (table === 'dashboard_activity') return activityBuilder;
+      if (table === 'follow_ups') return followUpBuilder;
       throw new Error(`unexpected table: ${table}`);
     };
-    return { from, updateCalls, activityCalls };
+    return { from, updateCalls, activityCalls, followUpCalls };
   }
+
+  // Row 430 (premerge STAFF lens, HIGH). The deleted follow-up strip's Done
+  // button was the only staff-initiated way to retire a quote_sent_no_reply
+  // nag; without a replacement the "Follow-up due" pill that inherited its
+  // signal would stay lit until the deal itself ended. "I followed up" is the
+  // answer to "you should follow up", so this action now closes it.
+  it('closes the due follow-up when the Followed stamp succeeds', async () => {
+    const { from, followUpCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(followUpCalls.some((c) => c.method === 'update' && (c.args[0] as { status?: string }).status === 'done')).toBe(true);
+    expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'inbox_item_id' && c.args[1] === ITEM_ID)).toBe(true);
+    expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'reason' && c.args[1] === 'quote_sent_no_reply')).toBe(true);
+    // Scoped to a nag that is still pending - never re-touching a closed one.
+    expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'pending')).toBe(true);
+  });
+
+  it('leaves the follow-up alone when the Followed stamp was refused', async () => {
+    // The guarded UPDATE matched zero rows (already completed/dismissed, or
+    // already followed) - nothing was stamped, so nothing may be retired.
+    const { from, followUpCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    expect(followUpCalls).toHaveLength(0);
+  });
 
   it('blocks stamping followed_up_at on a row the guard excluded (already completed or dismissed) — the row-311 harm path', async () => {
     // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
@@ -6358,6 +6394,9 @@ describe('markItemFollowed — status guard (row 306)', () => {
         return rereadBuilder;
       }
       if (table === 'dashboard_activity') return activityBuilder;
+      // Row 430: same reason as makeSbFor above - a successful Followed stamp
+      // now also closes the item's due nag.
+      if (table === 'follow_ups') return makeBuilder({ data: [{ id: 'fu-1' }], error: null }).builder;
       throw new Error(`unexpected table: ${table}`);
     };
     return { from, updateCalls, activityCalls };

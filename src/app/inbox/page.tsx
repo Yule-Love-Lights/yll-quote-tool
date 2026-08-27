@@ -4,6 +4,7 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import {
   getOperatorLabels,
   getReopenCounts,
+  listDueFollowUps,
   listGmailWritebackFailures,
   listInWorks,
   listItemsForMetrics,
@@ -42,6 +43,7 @@ export default async function InboxPage() {
   const { ms: totalMs, value: results } = await timed('total', () =>
     Promise.all([
       timed('listOpenItems', () => listOpenItems()),
+      timed('listDueFollowUps', () => listDueFollowUps(now)),
       timed('listItemsForMetrics', () => listItemsForMetrics()),
       timed('getOperator', () => getOperator()),
       timed('listInWorks', () => listInWorks(200, now)),
@@ -52,8 +54,14 @@ export default async function InboxPage() {
       timed('listGmailWritebackFailures', () => listGmailWritebackFailures()),
     ]),
   );
-  const [openR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
+  const [openR, dueR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
   const openRes = openR.value;
+  // Row 430: read ONLY for the exact due count shown beside "Awaiting their
+  // reply". The uncapped `totalDue` is the same number the morning digest
+  // prints, and it is deliberately the count rather than the rows: the pills
+  // themselves come from listInWorks' own capped fetch, so this line stays
+  // true even if that cap ever hides a row.
+  const dueRes = dueR.value;
   const metricsRes = metricsR.value;
   const operator = operatorR.value;
   const inWorksRes = inWorksR.value;
@@ -163,6 +171,7 @@ export default async function InboxPage() {
             followUpDays={days}
             nowMs={now.getTime()}
             evidenceIncomplete={inWorksRes.evidenceIncomplete}
+            followUpsDue={dueRes.ok ? dueRes.totalDue : null}
           />
         )}
 

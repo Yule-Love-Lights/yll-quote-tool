@@ -14,7 +14,7 @@
 // Primarily an off-season prep tool: alongside installs + the quote pipeline it
 // surfaces the inbox's own counts, reusing listOpenItems/listDueFollowUps so
 // they match /inbox — the open-items count carries the legacy-rebook exclusion
-// (like the /inbox open list); follow-ups-due mirrors the inbox follow-up strip
+// (like the /inbox open list); follow-ups-due mirrors the /inbox due count
 // as-is (which does NOT exclude rebook), so it can exceed "awaiting reply".
 //
 // #265: reads totalLeads, NOT totalOpen — totalOpen counts every open item
@@ -171,7 +171,9 @@ export type OpsDigestData = {
    *  a quiet/noise-free morning stays clean; null on a failed inbox read
    *  (same fail-soft contract as inboxOpenCount). */
   inboxFilteredCount: number | null;
-  /** Follow-ups due today or overdue, matching the inbox follow-up strip
+  /** Follow-ups due today or overdue. Row 430 deleted the /inbox follow-up
+   *  strip this once mirrored, so the digest is now the primary named view of
+   *  these (the page shows the same exact count beside "Awaiting their reply")
    *  (still INCLUDES legacy-rebook-anchored ones — unchanged, existing
    *  behavior; the strip itself has never excluded them). */
   inboxFollowUpsDueCount: number | null;
@@ -442,7 +444,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   // the legacy-rebook exclusion AND excludes lead_kind='automated' noise,
   // #265) matches /inbox's own "Open leads" tile; totalOpen − totalLeads is
   // the filtered-out count (#265). follow-ups-due mirrors the inbox
-  // follow-up strip as-is. Never let a Telegram-side summary break on an
+  // due-follow-up list as-is. Never let a Telegram-side summary break on an
   // inbox read hiccup — fall back to null (rendered as no number) for BOTH.
   const inboxOpen = await safeCount(async () => {
     const res = await listOpenItems();
