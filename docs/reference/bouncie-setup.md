@@ -178,22 +178,23 @@ reassurance.
 
 Each of those waits on a real event confirming the payload shape.
 
-## Open question for Naldo: the business-hours window
+## Retention and hours: decided
 
-Every stored event is tagged `occurred_off_hours` at insert, using a single
-window in `BUSINESS_HOURS` in `src/lib/integrations/bouncie.ts`. The current
-value is **6:00 to 21:00 Eastern, all seven days**.
+**Naldo, 2026-08-27: keep all data, we are always open.**
 
-That is a placeholder, not a decision. It was chosen to fail toward capturing
-work, because installs genuinely run late and run weekends in season, and a
-window that is too tight would label real work as private. Nobody has set the
-real hours yet.
+`BUSINESS_HOURS` in `src/lib/integrations/bouncie.ts` spans the full day, so
+`occurred_off_hours` is false on every row and nothing is deleted or redacted on
+a schedule. The company runs at all hours in season, so there is no window during
+which a vehicle's position is treated as out of scope.
 
-Two things follow, and both need an answer before any map or purge job ships:
+The tagging mechanism stays even though it currently classifies nothing. It is
+the one place that decision lives: if the policy ever narrows, that constant is
+the only edit, and every row already carries the column a purge job would need.
 
-1. **What are the hours?** Change them in that one constant and every future row
-   follows.
-2. **What happens to off-hours rows?** Today they are tagged and kept. The tag is
-   the hook; the policy is not written. The options are keep, strip the
-   coordinates, or delete after N days, and that is a decision about an employee's
-   private movements rather than a technical one.
+Two things follow from this, and they are worth saying plainly rather than
+leaving implicit:
+
+- One vehicle goes home with a crew member, so every evening and weekend trip is
+  stored indefinitely at rooftop precision.
+- That makes step 8 below more important, not less. Tell the crew what is
+  captured and that it runs after hours, in writing, before the devices go in.
