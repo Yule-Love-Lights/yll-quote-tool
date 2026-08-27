@@ -14,6 +14,8 @@
 
 **MISTAKES:** the two above, plus — a code comment defending "Pull satellite" as safe went STALE against my own change in the same session (it was true on #998, false once #1001 froze the route it writes to); a lock banner placed inside a panel that only renders when a geocode succeeded, so it hid exactly when staff took the path that avoids Google; a commit message claiming "two tests fail" when the probe showed one (amended); an inert `if (!ok)` on what had become an object, caught by me before it shipped.
 
+**DEVICE-VERIFIED BY JASON, 2026-08-27:** an ordinary re-Calculate on an APPROVED quote still succeeds with the satellite change-detection freeze live. That was the one leg neither the tests nor the nine lens agents could reach — the whole design of row 427's partial freeze rests on it, and it is Jason's own ruling that it must keep working. Also verified live by me on approved quote #1290 and new-quote #1294: the lock chip, the four gated controls read `disabled: true` in the DOM, a stored `medium` roofline still reopens at $10/ft, and a new quote starts at Easy $8/ft on both roofline types while C9s Custom Runs stays Medium.
+
 **ENDING:** master `990bb41d`, everything merged. Gates tsc 0 · lint 0 errors / 19 warnings · vitest **8065** across 446 files. Prod verified on the deploy SHA and by live DOM.
 
 **OPEN FOR JASON:** (a) portal-visibility toggles — ungated but AUDITED (row 370 built that trail deliberately, which reads as a decision that the change stays allowed); freeze or leave? The only open design surface left. (b) row 335's evening `/admin/schedule` check is a Naldo item.
