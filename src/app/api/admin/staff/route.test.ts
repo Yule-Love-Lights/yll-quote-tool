@@ -18,6 +18,7 @@ const {
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  clearStaffLogin,
   deleteStaffMember,
   getStaffMember,
   listNonCrewOperators,
@@ -67,6 +68,7 @@ const {
     setStaffType: vi.fn(),
     deleteStaffMember: vi.fn(),
     getStaffMember: vi.fn(),
+    clearStaffLogin: vi.fn(),
     listNonCrewOperators: vi.fn(),
     listAllAccountsById: vi.fn(),
     OperatorAlreadyLinkedError,
@@ -96,6 +98,7 @@ vi.mock('@/lib/crewMembers', () => ({
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  clearStaffLogin,
   deleteStaffMember,
   getStaffMember,
   StaffHasRecordsError,
@@ -151,6 +154,7 @@ beforeEach(() => {
   setStaffType.mockResolvedValue({ ...OFFICE, isOffice: false });
   deleteStaffMember.mockResolvedValue(OFFICE);
   getStaffMember.mockResolvedValue(OFFICE);
+  clearStaffLogin.mockResolvedValue({ ...OFFICE, authUserId: null });
 });
 
 describe('GET /api/admin/staff', () => {
@@ -557,5 +561,43 @@ describe('GET exposes the login TYPE, which decides how someone can clock in', (
     const b = (await res.json()) as { staff: Array<{ id: string; isCrewLogin: boolean }> };
     expect(b.staff.find((x) => x.id === 'crew-1')?.isCrewLogin).toBe(true);
     expect(b.staff.find((x) => x.id === 'crew-office')?.isCrewLogin).toBe(false);
+  });
+});
+
+describe('PATCH clearLogin — row 359, repairing an orphaned pay row', () => {
+  it('clears the link when the login genuinely no longer exists', async () => {
+    // op-kelly is absent from the accounts map, i.e. the account was deleted.
+    listAllAccountsById.mockResolvedValueOnce(new Map());
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(200);
+    expect(clearStaffLogin).toHaveBeenCalledWith('crew-office');
+  });
+
+  it('REFUSES to clear a login that still exists — that would lock a working staffer out', async () => {
+    // The guard is the whole feature: the row's login resolves fine, so this
+    // must not be cleared even though the caller asked for it.
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/still exists/);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('409s a row that has no login linked at all', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('404s an unknown staff id', async () => {
+    getStaffMember.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', clearLogin: true }))).status).toBe(404);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('ignores clearLogin:false rather than treating the key as an intent', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: false }));
+    expect(res.status).toBe(400); // nothing to update
+    expect(clearStaffLogin).not.toHaveBeenCalled();
   });
 });

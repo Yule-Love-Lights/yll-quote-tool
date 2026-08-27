@@ -7,6 +7,7 @@ import { crewAppMetadata, crewMetadataIsSafe, validateCrewCredentials } from '@/
 import { dollarsToCents } from '@/lib/hourlyRate';
 import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 import {
+  clearStaffLogin,
   createFieldCrewMember,
   deleteStaffMember,
   getStaffMember,
@@ -33,7 +34,8 @@ export const runtime = 'nodejs';
  *   GET   /api/admin/staff → every staff member, office and field, with their
  *                            login, rate, Telegram link and active state
  *   POST  /api/admin/staff → add a person, either type
- *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password, type
+ *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password, type,
+ *                            a stale-login clear (row 359)
  *                            or active
  *   DELETE /api/admin/staff → remove a staff row that has no work behind it
  *
@@ -273,10 +275,11 @@ export async function PATCH(req: NextRequest) {
   const hasTelegram = body !== null && 'telegramUserId' in body;
   const hasPassword = body?.password !== undefined;
   const hasType = typeof body?.isOffice === 'boolean';
+  const hasClearLogin = body?.clearLogin === true;
   const hasActive = typeof body?.active === 'boolean';
-  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasActive) {
+  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasClearLogin && !hasActive) {
     return NextResponse.json(
-      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId or password.' },
+      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId, password or clearLogin.' },
       { status: 400 },
     );
   }
@@ -335,6 +338,36 @@ export async function PATCH(req: NextRequest) {
         );
       }
       member = await setStaffTelegram(crewMemberId, parsed.telegramUserId);
+    } else if (hasClearLogin) {
+      // ROW 359 REPAIR PATH, for an orphan created before the delete route
+      // started clearing the pointer itself.
+      //
+      // ⚠️ THE GUARD IS THE WHOLE FEATURE. Clearing a LIVE login would lock a
+      // working staff member out of the web clock, so this refuses unless the
+      // linked id genuinely no longer resolves in the auth store. The office
+      // cannot reach this from the UI for a healthy row either — the action only
+      // renders when GET reported loginMissing — but the server decides, because
+      // the UI's view can be stale by the time the click lands.
+      const target = await getStaffMember(crewMemberId);
+      if (!target) {
+        return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
+      }
+      if (!target.authUserId) {
+        return NextResponse.json(
+          { error: `${target.displayName} has no login linked, so there is nothing to clear.` },
+          { status: 409 },
+        );
+      }
+      const accounts = await listAllAccountsById(sb);
+      if (accounts.has(target.authUserId)) {
+        return NextResponse.json(
+          {
+            error: `${target.displayName}'s login still exists, so it was not cleared. Use Reset password if they cannot get in, or remove the account under Staff accounts first.`,
+          },
+          { status: 409 },
+        );
+      }
+      member = await clearStaffLogin(crewMemberId);
     } else if (hasType) {
       const toOffice = body!.isOffice as boolean;
       if (toOffice) {

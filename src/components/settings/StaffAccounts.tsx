@@ -216,6 +216,25 @@ export function StaffAccounts() {
     void patchRow(row, { password: input }, `${row.displayName}'s password was reset. Give it to them directly.`);
   }
 
+  function clearStaleLogin(row: StaffRow) {
+    // Only offered for a row the server already reported as loginMissing, and
+    // the server re-checks that the login really is gone before clearing. The
+    // point is to make the row linkable again: while a dead id sits in the
+    // column, adding a replacement login is refused as "already has one".
+    if (
+      !window.confirm(
+        `${row.displayName}'s login no longer exists. Clear the link so you can give them a new one? This does not delete anything else.`,
+      )
+    ) {
+      return;
+    }
+    void patchRow(
+      row,
+      { clearLogin: true },
+      `${row.displayName}'s stale login link is cleared. You can set them up with a new login now.`,
+    );
+  }
+
   function moveType(row: StaffRow) {
     // The flag's only effect is the job-assignment roster, so the confirm says
     // exactly that rather than implying something about their login or clock.
@@ -428,6 +447,16 @@ export function StaffAccounts() {
                       >
                         Reset password
                       </button>
+                      {s.loginMissing && (
+                        <button
+                          type="button"
+                          disabled={rowBusyId === s.id}
+                          onClick={() => clearStaleLogin(s)}
+                          className="text-xs text-red-600 underline disabled:opacity-50"
+                        >
+                          Clear stale login
+                        </button>
+                      )}
                       <button type="button" disabled={rowBusyId === s.id} onClick={() => moveType(s)} className={action}>
                         {s.isOffice ? 'Move to field' : 'Move to office'}
                       </button>
