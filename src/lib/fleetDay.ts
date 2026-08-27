@@ -17,6 +17,7 @@
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { MIN_DWELL_MINUTES, STALE_POSITION_MINUTES } from '@/lib/integrations/vehicleProximity';
+import { etMidnightAfter, addDays } from '@/lib/opsMidnightClose';
 
 export type FleetVehicleNow = {
   id: string;
@@ -30,6 +31,10 @@ export type FleetVehicleNow = {
 
 export type FleetVisit = {
   vehicleLabel: string;
+  /** The vehicle's CURRENT signal, so an open "still there" row can say
+   * "no signal since <t>" instead of implying the crew is still working. */
+  vehicleSignal: 'live' | 'stale' | 'never';
+  vehicleLastSeenAt: string | null;
   kind: 'job' | 'depot';
   jobNumber: number | null;
   address: string | null;
@@ -59,8 +64,12 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
     out.errors.push('no service client');
     return out;
   }
-  const start = `${date}T04:00:00.000Z`;
-  const endDate = new Date(Date.parse(start) + 24 * 3600 * 1000).toISOString();
+  // The ET day, DST-correct. A hardcoded T04:00Z is right in summer and wrong
+  // by an hour all winter — this repo's row-335 class, and the S68 lens round
+  // caught this file repeating it. etMidnightAfter converges on the offset
+  // actually in force, so midnight means midnight in March and November too.
+  const start = etMidnightAfter(new Date(`${addDays(date, -1)}T12:00:00Z`)).toISOString();
+  const endDate = etMidnightAfter(new Date(`${date}T12:00:00Z`)).toISOString();
 
   const vehiclesRes = await sb
     .from('vehicles')
@@ -71,19 +80,22 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
   if (vehiclesRes.error) out.errors.push(`vehicles: ${vehiclesRes.error.message}`);
   const now = Date.now();
   const labelById = new Map<string, string>();
+  const signalById = new Map<string, { signal: 'live' | 'stale' | 'never'; lastSeenAt: string | null }>();
   for (const v of vehiclesRes.data ?? []) {
     labelById.set(v.id, v.label);
+    const signal: 'live' | 'stale' | 'never' = !v.last_seen_at
+      ? 'never'
+      : now - Date.parse(v.last_seen_at) <= STALE_POSITION_MINUTES * 60_000
+        ? 'live'
+        : 'stale';
+    signalById.set(v.id, { signal, lastSeenAt: v.last_seen_at });
     out.vehicles.push({
       id: v.id,
       label: v.label,
       lastLat: v.last_lat,
       lastLng: v.last_lng,
       lastSeenAt: v.last_seen_at,
-      signal: !v.last_seen_at
-        ? 'never'
-        : now - Date.parse(v.last_seen_at) <= STALE_POSITION_MINUTES * 60_000
-          ? 'live'
-          : 'stale',
+      signal,
     });
   }
 
@@ -129,8 +141,11 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
 
   for (const v of visitRows) {
     const label = v.job_id ? jobLabel.get(v.job_id) : undefined;
+    const sig = signalById.get(v.vehicle_id);
     out.visits.push({
       vehicleLabel: labelById.get(v.vehicle_id) ?? '(unknown vehicle)',
+      vehicleSignal: sig?.signal ?? 'never',
+      vehicleLastSeenAt: sig?.lastSeenAt ?? null,
       kind: v.kind,
       jobNumber: label?.jobNumber ?? null,
       address: v.kind === 'depot' ? 'Depot' : (label?.address ?? null),

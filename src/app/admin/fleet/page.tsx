@@ -12,6 +12,7 @@
 import { OperatorShell } from '@/components/OperatorShell';
 import { loadFleetDay, MIN_DWELL_MINUTES } from '@/lib/fleetDay';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { addDays } from '@/lib/opsMidnightClose';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +48,27 @@ export default async function FleetPage({
           <h1 className="text-xl font-semibold text-gray-900">Fleet — {date}</h1>
           <p className="text-sm text-gray-500 mt-1">
             Where the vans are, and the day&apos;s two clocks side by side.
+          </p>
+          <p className="text-sm mt-2">
+            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
+              ← previous day
+            </a>
+            {date !== etDayKey(new Date()) && (
+              <>
+                {' · '}
+                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
+                  next day →
+                </a>
+                {' · '}
+                <a href="/admin/fleet" className="underline text-gray-600">
+                  today
+                </a>
+              </>
+            )}
+            {' · '}
+            <a href="/admin/geocoding" className="underline text-gray-600">
+              addresses needing fixes
+            </a>
           </p>
         </div>
 
@@ -131,13 +153,18 @@ export default async function FleetPage({
                       </span>
                       {v.belowMinDwell === true && (
                         <span className="text-xs text-amber-700">
-                          under {MIN_DWELL_MINUTES} min — likely a pass-by, not a working visit
+                          under {MIN_DWELL_MINUTES} min
                         </span>
                       )}
                     </div>
                     {v.kind === 'job' && v.address && <p className="text-gray-500">{v.address}</p>}
                     <p className="text-gray-600">
-                      {fmtTime(v.enteredAt)} → {v.exitedAt ? fmtTime(v.exitedAt) : 'still there'}
+                      {fmtTime(v.enteredAt)} →{' '}
+                      {v.exitedAt
+                        ? fmtTime(v.exitedAt)
+                        : v.vehicleSignal === 'live'
+                          ? 'still there'
+                          : `last seen ${fmtTime(v.vehicleLastSeenAt)} — no signal, may have left`}
                       {v.minutes != null && ` · ${v.minutes} min`}
                     </p>
                   </li>

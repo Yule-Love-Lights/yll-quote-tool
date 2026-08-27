@@ -496,3 +496,40 @@ no-op by design.
 
 The page carries its own warning, on purpose: the van is not the person. A gap
 between the two clocks is a question to ask, never an answer.
+
+---
+
+# READ THIS FIRST if you are following this document top to bottom
+
+This file grew phase by phase, and the design CHANGED partway through. The
+current truth, in one paragraph: apply the phase-2 migration (2026-08-26), the
+OAuth migration (2026-08-27-bouncie-oauth-tokens), and the POLLING migration
+(2026-08-28-vehicle-visits-polling). Do NOT apply the two 2026-08-27 geofence
+migrations — they are superseded and say so at the top of each file. Everything
+in the phase 3b/3c sections above about geofences, arming and orphaned zones
+describes the dead design and exists only as history.
+
+# One consequence that deserves its own decision
+
+The fleet page shows each van's CURRENT position, around the clock, to any
+logged-in operator. One van goes home with a crew member, which means that
+crew member's house is on that screen every evening and weekend.
+
+Naldo's "keep all data, always open" decision (2026-08-27) covered STORING
+around the clock. Showing the live position at any hour is a further
+consequence, and it is recorded here as one rather than slipped in: if a
+narrower rule is ever wanted (say, the live tile blanks outside work hours
+while history stays), it is a small change to the fleet page. Until then, the
+display follows the storage decision.
+
+This makes telling the crew, in writing, before the devices go in, matter
+more — not less.
+
+# One outbound data flow to know about, planned but not built
+
+The ETA-text design (scheduling-system-design.md) plans travel-time lookups
+via Google Distance Matrix, which would send customer coordinates to Google at
+message time. The tool already sends customer ADDRESSES to Google for
+geocoding, so this is the same counterparty and a similar exposure — but it is
+a new flow, and it should be acknowledged when that feature is built, the same
+way the Bouncie flow was killed on sight.
