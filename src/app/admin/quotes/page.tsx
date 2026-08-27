@@ -11,17 +11,8 @@ import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
 import { DepositRateChip } from '@/components/admin/DepositRateChip';
 import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
 import { QuotesListSkeleton } from './QuotesListSkeleton';
-
-// Service-line badge palette (#123) — so an operator can tell holiday vs event
-// vs permanent at a glance. Holiday (the default, the majority) is muted; the
-// two rarer verticals get their own accent so they pop out of the list.
-const SERVICE_TYPE_STYLES: Record<ServiceType, string> = {
-  holiday: 'bg-slate-100 text-slate-600',
-  permanent: 'bg-indigo-100 text-indigo-700',
-  event: 'bg-amber-100 text-amber-800',
-  permanent_bistro: 'bg-teal-100 text-teal-700',
-};
 
 // Admin page for the `quotes` table: list + per-row delete + bulk delete
 // all. Used to clean up fake/test customer rows while we iterate on the
@@ -183,8 +174,18 @@ export default function QuotesAdminPage() {
     if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
     if (testOnly && !q.is_test) return false;
     if (!term) return true;
-    return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
-      .some(v => v != null && v.toLowerCase().includes(term));
+    // Device check 2026-08-26: typing the "#1262" the list itself displays
+    // found nothing — the haystack had the UUID but not the quote number. Same
+    // `#${n}` idiom as the jobs and invoices lists, so "#1262" and "1262" both
+    // match.
+    return [
+      q.customer_name,
+      q.customer_address,
+      q.customer_phone,
+      q.customer_email,
+      q.id,
+      q.quote_number != null ? `#${q.quote_number}` : null,
+    ].some(v => v != null && v.toLowerCase().includes(term));
   });
 
   return (
@@ -294,7 +295,7 @@ export default function QuotesAdminPage() {
                 type="search"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search name, address, phone, email, ID…"
+                placeholder="Search name, address, phone, email, quote #…"
                 className="flex-1 min-w-[12rem] text-sm border border-gray-300 rounded-md px-3 py-1.5"
               />
               <span className="text-xs text-gray-500 whitespace-nowrap">
@@ -373,17 +374,8 @@ export default function QuotesAdminPage() {
                               <span>{q.customer_name ?? '—'}</span>
                             );
                           })()}
-                          {/* Service-line badge (#123) — holiday / permanent / event. */}
-                          {(() => {
-                            const svc = q.service_type ?? DEFAULT_SERVICE_TYPE;
-                            return (
-                              <span
-                                className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${SERVICE_TYPE_STYLES[svc]}`}
-                              >
-                                {SERVICE_TYPE_LABELS[svc]}
-                              </span>
-                            );
-                          })()}
+                          {/* Service-line badge (#123) — shared chip (row 419). */}
+                          <ServiceTypeBadge serviceType={q.service_type} />
                           <span
                             title={badgeTitle}
                             className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${status.className}`}

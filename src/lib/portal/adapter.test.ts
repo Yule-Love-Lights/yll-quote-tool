@@ -3,6 +3,7 @@ import {
   quoteRowToPortalQuote,
   resolveApprovalSelectionSeed,
   resolveBrowsingSelectionSeed,
+  showStaffPreselectNotice,
   BILLED_ROOFLINE_IDS,
   type QuoteRowForPortal,
 } from './adapter';
@@ -2478,5 +2479,61 @@ describe('quoteRowToPortalQuote — browsing selection (ledger row 239)', () => 
       installTiming: 'none',
     });
     expect(portal.browsingSelection?.permanentEffect).toBeUndefined();
+  });
+
+  // Row 324 fix round (customer MED): staffSet is decoded from the raw jsonb
+  // (see the staffSet key in BrowsingSelectionJson above) and surfaces on
+  // PortalBrowsingSelection so the portal can show/withhold its notice.
+  it('decodes staffSet when present on the raw browsing_selection', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithBrowsing({
+        packageId: 'B',
+        selectedItemIds: ['a'],
+        staffSet: { by: 'operator@example.com', at: '2026-08-01T00:00:00Z' },
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.browsingSelection?.staffSet).toEqual({ by: 'operator@example.com', at: '2026-08-01T00:00:00Z' });
+  });
+
+  it('leaves staffSet undefined for a genuine customer autosave (no staffSet key)', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithBrowsing({ packageId: 'B', selectedItemIds: ['a'] }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.browsingSelection?.staffSet).toBeUndefined();
+  });
+});
+
+// Row 324 fix round (customer MED): whether the portal shows the "your
+// installer set these starting choices" line. Both conditions are required —
+// see showStaffPreselectNotice's own comment in adapter.ts for the self-clear
+// reasoning (no live tracking needed: the customer's own next autosave drops
+// staffSet from the DB row, so the NEXT page load reads false on its own).
+describe('showStaffPreselectNotice', () => {
+  const STAFF_SET = { by: 'operator@example.com', at: '2026-08-01T00:00:00Z' };
+
+  it('shows the notice when staffSet AND the customer has viewed before', () => {
+    expect(showStaffPreselectNotice({ staffSet: STAFF_SET }, '2026-08-02T00:00:00Z')).toBe(true);
+  });
+
+  it('withholds the notice on a first-ever view (no viewedAt yet), even if staffSet', () => {
+    expect(showStaffPreselectNotice({ staffSet: STAFF_SET }, undefined)).toBe(false);
+  });
+
+  it('withholds the notice for a genuine customer selection (no staffSet), even if viewed', () => {
+    expect(showStaffPreselectNotice({ staffSet: undefined }, '2026-08-02T00:00:00Z')).toBe(false);
+  });
+
+  it('withholds the notice when there is no browsing selection at all (e.g. an approved quote)', () => {
+    expect(showStaffPreselectNotice(undefined, '2026-08-02T00:00:00Z')).toBe(false);
+  });
+
+  // The literal self-clear this fix depends on: a customer autosave never
+  // writes a staffSet key (see /api/quotes/[id]/selection/route.ts), so the
+  // decoded browsingSelection naturally carries staffSet: undefined on their
+  // NEXT page load once they've edited anything — no extra machinery here.
+  it('withholds the notice once the customer has made their own edit (staffSet cleared)', () => {
+    expect(showStaffPreselectNotice({ staffSet: undefined }, '2026-08-02T00:00:00Z')).toBe(false);
   });
 });

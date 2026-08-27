@@ -948,47 +948,37 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
 });
 
 describe('POST /api/quote — quote build timer association', () => {
-  it('creates or reuses the owned timer on a new quote before reporting save success', async () => {
+  // Row 376: this bookkeeping moved from an inline await into after() (like
+  // send/mark-sent's queueQuoteBuildSessionCompletion), so Calculate's
+  // response no longer waits on it. The OLD contract this test asserted —
+  // the response promise stays unsettled while the timer start is in
+  // flight — is exactly the behavior row 376 removed. Proven here the other
+  // way: startQuoteBuildSession's promise is deliberately never resolved,
+  // and the response still settles.
+  it('starts the timer via after(), and the response settles without waiting on it', async () => {
     const timerId = '11111111-2222-4333-8444-555555555555';
     operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
-    let releaseStart!: (value: {
-      ok: true;
-      kind: 'started';
-      row: { id: string; quote_id: string; sent_at: null };
-    }) => void;
-    startQuoteBuildSession.mockReturnValueOnce(
-      new Promise((resolve) => {
-        releaseStart = resolve;
-      }),
-    );
-    let settled = false;
+    startQuoteBuildSession.mockReturnValueOnce(new Promise(() => {}));
 
-    const pending = POST(makeReq({
+    const res = await POST(makeReq({
       inputs: validInputs(),
       quoteBuildTimerId: timerId,
       quoteBuildStartReason: 'contact_selected',
-    }))
-      .then((response) => {
-        settled = true;
-        return response;
-      });
+    }));
 
-    await vi.waitFor(() => expect(startQuoteBuildSession).toHaveBeenCalledWith({
+    expect(res.status).toBe(200);
+    // Proves the bookkeeping was actually scheduled via after() (not a bare
+    // `void` call, which the mocked after() below would make pass too) AND
+    // that the call itself already fired even though its own promise is
+    // still pending above.
+    expect(afterCallCount.current).toBe(1);
+    expect(startQuoteBuildSession).toHaveBeenCalledWith({
       timerId,
       startReason: 'contact_selected',
       quoteId: 'new-id',
       operator: { id: 'op-1', email: 'a@b.com', role: 'operator' },
       startedAt: expect.any(String),
-    }));
-    expect(settled).toBe(false);
-
-    releaseStart({
-      ok: true,
-      kind: 'started',
-      row: { id: timerId, quote_id: 'new-id', sent_at: null },
     });
-    const res = await pending;
-    expect(res.status).toBe(200);
     expect(linkQuoteBuildSession).not.toHaveBeenCalled();
   });
 
@@ -1068,6 +1058,12 @@ describe('POST /api/quote — quote build timer association', () => {
     }));
 
     expect(res.status).toBe(200);
+    // The link/complete calls happen a couple of `await`s deep inside the
+    // after() task (start -> link -> re-read target -> complete), past the
+    // point Calculate's own response has already resolved — await the whole
+    // task explicitly before asserting on them, per the file's own
+    // lastAfterTask convention (see its declaration comment above).
+    await lastAfterTask.current;
     expect(linkQuoteBuildSession).toHaveBeenCalledWith({
       timerId,
       quoteId: 'new-id',

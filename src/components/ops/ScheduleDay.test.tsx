@@ -11,7 +11,29 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ScheduleDay, isStaleDay, scheduleStatusNote } from './ScheduleDay';
+import { ScheduleDay, defaultScheduleDay, isStaleDay, scheduleStatusNote } from './ScheduleDay';
+
+describe('defaultScheduleDay (row 335 — the day the page opens on)', () => {
+  it('an ET evening stays on the ET day, where the UTC slice already reads tomorrow', () => {
+    // 2026-08-26 23:30 ET (EDT, UTC-4) = 2026-08-27T03:30Z. The old
+    // `toISOString().slice(0, 10)` read 2026-08-27 — tomorrow's schedule.
+    const eveningEt = new Date('2026-08-27T03:30:00Z');
+    expect(eveningEt.toISOString().slice(0, 10)).toBe('2026-08-27'); // the bug
+    expect(defaultScheduleDay(eveningEt)).toBe('2026-08-26'); // the fix
+  });
+
+  it('a winter (EST, UTC-5) evening too — 7pm was already enough then', () => {
+    // 2026-01-15 19:30 ET = 2026-01-16T00:30Z.
+    const winterEvening = new Date('2026-01-16T00:30:00Z');
+    expect(winterEvening.toISOString().slice(0, 10)).toBe('2026-01-16');
+    expect(defaultScheduleDay(winterEvening)).toBe('2026-01-15');
+  });
+
+  it('midday the two clocks agree', () => {
+    const noonEt = new Date('2026-08-26T16:00:00Z'); // 12:00 EDT
+    expect(defaultScheduleDay(noonEt)).toBe('2026-08-26');
+  });
+});
 
 const TODAY = '2026-08-24';
 const PICKED = '2026-08-25';

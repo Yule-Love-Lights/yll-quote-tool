@@ -580,6 +580,49 @@ describe('getJobDetail', () => {
     });
   });
 
+  // Row 418: the customer-name link on /admin/jobs/[id] routes by this field —
+  // HL contact id first, then the job's own customer_id, then the quote's.
+  it('resolves customerRouteId with the HL contact id winning over both customer_ids', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', customer_id: 'job-cust', status: 'requires_invoicing', line_items: [] } },
+      quotes: { read: { customer_name: 'Alice', highlevel_contact_id: 'hl-1', customer_id: 'quote-cust' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+    expect((await getJobDetail('j1'))?.customerRouteId).toBe('hl-1');
+  });
+
+  it('falls back to the job\'s own customer_id, then the quote\'s, then null (plain-text walk-in)', async () => {
+    const base = { quote_id: 'q1', status: 'requires_invoicing', line_items: [] };
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', customer_id: 'job-cust', ...base } },
+        quotes: { read: { customer_name: 'Alice', highlevel_contact_id: null, customer_id: 'quote-cust' } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.customerRouteId).toBe('job-cust');
+    }
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', customer_id: null, ...base } },
+        quotes: { read: { customer_name: 'Alice', highlevel_contact_id: null, customer_id: 'quote-cust' } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.customerRouteId).toBe('quote-cust');
+    }
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', customer_id: null, ...base } },
+        quotes: { read: { customer_name: 'Walk In', highlevel_contact_id: null, customer_id: null } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.customerRouteId).toBeNull();
+    }
+  });
+
   it('carries the labor numbers in tagged form, flagged when the rates are placeholder', async () => {
     // GET /api/jobs/[id] serializes this object wholesale to consumers outside
     // this repo, where the lint guardrail cannot reach. The tagged plan is what

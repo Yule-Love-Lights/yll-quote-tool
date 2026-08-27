@@ -3,6 +3,7 @@ import {
   reconcileHolidayFootageField,
   deriveHolidayFootageBaseline,
   mergeHolidayFootageBaseline,
+  reconcileAnalysisFootage,
   type HolidayFootageBaseline,
   type HolidayFootageFieldKey,
   type HolidayFieldReconcileResult,
@@ -456,5 +457,68 @@ describe('S46 finding 2 — reconcile helpers are idempotent under repeated call
     expect(call2).toEqual({ santas: 110, c9: 40 });
     // and the shared input object was never mutated by either call
     expect(prev).toEqual({ santas: 100, c9: 40 });
+  });
+});
+
+describe('row 209: reconcileAnalysisFootage — street re-analyze must not clobber satellite-derived footage', () => {
+  it('applies the AI text estimate for a field with no satellite lines drawn (the ordinary, un-clobbered case)', () => {
+    const out = reconcileAnalysisFootage({
+      aiSantasFootage: 80,
+      aiGingerbreadFootage: 45,
+      hasSatelliteSantasLines: false,
+      hasSatelliteGingerbreadLines: false,
+      satelliteHasScale: true,
+    });
+    expect(out).toEqual({ santasFootage: 80, gingerbreadFootage: 45 });
+  });
+
+  it('keeps the field untouched (omits it) when satellite lines already exist for it', () => {
+    const out = reconcileAnalysisFootage({
+      aiSantasFootage: 80,
+      aiGingerbreadFootage: 45,
+      hasSatelliteSantasLines: true,
+      hasSatelliteGingerbreadLines: true,
+      satelliteHasScale: true,
+    });
+    expect(out).toEqual({});
+  });
+
+  it('is independent per field: santas has satellite lines, gingerbread does not', () => {
+    const out = reconcileAnalysisFootage({
+      aiSantasFootage: 80,
+      aiGingerbreadFootage: 45,
+      hasSatelliteSantasLines: true,
+      hasSatelliteGingerbreadLines: false,
+      satelliteHasScale: true,
+    });
+    // santas is omitted (kept from satellite geometry); gingerbread applies
+    // the AI text estimate, because it has nothing else to go on yet.
+    expect(out).toEqual({ gingerbreadFootage: 45 });
+  });
+
+  it('the reverse split: gingerbread has satellite lines, santas does not', () => {
+    const out = reconcileAnalysisFootage({
+      aiSantasFootage: 80,
+      aiGingerbreadFootage: 45,
+      hasSatelliteSantasLines: false,
+      hasSatelliteGingerbreadLines: true,
+      satelliteHasScale: true,
+    });
+    expect(out).toEqual({ santasFootage: 80 });
+  });
+
+  // Fix round (staff lens MED): the manual-satellite flow (#9) traces lines
+  // with NO scale, purely for training value — nothing was ever DERIVED from
+  // them (the measurement effect bails on null scale), so the AI estimate is
+  // still the only real measurement and must apply.
+  it('scale-less manual-satellite lines do NOT protect a field — the AI estimate still applies', () => {
+    const out = reconcileAnalysisFootage({
+      aiSantasFootage: 80,
+      aiGingerbreadFootage: 45,
+      hasSatelliteSantasLines: true,
+      hasSatelliteGingerbreadLines: true,
+      satelliteHasScale: false,
+    });
+    expect(out).toEqual({ santasFootage: 80, gingerbreadFootage: 45 });
   });
 });
