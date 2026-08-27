@@ -26,14 +26,48 @@
 
 name: CI
 
+# DOCS-ONLY PUSHES DON'T RUN (row 355). The org is on the free plan's 2000
+# Actions minutes, and an exhausted balance fails every workflow repo-wide with
+# an instant no-runner error — S66 diagnosed exactly that. tsc, lint and vitest
+# cannot be affected by a markdown file, so a push touching ONLY the paths below
+# spends nothing. `paths-ignore` skips only when EVERY changed file matches, so
+# a PR mixing docs with code still runs the full gates.
+#
+# `.claude/**` is deliberately NOT ignored: skills, commands and settings.json
+# change how the assistants behave, and that is not something to make cheaper to
+# land unreviewed.
+#
+# ⚠️ TWO CONSEQUENCES, both deliberate, do not "fix" them by surprise:
+#   1. A docs-only PR has NO `gates` check at all — not a red one, not a green
+#      one, simply absent. AGENTS.md says to verify gates green before merging;
+#      for a docs-only PR the correct reading is "no run is expected", NOT "the
+#      run is missing, fall back to local gates and say CI did not run". This
+#      includes the wrap skill's own documents-only close PR, which auto-merges
+#      on Naldo's machine.
+#   2. If `gates` is ever made a REQUIRED status check (see the note above about
+#      the free plan), a skipped workflow leaves that check permanently pending
+#      and blocks every docs-only PR forever. The fix at that point is a
+#      companion job that reports success for the ignored paths, not deleting
+#      this block. Decide it then; this comment is the warning.
 on:
   pull_request:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - 'CLAUDE.md'
+      - 'AGENTS.md'
+      - 'README.md'
   push:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - 'CLAUDE.md'
+      - 'AGENTS.md'
+      - 'README.md'
 
 # A new push to the same branch cancels an in-flight run for it — no point
-# gating a commit that's already been superseded.
+# gating a commit that's already been superseded. (This half of row 355 was
+# already in place before that row was actioned; only the docs skip was new.)
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
