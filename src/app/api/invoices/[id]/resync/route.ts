@@ -20,11 +20,16 @@
 // resync without recording a fake amendment.
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { getInvoice, type InvoicePricingInput } from '@/lib/invoices';
 import { getJobByQuote } from '@/lib/jobs';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
-import { resyncInvoiceToAgreedTotal } from '@/lib/quoteAmendInvoiceSync';
+import {
+  computeInvoiceResyncTotals,
+  priorBalanceCollectedUsd,
+  resyncInvoiceToAgreedTotal,
+} from '@/lib/quoteAmendInvoiceSync';
+import { appendQuoteAuditEntry } from '@/lib/quoteAudit';
 
 export const runtime = 'nodejs';
 
@@ -52,6 +57,23 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (invoice.status === 'cancelled') {
     return NextResponse.json(
       { error: 'This invoice is cancelled — nothing to resync.', code: 'cancelled' },
+      { status: 409 },
+    );
+  }
+  // FIX 2 (admin lens HIGH part b + staff MED 2): resyncInvoiceToAgreedTotal
+  // can REOPEN a 'paid' invoice back to awaiting_payment (see that function's
+  // own comment) — inside /amend that reopen is surrounded by consent/notice
+  // machinery, but this standalone route has none of it, so calling it on a
+  // settled invoice would silently reopen settled money with no customer
+  // notice and no re-consent. Refuse before ever calling the resync.
+  if (invoice.status === 'paid') {
+    return NextResponse.json(
+      {
+        error:
+          'This invoice is already settled. Changing a settled total is an amendment — record it from the ' +
+          'job page so the customer is notified and re-consents.',
+        code: 'paid',
+      },
       { status: 409 },
     );
   }
@@ -86,11 +108,46 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const job = await getJobByQuote(invoice.quote_id);
   const newTotal = resolveAgreedTotal(quote.approval_snapshot, quote.result);
 
+  // FIX 3 (staff MED 2, no-op honesty): resyncInvoiceToAgreedTotal ALWAYS
+  // performs its DB write, even when the recomputed figures exactly match
+  // what's already on the invoice — a resync that changes nothing still
+  // reads as "Resynced" to the operator. Pre-compare with the EXACT formula
+  // the real write would use (computeInvoiceResyncTotals — the one place
+  // that formula lives, shared with the amend route's own pre-write stamp)
+  // and skip the write entirely when nothing would change.
+  //
+  // Balance parity implies status parity here: resyncInvoiceToAgreedTotal's
+  // own reconciledStatus only diverges from the invoice's current status by
+  // REOPENING a 'paid' invoice when balance rises back above 0 — and this
+  // route already refuses a 'paid' invoice above (FIX 2), so invoice.status
+  // can never be 'paid' at this point. With that branch structurally
+  // unreachable here, reconciledStatus === invoice.status whenever balance
+  // is unchanged, so comparing the money fields alone is a complete check.
+  const depositPaid = quote.deposit_amount_usd ?? 0;
+  const plannedTotals = computeInvoiceResyncTotals(
+    quote.result,
+    depositPaid,
+    newTotal,
+    invoice.tax_overridden,
+    priorBalanceCollectedUsd(invoice),
+  );
+  const unchanged =
+    plannedTotals.subtotal === invoice.subtotal &&
+    plannedTotals.discount === invoice.discount &&
+    plannedTotals.tax === invoice.tax &&
+    plannedTotals.total === invoice.total &&
+    plannedTotals.deposit_applied === invoice.deposit_applied &&
+    plannedTotals.balance === invoice.balance &&
+    plannedTotals.credit_note === invoice.credit_note;
+  if (unchanged) {
+    return NextResponse.json({ ok: true, changed: false });
+  }
+
   const outcome = await resyncInvoiceToAgreedTotal({
     jobId: job ? job.id : null,
     invoice,
     result: quote.result,
-    depositPaid: quote.deposit_amount_usd ?? 0,
+    depositPaid,
     newTotal,
     logPrefix: '[api/invoices/:id/resync]',
     retiredReason: 'manual-resync',
@@ -112,10 +169,50 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     );
   }
 
+  // FIX 1 (admin lens HIGH part a, durable audit trail): the money write has
+  // ALREADY landed above — an audit-stamp failure must never undo it or fail
+  // the request, so this is best-effort by construction (appendQuoteAuditEntry
+  // is exactly that: a CAS write with one re-read retry that returns a boolean
+  // and never throws — see src/lib/quoteAudit.ts). MUST re-read approval_snapshot
+  // FRESH here: resyncInvoiceToAgreedTotal's own success branch just mutated it
+  // (clearInvoiceStaleMarkers clears the stale markers), so the `quote` object
+  // read at the top of this request is now stale and would lose that clear if
+  // used as the CAS base.
+  let audited = false;
+  const { data: freshQuote, error: freshErr } = await sb
+    .from('quotes')
+    .select('approval_snapshot')
+    .eq('id', invoice.quote_id)
+    .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+  if (freshErr || !freshQuote) {
+    console.error(
+      `[api/invoices/:id/resync] could not re-read approval_snapshot to append the resync audit entry for quote ${invoice.quote_id}:`,
+      freshErr,
+    );
+  } else {
+    const operator = await getOperator();
+    audited = await appendQuoteAuditEntry(
+      sb,
+      invoice.quote_id,
+      'markerOverrides',
+      {
+        action: 'resync',
+        by: operator?.email ?? null,
+        at: new Date().toISOString(),
+        invoiceId: id,
+        fromTotal: outcome.previousInvoicedTotal,
+        toTotal: outcome.invoicedTotal,
+      },
+      '[api/invoices/:id/resync]',
+      freshQuote.approval_snapshot,
+    );
+  }
+
   return NextResponse.json({
     ok: true,
     invoicedTotal: outcome.invoicedTotal,
     invoicedBalance: outcome.invoicedBalance,
     previousInvoicedTotal: outcome.previousInvoicedTotal,
+    audited,
   });
 }
