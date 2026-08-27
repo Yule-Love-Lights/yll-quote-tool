@@ -10,6 +10,17 @@ The Cool Tool remains the system of record for customers, quotes, jobs, scheduli
 
 Past Operations Hub notes are product context only. They are not proof that the current repo has a feature, and they are not permission to copy old code or migrations.
 
+## Superseded Remnants Still On Master
+
+The scrapped separate-Hub direction left real artifacts on current master. They look authoritative but they describe the old direction, not this plan:
+
+- `docs/context/OPERATIONS_HUB_CONTRACT.md` (v1.6.0-draft). It says the Hub owns all advertising and uses phone-OTP auth. Both points are superseded by this document.
+- The byte-identical mirror of that contract in the `yll-call-copilot` repo (`docs/operations-hub/INTEGRATION-CONTRACT.md`).
+- The AGENTS.md "Operations Hub contract" ownership row reserving `/api/ops/v1/**` for a separate Hub.
+- Three machine routes with no consumer: `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`. Built for the Hub; they are the natural foundation for the Crew My Day actions.
+
+Task ledger row 433 tracks their disposition, which is Naldo's call. Any audit session must treat these as superseded remnants, not as current truth, and should propose what to do with each (likely: reuse the routes for Crew My Day, mark or strip the contract).
+
 ## How The System Should Work In Theory
 
 The Cool Tool should become one operating system for Yule Love Lights. Office users should work from the full internal tool. Crew/installers should see only the work needed for their day. Advertising workers should eventually get a separate simple surface for campaigns, yard signs, door hangers, and reviewed placement proof.
@@ -44,7 +55,7 @@ Office/operator users should use the main internal Cool Tool. Admin users should
 
 Crew/installers must stay blocked from office/customer/quote/invoice/payroll-sensitive areas unless a specific future feature safely grants a narrow view. Advertising users must not receive broad operator access.
 
-Before adding Advertising accounts or pages, audit the current role helpers and route protection. The repo has a known historical risk where loose role interpretation can treat unknown non-admin roles as operator. New roles need positive allowlists, not "anything except crew" logic.
+Before adding Advertising accounts or pages, audit the current role helpers and route protection. The known risk where loose role interpretation treats unknown non-admin roles as operator is current, not just historical: `roleOf` in `src/lib/auth/supabaseServer.ts` returns `'operator'` for any role value that is not exactly `'admin'`. Crew logins avoid it only through the separate `CREW_ROLE` marker and its guards. A new `'advertising'` value dropped into `app_metadata.role` today would receive full operator access. New roles need positive allowlists, not "anything except crew" logic.
 
 ## Existing Foundation To Reuse
 
@@ -52,7 +63,7 @@ The current Cool Tool already has major Operations Hub foundations:
 
 - Supabase email/password login.
 - Operator dashboard and shell.
-- Navigation for Home, Inbox, Leads, Customers, Quotes, Jobs, Invoices, Inventory, Insights, and Settings.
+- Navigation for Home, Inbox, Customers, Quotes, Jobs, Invoices, Inventory, Insights, and Settings. Leads and Schedule pages exist (`/admin/leads`, `/admin/schedule`) but deliberately hold no nav slot today; audit `src/components/dashboard/OperatorNav.tsx` for the current list.
 - Customer, quote, job, invoice, inventory, schedule, inbox, settings, and insights areas.
 - Crew member records.
 - Crew account restrictions.
@@ -60,6 +71,8 @@ The current Cool Tool already has major Operations Hub foundations:
 - Shift, break, job segment, and job assignment foundations.
 - Crew-facing job action APIs under existing ops routes.
 - Telegram and time/payroll-related foundations.
+
+Several of these foundations are dormant in production even though the schema and code exist: `job_segments` has never held a row, and shifts are barely used. An audit must count production rows and report each foundation as used or dormant. Schema shape alone is not proof of a working feature.
 
 Implementation work must audit current master before changing code. File names and route names from old notes are hints, not current truth.
 
@@ -261,6 +274,8 @@ Known direction:
 - The desired future direction is automatic recording and transcript ingestion, not manual-only importing.
 - Durable/background work may still need a worker architecture if call ingestion, polling, transcription, grading, retries, queues, or scheduled processing return.
 
+About 1,210 call transcripts already exist in the sibling `yll-call-copilot` Supabase project and its repo. Check there before declaring any part of the chain missing; a repo-scoped audit of the quote tool alone will wrongly report that no transcription exists.
+
 Before rebuilding call features, audit the full chain:
 
 - HighLevel/provider event or export.
@@ -349,7 +364,7 @@ Do not:
 
 ## Workstream Prompts
 
-Use these prompts when running concurrent planning or implementation sessions. Each session should audit the current repo before proposing code.
+Use these prompts when running concurrent planning or implementation sessions. Each session should audit the current repo before proposing code, and should write its findings to a file under `docs/context/` so they persist beyond the chat.
 
 ### Office / Admin Foundation Prompt
 
@@ -359,6 +374,8 @@ Work inside Yule-Love-Lights/yll-quote-tool, also called the Cool Tool. Do not c
 Audit the current Office/Operator/Admin foundation. Office and Operator are the same internal group. Admin is only Naldo and Jason.
 
 Confirm current auth, role helpers, proxy route protection, navigation, dashboard, Inbox, Leads, Customers, Quotes, Jobs, Invoices, Inventory, Insights, Settings, and admin-only controls.
+
+Note: roleOf in src/lib/auth/supabaseServer.ts treats every role value that is not exactly 'admin' as operator. Any new role needs a positive allowlist, never the default collapse.
 
 Plan the smallest safe improvements so Admin can use the normal Office tool and manually switch into Crew/Installer and Advertising views for review/testing. Do not weaken crew restrictions. Do not add Advertising broad operator access.
 
@@ -392,6 +409,8 @@ Work inside Yule-Love-Lights/yll-quote-tool, also called the Cool Tool. Crew and
 
 Audit the current crew/install job actions, Telegram workflows, assignments, shifts, breaks, job segments, and existing /api/ops/v1 routes.
 
+The /api/ops/v1 job routes were built for the scrapped separate Operations Hub and currently have no consumer, and job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
+
 Plan an optional app-based My Day view for crew/installers. Telegram will likely remain the main workflow, but the app should exist as an option and as a foundation for future workers.
 
 Crew/installers should see approved assigned jobs, today's schedule, start time, crew info, prep notes, narrow job details, arrive/depart/complete actions, and their own time state where appropriate.
@@ -411,6 +430,8 @@ Work inside Yule-Love-Lights/yll-quote-tool, also called the Cool Tool. Call/Hig
 The desired direction is automatic recording and transcript ingestion, not manual-only imports.
 
 Audit the full current chain: HighLevel/provider call source, recording availability, ingestion or polling, persistence, transcription, grading/coaching analysis, customer promise extraction, review process, task creation if approved, and display in Cool Tool.
+
+About 1,210 call transcripts already exist in the sibling yll-call-copilot Supabase project and its repo. Check there before declaring any part of the chain missing.
 
 Do not enable live calls, live transcription, automatic sends, cron jobs, Twilio Verify, Turnstile, phone login, Cloudflare auth work, or Railway-style background processing without explicit approval.
 
@@ -458,6 +479,13 @@ The Cool Tool remains the source of truth for:
 
 Past Operations Hub chats, branches, migrations, and docs are context only. Do not treat them as current truth until the current repo proves it.
 
+SUPERSEDED REMNANTS ON MASTER
+The scrapped separate-Hub direction left artifacts on current master that look authoritative but describe the old direction:
+- docs/context/OPERATIONS_HUB_CONTRACT.md (v1.6.0-draft). It says the Hub owns all advertising and uses phone-OTP auth. Both points are superseded by this prompt.
+- The AGENTS.md "Operations Hub contract" ownership row reserving /api/ops/v1/** for a separate Hub.
+- Three machine routes with no consumer: src/app/api/ops/v1/jobs/[id]/arrive, depart, and complete. Likely reusable for Crew My Day.
+Task ledger row 433 tracks their disposition, which is Naldo's decision. Treat these as superseded remnants, not current truth, and propose a disposition for each in your report.
+
 FIRST TASK
 This first session is audit and planning only.
 
@@ -496,7 +524,7 @@ Crew/Installer users must not see:
 
 Advertising users must not get broad Office/Operator access.
 
-Before adding Advertising, audit all current role helpers, route gates, and app perimeter protection. There is historical concern that loose role interpretation can accidentally treat unknown roles as operator. Use positive allowlists.
+Before adding Advertising, audit all current role helpers, route gates, and app perimeter protection. The concern that loose role interpretation can accidentally treat unknown roles as operator is confirmed current: roleOf in src/lib/auth/supabaseServer.ts returns 'operator' for any role value that is not exactly 'admin'. Crew logins avoid it only through the separate CREW_ROLE marker and its guards. A new 'advertising' value in app_metadata.role today would receive full operator access. Use positive allowlists.
 
 OFFICE / OPERATOR THEORY
 Office/Operator users use the main Cool Tool.
@@ -512,6 +540,8 @@ Office work should stay inside existing Cool Tool areas where possible:
 - Invoices
 - Insights
 - Settings
+
+This area list is approximate. Leads and Schedule pages exist (/admin/leads, /admin/schedule) but hold no nav slot today; audit src/components/dashboard/OperatorNav.tsx for the current navigation.
 
 Office should be able to:
 - review new leads and quote requests
@@ -714,6 +744,8 @@ HighLevel call features are desired future Operations Hub features inside Cool T
 
 The desired direction is automatic recording and transcript ingestion, not manual-only imports.
 
+About 1,210 call transcripts already exist in the sibling yll-call-copilot Supabase project and its repo. Check there before declaring any part of the chain missing.
+
 Audit before building:
 - HighLevel/provider call source
 - recording availability
@@ -792,6 +824,8 @@ Audit:
 - Telegram workflows
 - existing /api/ops routes
 - any HighLevel/integration code
+- docs/context/OPERATIONS_HUB_CONTRACT.md and the AGENTS.md ownership row, as superseded remnants per above
+- production row counts for crew_members, shifts, breaks, job_segments, and job_assignments; several foundations are dormant (job_segments has never held a row), so report each as used or dormant, because schema shape alone is not proof of a working feature
 
 OUTPUT SHAPE
 Give a full planning report with:
@@ -812,7 +846,9 @@ Give a full planning report with:
 10. Database tables likely needed.
 11. Routes/pages likely needed.
 12. Tests and verification needed.
-13. Questions for Naldo before code is written.
+13. Questions for Naldo before code is written, including the row 433 remnant disposition.
+
+Write the full report to a new file under docs/context/ in the repo so it persists beyond this chat, and propose task ledger rows for the build items.
 
 BAR
 The plan should be good enough that another developer can start from it without rereading all past chats.
@@ -831,4 +867,5 @@ Before finalizing, check:
 - Did you include GPS reverse lookup and exact address tracking?
 - Did you keep HighLevel automatic but deferred pending audit?
 - Did you treat old chats/docs as context, not current code truth?
+- Did you treat the superseded contract and the /api/ops/v1 remnants as row 433 decisions, not current truth?
 ```
