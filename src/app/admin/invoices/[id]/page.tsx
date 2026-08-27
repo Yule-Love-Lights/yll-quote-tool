@@ -169,15 +169,25 @@ export default function InvoiceDetailPage() {
     setResyncMsg(null);
     try {
       const res = await fetch(`/api/invoices/${id}/resync`, { method: 'POST' });
-      const body = (await res.json()) as { error?: string; code?: string; invoicedTotal?: number };
+      const body = (await res.json()) as {
+        error?: string;
+        code?: string;
+        invoicedTotal?: number;
+        changed?: boolean;
+      };
       if (!res.ok) {
         throw new Error(body.error ?? 'Failed');
       }
       setResyncMsg({
+        // FIX 3 (staff MED 2, no-op honesty): the route returns changed:false
+        // (no write) when the invoice already matches the agreed total —
+        // say so plainly instead of claiming a resync that never happened.
         text:
-          body.invoicedTotal != null
-            ? `Resynced — invoice now totals ${money(body.invoicedTotal)}.`
-            : 'Resynced.',
+          body.changed === false
+            ? 'Already in sync — nothing changed.'
+            : body.invoicedTotal != null
+              ? `Resynced — invoice now totals ${money(body.invoicedTotal)}.`
+              : 'Resynced.',
         ok: true,
         forId: id,
       });
@@ -630,7 +640,8 @@ export default function InvoiceDetailPage() {
                           balance <strong>{money(inv.balance)}</strong>
                         </>
                       )}
-                      .
+                      . If the totals genuinely drifted, use &lsquo;Resync to agreed total&rsquo; below
+                      &mdash; &lsquo;Mark reconciled&rsquo; only clears the flag without touching the numbers.
                     </p>
                   )}
                   {data.staleMarkers.paymentBlocked && (
@@ -687,15 +698,36 @@ export default function InvoiceDetailPage() {
 
             {/* #973 staff lens MED: the override trail is owner-visible on the
                 invoice, mirroring the valor_txn_log precedent - a write-only
-                audit is forensics nobody can find. */}
+                audit is forensics nobody can find.
+                Row 990 fix round (admin lens HIGH): the SAME markerOverrides
+                list also carries /resync audit entries now - label by
+                `action` so a resync reads as what it actually did (rewrote
+                the total) instead of the mark-reconciled wording ("cleared
+                the flag") that never touched a number. */}
             {data?.lastMarkerOverride && (
               <p className="text-xs text-gray-500">
-                Unreconciled flag last cleared
-                {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
-                {data.lastMarkerOverride.at
-                  ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
-                  : ''}
-                .
+                {data.lastMarkerOverride.action === 'resync' &&
+                data.lastMarkerOverride.fromTotal != null &&
+                data.lastMarkerOverride.toTotal != null ? (
+                  <>
+                    Invoice last resynced to the agreed total
+                    {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
+                    {data.lastMarkerOverride.at
+                      ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
+                      : ''}
+                    {' '}
+                    (was {money(data.lastMarkerOverride.fromTotal)}, now {money(data.lastMarkerOverride.toTotal)}).
+                  </>
+                ) : (
+                  <>
+                    Unreconciled flag last cleared
+                    {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
+                    {data.lastMarkerOverride.at
+                      ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
+                      : ''}
+                    .
+                  </>
+                )}
               </p>
             )}
 
@@ -806,7 +838,12 @@ export default function InvoiceDetailPage() {
                   <button
                     type="button"
                     onClick={() => void resyncInvoice()}
-                    disabled={resyncBusy || inv.status === 'cancelled'}
+                    disabled={resyncBusy || inv.status === 'cancelled' || inv.status === 'paid'}
+                    title={
+                      inv.status === 'paid'
+                        ? 'This invoice is already settled - record a re-price from the job page (Record amendment) so the customer is notified and re-consents.'
+                        : undefined
+                    }
                     className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-60"
                   >
                     {resyncBusy ? 'Resyncing…' : 'Resync to agreed total'}
