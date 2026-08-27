@@ -1,58 +1,84 @@
 // src/app/api/integrations/bouncie/callback/route.ts
 // OAuth redirect target for the Bouncie grant (ledger row 403, phase 3a).
 //
-// Bouncie sends the operator's BROWSER here after they approve, with
-// `?code=...`. We exchange that code for a token pair and store it encrypted,
-// then send them somewhere human rather than leaving raw JSON on screen.
+// Bouncie sends the operator's BROWSER here after they approve, with `?code=`
+// and the `state` we issued at `/api/integrations/bouncie/start`. We check the
+// state, exchange the code for a token pair, store it encrypted, and send them
+// back to Settings with a readable outcome.
 //
-// DELIBERATELY OPERATOR-GATED, unlike the webhook. The webhook has to be public
+// DELIBERATELY OPERATOR-GATED, unlike the webhook. The webhook must be public
 // because Bouncie's servers call it with no session. This route is reached by a
-// person clicking through a consent screen in their own browser, so it can and
-// should sit behind the normal operator session — it is NOT in
-// `PUBLIC_API_EXACT`. That means whoever completes the grant must be logged into
-// the quote tool in the same browser, which is the correct requirement: storing
-// a fleet-wide credential is not something an anonymous request should do.
+// person in their own browser, so it sits behind the normal operator session and
+// is NOT in `PUBLIC_API_EXACT`. Storing a fleet-wide credential should not be
+// something an anonymous request can do.
 //
-// The authorization code is single-use in practice: re-running the authorize
-// flow invalidates the previous one. So a failure here means going back to the
-// consent screen, not retrying this URL.
+// AN OPERATOR SESSION IS NOT ENOUGH ON ITS OWN, which is why `state` exists. A
+// session proves who is asking; it does not prove the authorization code belongs
+// to the flow they started. Without the check, an attacker could hand a
+// logged-in operator a code from the attacker's OWN Bouncie account and we would
+// store it and then act as that account — polling a fleet that is not ours, with
+// no symptom except somebody noticing unfamiliar vehicles.
+//
+// The authorization code is single-use in practice, so a failure here means
+// starting again from `/start`, not retrying this URL.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { exchangeCodeForTokens, isBouncieOAuthConfigured } from '@/lib/integrations/bouncieAuth';
+import { OAUTH_STATE_COOKIE, portalBaseUrl, stateMatches } from '@/lib/integrations/bouncieOAuthState';
 
 export const runtime = 'nodejs';
 
-/** Where to send the operator afterwards, with a readable outcome. */
-function back(req: NextRequest, params: Record<string, string>): NextResponse {
-  const url = new URL('/settings/accounts', req.nextUrl.origin);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  return NextResponse.redirect(url);
+/**
+ * Send the operator back to Settings with an outcome it can render.
+ *
+ * Only ever a fixed, short status word — never a token, a code, an account
+ * email, or an error body. Redirect URLs land in browser history and server
+ * access logs, so anything put here is effectively published.
+ */
+function back(status: string): NextResponse {
+  const url = new URL('/settings/accounts', portalBaseUrl());
+  url.searchParams.set('bouncie', status);
+  const res = NextResponse.redirect(url);
+  // The state is spent either way: success, failure, or a forged attempt.
+  res.cookies.delete(OAUTH_STATE_COOKIE);
+  return res;
 }
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
   const denied = req.nextUrl.searchParams.get('error');
+  const state = req.nextUrl.searchParams.get('state');
+  const expected = req.cookies.get(OAUTH_STATE_COOKIE)?.value;
 
   // The user pressed deny, or Bouncie refused. Not an error on our side.
-  if (denied) return back(req, { bouncie: 'denied' });
+  if (denied) return back('denied');
 
-  if (!code) return back(req, { bouncie: 'missing_code' });
+  if (!stateMatches(state, expected)) {
+    console.warn('[bouncie] callback rejected: state did not match the issued value');
+    return back('bad_state');
+  }
+
+  if (!code) return back('missing_code');
 
   if (!isBouncieOAuthConfigured()) {
     console.error('[bouncie] callback hit but BOUNCIE_CLIENT_ID/SECRET/REDIRECT_URI are not all set');
-    return back(req, { bouncie: 'not_configured' });
+    return back('not_configured');
   }
 
   try {
     const account = await exchangeCodeForTokens(code);
-    // The account email is not a secret and is worth logging: it is the only
-    // record of WHOSE grant is now stored.
+    // Logged, not redirected: the account is the only record of WHOSE grant is
+    // now stored, and a server log is the right place for it. A query string is
+    // not — see `back` above.
     console.info('[bouncie] stored a grant for', account);
-    return back(req, { bouncie: 'connected', account });
+    return back('connected');
   } catch (err) {
-    // Never echo the error text into the redirect: it can carry fragments of a
-    // token response.
-    console.error('[bouncie] token exchange failed:', err instanceof Error ? err.message : String(err));
-    return back(req, { bouncie: 'failed' });
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[bouncie] token exchange failed:', message);
+    // Distinguish the one failure with a completely different fix. Everything
+    // else is "look at the logs"; this one is "set an environment variable",
+    // and the operator can act on it without help.
+    if (/TOKEN_ENCRYPTION_KEY/.test(message)) return back('no_encryption_key');
+    return back('failed');
   }
 }

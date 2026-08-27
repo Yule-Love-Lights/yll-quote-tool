@@ -20,9 +20,24 @@
 -- does AES-256-GCM with a key from the environment, and the writer refuses to
 -- store anything if the key is missing. The column name now describes reality.
 --
--- HOW TO APPLY. Three nullable ADD COLUMNs on a table with zero rows, which sits
--- on AGENTS.md's safe/additive allowlist. Nothing is altered or dropped, and no
+-- HOW TO APPLY — READ THIS, IT IS NOT FULLY SELF-APPLYING.
+--
+-- The three nullable ADD COLUMNs ARE on AGENTS.md's safe/additive allowlist:
+-- the table has zero rows (measured), nothing is altered or dropped, and no
 -- existing column changes type or nullability.
+--
+-- The trigger and its function are NOT. That allowlist is explicitly exhaustive
+-- rather than illustrative, and it does not include creating functions or
+-- triggers. An earlier draft of this file claimed the whole migration was
+-- allowlisted; that was wrong, and the S68 admin lens caught it. Saying "safe"
+-- about something the rule does not cover is how the rule stops meaning
+-- anything.
+--
+-- So: this migration needs the dev's explicit go before being applied, on
+-- account of the trigger. If you would rather not grant that, apply only the
+-- three ADD COLUMNs — the application code works without the trigger, and the
+-- only loss is that `updated_at` stays stale, which costs a diagnostic signal
+-- during an outage rather than any behaviour.
 -- =====================================================================
 
 -- The short-lived half of the pair. Encrypted with the same box as the refresh

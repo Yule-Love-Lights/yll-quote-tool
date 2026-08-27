@@ -11,7 +11,13 @@ const { upsert, selectChain, getSupabaseServiceClient } = vi.hoisted(() => {
   const upsert = vi.fn(async (_row: Record<string, unknown>, _opts?: unknown) => ({
     error: null as { message: string } | null,
   }));
-  const state: { row: Record<string, unknown> | null } = { row: null };
+  const state: {
+    row: Record<string, unknown> | null;
+    rows: Record<string, unknown>[] | null;
+    readError: { message: string } | null;
+    /** Successive reads pop from here when set, for testing re-reads. */
+    queue: Record<string, unknown>[][] | null;
+  } = { row: null, rows: null, readError: null, queue: null };
   const selectChain = state;
   const getSupabaseServiceClient = vi.fn(() => ({
     from: () => ({
@@ -20,10 +26,18 @@ const { upsert, selectChain, getSupabaseServiceClient } = vi.hoisted(() => {
         eq: function () {
           return this;
         },
+        order() {
+          return this;
+        },
         limit() {
           return this;
         },
-        returns: async () => ({ data: state.row ? [state.row] : [] }),
+        returns: async () => ({
+          data: state.queue?.length
+            ? state.queue.shift()!
+            : (state.rows ?? (state.row ? [state.row] : [])),
+          error: state.readError,
+        }),
       }),
     }),
   }));
@@ -56,6 +70,9 @@ beforeEach(() => {
   process.env.BOUNCIE_CLIENT_SECRET = 'client-secret';
   process.env.BOUNCIE_REDIRECT_URI = 'https://quote.yulelovelights.com/api/integrations/bouncie/callback';
   selectChain.row = null;
+  selectChain.rows = null;
+  selectChain.readError = null;
+  selectChain.queue = null;
   upsert.mockClear();
   upsert.mockResolvedValue({ error: null });
   fetchMock = vi.fn();
@@ -214,5 +231,60 @@ describe('bouncieFetch', () => {
     expect(url).toBe('https://api.bouncie.dev/v1/vehicles');
     expect(init.headers.Authorization).toBe('stored-access');
     expect(init.headers.Authorization).not.toMatch(/^Bearer/);
+  });
+});
+
+
+describe('fixes from the S68 lens round', () => {
+  it('refuses to spend the one-shot code when the encryption key is missing', async () => {
+    // ADMIN lens: exchanging first and discovering afterwards that we cannot
+    // encrypt would burn the authorization code for a purely local problem,
+    // sending the operator back through the consent screen for nothing.
+    delete process.env.TOKEN_ENCRYPTION_KEY;
+    await expect(exchangeCodeForTokens('the-code', EMAIL)).rejects.toThrow(/TOKEN_ENCRYPTION_KEY/);
+    expect(fetchMock).not.toHaveBeenCalled(); // the code was never sent
+  });
+
+  it('reports a database read failure as an OUTAGE, not as "no grant stored"', async () => {
+    // RECOVERY lens: those have opposite fixes. "No grant" tells the operator to
+    // re-run the consent flow, which would invalidate a perfectly good grant.
+    selectChain.readError = { message: 'connection reset' };
+    await expect(getAccessToken(EMAIL)).rejects.toThrow(/Could not read the stored Bouncie grant/);
+  });
+
+  it('refuses to guess when more than one grant is stored', async () => {
+    // TECHNICAL lens: .limit(1) with no ordering meant which Bouncie account we
+    // acted as depended on the query plan. Acting as the wrong fleet is silent.
+    selectChain.rows = [storedRow(), storedRow({ account_email: 'other@example.com' })];
+    await expect(getAccessToken()).rejects.toThrow(/must name which account/);
+  });
+
+  it('still works with two grants when the caller names the account', async () => {
+    selectChain.rows = [storedRow()];
+    expect(await getAccessToken(EMAIL)).toBe('stored-access');
+  });
+
+  // THE ROTATION RACE.
+  it('recovers when another caller won the refresh, instead of demanding re-authorization', async () => {
+    // Both callers see an expired token and refresh with the SAME refresh token.
+    // Bouncie honours the first and rejects the second. The grant is NOT lost —
+    // the winner already stored a valid pair — so the loser re-reads and uses it.
+    const expired = storedRow({ access_token_expires_at: new Date(Date.now() - 1000).toISOString() });
+    const winner = storedRow({
+      access_token_enc: encryptSecret('winner-access'),
+      access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    selectChain.queue = [[expired], [winner]];
+    fetchMock.mockRejectedValueOnce(new Error('400 invalid_grant'));
+    expect(await getAccessToken(EMAIL)).toBe('winner-access');
+  });
+
+  it('still throws when the refresh failed AND no fresher token appeared', async () => {
+    // Distinguishes a genuinely dead grant from a lost race: nothing newer
+    // showed up on the re-read, so this really does need re-authorization.
+    const expired = storedRow({ access_token_expires_at: new Date(Date.now() - 1000).toISOString() });
+    selectChain.queue = [[expired], [expired]];
+    fetchMock.mockRejectedValueOnce(new Error('400 invalid_grant'));
+    await expect(getAccessToken(EMAIL)).rejects.toThrow(/invalid_grant/);
   });
 });

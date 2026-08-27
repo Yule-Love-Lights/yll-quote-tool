@@ -26,7 +26,7 @@
 // Tokens are stored encrypted (see `crypto/secretBox`) in `integration_tokens`,
 // keyed by provider + account email.
 
-import { encryptSecret, decryptSecret } from '@/lib/crypto/secretBox';
+import { encryptSecret, decryptSecret, isSecretBoxConfigured } from '@/lib/crypto/secretBox';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 
 const TOKEN_URL = 'https://auth.bouncie.com/oauth/token';
@@ -131,6 +131,16 @@ async function fetchAccountEmail(accessToken: string): Promise<string> {
  */
 export async function exchangeCodeForTokens(code: string, accountEmail?: string): Promise<string> {
   if (!isBouncieOAuthConfigured()) throw new BouncieAuthError('Bouncie OAuth is not configured.');
+  // Check we can STORE before we SPEND. The authorization code is one-shot: the
+  // moment it is exchanged, Bouncie considers it used. Discovering afterwards
+  // that TOKEN_ENCRYPTION_KEY is missing would burn the code and force the
+  // operator back through the consent screen for a purely local misconfiguration.
+  // Found by the S68 admin lens.
+  if (!isSecretBoxConfigured()) {
+    throw new BouncieAuthError(
+      'TOKEN_ENCRYPTION_KEY is not configured; refusing to spend the authorization code.',
+    );
+  }
   const tokens = await postToken({
     client_id: process.env.BOUNCIE_CLIENT_ID!,
     client_secret: process.env.BOUNCIE_CLIENT_SECRET!,
@@ -152,14 +162,35 @@ type StoredRow = {
 
 async function loadRow(accountEmail?: string): Promise<StoredRow | null> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return null;
+  if (!sb) throw new BouncieAuthError('No Supabase service client; cannot read the stored grant.');
   let q = sb
     .from('integration_tokens')
     .select('account_email, access_token_enc, refresh_token_enc, access_token_expires_at')
-    .eq('provider', PROVIDER);
+    .eq('provider', PROVIDER)
+    // Deterministic: newest grant wins. Without an order, `.limit(1)` returns
+    // whichever row Postgres feels like, so a second stored grant would make
+    // which account we act as depend on the query plan (S68 technical lens).
+    .order('updated_at', { ascending: false });
   if (accountEmail) q = q.eq('account_email', accountEmail);
-  const { data } = await q.limit(1).returns<StoredRow[]>();
-  return data?.[0] ?? null;
+
+  // Two rather than one, so ambiguity is detectable instead of silently resolved.
+  const { data, error } = await q.limit(2).returns<StoredRow[]>();
+
+  // A read FAILURE is not the same as NO GRANT. Reporting a database outage as
+  // "nobody has authorized yet" sends the operator to re-run the consent flow,
+  // which is both useless and destructive — it invalidates the existing code
+  // (S68 recovery lens).
+  if (error) throw new BouncieAuthError(`Could not read the stored Bouncie grant: ${error.message}`);
+
+  const rows = data ?? [];
+  if (!accountEmail && rows.length > 1) {
+    // Refusing beats guessing: acting as the wrong Bouncie account would poll
+    // the wrong fleet, and nobody would notice except by spotting wrong vehicles.
+    throw new BouncieAuthError(
+      `${rows.length} Bouncie grants are stored; the caller must name which account to use.`,
+    );
+  }
+  return rows[0] ?? null;
 }
 
 /** True when the stored access token is missing or close enough to expiry to replace. */
@@ -187,12 +218,26 @@ export async function getAccessToken(accountEmail?: string): Promise<string> {
   if (!row.refresh_token_enc) {
     throw new BouncieAuthError('Stored Bouncie grant has no refresh token; re-authorization is required.');
   }
-  const refreshed = await postToken({
-    client_id: process.env.BOUNCIE_CLIENT_ID!,
-    client_secret: process.env.BOUNCIE_CLIENT_SECRET!,
-    grant_type: 'refresh_token',
-    refresh_token: decryptSecret(row.refresh_token_enc),
-  });
+  let refreshed: TokenResponse;
+  try {
+    refreshed = await postToken({
+      client_id: process.env.BOUNCIE_CLIENT_ID!,
+      client_secret: process.env.BOUNCIE_CLIENT_SECRET!,
+      grant_type: 'refresh_token',
+      refresh_token: decryptSecret(row.refresh_token_enc),
+    });
+  } catch (err) {
+    // THE ROTATION RACE (S68 technical lens, HIGH). Two callers can both see an
+    // expired token and both refresh with the SAME refresh token. Bouncie
+    // consumes it for whichever arrives first and rejects the second.
+    //
+    // The grant is NOT lost when that happens: the winner has already persisted
+    // a fresh, valid pair. So the loser re-reads rather than surfacing an error
+    // that reads like "re-authorize" when nothing is actually wrong.
+    const fresh = await loadRow(row.account_email);
+    if (fresh && !needsRefresh(fresh)) return decryptSecret(fresh.access_token_enc!);
+    throw err;
+  }
   await storeTokens(row.account_email, refreshed);
   return refreshed.access_token;
 }
