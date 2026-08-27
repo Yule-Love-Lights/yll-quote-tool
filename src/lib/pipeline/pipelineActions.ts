@@ -24,7 +24,18 @@ export type PipelineRecord = {
   // informational, read by PipelineActionsMenu's 'send' case to warn the
   // operator before a revive silently reseeds the portal from it. Never
   // affects which actions pipelineActions() below offers.
-  staleBrowsingSelection?: { packageId: string | null; itemCount: number; savedAt: string | null } | null;
+  //
+  // Row 324 fix round (admin lens MED): staffSet — true when the summarized
+  // selection was written by staff-selection/route.ts (Jason's row 324
+  // preselect), false for a genuine customer edit — so the operator confirm
+  // can word itself correctly instead of always implying "the customer
+  // chose this."
+  staleBrowsingSelection?: {
+    packageId: string | null;
+    itemCount: number;
+    savedAt: string | null;
+    staffSet: boolean;
+  } | null;
 };
 
 export type PipelineAction =
