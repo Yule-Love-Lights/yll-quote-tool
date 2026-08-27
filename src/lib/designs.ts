@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { readSceneLock } from '@/lib/design/sceneFreeze';
 import { recordDesignChange } from '@/lib/design/designAudit';
+import { satelliteLinesEqual } from '@/lib/design/satelliteLinesEqual';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
@@ -960,18 +961,53 @@ export async function uploadDesignSatellite(
 
 // Store the staff's current satellite measurement polylines (pushed by the
 // builder at Calculate — the natural "measurement finalized" moment).
+export type UpdateSatelliteLinesOutcome =
+  | { ok: true }
+  // Row 427: the quote is customer-approved AND these lines actually DIFFER
+  // from what is stored, i.e. this is a redraw or a deletion of the trace the
+  // customer signed off on — which the portal renders. An identical re-write
+  // (the ordinary re-Calculate) is NOT refused; see satelliteLinesEqual.
+  | { ok: false; reason: 'locked' }
+  | { ok: false; reason: 'unverified' }
+  | { ok: false; reason: 'error' };
+
 export async function updateDesignSatelliteLines(
   id: string,
   lines: DesignSatelliteLines,
-): Promise<boolean> {
+): Promise<UpdateSatelliteLinesOutcome> {
   const sb = getSb();
-  if (!sb) return false;
+  if (!sb) return { ok: false, reason: 'error' };
+
+  const lock = await readSceneLock(id);
+  if (!lock.ok) return { ok: false, reason: 'unverified' };
+  if (lock.locked) {
+    // Only a real CHANGE is refused. Jason's ruling (2026-08-27) is that a
+    // re-Calculate on an approved quote must keep working, and it re-persists
+    // the same lines it already had; the staff lens showed the other half,
+    // that the trace is hand-editable and lands on the customer's portal.
+    // Comparing settles both without a blanket gate.
+    const { data: current, error: readErr } = await sb
+      .from('designs')
+      .select('satellite_lines')
+      .eq('id', id)
+      .maybeSingle<{ satellite_lines: DesignSatelliteLines | null }>();
+    if (readErr) {
+      console.warn('updateDesignSatelliteLines: stored-trace read failed:', readErr.message);
+      return { ok: false, reason: 'unverified' };
+    }
+    if (!satelliteLinesEqual(current?.satellite_lines ?? null, lines)) {
+      return { ok: false, reason: 'locked' };
+    }
+    // Identical — fall through and let the no-op write land, so the caller's
+    // ordinary success path is completely unchanged.
+  }
+
   const { error } = await sb.from('designs').update({ satellite_lines: lines }).eq('id', id);
   if (error) {
     console.error('Supabase updateDesignSatelliteLines error:', error);
-    return false;
+    return { ok: false, reason: 'error' };
   }
-  return true;
+  return { ok: true };
 }
 
 // Download a private-bucket object back to base64 (training capture snapshots

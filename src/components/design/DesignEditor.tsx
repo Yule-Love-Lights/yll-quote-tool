@@ -327,7 +327,12 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
               "could not check this quote's approval state. Those items are still on the quote. " +
               'Reload and check the design before sending anything.',
         );
-        onDesignLockedRef.current?.();
+        // Row 427 (premerge technical MED): only a REAL lock self-corrects the
+        // page. 'unverified' means the freeze state could not be READ — a
+        // transient blip — and treating it as a lock would stick the page-wide
+        // frozen flag permanently, contradicting the "never guess locked on a
+        // blip" rule the rest of this feature is built on.
+        if (data.sceneNotPruned === 'locked') onDesignLockedRef.current?.();
       }
       onPrunedMiniGroups?.(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
       if (activePhotoId === id) {

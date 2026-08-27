@@ -7,14 +7,16 @@
 // this route only.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTitle, readSceneLock } = vi.hoisted(() => ({
-  // Row 367: the pre-flight freeze lookup. Mocked here (rather than mocking
-  // Supabase) so these tests stay about the ROUTE's ordering guarantee: a
-  // frozen or unverifiable design must be refused before ANY of the three
-  // writes a delete performs (storage object, extra_photos, scene prune).
-  readSceneLock: vi.fn(async (): Promise<{ ok: true; locked: boolean } | { ok: false }> => ({ ok: true, locked: false })),
+const { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTitle, refuseIfFrozen } = vi.hoisted(() => ({
+  // Row 367/427: the shared pre-flight refusal. Mocked here (rather than
+  // mocking Supabase) so these tests stay about the ROUTE's ordering
+  // guarantee: a frozen or unverifiable design must be refused before ANY of
+  // the three writes a delete performs (storage object, extra_photos, scene
+  // prune).
+  refuseIfFrozen: vi.fn(async (): Promise<unknown> => null),
   removeDesignExtraPhoto: vi.fn(
     // Row 371: `version` is the post-prune CAS version the route hands back.
     async (): Promise<{
@@ -47,7 +49,7 @@ vi.mock('@/lib/supabase', () => ({
 
 vi.mock('@/lib/design/sceneFreeze', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/design/sceneFreeze')>()),
-  readSceneLock,
+  refuseIfFrozen,
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
@@ -69,7 +71,7 @@ beforeEach(() => {
   removeDesignExtraPhoto.mockResolvedValue({ ok: true, prunedMiniGroups: [], version: null });
   updateDesignExtraPhotoTitle.mockResolvedValue(true);
   updateDesignPhotoTitle.mockResolvedValue(true);
-  readSceneLock.mockResolvedValue({ ok: true, locked: false });
+  refuseIfFrozen.mockResolvedValue(null);
 });
 
 describe('photoId validation — tightened UUID (#110 W2-023)', () => {
@@ -160,7 +162,7 @@ describe('post-approval freeze (row 367)', () => {
   const baseCtx = { params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: 'base' }) };
 
   it('DELETE on a locked design 409s with the shared code and removes NOTHING', async () => {
-    readSceneLock.mockResolvedValue({ ok: true, locked: true });
+    refuseIfFrozen.mockResolvedValue(NextResponse.json({ error: 'locked', code: 'design-locked' }, { status: 409 }));
     const res = await DELETE(makeReq(), ctx);
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('design-locked');
@@ -168,7 +170,7 @@ describe('post-approval freeze (row 367)', () => {
   });
 
   it('PATCH (rename) on a locked design 409s and renames NOTHING', async () => {
-    readSceneLock.mockResolvedValue({ ok: true, locked: true });
+    refuseIfFrozen.mockResolvedValue(NextResponse.json({ error: 'locked', code: 'design-locked' }, { status: 409 }));
     const res = await PATCH(makeReq({ title: 'Left side' }), baseCtx);
     expect(res.status).toBe(409);
     expect(updateDesignPhotoTitle).not.toHaveBeenCalled();
@@ -178,7 +180,7 @@ describe('post-approval freeze (row 367)', () => {
   it('an unverifiable freeze read is a retryable 500, and still removes NOTHING', async () => {
     // Neither direction is safe to guess: writing anyway is the drift row 367
     // closes, and a 409 would tell staff a live quote is approved.
-    readSceneLock.mockResolvedValue({ ok: false });
+    refuseIfFrozen.mockResolvedValue(NextResponse.json({ error: 'unverified' }, { status: 500 }));
     const res = await DELETE(makeReq(), ctx);
     expect(res.status).toBe(500);
     expect((await res.json()).code).toBeUndefined();

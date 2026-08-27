@@ -33,6 +33,7 @@
 //     path is the same one the money freeze names: decline → revive (re-send,
 //     which clears `customer_approved_at`) → edit → re-send.
 
+import { NextResponse } from 'next/server';
 import { deriveStatus, type QuoteStatusRow } from '@/lib/quoteStatus';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 
@@ -113,4 +114,35 @@ export async function readSceneLock(designId: string): Promise<SceneLock> {
     quoteId: designRow.quote_id,
     auditable: !quoteRow.is_test && !!quoteRow.customer_approved_at,
   };
+}
+
+/**
+ * The ONE post-approval refusal used by every design write route.
+ *
+ * Returns a response to send, or null to carry on. Call it BEFORE any mutation
+ * — several of these routes write more than one thing (a storage object, then a
+ * row, then a scene prune), and a refusal discovered halfway through leaves a
+ * half-done change that a 409 then lies about.
+ *
+ * Row 427: this exists because row 367 froze the design SCENE and four premerge
+ * lenses, hunting the same class on a later PR, found four sibling surfaces of
+ * the same design still open — the base photo, extra photos, the satellite
+ * image, and the satellite trace. Each was a separate route with its own local
+ * check or none at all. One shared helper is the point: a route added tomorrow
+ * calls this, or it is obvious in review that it did not.
+ */
+export async function refuseIfFrozen(designId: string): Promise<NextResponse | null> {
+  const lock = await readSceneLock(designId);
+  if (!lock.ok) {
+    // Not a lock and not a licence — a transient read failure must not
+    // manufacture a permanent refusal, nor wave the write through.
+    return NextResponse.json(
+      { error: "Could not verify this design's approval state — nothing was changed." },
+      { status: 500 },
+    );
+  }
+  if (lock.locked) {
+    return NextResponse.json({ error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE }, { status: 409 });
+  }
+  return null;
 }

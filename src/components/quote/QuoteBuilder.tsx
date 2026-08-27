@@ -6536,63 +6536,70 @@ export default function QuoteBuilder({
                       </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      <button type="button" disabled={recapturing}
+                      {/* Row 427: every camera move REPLACES the design's base
+                          photo (moveStreetView/recaptureStreetView -> setPhotoBase64
+                          -> POST /api/designs/[id]/photo), and saving an angle adds a
+                          quoted extra photo. Both change the picture the customer
+                          approved, so both are frozen with the rest of it - the server
+                          refuses them too, this just stops staff clicking into a
+                          refusal. Found by three premerge lenses on PR #998. */}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => moveStreetView('left')}
                         title="Move the camera to the next panorama along the street (re-aims at the house)"
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ◀ Along street
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => moveStreetView('right')}
                         title="Move the camera to the next panorama along the street (re-aims at the house)"
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Along street ▶
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ◀ Rotate −30°
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 10 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ◀ −10°
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 10 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         +10° ▶
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 30 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Rotate +30° ▶
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ pitch: Math.min(90, svPitch + 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ▲ Tilt Up
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ pitch: Math.max(-90, svPitch - 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ▼ Tilt Down
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ fov: Math.min(120, svFov + 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         − Zoom Out
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ fov: Math.max(30, svFov - 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         + Zoom In
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: null, pitch: 0, fov: 80 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Reset
@@ -6609,13 +6616,13 @@ export default function QuoteBuilder({
                         tab to draw the new angle on). */}
                     {designId && (
                       <div className="mt-2 flex items-center gap-2 flex-wrap">
-                        <button type="button" disabled={savingVantage || recapturing}
+                        <button type="button" disabled={savingVantage || recapturing || postApprovalFrozen}
                           onClick={() => void saveVantageAsExtra('left')}
                           title="Fetch the next panorama to the left (aimed at the house) and add it as an extra photo of the design — the current photo stays put"
                           className="text-xs font-medium border border-green-300 hover:border-green-500 text-green-800 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                           📌 ◀ Save prev angle as extra photo
                         </button>
-                        <button type="button" disabled={savingVantage || recapturing}
+                        <button type="button" disabled={savingVantage || recapturing || postApprovalFrozen}
                           onClick={() => void saveVantageAsExtra('right')}
                           title="Fetch the next panorama to the right (aimed at the house) and add it as an extra photo of the design — the current photo stays put"
                           className="text-xs font-medium border border-green-300 hover:border-green-500 text-green-800 rounded px-3 py-1.5 bg-white disabled:opacity-50">
