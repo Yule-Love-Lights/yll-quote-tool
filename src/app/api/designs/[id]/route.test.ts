@@ -77,7 +77,44 @@ beforeEach(() => {
     portalShowStreetView: true,
     portalShowSatelliteView: true,
   });
+  // Row 367: the scene write now resolves the linked quote's approval state
+  // through the service client, so every scene test needs one. Default = an
+  // UNLINKED design (nothing signed off), which is the pre-row-367 behaviour.
+  // Also stops the row-370 tests below leaking their own client into the next
+  // test, which they did before this line existed.
+  auditSbRef.current = makeFreezeFake({ quoteId: null }).client;
 });
+
+// Row 367 — a service-client fake for the freeze lookup: designs.quote_id, then
+// the quote's lifecycle columns. `designError`/`quoteError` model a read we
+// could NOT confirm (the retryable-500 path, deliberately not a lock).
+function makeFreezeFake(opts: {
+  quoteId?: string | null;
+  quote?: Record<string, unknown> | null;
+  designError?: string;
+  quoteError?: string;
+}) {
+  const reads: string[] = [];
+  function from(table: string) {
+    const b = {
+      select: () => b,
+      eq: () => b,
+      async maybeSingle() {
+        reads.push(table);
+        if (table === 'designs') {
+          if (opts.designError) return { data: null, error: { message: opts.designError } };
+          return { data: { quote_id: opts.quoteId ?? null }, error: null };
+        }
+        if (opts.quoteError) return { data: null, error: { message: opts.quoteError } };
+        return { data: opts.quote ?? null, error: null };
+      },
+      update: () => b,
+      then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+    };
+    return b;
+  }
+  return { client: { from }, reads };
+}
 
 describe('GET /api/designs/[id]', () => {
   it('401s when the operator gate denies', async () => {
@@ -499,5 +536,94 @@ describe('PUT /api/designs/[id] — portal-visibility audit (row 370)', () => {
     // client missing entirely (throwing accessor) — save still succeeds
     auditSbRef.current = null;
     expect((await PUT(makeReq({ portalShowStreetView: true }), ctx())).status).toBe(200);
+  });
+});
+
+// ── Row 367: the design's post-approval freeze ────────────────────────────────
+// The money was frozen at approval; the PICTURE was not, and the portal reads
+// this scene LIVE. These pin the predicate at the route boundary — the pure
+// predicate itself is covered in src/lib/design/sceneFreeze.test.ts.
+describe('PUT /api/designs/[id] — post-approval design freeze (row 367)', () => {
+  const approvedNotBooked = {
+    status: 'approved',
+    quote_sent_at: '2026-08-01T00:00:00Z',
+    viewed_at: '2026-08-01T01:00:00Z',
+    customer_approved_at: '2026-08-02T00:00:00Z',
+    deposit_paid_at: null,
+    is_test: false,
+  };
+
+  it('409s a scene write on an approved quote, with a distinguishable code, and writes NOTHING', async () => {
+    auditSbRef.current = makeFreezeFake({ quoteId: OTHER_ID, quote: approvedNotBooked }).client;
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('design-locked');
+    // The code is what stops the editor mistaking this for the row-260 CAS
+    // conflict and telling staff to "reload" into the same lock forever.
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS a booked order — that is the sanctioned amend path', async () => {
+    auditSbRef.current = makeFreezeFake({
+      quoteId: OTHER_ID,
+      quote: { ...approvedNotBooked, deposit_paid_at: '2026-08-03T00:00:00Z' },
+    }).client;
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays LOCKED for a quote cancelled AFTER approval (deriveStatus is not "booked")', async () => {
+    auditSbRef.current = makeFreezeFake({
+      quoteId: OTHER_ID,
+      quote: { ...approvedNotBooked, status: 'cancelled' },
+    }).client;
+    expect((await PUT(makeReq({ scene: validScene, version: 1 }), ctx())).status).toBe(409);
+  });
+
+  it('exempts is_test quotes, matching every other freeze in the app', async () => {
+    auditSbRef.current = makeFreezeFake({
+      quoteId: OTHER_ID,
+      quote: { ...approvedNotBooked, is_test: true },
+    }).client;
+    expect((await PUT(makeReq({ scene: validScene, version: 1 }), ctx())).status).toBe(200);
+  });
+
+  it('allows a quote that was never approved, and an unlinked design', async () => {
+    auditSbRef.current = makeFreezeFake({
+      quoteId: OTHER_ID,
+      quote: { ...approvedNotBooked, status: 'sent', customer_approved_at: null },
+    }).client;
+    expect((await PUT(makeReq({ scene: validScene, version: 1 }), ctx())).status).toBe(200);
+    auditSbRef.current = makeFreezeFake({ quoteId: null }).client;
+    expect((await PUT(makeReq({ scene: validScene, version: 1 }), ctx())).status).toBe(200);
+  });
+
+  it('a read it could NOT confirm is a retryable 500, never a 409 and never a silent write', async () => {
+    // Both directions are wrong here: a 409 would block this editor's saves
+    // permanently on a transient DB blip AND tell staff a live quote is
+    // approved; writing anyway would be the exact drift row 367 closes. A 500
+    // keeps the edit queued for the editor's own backoff retry.
+    for (const fake of [
+      makeFreezeFake({ designError: 'boom' }),
+      makeFreezeFake({ quoteId: OTHER_ID, quoteError: 'boom' }),
+    ]) {
+      updateDesignSceneGuarded.mockClear();
+      auditSbRef.current = fake.client;
+      const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+      expect(res.status).toBe(500);
+      expect((await res.json()).code).toBeUndefined();
+      expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+    }
+  });
+
+  it('does not touch the non-scene write paths — the freeze is scoped to the picture', async () => {
+    // Scope note, deliberately pinned: satelliteLines + portal visibility are
+    // separate writes on this same route and are NOT frozen by row 367. Change
+    // this test only alongside a decision to widen the row.
+    auditSbRef.current = makeFreezeFake({ quoteId: OTHER_ID, quote: approvedNotBooked }).client;
+    expect((await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx())).status).toBe(200);
+    expect((await PUT(makeReq({ portalShowStreetView: false }), ctx())).status).toBe(200);
   });
 });

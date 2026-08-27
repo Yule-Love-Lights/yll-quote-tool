@@ -22,6 +22,16 @@ type Props = {
    *  (defensive — the two service types never coexist on one form). */
   bistroOnly?: boolean;
   /**
+   * Row 367 — the design's post-approval freeze. True when the linked quote
+   * already carries a customer approval and is not a booked order (the SAME
+   * predicate as QuoteBuilder's `postApprovalFrozen` and /api/quote's own
+   * approval gate). The editor blocks saving and says so; the server enforces
+   * it independently in `PUT /api/designs/[id]`, so a stale tab that mounted
+   * before the approval still finds out on its next save. Presentation only —
+   * never the sole guard.
+   */
+  locked?: boolean;
+  /**
    * Handed a flush() that synchronously persists a pending debounced scene save
    * (#8 Stage A) — the parent awaits it before training capture / pricing so
    * neither reads a stale scene. Called with null on unmount. Re-fires on each
@@ -68,7 +78,7 @@ type PhotoTab = { id: string | null; title: string };
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly, locked }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
@@ -162,6 +172,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         activePhotoId,
         permanentOnly,
         bistroOnly,
+        locked,
       });
       if (cancelled) {
         handle?.();
@@ -190,7 +201,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       onReadyRef.current?.(null, null);
       handle?.();
     };
-  }, [designId, activePhotoId, permanentOnly, bistroOnly]);
+  }, [designId, activePhotoId, permanentOnly, bistroOnly, locked]);
 
   // ─── #13 photo strip actions ───
   const switchPhoto = async (id: string | null) => {
@@ -388,6 +399,17 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         className="flex items-center justify-between gap-2 px-3 border-b border-[#2e3340] bg-[#1a1d24]"
       >
         <span className="text-xs font-medium text-[#9aa3b2]">Design editor</span>
+        {/* Row 367: staff see the freeze BEFORE they draw, not after a refused
+            save. The editor-core banner still fires if a save is refused (a
+            stale tab), but this is the one that prevents wasted work. */}
+        {locked && (
+          <span
+            className="text-xs font-medium rounded px-2 py-0.5 border border-amber-700 bg-[#2a2117] text-amber-300 whitespace-nowrap"
+            title="The customer already approved this quote, so the design they signed off on is locked. To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)"
+          >
+            🔒 Approved — locked
+          </span>
+        )}
         <div className="flex items-center gap-2">
           <Link href="/settings" target="_blank" className={barBtn}>
             ⚙ Settings

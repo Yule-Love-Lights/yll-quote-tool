@@ -6622,6 +6622,11 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
+                      // Row 367: the design's post-approval freeze rides the
+                      // SAME predicate as the money freeze on this page, so the
+                      // picture and the price can never be locked on different
+                      // rules. Server-enforced too (PUT /api/designs/[id]).
+                      locked={postApprovalFrozen}
                       onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
                       onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />
