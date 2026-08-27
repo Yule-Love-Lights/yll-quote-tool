@@ -6377,11 +6377,17 @@ export default function QuoteBuilder({
                 accept="image/*"
                 onChange={handlePhotoSelect}
                 // Row 427b, found by a live prod check on approved quote #1290:
-                // the satellite upload beside it was gated and this one was
-                // not. A chosen photo flows through the eager design effect to
-                // POST /api/designs/[id]/photo, which the freeze now refuses —
-                // so staff could pick a file and get nothing but a swallowed
-                // failure. Same door as the camera moves, one input over.
+                // the satellite upload beside it was gated and this one was not.
+                //
+                // Corrected after a premerge lens traced it: choosing a file
+                // does NOT itself write. handlePhotoSelect sets photoFile /
+                // photoPreview only; the eager design effect keys on
+                // photoBase64, which the Analyze button sets — and that button
+                // was already frozen. So this is a CONSISTENCY fix, not a
+                // closed write path: it stops staff picking a photo, watching
+                // the preview appear, and then finding the only button that can
+                // do anything with it greyed out. The comment here first
+                // claimed it closed a live write; it did not.
                 disabled={loading || postApprovalFrozen}
                 title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
