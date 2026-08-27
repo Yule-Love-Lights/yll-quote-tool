@@ -761,6 +761,11 @@ export default function QuoteBuilder({
     quoteBuildTimerRef.current = createQuoteBuildTimerClient();
   }
   const quoteBuildTimingEligible = quoteBuildTimerEligible({ isTest, viewOnly, status: savedStatus });
+  // Ledger row 375, Naldo's call 2026-08-25: staff are measured by this and were
+  // never told it was running. The timer starts silently and everything it
+  // produces is on /insights, a page they may never open. Whatever the metric is
+  // worth, people should be able to see when they are being timed.
+  const [buildTimerRunning, setBuildTimerRunning] = useState(false);
   const hasPrefilledContact =
     !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId);
   useEffect(() => {
@@ -772,7 +777,12 @@ export default function QuoteBuilder({
         status: savedStatus,
       })
     ) {
-      void quoteBuildTimerRef.current?.start('prefilled_open', initialQuote?.quoteId);
+      // Flagged on the promise, not synchronously: setState inside an effect
+      // body triggers a cascading render (the lint rule catches it), and the
+      // pill should reflect a timer that actually started anyway.
+      void quoteBuildTimerRef.current
+        ?.start('prefilled_open', initialQuote?.quoteId)
+        .then(() => setBuildTimerRunning(true));
     }
   }, [hasPrefilledContact, initialQuote?.quoteId, isTest, savedStatus, viewOnly]);
 
@@ -4271,7 +4281,9 @@ export default function QuoteBuilder({
     );
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     if (quoteBuildTimingEligible) {
-      void quoteBuildTimerRef.current?.start('contact_selected', savedQuoteId);
+      void quoteBuildTimerRef.current
+        ?.start('contact_selected', savedQuoteId)
+        .then(() => setBuildTimerRunning(true));
     }
     everLinkedContactIdRef.current = c.id;
     // Row 328(a) fix round (technical MED): a standing notice describes the
@@ -5826,6 +5838,16 @@ export default function QuoteBuilder({
             {viewOnly && (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
                 View-only
+              </span>
+            )}
+            {/* Row 375: say plainly that a build timer is running. Sits with the
+                other state pills so it reads as status, not as a warning. */}
+            {buildTimerRunning && (
+              <span
+                className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-50 text-amber-700"
+                title="Build time is being recorded for this quote: from when you picked the contact until it is first sent. Interrupted quotes are not counted. Reported on Insights."
+              >
+                Timing
               </span>
             )}
             {/* Customer tenure (#178) — "Nth year — 2023 · 2024 · 2025", display-only. */}
