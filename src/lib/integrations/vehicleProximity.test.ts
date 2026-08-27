@@ -14,7 +14,7 @@ const { bouncieFetch, db } = vi.hoisted(() => {
     assignments: [] as { job_id: string }[],
     jobs: [] as { id: string; property_id: string | null }[],
     properties: [] as { id: string; lat: number | null; lng: number | null }[],
-    openVisits: [] as { id: string; kind: string; job_id: string | null; entered_at: string }[],
+    openVisits: [] as { id: string; vehicle_id?: string; kind: string; job_id: string | null; entered_at: string }[],
     errors: {} as Record<string, { message: string } | undefined>,
     inserted: [] as Record<string, unknown>[],
     updated: [] as { table: string; row: Record<string, unknown> }[],
@@ -29,9 +29,19 @@ vi.mock('@/lib/supabase', () => ({
     from: (table: string) => {
       db.touched.push(table);
       const chain: Record<string, unknown> = {};
+      // Track .eq('vehicle_id', X) so the open-visit lookup is filtered the way
+      // the real query is. The first mock returned the same list to every
+      // vehicle, which structurally could not catch a cross-vehicle mixup
+      // (S68 lens round: a mock at the wrong fidelity hides the race it should
+      // expose).
+      let eqVehicleId: string | null = null;
       const self = () => chain;
       Object.assign(chain, {
-        select: self, eq: self, is: self, not: self, in: self, limit: self,
+        select: self, is: self, not: self, in: self, limit: self,
+        eq: (col: string, val: unknown) => {
+          if (col === 'vehicle_id') eqVehicleId = val as string;
+          return chain;
+        },
         returns: async () => {
           const error = db.errors[table] ?? null;
           if (error) return { data: null, error };
@@ -39,7 +49,12 @@ vi.mock('@/lib/supabase', () => ({
           if (table === 'job_assignments') return { data: db.assignments, error: null };
           if (table === 'jobs') return { data: db.jobs, error: null };
           if (table === 'properties') return { data: db.properties, error: null };
-          if (table === 'vehicle_visits') return { data: db.openVisits, error: null };
+          if (table === 'vehicle_visits') {
+            const rows = eqVehicleId
+              ? db.openVisits.filter((v) => (v.vehicle_id ?? 'veh-1') === eqVehicleId)
+              : db.openVisits;
+            return { data: rows, error: null };
+          }
           return { data: [], error: null };
         },
         insert: (row: Record<string, unknown>) => {
@@ -174,6 +189,8 @@ describe('pollVehiclePositions', () => {
     expect(out.closed).toBe(1);
     const close = db.updated.find((u) => u.table === 'vehicle_visits');
     expect(close?.row).toMatchObject({ below_min_dwell: false });
+    // Stamped with Bouncie's observation time, not the poll time.
+    expect(close?.row).toMatchObject({ exited_at: FRESH });
   });
 
   // NALDO'S 15-MINUTE RULE: flagged, never discarded.
@@ -231,6 +248,26 @@ describe('pollVehiclePositions', () => {
     ]);
     await pollVehiclePositions(NOW);
     expect(bouncieFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps each vehicle to its own open visit (the race the old mock hid)', async () => {
+    db.vehicles = [
+      { id: 'v1', imei: '111111111111111', label: 'Van' },
+      { id: 'v2', imei: '222222222222222', label: 'Truck' },
+    ];
+    scheduleJob('job-1', 40.75, -73.5);
+    // The VAN has an open visit at job-1; the TRUCK arrives there too. The
+    // truck must open its OWN visit, not be treated as already inside because
+    // some other vehicle is.
+    db.openVisits = [{ id: 'v-open', vehicle_id: 'v1', kind: 'job', job_id: 'job-1', entered_at: '2026-08-28T14:00:00.000Z' }];
+    bouncieReports([
+      { imei: '111111111111111', lat: 40.75, lon: -73.5 },
+      { imei: '222222222222222', lat: 40.7501, lon: -73.5 },
+    ]);
+    const out = await pollVehiclePositions(NOW);
+    expect(out.opened).toBe(1); // the truck opens its own
+    expect(out.closed).toBe(0); // the van stays open
+    expect(db.inserted[0]).toMatchObject({ vehicle_id: 'v2', job_id: 'job-1' });
   });
 
   // ROW 403 CONSTRAINT (a).

@@ -30,8 +30,11 @@ export function GeocodeFixRow({ propertyId, customerId, customerName, nickname, 
     if (!value.trim() || state.kind === 'saving') return;
     setState({ kind: 'saving' });
     try {
+      // POST, not PATCH: the property route's single mutating handler is POST
+      // (S68 lens round — the first draft used PATCH and every save 405'd, a
+      // verb mismatch nothing type-checks).
       const res = await fetch(`/api/customers/${customerId}/properties/${propertyId}`, {
-        method: 'PATCH',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address: value.trim() }),
       });

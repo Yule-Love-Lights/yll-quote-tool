@@ -28,6 +28,11 @@ export async function GET(req: NextRequest) {
   // cron does not spend its life logging failures on a feature that is not
   // switched on yet.
   if (!isBouncieOAuthConfigured()) {
+    // Logged, not just returned (S68 admin lens): a dormant cron that answers a
+    // silent 200 every two minutes forever is exactly the silence-looks-like-
+    // success failure this route's own summary line exists to prevent. One info
+    // line per cycle is cheap; believing tracking is on when it is not is not.
+    console.info('[vehicle-poll] dormant: Bouncie OAuth env vars not configured, nothing polled');
     return NextResponse.json({ ok: true, dormant: 'bouncie oauth not configured' });
   }
 

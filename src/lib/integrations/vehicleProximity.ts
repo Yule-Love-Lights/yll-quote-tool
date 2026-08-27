@@ -244,6 +244,13 @@ export async function pollVehiclePositions(now: Date = new Date()): Promise<Poll
     }
     outcome.polled += 1;
 
+    // Visit times use BOUNCIE'S observation timestamp, not our poll time. A
+    // position can be several minutes old and still count as fresh, and at a
+    // 15-minute dwell threshold that skew is material: stamping poll time at
+    // both ends could flip a genuine 20-minute visit under the flag line
+    // (S68 lens round). The observation time is when the van was actually
+    // there; the poll is only when we found out.
+    const observedAt = new Date(lastUpdated).toISOString();
     const position = { lat: loc.lat, lng: loc.lon };
     const here = resolvePlace(position, places);
 
@@ -265,11 +272,11 @@ export async function pollVehiclePositions(now: Date = new Date()): Promise<Poll
       // Left the place (or moved to a different one). Close, applying the
       // 15-minute rule at close time: dwell below the threshold is recorded and
       // flagged, never discarded.
-      const dwellMinutes = (now.getTime() - Date.parse(open.entered_at)) / 60_000;
+      const dwellMinutes = (lastUpdated - Date.parse(open.entered_at)) / 60_000;
       const { error } = await sb
         .from('vehicle_visits')
         .update({
-          exited_at: now.toISOString(),
+          exited_at: observedAt,
           below_min_dwell: dwellMinutes < MIN_DWELL_MINUTES,
         })
         .eq('id', open.id)
@@ -283,7 +290,7 @@ export async function pollVehiclePositions(now: Date = new Date()): Promise<Poll
         vehicle_id: vehicle.id,
         kind: here.kind,
         job_id: here.jobId,
-        entered_at: now.toISOString(),
+        entered_at: observedAt,
         entered_lat: position.lat,
         entered_lng: position.lng,
       });
