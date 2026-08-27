@@ -47,7 +47,7 @@ export const BUSINESS_RULES = {
   // value cannot drift into disagreeing about what it is.
   //
   // Used for the read-side fallbacks too (quoteForm's `?? ...`, QuoteBuilder's
-  // DIFFICULTY_BY_ITEM). The first draft of this change deliberately left those
+  // OVERRIDE_ID_TO_RATE). The first draft of this change deliberately left those
   // at 'medium', reasoning that they describe legacy quotes already PRICED at
   // medium and that moving them would re-price history on reopen. Measured
   // instead of argued: 187 of 187 holiday quotes in production store both

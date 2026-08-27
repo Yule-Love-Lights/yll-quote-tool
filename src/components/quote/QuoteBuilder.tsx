@@ -7305,7 +7305,11 @@ export default function QuoteBuilder({
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Santa's — Front Gutterline (C9 Bulbs)">
-              <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
+              <p className="text-xs text-gray-400 mb-3">
+                Footage is auto-measured from the photo — adjust if needed. <strong>Difficulty is not:</strong>{' '}
+                it stays where you left it (new quotes start at Easy $8/ft) and only changes when you pick a
+                different value here. Bump it for a genuinely hard roof.
+              </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
@@ -7342,7 +7346,11 @@ export default function QuoteBuilder({
           {/* ── Gingerbread — Ridge + Sides ── */}
           <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Gingerbread — Ridge + Sides (C9 Bulbs)">
-              <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
+              <p className="text-xs text-gray-400 mb-3">
+                Footage is auto-measured from the photo — adjust if needed. <strong>Difficulty is not:</strong>{' '}
+                it stays where you left it (new quotes start at Easy $8/ft) and only changes when you pick a
+                different value here. Bump it for a genuinely hard roof.
+              </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
