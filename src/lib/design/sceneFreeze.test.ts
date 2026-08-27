@@ -112,7 +112,7 @@ describe('readSceneLock', () => {
 
   it('locks a design whose linked quote is approved and not booked', async () => {
     sbRef.current = fakeSb({ quoteId: 'q1', quote: APPROVED }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: true });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: true, quoteId: 'q1', auditable: true });
   });
 
   it('does not lock a booked order — the amend path stays open', async () => {
@@ -120,15 +120,18 @@ describe('readSceneLock', () => {
       quoteId: 'q1',
       quote: { ...APPROVED, deposit_paid_at: '2026-08-03T00:00:00Z' },
     }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false });
+    // Row 423: a booked order is the one state where a design write still
+    // LANDS on a signed-off quote, so it is also the one that must be audited.
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: 'q1', auditable: true });
   });
 
   it('does not lock an UNLINKED design, or one whose quote row is gone', async () => {
     // Nothing was ever signed off, so there is no agreement to protect.
+    // Nothing signed off, so nothing to protect AND nothing to audit onto.
     sbRef.current = fakeSb({ quoteId: null }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: null, auditable: false });
     sbRef.current = fakeSb({ quoteId: 'q1', quote: null }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: null, auditable: false });
   });
 
   it('reports ok:false — never a lock, never a licence — when a read fails', async () => {
@@ -156,5 +159,22 @@ describe('readSceneLock', () => {
       expect(fake.selected.quotes).toContain(col);
     }
     expect(fake.selected.designs).toContain('quote_id');
+  });
+});
+
+describe('readSceneLock — the row 423 audit signal', () => {
+  it('is false for a quote that was never approved, however far along it is', async () => {
+    sbRef.current = fakeSb({
+      quoteId: 'q1',
+      quote: { ...APPROVED, status: 'viewed', customer_approved_at: null },
+    }).client;
+    const lock = await readSceneLock('d1');
+    expect(lock).toMatchObject({ ok: true, locked: false, auditable: false });
+  });
+
+  it('is false for an is_test quote even once approved', async () => {
+    // Parity with the freeze itself: a test quote is exempt from both.
+    sbRef.current = fakeSb({ quoteId: 'q1', quote: { ...APPROVED, is_test: true } }).client;
+    expect(await readSceneLock('d1')).toMatchObject({ locked: false, auditable: false });
   });
 });
