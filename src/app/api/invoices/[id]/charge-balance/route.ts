@@ -500,8 +500,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           error:
             `The invoice balance ($${freshInvoice.balance}) doesn't match this order's current agreed total ` +
             `(expected $${expected.balance}) — a prior amendment's invoice sync may not have landed. Reconcile ` +
-            `the invoice (re-run the amendment, or edit the invoice directly) before charging, or pass an ` +
-            `explicit override to charge the amount currently on file anyway.`,
+            // Row 388: this used to point at "edit the invoice directly", which
+            // doesn't exist anywhere in this app. "Resync to agreed total"
+            // (POST /api/invoices/:id/resync, the invoice detail page) is the
+            // real remedy — it calls the exact same resyncInvoiceToAgreedTotal
+            // this guard itself compares against.
+            `the invoice (re-run the amendment, or use "Resync to agreed total" on the invoice detail page) ` +
+            `before charging, or pass an explicit override to charge the amount currently on file anyway.`,
         },
         { status: 409 },
       );

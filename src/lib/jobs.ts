@@ -299,6 +299,13 @@ export type JobDetail = {
   // DECLINED — previously invisible here (only /admin/quotes/[id] rendered
   // it). Empty array when the job has no linked quote or none was amended.
   amendments: AmendmentTrailEntry[];
+  // Row 388: does the linked quote carry either unreconciled-invoice marker
+  // (approval_snapshot.paymentBlocked / .invoiceResyncFailed)? Booleans only —
+  // this page renders a compact notice pointing to the invoice detail page,
+  // which is where the flagged figures + the override/resync actions live
+  // (row 414 / row 388); duplicating that panel here would be a second place
+  // for the two UIs to drift apart. false when there's no linked quote.
+  staleMarkers: { paymentBlocked: boolean; invoiceResyncFailed: boolean };
 };
 
 /**
@@ -325,6 +332,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let lightColorLabel: string | null = null;
   let quoteHlContactId: string | null = null;
   let quoteCustomerId: string | null = null;
+  let staleMarkers: JobDetail['staleMarkers'] = { paymentBlocked: false, invoiceResyncFailed: false };
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
@@ -339,7 +347,14 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         is_nce: boolean | null;
         service_type: string | null;
         deposit_amount_usd: number | null;
-        approval_snapshot: { amendments?: AmendmentTrailEntry[]; customerSelection?: { colorSchemeId?: string; customPattern?: string[] } } | null;
+        approval_snapshot:
+          | {
+              amendments?: AmendmentTrailEntry[];
+              customerSelection?: { colorSchemeId?: string; customPattern?: string[] };
+              paymentBlocked?: unknown;
+              invoiceResyncFailed?: unknown;
+            }
+          | null;
         highlevel_contact_id: string | null;
         customer_id: string | null;
       }>();
@@ -362,6 +377,13 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       // freeze into a different swatch id space, and resolving against the
       // wrong one silently renders "Staff's pick" instead of the real colour.
       lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
+      // Row 388: the two markers isStaleInvoiceSnapshot checks — same
+      // snapshot, no extra query. Booleans only; the flagged figures live on
+      // the invoice detail page (row 414's panel).
+      staleMarkers = {
+        paymentBlocked: !!data.approval_snapshot?.paymentBlocked,
+        invoiceResyncFailed: !!data.approval_snapshot?.invoiceResyncFailed,
+      };
     }
   }
 
@@ -381,6 +403,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
     isTest,
     isNce,
     quoteServiceType,
+    staleMarkers,
     amendments,
     invoice,
     intendedDepositUsd,

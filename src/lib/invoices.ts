@@ -583,8 +583,21 @@ export type InvoiceDetail = {
    * same precedent the sibling valor_txn_log audit follows (#640 review LOW:
    * an audit trail must be visible on the invoice, not write-only forensics).
    * null when no override was ever recorded for this invoice.
+   *
+   * Row 990 fix round (admin lens HIGH): also the most recent /resync audit
+   * entry for this invoice — the SAME markerOverrides list, just a different
+   * `action`. `action` is null for a pre-existing entry that predates this
+   * field (mark-reconciled entries always write 'mark-reconciled'; a legacy
+   * entry from before that field existed would read null too). fromTotal/
+   * toTotal are ONLY present on a 'resync' entry; null for every other action.
    */
-  lastMarkerOverride: { by: string | null; at: string | null } | null;
+  lastMarkerOverride: {
+    by: string | null;
+    at: string | null;
+    action: string | null;
+    fromTotal: number | null;
+    toTotal: number | null;
+  } | null;
   // #177 fix 4: the linked quote's stamped deposit_amount_usd — the deposit
   // actually INTENDED to be collected at this quote's own deposit percent.
   // Fed into reconcileInvoice so 'short-deposit' compares against the real
@@ -681,6 +694,9 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
             lastMarkerOverride = {
               by: typeof entry.by === 'string' ? entry.by : null,
               at: typeof entry.at === 'string' ? entry.at : null,
+              action: typeof entry.action === 'string' ? entry.action : null,
+              fromTotal: num(entry.fromTotal),
+              toTotal: num(entry.toTotal),
             };
           }
         }

@@ -257,6 +257,104 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
   });
 });
 
+// Row 990 fix round (technical-lens MED + delta-verify LOW, TOCTOU): the
+// standalone resync route's own 'paid' pre-check reads the invoice at the TOP
+// of the request; if a payment settles in the gap before this function's OWN
+// fresh re-read (the B10 re-read above) runs, that stale pre-check can't see
+// it and canTransition('paid','awaiting_payment') is legal, so without
+// `refuseIfPaid` this function would silently reopen a just-settled invoice.
+// These tests drive the race directly: the caller-supplied `invoice` arg
+// (standing in for the route's stale top-of-request read) is NOT paid, but
+// the fresh re-read (mocked via getInvoiceByJobMock, exactly as the B10
+// re-read comment describes) IS.
+describe('resyncInvoiceToAgreedTotal — refuseIfPaid (row 990, TOCTOU race)', () => {
+  const staleAwaitingInvoice: InvoiceRow = {
+    id: 'inv-1',
+    invoice_number: 1,
+    job_id: 'job-1',
+    quote_id: 'quote-1',
+    customer_id: null,
+    subtotal: 1000,
+    discount: 0,
+    tax: 0,
+    total: 1000,
+    deposit_applied: 500,
+    balance: 500,
+    credit_note: 0,
+    tax_overridden: false,
+    status: 'awaiting_payment',
+    valor_balance_txn_id: null,
+    valor_receipt_url: null,
+    valor_txn_log: null,
+    payment_preference: null,
+    created_at: '2026-07-01T00:00:00.000Z',
+    paid_at: null,
+    updated_at: '2026-08-20T10:00:00.000Z',
+  };
+  const settledInvoice: InvoiceRow = {
+    ...staleAwaitingInvoice,
+    status: 'paid',
+    balance: 0,
+    paid_at: '2026-08-20T10:00:05.000Z',
+    updated_at: '2026-08-20T10:00:05.000Z',
+  };
+
+  it('refuses and writes NOTHING when the fresh re-read finds the invoice already paid, even though the caller-supplied (stale) invoice was still awaiting_payment', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValueOnce(settledInvoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice: staleAwaitingInvoice,
+      result: { total: 1400 },
+      depositPaid: 500,
+      newTotal: 1400,
+      logPrefix: '[test]',
+      retiredReason: 'manual-resync',
+      refuseIfPaid: true,
+    });
+
+    expect(outcome).toEqual({
+      invoicedBalance: null,
+      invoicedTotal: null,
+      previousInvoicedTotal: null,
+      resynced: false,
+      refusedPaid: true,
+    });
+    expect(sb.invoiceUpdates).toHaveLength(0); // no write ever attempted
+    // Deliberately NOT flagged via flagInvoiceResyncFailed — see the branch's
+    // own comment (mirrors the cancelled-invoice branch's reasoning): the
+    // caller asked for exactly this outcome, so it isn't a "we expected to
+    // sync and couldn't" failure.
+    expect(sb.quoteUpdates).toHaveLength(0);
+    expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse when refuseIfPaid is absent — matches /amend and /amend-decline, which legitimately reopen a paid invoice under their own consent machinery', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValueOnce(settledInvoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice: staleAwaitingInvoice,
+      result: { total: 1400 },
+      depositPaid: 500,
+      newTotal: 1400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+      // refuseIfPaid intentionally omitted — this is the exact call shape
+      // amend/route.ts and amend-decline/route.ts use.
+    });
+
+    expect(outcome.resynced).toBe(true);
+    expect(outcome.refusedPaid).toBeUndefined();
+    expect(sb.invoiceUpdates).toHaveLength(1);
+    expect(sb.invoiceUpdates[0]).toMatchObject({ status: 'awaiting_payment' });
+  });
+});
+
 // Row 339 (LOW, #830/#862 shape): resyncInvoiceToAgreedTotal's own B10
 // re-read narrows the window between reading the invoice and writing it, but
 // (per that comment) does not eliminate it — a second write could still land
