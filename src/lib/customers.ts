@@ -793,7 +793,13 @@ export async function findOrCreateProperty(
       const { error: updErr } = await sb
         .from('properties')
         .update({ address: nextAddress, lat: nextLat, lng: nextLng, archived_at: null })
-        .eq('id', row.id);
+        .eq('id', row.id)
+        // Guard against the fix-revert race (S68 lens round): if the office
+        // corrected the address after we read this row (updateProperty re-keys
+        // it), this refresh is describing a property that no longer exists under
+        // that key — writing it would silently undo the human's fix with stale
+        // data. The key match makes that write a no-op instead.
+        .eq('address_key', address_key);
       if (updErr) {
         console.error('findOrCreateProperty newest-win update error:', updErr);
       } else if (resurrect) {
