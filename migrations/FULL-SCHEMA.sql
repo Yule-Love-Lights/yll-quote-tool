@@ -2845,11 +2845,12 @@ create unique index if not exists job_geozones_depot_live_key
 -- `exited_at` is NULL while a vehicle is still there. That is a normal, expected
 -- state during the working day, not an error, and any reader has to handle it.
 --
--- `enter_event_id` is UNIQUE and is what makes this idempotent. Bouncie
--- documents duplicate delivery as normal (overlapping real-time and periodic
--- streams, plus retries and buffered dumps after a device regains signal), so
--- without this a redelivered ENTER would open a second visit for an arrival that
--- already happened.
+-- WHAT ACTUALLY MAKES THIS IDEMPOTENT is the writer refusing to open a second
+-- visit while one is already open for the same vehicle and zone — not the unique
+-- index below. Bouncie's documented duplicate pattern is two SEPARATE deliveries
+-- reporting one physical arrival (its real-time and periodic streams overlap,
+-- and a device that loses signal dumps a burst on reconnect). Those differ in
+-- bytes, so a per-event index cannot see them as duplicates at all.
 -- ---------------------------------------------------------------------
 create table if not exists public.vehicle_visits (
   id              uuid primary key default gen_random_uuid(),
@@ -2867,15 +2868,32 @@ create table if not exists public.vehicle_visits (
 
   -- Which raw events produced this. The whole point of the capture table is that
   -- any derived row can be traced back to the bytes Bouncie actually sent.
-  enter_event_id  uuid not null references public.vehicle_events(id) on delete cascade,
+  --
+  -- BOTH ARE `on delete set null`, AND NULLABLE, ON PURPOSE. An earlier draft had
+  -- `enter_event_id not null ... on delete cascade`, which meant that the moment
+  -- anyone purged old raw events — and this project already anticipates a
+  -- retention job — every visit derived from them would be silently deleted too.
+  -- The timeline is the durable record; the raw event is the receipt for it.
+  -- Losing the receipt should cost the provenance link, not the history.
+  -- Found by the S68 technical lens.
+  enter_event_id  uuid references public.vehicle_events(id) on delete set null,
   exit_event_id   uuid references public.vehicle_events(id) on delete set null,
 
   created_at      timestamptz not null default now()
 );
 
--- Idempotency: a redelivered ENTER cannot open a second visit.
+-- Provenance uniqueness: one visit per source event. Partial, because the column
+-- is nullable now — a purged raw event leaves its visit intact with a null link,
+-- and several such rows must not collide with each other.
+--
+-- NOTE this is NOT what makes arrivals idempotent. It only catches a redelivery
+-- of the SAME stored event, and those never reach the visit writer anyway: the
+-- body hash on `vehicle_events` drops them first. Real duplicate arrivals come
+-- from Bouncie's overlapping streams as DIFFERENT events reporting one physical
+-- arrival, and the writer guards those by refusing to open a second visit while
+-- one is already open for that vehicle and zone.
 create unique index if not exists vehicle_visits_enter_event_key
-  on public.vehicle_visits (enter_event_id);
+  on public.vehicle_visits (enter_event_id) where enter_event_id is not null;
 
 -- "What is still open for this vehicle" — the lookup EXIT does.
 create index if not exists vehicle_visits_open_idx
