@@ -1155,3 +1155,44 @@ describe('nceTagDepositWasSuppressed (row 328(a))', () => {
     ).toBe(false);
   });
 });
+
+// Jason, 2026-08-27: roofline difficulty starts at Easy ($8/ft) and only a
+// staff member's dropdown pick moves it. Pinned in one place per surface so a
+// future edit has to break a named test rather than drift the price quietly.
+describe('roofline difficulty defaults to Easy everywhere a quote can start', () => {
+  it('a brand-new quote form starts both roofline types at easy', () => {
+    expect(initialFormData.santasDifficulty).toBe('easy');
+    expect(initialFormData.gingerbreadDifficulty).toBe('easy');
+    // Not a blanket change: the other two keep their own settled defaults.
+    expect(initialFormData.winterWonderlandDifficulty).toBe('medium');
+    expect(initialFormData.stakeLightingDifficulty).toBe('easy');
+  });
+
+  it('a stored row with no difficulty recorded also reads easy', () => {
+    // Measured before changing this fallback: 187 of 187 holiday quotes in
+    // production store both keys, so no live quote is re-priced by it — it just
+    // stops being a second, disagreeing default.
+    const hydrated = inputsToFormData(null, { santasFootage: 100, gingerbreadFootage: 40 });
+    expect(hydrated.santasDifficulty).toBe('easy');
+    expect(hydrated.gingerbreadDifficulty).toBe('easy');
+  });
+
+  it('a stored difficulty a staff member chose still wins', () => {
+    const hydrated = inputsToFormData(null, {
+      santasDifficulty: 'hard',
+      gingerbreadDifficulty: 'medium',
+    });
+    expect(hydrated.santasDifficulty).toBe('hard');
+    expect(hydrated.gingerbreadDifficulty).toBe('medium');
+  });
+
+  it('prices a default new quote at $8/ft on both roofline types', () => {
+    const inputs = buildQuoteInputs({
+      ...initialFormData,
+      santasFootage: 100,
+      gingerbreadFootage: 50,
+    });
+    expect(inputs.santasDifficulty).toBe('easy');
+    expect(inputs.gingerbreadDifficulty).toBe('easy');
+  });
+});
