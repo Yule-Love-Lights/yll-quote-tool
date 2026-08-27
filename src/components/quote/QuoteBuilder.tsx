@@ -6259,6 +6259,22 @@ export default function QuoteBuilder({
 
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
+            {/* Row 427b (premerge staff lens): this note used to live inside the
+                "Move the Camera" box, which only renders when a Google geocode
+                succeeded — so an approved quote where staff went straight to a
+                manual upload showed NO visible lock text at all, just a
+                disabled attribute and a title that is invisible on touch. At
+                section level it covers every control in the section, and the
+                copy now names them instead of only the camera. */}
+            {postApprovalFrozen && (
+              <p className="text-xs text-amber-700 mb-3">
+                🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
+                so nothing in this section can change it — analyzing, moving the camera, saving an angle,
+                pulling or uploading a satellite image, and uploading a house photo are all disabled.
+                To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
+                through the amend flow.)
+              </p>
+            )}
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
                 ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
@@ -6360,7 +6376,20 @@ export default function QuoteBuilder({
                 type="file"
                 accept="image/*"
                 onChange={handlePhotoSelect}
-                disabled={loading}
+                // Row 427b, found by a live prod check on approved quote #1290:
+                // the satellite upload beside it was gated and this one was not.
+                //
+                // Corrected after a premerge lens traced it: choosing a file
+                // does NOT itself write. handlePhotoSelect sets photoFile /
+                // photoPreview only; the eager design effect keys on
+                // photoBase64, which the Analyze button sets — and that button
+                // was already frozen. So this is a CONSISTENCY fix, not a
+                // closed write path: it stops staff picking a photo, watching
+                // the preview appear, and then finding the only button that can
+                // do anything with it greyed out. The comment here first
+                // claimed it closed a live write; it did not.
+                disabled={loading || postApprovalFrozen}
+                title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
               {photoPreview && photoFile && (
@@ -6549,15 +6578,6 @@ export default function QuoteBuilder({
                       </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      {postApprovalFrozen && (
-                        <p className="w-full text-xs text-amber-700 mb-1">
-                          🔒 Locked after approval — the customer agreed to this photo and design.
-                          Moving the camera, saving an angle, pulling satellite or uploading a new
-                          satellite photo would all change what they signed off on. To change it:
-                          decline this quote, revive it, edit, and re-send. (A booked order is
-                          changed through the amend flow.)
-                        </p>
-                      )}
                       {/* Row 427: every camera move REPLACES the design's base
                           photo (moveStreetView/recaptureStreetView -> setPhotoBase64
                           -> POST /api/designs/[id]/photo), and saving an angle adds a
