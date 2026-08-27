@@ -198,3 +198,97 @@ leaving implicit:
   stored indefinitely at rooftop precision.
 - That makes step 8 below more important, not less. Tell the crew what is
   captured and that it runs after hours, in writing, before the devices go in.
+
+---
+
+# Phase 3a: connecting the API (OAuth)
+
+The webhook only lets Bouncie push events TO us. Reading live position, and
+creating geofences, both need an OAuth grant. This is that setup.
+
+**The API key in the developer portal does not work for this.** It was tested
+against `/v1/vehicles` on 2026-08-27 and returns 401, bare and with a `Bearer`
+prefix. OAuth is the only way in. Do not spend time on the key.
+
+## Step 1: generate the token encryption key
+
+The Bouncie tokens are stored in the database, encrypted. Generate the key:
+
+```powershell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+Add it in Vercel as `TOKEN_ENCRYPTION_KEY`.
+
+**Use the SAME value in Preview and Production.** A token encrypted with one key
+cannot be read with another. If they differ, the grant works in one environment
+and silently fails in the other, and the error looks like a Bouncie problem
+rather than a configuration one.
+
+**If this key is ever lost or changed, the stored tokens are gone for good.**
+There is no recovery and no way to re-derive them. That is not a bug, it is what
+encryption means. The fix is not dangerous, just manual: delete the row from
+`integration_tokens` where `provider = 'bouncie'`, then reconnect from Step 5.
+
+## Step 2: the other three variables
+
+From the Bouncie developer portal application page:
+
+| Variable | Value |
+| --- | --- |
+| `BOUNCIE_CLIENT_ID` | `yll-hub` |
+| `BOUNCIE_CLIENT_SECRET` | the client secret, revealed with SHOW |
+| `BOUNCIE_REDIRECT_URI` | `https://quote.yulelovelights.com/api/integrations/bouncie/callback` |
+
+## Step 3: apply the migration
+
+`migrations/2026-08-27-bouncie-oauth-tokens.sql`. Read its header first: the
+column additions are routine, the trigger needs a deliberate go.
+
+## Step 4: update the redirect URL in Bouncie
+
+On the application page, change REDIRECT URLS from the site root to:
+
+```
+https://quote.yulelovelights.com/api/integrations/bouncie/callback
+```
+
+It must match `BOUNCIE_REDIRECT_URI` exactly, including the scheme and any
+trailing slash. Bouncie compares them character for character.
+
+## Step 5: connect
+
+Visit `/api/integrations/bouncie/start` while logged into the quote tool. That
+mints a one-time value, sends you to Bouncie's approval screen, and brings you
+back to Settings → Accounts with the result on screen.
+
+**Start from that URL, not from Bouncie's own authorize link.** The callback
+refuses a request that did not begin here, which is what stops someone else's
+Bouncie account being connected in place of yours.
+
+## What the outcomes mean
+
+Settings → Accounts shows one of these after connecting:
+
+| Message | What to do |
+| --- | --- |
+| Bouncie connected | Nothing. It worked. |
+| access was not granted | You declined or closed the approval screen. Start again. |
+| attempt was refused | The request did not match one started here, usually because it sat too long. Start again. If it repeats, say so rather than retrying. |
+| not configured on the server | One of the three variables in Step 2 is missing. |
+| token encryption key is missing | `TOKEN_ENCRYPTION_KEY` is not set. Nothing was wasted; set it, redeploy, retry. |
+| Connecting failed | The approval code was used up and could not be exchanged. Start again; the server log has the reason. |
+
+## When it breaks later
+
+**The refresh token rotates on every use, and expires if unused.** If nothing
+reads Bouncie data for a long stretch, the grant can die on its own. There is no
+keep-alive job yet — that ships with the live map, which is the first thing that
+will read it regularly.
+
+**A dead grant is not dangerous, just manual.** Nothing is lost except the
+connection. Reconnect from Step 5.
+
+**The one thing to watch for:** if the map stops showing positions, check
+Settings → Accounts before assuming the trackers are at fault. A revoked or
+expired grant and a dead device look the same from the outside.
