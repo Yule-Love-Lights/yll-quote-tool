@@ -2658,3 +2658,106 @@ create index if not exists job_stock_movements_created_at_idx
   on public.job_stock_movements (created_at desc);
 
 alter table public.job_stock_movements enable row level security;
+
+-- ---------------------------------------------------------------------
+-- Fleet GPS (Bouncie) — ledger row 403 phase 2, capture-only.
+-- Source migration: 2026-08-26-bouncie-vehicles.sql (read it for the reasoning).
+--
+-- These three tables record where the company vehicles are. They deliberately
+-- have NO foreign key into job_segments / shifts / jobs: row 403 constraint (a)
+-- is that GPS never writes payroll. A geofence may only SUGGEST an arrive or
+-- depart to a crew member's own device, and a human still affirmatively taps.
+-- ---------------------------------------------------------------------
+create table if not exists public.vehicles (
+  id          uuid primary key default gen_random_uuid(),
+  label       text not null,
+  imei        text,
+  vin         text,
+  active      boolean not null default true,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+-- One device per vehicle, never shared (constraint (c)): the Bouncie
+-- subscription and trip history belong to the DEVICE, so moving the truck's
+-- tracker into the van would file the van's miles under the truck.
+create unique index if not exists vehicles_imei_key
+  on public.vehicles (imei) where imei is not null;
+
+create unique index if not exists vehicles_vin_key
+  on public.vehicles (vin) where vin is not null;
+
+-- `updated_at` maintenance, matching every other table in this schema that has
+-- the column (S68 technical lens: it was declared and then never maintained,
+-- which is worse than not having it — it would read as fresh forever).
+create or replace function vehicles_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists vehicles_updated_at_trigger on public.vehicles;
+create trigger vehicles_updated_at_trigger
+  before update on public.vehicles
+  for each row execute function vehicles_set_updated_at();
+
+-- The STATIC vehicle-to-crew assignment (constraint (d)) — a setting edited when
+-- a crew actually changes, not a daily screen. A vehicle carries a CREW, so the
+-- map label holds several names. Whatever reads this must present it as an
+-- assumption, never as an assertion about who is physically in the vehicle.
+create table if not exists public.vehicle_crew (
+  id              uuid primary key default gen_random_uuid(),
+  vehicle_id      uuid not null references public.vehicles (id) on delete cascade,
+  crew_member_id  uuid not null references public.crew_members (id) on delete cascade,
+  active          boolean not null default true,
+  created_at      timestamptz not null default now()
+);
+
+create unique index if not exists vehicle_crew_vehicle_member_key
+  on public.vehicle_crew (vehicle_id, crew_member_id);
+
+create index if not exists vehicle_crew_vehicle_idx
+  on public.vehicle_crew (vehicle_id) where active;
+
+-- The raw capture log. Everything but the payload and its hash is NULLABLE on
+-- purpose: this table's job is to record what Bouncie ACTUALLY sent, including a
+-- payload that does not match the published spec, which is the most valuable
+-- thing it can catch. Dedupe is a sha256 of the exact body, because
+-- transaction_id identifies a TRIP and many distinct events share one.
+create table if not exists public.vehicle_events (
+  id              uuid primary key default gen_random_uuid(),
+  received_at     timestamptz not null default now(),
+  event_type      text,
+  imei            text,
+  vin             text,
+  transaction_id  text,
+  occurred_at     timestamptz,
+
+  -- ROW 403 CONSTRAINT (f): off-hours location is not the company's to see.
+  -- The truck goes home with an employee, so without this the table quietly
+  -- accumulates every evening, weekend and personal errand, forever, at rooftop
+  -- precision. Tagging at INSERT is the floor: it costs nothing, it cannot be
+  -- forgotten later, and it gives a retention or redaction job something to act
+  -- on without re-parsing every payload. NULL means the event carried no usable
+  -- timestamp, which is itself a case a purge job must decide about rather than
+  -- silently treat as in-hours. The window itself is a business decision, held
+  -- in ONE place: BUSINESS_HOURS in src/lib/integrations/bouncie.ts.
+  occurred_off_hours boolean,
+  body_sha256     text not null,
+  payload         jsonb not null
+);
+
+create unique index if not exists vehicle_events_body_sha256_key
+  on public.vehicle_events (body_sha256);
+
+create index if not exists vehicle_events_imei_received_idx
+  on public.vehicle_events (imei, received_at desc);
+
+create index if not exists vehicle_events_transaction_idx
+  on public.vehicle_events (transaction_id) where transaction_id is not null;
+
+alter table public.vehicles       enable row level security;
+alter table public.vehicle_crew   enable row level security;
+alter table public.vehicle_events enable row level security;
