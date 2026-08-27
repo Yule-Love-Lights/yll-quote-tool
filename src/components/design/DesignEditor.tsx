@@ -32,6 +32,12 @@ type Props = {
    */
   locked?: boolean;
   /**
+   * Row 367 — fired when the SERVER refuses a scene save because the linked
+   * quote is customer-approved, i.e. this editor mounted unlocked and found
+   * out afterwards. Lets the host page self-correct the rest of its controls.
+   */
+  onDesignLocked?: () => void;
+  /**
    * Handed a flush() that synchronously persists a pending debounced scene save
    * (#8 Stage A) — the parent awaits it before training capture / pricing so
    * neither reads a stale scene. Called with null on unmount. Re-fires on each
@@ -78,7 +84,7 @@ type PhotoTab = { id: string | null; title: string };
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly, locked }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly, locked, onDesignLocked }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
@@ -100,10 +106,16 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   const removePhotoItemsRef = useRef<((photoId: string, serverVersion?: number | null) => void) | null>(null);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
   // (a new callback identity each render would needlessly remount the editor).
+  // Kept in a ref for the same reason as onReady: a new identity each render
+  // must not remount the editor.
+  const onDesignLockedRef = useRef(onDesignLocked);
   const onReadyRef = useRef(onReady);
   useEffect(() => {
     onReadyRef.current = onReady;
   }, [onReady]);
+  useEffect(() => {
+    onDesignLockedRef.current = onDesignLocked;
+  }, [onDesignLocked]);
 
   // Load the photo tab list (base + extras). Re-runs after add/rename/delete.
   const refreshPhotoTabs = async (id: string): Promise<PhotoTab[] | null> => {
@@ -173,6 +185,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         permanentOnly,
         bistroOnly,
         locked,
+        onLocked: () => onDesignLockedRef.current?.(),
       });
       if (cancelled) {
         handle?.();
@@ -281,6 +294,17 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       // (a "Curtain — 6 strings" line can vanish with this deleted photo) so
       // the parent can warn staff the same way it already does for #255.
       const data = await res.json().catch(() => ({}));
+      // Row 367 delta-verify HIGH: the photo is gone but its drawn items are
+      // NOT — the quote was approved between the route's pre-flight check and
+      // its scene prune. Say so plainly; the alternative (a silent success)
+      // leaves invisible items still billing.
+      if (data.sceneLocked === true) {
+        alert(
+          'The photo was deleted, but the items drawn on it could NOT be removed — ' +
+          'the customer approved this quote while the delete was running, so the design is now locked. ' +
+          'Those items are still on the quote. Tell the office before sending anything else.',
+        );
+      }
       onPrunedMiniGroups?.(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
       if (activePhotoId === id) {
         // #741 defects 1/2: the editor is mounted ON the deleted photo — its

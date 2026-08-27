@@ -21,6 +21,8 @@ const { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTi
       ok: boolean;
       prunedMiniGroups: { surface: string | null; stringCount: number }[];
       version: number | null;
+      // Row 367: set when the scene prune was refused by the freeze.
+      sceneLocked?: boolean;
     }> => ({
       ok: true,
       prunedMiniGroups: [],
@@ -188,5 +190,33 @@ describe('post-approval freeze (row 367)', () => {
     expect(removeDesignExtraPhoto).toHaveBeenCalledTimes(1);
     expect((await PATCH(makeReq({ title: 'Front' }), baseCtx)).status).toBe(200);
     expect(updateDesignPhotoTitle).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Row 367 delta-verify HIGH: the mid-request freeze race. The photo is gone,
+// its scene items are not — the route must SAY so rather than answer a clean
+// success (the client alerts staff on this flag; a silent 200 would leave
+// invisible items still billing).
+describe('DELETE — surfaces a scene prune blocked by the freeze (row 367)', () => {
+  it('passes sceneLocked through on the 200', async () => {
+    removeDesignExtraPhoto.mockResolvedValueOnce({
+      ok: true,
+      prunedMiniGroups: [],
+      version: null,
+      sceneLocked: true,
+    });
+    const res = await DELETE(makeReq(), {
+      params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).sceneLocked).toBe(true);
+  });
+
+  it('omits the flag entirely on an ordinary delete', async () => {
+    const res = await DELETE(makeReq(), {
+      params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).sceneLocked).toBeUndefined();
   });
 });

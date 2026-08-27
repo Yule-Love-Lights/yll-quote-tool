@@ -851,6 +851,18 @@ export default function QuoteBuilder({
   // reopening the quote for editing. That resend is the sanctioned way to
   // change a price/label/footage that was already customer-approved but
   // never booked.
+  // Row 367 delta-verify MED: the REAL whole-page self-correction for a design
+  // lock. The design routes answer 409 `code: 'design-locked'` when the linked
+  // quote turns out to be customer-approved; this tab may still be showing
+  // editable money controls from before that happened. Flipping
+  // staleApprovalFrozen makes the page agree with the server — the same
+  // recovery /api/quote's own lock codes already trigger.
+  const noteDesignLocked = (data: unknown): boolean => {
+    const code = (data as { code?: unknown } | null)?.code;
+    if (code !== 'design-locked') return false;
+    setStaleApprovalFrozen(true);
+    return true;
+  };
   // Row 367: the DESIGN's own lock copy. Separate from the money reason above
   // because the remedy sentence differs — nothing here needs re-pricing, the
   // customer simply agreed to a picture.
@@ -1730,6 +1742,7 @@ export default function QuoteBuilder({
         // conflict) via the same designError banner the design-photo effect
         // above already uses for this design.
         const data = await res.json().catch(() => ({}));
+        noteDesignLocked(data);
         setDesignError(data.error ?? 'The AI-detected layout could not be applied — reopen the design and try again');
       }
     } catch {
@@ -5209,10 +5222,13 @@ export default function QuoteBuilder({
         // and flip the tab to frozen so the controls lock with the honest
         // post-approval copy — the tab self-corrects to server truth instead
         // of staying editable and re-erroring on every retry.
-        // Row 367: 'design-locked' joins the money lock codes so a stale tab
-        // that learns the quote is approved from a DESIGN write self-corrects
-        // the whole page, not just the editor that got the 409.
-        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked', 'design-locked']);
+        // Row 367 delta-verify MED: 'design-locked' deliberately does NOT
+        // belong here. This set is only ever matched against /api/quote's
+        // response, and /api/quote never returns that code (grep-confirmed) —
+        // adding it read as a self-correction that could not fire. The design
+        // routes that DO return it self-correct through noteDesignLocked()
+        // below instead.
+        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
           setBaselineResult(prevBaseline);
@@ -5612,6 +5628,7 @@ export default function QuoteBuilder({
       });
       if (!putRes.ok) {
         const putData = await putRes.json().catch(() => ({}));
+        noteDesignLocked(putData);
         throw new Error(putData.error ?? 'Could not save recommendation');
       }
       // Remount the editor + re-fetch the scene (also refreshes DesignSummary).
@@ -6641,6 +6658,10 @@ export default function QuoteBuilder({
                       // picture and the price can never be locked on different
                       // rules. Server-enforced too (PUT /api/designs/[id]).
                       locked={postApprovalFrozen}
+                      // Row 367 delta-verify MED: the editor mounted unlocked and
+                      // the server said otherwise — bring the rest of the page
+                      // into line instead of leaving money controls that 409.
+                      onDesignLocked={() => setStaleApprovalFrozen(true)}
                       onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
                       onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />

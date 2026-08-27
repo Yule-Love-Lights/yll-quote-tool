@@ -1612,3 +1612,59 @@ describe('updateDesignSceneGuarded — post-approval freeze (row 367)', () => {
     expect(outcome).toEqual({ ok: true, version: 6 });
   });
 });
+
+// ── Row 367 delta-verify HIGH: the prune loop must treat the new outcomes as
+// TERMINAL. Before this, 'locked'/'unverified' fell through to the loop's
+// `continue` (the CAS-conflict path), burned all five retries, threw into an
+// outer catch that only logs — and the function still answered `ok: true`.
+// The photo's storage object and extra_photos entry are already deleted by
+// then, so the deleted photo's scene items survived, invisible and still
+// billing: the exact #741 class this prune exists to prevent.
+describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryable', () => {
+  // Delta-verify HIGH on the fix round: 'locked'/'unverified' used to fall
+  // through to the loop's `continue` (the CAS-conflict path), burn all five
+  // retries, throw into an outer catch that only logs — and the function still
+  // answered a clean `ok: true`. The photo's storage object and extra_photos
+  // entry are already gone by then, so the deleted photo's scene items
+  // survived, invisible and still billing: the #741 class this prune exists to
+  // prevent. Driven through the REAL guard (readSceneLock is the suite's mock),
+  // not by stubbing updateDesignSceneGuarded, so the whole path is exercised.
+  const P = '33333333-3333-4333-8333-333333333333';
+
+  function fixture() {
+    return makeExtrasSb({
+      extra_photos: [{ id: P, path: `${ID}/extra-${P}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [{ id: 'i1', kind: 'wreath', photoId: P }] },
+    });
+  }
+
+  it('reports sceneLocked instead of a clean success, and leaves the items in place', async () => {
+    const { client, state } = fixture();
+    sbRef.current = client;
+    // The quote was approved between the route's pre-flight check and here.
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    // Honest on both counts: the photo IS gone (storage + extra_photos already
+    // written), and the caller is TOLD the drawn items survived.
+    expect(result.ok).toBe(true);
+    expect(result.sceneLocked).toBe(true);
+    expect(state.removedPaths).toEqual([[`${ID}/extra-${P}.jpg`]]);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['i1']); // un-pruned, on purpose
+  });
+
+  it('leaves sceneLocked false on the ordinary unfrozen path', async () => {
+    const { client, state } = fixture();
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
+
+    const result = await removeDesignExtraPhoto(ID, P);
+
+    expect(result.ok).toBe(true);
+    expect(result.sceneLocked).toBe(false);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items).toHaveLength(0); // pruned, as always
+  });
+});

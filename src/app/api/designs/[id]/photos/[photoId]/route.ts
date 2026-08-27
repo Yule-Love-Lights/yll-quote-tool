@@ -104,5 +104,14 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   // still-mounted editor (an INACTIVE tab was deleted, so it never remounts)
   // can adopt it instead of failing its next save's CAS. Null when the prune
   // wrote nothing.
-  return NextResponse.json({ ok: true, prunedMiniGroups: result.prunedMiniGroups, version: result.version });
+  // Row 367 delta-verify HIGH: `sceneLocked` means the photo IS gone but its
+  // scene items could not be pruned (the quote was approved mid-request). A
+  // 200 is honest — the delete happened — but the client must TELL staff, or
+  // the surviving items keep billing invisibly.
+  return NextResponse.json({
+    ok: true,
+    prunedMiniGroups: result.prunedMiniGroups,
+    version: result.version,
+    ...(result.sceneLocked ? { sceneLocked: true } : {}),
+  });
 }

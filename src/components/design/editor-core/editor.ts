@@ -208,7 +208,7 @@ type ToolState = {
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean; bistroOnly?: boolean; locked?: boolean } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean; bistroOnly?: boolean; locked?: boolean; onLocked?: () => void } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -1605,6 +1605,11 @@ export async function renderEditor(
         // recover, and this is a deliberate refusal, not a loss of a race.
         if (destroyed || seq !== saveSeq) return;
         locked = true;
+        // Row 367 delta-verify MED: tell the HOST too. This editor just
+        // learned from the server that the quote is approved; the page around
+        // it may still be showing editable money controls from before that
+        // happened, which would 409 on their own next write.
+        try { opts.onLocked?.(); } catch { /* host handler must never break the editor */ }
         pendingSave = false;
         if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
         savingEl.textContent = "Locked — not saved";
