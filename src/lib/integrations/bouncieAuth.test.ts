@@ -226,7 +226,7 @@ describe('bouncieFetch', () => {
     // Bouncie's own FAQ names the Bearer prefix as a top cause of 401.
     selectChain.row = storedRow();
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200 });
-    await bouncieFetch('/vehicles', EMAIL);
+    await bouncieFetch('/vehicles', { accountEmail: EMAIL });
     const [url, init] = fetchMock.mock.calls[0]! as [string, { headers: Record<string, string> }];
     expect(url).toBe('https://api.bouncie.dev/v1/vehicles');
     expect(init.headers.Authorization).toBe('stored-access');
