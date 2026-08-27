@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import {
   LIGHT_SCALE_DEFAULT,
@@ -156,10 +157,156 @@ describe("spritzerLightDims", () => {
     // only. If a future edit starts returning a scaled spray radius, the
     // Small/Medium/Large size buttons and the resize handles would start
     // fighting the slider.
+    // Row 350 added centerRadius — also a LIGHT part (the hub the rays spray
+    // from), which is why it belongs here. The spray radius itself still must
+    // never appear in this list.
     expect(Object.keys(spritzerLightDims(R, 4)).sort()).toEqual([
+      "centerRadius",
       "rayStroke",
       "tipHaloRadius",
       "tipRadius",
     ]);
+  });
+
+  // ── Row 350: the hub can never be smaller than its own ray tips ──────────
+  // The S65 wrap staff lens computed the shipped formulas: at 4x on a
+  // whole-house shot the tips sit on their 1.5px floor and reach 6px while the
+  // hub sat on its own 4px floor — ray-end dots bigger than the light source
+  // they spray from, on the portal too via render-readonly.
+  const OLD_CENTER = (r: number) => Math.max(4, r * 0.18);
+
+  it("renders the hub at exactly the pre-row-350 size at the default scale", () => {
+    // The fix must be invisible at 1x: staff who never touch the slider see
+    // precisely what they saw before.
+    for (const r of [2, 6.67, 10, 20, 60, 200]) {
+      expect(spritzerLightDims(r).centerRadius).toBe(OLD_CENTER(r));
+      expect(spritzerLightDims(r, 1).centerRadius).toBe(OLD_CENTER(r));
+    }
+  });
+
+  it("keeps the hub at least as large as a tip dot at every size and every scale", () => {
+    for (let r = 2; r <= 240; r += 2) {
+      for (const scale of [LIGHT_SCALE_MIN, 0.75, 1, 1.5, 2, 3, LIGHT_SCALE_MAX]) {
+        const d = spritzerLightDims(r, scale);
+        expect(d.centerRadius).toBeGreaterThanOrEqual(d.tipRadius);
+      }
+    }
+  });
+
+  it("fixes the exact reported case: a 24 inch spritzer at 10 px/ft, slider at 4x", () => {
+    const d = spritzerLightDims(10, 4); // (24/12 * 10) / 2 = radiusPx 10
+    // Unbounded, the 1.5px tip FLOOR times 4x gave 6px dots against a hub
+    // stuck at its own 4px floor. Both ends moved: the dots are now held to
+    // 42% of the spray, and the hub sits above them.
+    expect(d.tipRadius).toBeCloseTo(4.2, 5);
+    expect(OLD_CENTER(10)).toBe(4);
+    expect(d.centerRadius).toBeGreaterThanOrEqual(d.tipRadius);
+  });
+
+  // Customer lens MED: fixing only the hub widened a band at the SMALL end
+  // where the hub covered the entire spray — because it was chasing tips that
+  // were themselves bigger than the spray. Bounding the tips closed it.
+  // NOTE the scope in this name: the tip DOT and the hub, not the tip HALO.
+  // The halo is a gradient that fades to fully transparent, so it reaches past
+  // the spray by design (and did so before row 350, by more) — asserting it
+  // here would be asserting something untrue.
+  it("never lets the tip dot or the hub outgrow the spray that contains them", () => {
+    for (let r = 5; r <= 240; r += 1) {
+      for (const scale of [LIGHT_SCALE_MIN, 1, 2, 2.5, 3, LIGHT_SCALE_MAX]) {
+        const d = spritzerLightDims(r, scale);
+        const shortestRay = r * 0.93; // spritzer.ts draws rays at 93%-101% of r
+        expect(d.centerRadius).toBeLessThanOrEqual(shortestRay);
+        expect(d.tipRadius).toBeLessThanOrEqual(r * 0.42);
+      }
+    }
+  });
+
+  // Delta-verify MED: below radiusPx ~3.6 the tip cap collapses onto the 1.5px
+  // floor, so the slider stops moving the tips entirely. Deliberate — the
+  // whole spray is under 7px across there — but it was neither documented nor
+  // covered, and the sweep above starts at 5, so it could not have been.
+  it("holds the tips at their floor on a spritzer smaller than one dot, at every scale", () => {
+    for (const r of [2, 3, 3.5]) {
+      for (const scale of [1, 2, LIGHT_SCALE_MAX]) {
+        expect(spritzerLightDims(r, scale).tipRadius).toBe(1.5);
+      }
+    }
+    // ...and starts moving again as soon as the spray is big enough to hold it.
+    expect(spritzerLightDims(4, LIGHT_SCALE_MAX).tipRadius).toBeGreaterThan(1.5);
+  });
+
+  it("leaves the tips untouched at the default scale, where the cap must not bind", () => {
+    for (const r of [2, 6, 10, 22, 60, 240]) {
+      expect(spritzerLightDims(r, 1).tipRadius).toBe(Math.max(1.5, r * 0.028));
+    }
+  });
+
+  it("still refuses to let the hub swallow the rays on a large spritzer", () => {
+    // Row 347 left the hub unscaled for this reason; the ceiling is what
+    // preserves it. Rays run out to ~radiusPx, so a hub under half of that
+    // still reads as a core sitting beneath a spray, not as one big blob.
+    for (const r of [60, 120, 240]) {
+      const d = spritzerLightDims(r, LIGHT_SCALE_MAX);
+      expect(d.centerRadius).toBeLessThanOrEqual(Math.max(OLD_CENTER(r), r * 0.45));
+      expect(d.centerRadius).toBeLessThan(r * 0.5);
+    }
+  });
+
+  // Staff lens MED: on a spritzer past ~22px the hub reaches its ceiling
+  // around 2.5x and then holds while the tips keep growing. Pinned so that
+  // stays a decision somebody made rather than a slider that looks broken.
+  it("holds the hub at its ceiling above ~2.5x on a large spritzer, by design", () => {
+    const atCeiling = spritzerLightDims(60, 2.5).centerRadius;
+    expect(atCeiling).toBeCloseTo(60 * 0.45, 10); // float math: 10.8 * 2.5
+
+    expect(spritzerLightDims(60, 3).centerRadius).toBeCloseTo(atCeiling, 10);
+    expect(spritzerLightDims(60, LIGHT_SCALE_MAX).centerRadius).toBeCloseTo(atCeiling, 10);
+    // ...while the tips genuinely keep moving across that same stretch, so the
+    // slider is never doing nothing at all.
+    expect(spritzerLightDims(60, LIGHT_SCALE_MAX).tipRadius).toBeGreaterThan(
+      spritzerLightDims(60, 2.5).tipRadius,
+    );
+  });
+
+  it("grows the hub with the slider, so the fix is not just a frozen hub", () => {
+    // Otherwise every assertion above could be "satisfied" by a hub that never
+    // moves at all. Uses a 60px spritzer, where the hub is driven by the
+    // radius rather than pinned to its 4px floor.
+    const atDefault = spritzerLightDims(60, 1).centerRadius;
+    expect(spritzerLightDims(60, 2).centerRadius).toBeGreaterThan(atDefault);
+    expect(spritzerLightDims(60, LIGHT_SCALE_MAX).centerRadius).toBeGreaterThan(atDefault);
+  });
+
+  // On a SMALL spritzer the hub sits on its own 4px floor and only starts
+  // moving once the tips would otherwise overtake it. Pinned so the flatness
+  // reads as deliberate rather than as the fix failing to fire.
+  it("holds a small spritzer's hub near its floor, just above the capped tips", () => {
+    expect(spritzerLightDims(10, 2).centerRadius).toBe(4.5); // ceiling: 0.45 * 10
+    const max = spritzerLightDims(10, LIGHT_SCALE_MAX);
+    expect(max.centerRadius).toBe(4.5);
+    expect(max.centerRadius).toBeGreaterThan(max.tipRadius);
+  });
+});
+
+// Row 348: undo()/redo() in editor.ts reassign `scene` and call
+// redrawScene(), which correctly resizes bulbs (redrawCanvas() reads
+// activeLightScale() fresh off the reverted scene) — but neither used to
+// resync the light-size slider's thumb/readout, which kept showing the
+// pre-undo value. editor.ts imports Konva, which needs the optional `canvas`
+// package this headless test environment doesn't have (see the file header
+// above), so this pins the fix as source text instead of executing it.
+describe("editor.ts undo()/redo() light-scale resync", () => {
+  it("calls showLightScale(activeLightScale()) in both undo() and redo()", () => {
+    const editor = readFileSync(
+      new URL("./editor.ts", import.meta.url),
+      "utf8",
+    );
+    const [undoBody] = editor.match(/function undo\(\) \{[\s\S]*?\n  \}/) ?? [""];
+    const [redoBody] = editor.match(/function redo\(\) \{[\s\S]*?\n  \}/) ?? [""];
+
+    for (const body of [undoBody, redoBody]) {
+      expect(body).toContain("redrawScene();");
+      expect(body).toContain("showLightScale(activeLightScale());");
+    }
   });
 });

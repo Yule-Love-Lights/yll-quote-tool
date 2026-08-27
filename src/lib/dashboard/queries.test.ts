@@ -53,6 +53,8 @@ import {
   listQuotesForDashboardResult,
   listQuotesForDashboard,
   listJobsForWorkflowBoard,
+  listInvoicesForWorkflowBoard,
+  loadNeedsActionData,
 } from './queries';
 
 beforeEach(() => {
@@ -145,5 +147,91 @@ describe('Test Quote isolation (#93)', () => {
     const jobs = await listJobsForWorkflowBoard();
     expect(jobs).toHaveLength(2);
     expect(jobs.map((j) => (j as { quote_id?: string }).quote_id)).not.toContain('test');
+  });
+});
+
+// ─── Row 389 (S49): stale-invoice flag derivation ────────────────────────────
+// A generic multi-table fake: `.limit()` resolves the table's row set, `.in()`
+// resolves the quotes lookup (the shape both listInvoicesForWorkflowBoard and
+// loadNeedsActionData join through — is_test/approval_snapshot).
+function makeMultiTableClient(tables: Record<string, unknown[]>) {
+  return {
+    from(table: string) {
+      const rows = tables[table] ?? [];
+      const b = {
+        select: () => b,
+        order: () => b,
+        limit: () => Promise.resolve({ data: rows, error: null }),
+        in: (_col: string, ids: string[]) =>
+          Promise.resolve({ data: rows.filter((r: unknown) => ids.includes((r as { id: string }).id)), error: null }),
+      };
+      return b;
+    },
+  };
+}
+
+describe('listInvoicesForWorkflowBoard — stale flag (row 389)', () => {
+  it('flags an invoice whose quote carries paymentBlocked', async () => {
+    client = makeMultiTableClient({
+      invoices: [{ status: 'awaiting_payment', balance: 500, quote_id: 'q1' }],
+      quotes: [{ id: 'q1', is_test: false, approval_snapshot: { paymentBlocked: { at: 'x' } } }],
+    }) as unknown as ReturnType<typeof makeClient>;
+    const invoices = await listInvoicesForWorkflowBoard();
+    expect(invoices).toHaveLength(1);
+    expect((invoices[0] as { stale?: boolean }).stale).toBe(true);
+  });
+
+  it('flags an invoice whose quote carries invoiceResyncFailed', async () => {
+    client = makeMultiTableClient({
+      invoices: [{ status: 'awaiting_payment', balance: 500, quote_id: 'q2' }],
+      quotes: [{ id: 'q2', is_test: false, approval_snapshot: { invoiceResyncFailed: { invoiceId: 'i' } } }],
+    }) as unknown as ReturnType<typeof makeClient>;
+    const invoices = await listInvoicesForWorkflowBoard();
+    expect((invoices[0] as { stale?: boolean }).stale).toBe(true);
+  });
+
+  it('leaves an ordinary invoice stale:false', async () => {
+    client = makeMultiTableClient({
+      invoices: [{ status: 'awaiting_payment', balance: 500, quote_id: 'q3' }],
+      quotes: [{ id: 'q3', is_test: false, approval_snapshot: {} }],
+    }) as unknown as ReturnType<typeof makeClient>;
+    const invoices = await listInvoicesForWorkflowBoard();
+    expect((invoices[0] as { stale?: boolean }).stale).toBe(false);
+  });
+
+  it('still excludes a test-quote invoice even when its snapshot is also stale (test-isolation wins)', async () => {
+    client = makeMultiTableClient({
+      invoices: [{ status: 'awaiting_payment', balance: 500, quote_id: 'q4' }],
+      quotes: [{ id: 'q4', is_test: true, approval_snapshot: { paymentBlocked: { at: 'x' } } }],
+    }) as unknown as ReturnType<typeof makeClient>;
+    const invoices = await listInvoicesForWorkflowBoard();
+    expect(invoices).toHaveLength(0);
+  });
+});
+
+describe('loadNeedsActionData — stale flag (row 389)', () => {
+  it('flags a stale invoice so the collect-balance nag can warn instead of quoting it as fact', async () => {
+    client = makeMultiTableClient({
+      jobs: [{ id: 'j1', quote_id: 'q1', status: 'requires_invoicing', created_at: '2026-08-01' }],
+      invoices: [
+        { id: 'inv1', job_id: 'j1', quote_id: 'q1', status: 'awaiting_payment', balance: 700, created_at: '2026-08-01' },
+      ],
+      quotes: [{ id: 'q1', approval_snapshot: { paymentBlocked: { at: 'x' } } }],
+    }) as unknown as ReturnType<typeof makeClient>;
+    const result = await loadNeedsActionData([]);
+    expect(result.invoices).toHaveLength(1);
+    expect((result.invoices[0] as { stale?: boolean }).stale).toBe(true);
+  });
+
+  it('leaves stale undefined/false when nothing is flagged on the linked quote', async () => {
+    client = makeMultiTableClient({
+      jobs: [{ id: 'j2', quote_id: 'q2', status: 'requires_invoicing', created_at: '2026-08-01' }],
+      invoices: [
+        { id: 'inv2', job_id: 'j2', quote_id: 'q2', status: 'awaiting_payment', balance: 400, created_at: '2026-08-01' },
+      ],
+      quotes: [{ id: 'q2', approval_snapshot: {} }],
+    }) as unknown as ReturnType<typeof makeClient>;
+    const result = await loadNeedsActionData([]);
+    expect((result.invoices[0] as { stale?: boolean }).stale).toBe(false);
   });
 });

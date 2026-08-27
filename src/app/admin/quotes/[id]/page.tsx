@@ -7,15 +7,17 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { depositCaution } from '@/components/admin/DepositRateChip';
 import { NceToggle } from '@/components/admin/NceToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
+import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { getQuoteRaw } from '@/lib/quotes';
-import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
+import { getQuoteRaw, resolveQuoteDepositRate, numberOrUndefined } from '@/lib/quotes';
+import { deriveStatus, repriceSignalCanFire, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
@@ -26,9 +28,10 @@ import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
-import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
+import { PortalImageVisibilityControls } from '@/components/admin/PortalImageVisibilityControls';
 import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
@@ -88,18 +91,6 @@ function relativeTimeFromNow(iso: string): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// #155 — the light color/pattern a legacy-rebook customer approved with, for
-// the admin detail card. null when the quote hasn't been approved yet (no
-// customerSelection to read) — the card renders nothing in that case.
-function chosenLightColorLabel(
-  sel: { colorSchemeId?: string; customPattern?: string[] } | undefined,
-): string | null {
-  if (!sel) return null;
-  const hasCustomPattern = Array.isArray(sel.customPattern) && sel.customPattern.length > 0;
-  if (sel.colorSchemeId === CUSTOM_SCHEME_ID || hasCustomPattern) return 'Custom pattern';
-  if (sel.colorSchemeId) return getColorScheme(sel.colorSchemeId).label;
-  return null;
-}
 
 export default async function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -125,6 +116,59 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+  // Row 409 (staff lens HIGH on PR #968): two deposit percentages exist on a
+  // quote and they are not always the same number. PRICED is the rate the
+  // dollar figures in the summary below were computed with (frozen into
+  // `result` by the last Calculate). CONFIGURED is the rate the money paths
+  // will actually use — the frozen approval rate if there is one, else the
+  // staff override, else the rate in `result` — resolved by the same helper the
+  // admin list's deposit chip reads, so the two staff screens cannot disagree.
+  const pricedDepositPercent = Math.round(
+    (quote.result?.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
+  // Fix round 2 LOW: sanitize the snapshot value through the same guard the
+  // list uses, instead of an unchecked cast — a legacy string "0.4" or garbage
+  // must degrade, not propagate NaN into a rendered percent.
+  const frozenDepositRate = numberOrUndefined(
+    quote.approval_snapshot?.customerSelection?.depositRate,
+  );
+  const configuredDepositPercent = Math.round(
+    resolveQuoteDepositRate({
+      depositPercent: (quote.inputs as QuoteInputs | null)?.depositPercent,
+      resultRate: quote.result?.depositRate ?? undefined,
+      snapshotRate: frozenDepositRate,
+    }) * 100,
+  );
+  // Fix round 2 (delta-verify MED x2): what the caution may CLAIM depends on
+  // the quote's state, and the instruction it gives has to be one that can
+  // actually run — the enumeration lives in depositCaution, which is pure and
+  // tested. `frozen` picks the honest basis wording, mirroring the list chip:
+  // 8 of 24 live approved quotes have NO frozen rate, and for those "the
+  // customer agreed to X%" is a claim nothing on file supports.
+  const caution = depositCaution({
+    pricedPercent: pricedDepositPercent,
+    configuredPercent: configuredDepositPercent,
+    status,
+  });
+  const configuredBasis = frozenDepositRate !== undefined ? 'agreed at approval' : 'currently configured';
+
+
+  // Row 344 fix round (staff-lens HIGH): the audit trail route.ts appends to
+  // on a scene-driven reprice of an approved-not-booked quote was written
+  // and read back NOWHERE — a staffer who navigated away lost every trace of
+  // the divergence between the portal (frozen/stale) and the live total.
+  // Surfaced here the same way the amendment trail above already is: a
+  // header pill while the divergence is still LIVE (status still 'approved',
+  // i.e. not yet booked/declined/revived-and-resent) + a persistent panel
+  // listing every entry, so the trail survives a page reload even after the
+  // quote moves on.
+  const postApprovalReprices = (quote.approval_snapshot?.postApprovalReprices ?? []) as Array<{
+    at: string;
+    by: string | null;
+    previous_total: number;
+    new_total: number;
+    delta: number;
+  }>;
 
   // #163 Slice B — a pending customer colour-change request (set by the portal
   // "Request colour change" button). Staff Apply (re-freeze) or Dismiss it.
@@ -151,8 +195,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   // #155 — for a legacy rebook, show what light color/pattern the customer
   // approved with (once approved). null while awaiting approval, or for a
   // normal (non-rebook) quote — the line simply doesn't render.
-  const chosenLightColor =
-    quote.legacy_rebook ? chosenLightColorLabel(quote.approval_snapshot?.customerSelection) : null;
+  // Row 362: resolved against THIS quote's vertical. Before, this called the
+  // label helper with no scheme list, so it silently used the holiday one — a
+  // permanent quote's colour would have read "Staff's pick". Pre-existing and
+  // narrow here (legacy_rebook only), but it is the same defect row 362 is
+  // about, so it is fixed rather than carried forward.
+  const chosenLightColor = quote.legacy_rebook
+    ? await approvedColorLabelForQuote(quote.approval_snapshot, quote.service_type)
+    : null;
 
   // Permanent Lighting (#88 P7/P8): the operator BOM (Ascend/Dauer APL material
   // list + wholesale cost) for ordering. Null for non-permanent quotes. Materials
@@ -229,6 +279,29 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               View-only
             </span>
           )}
+          {/* Row 344 fix round (staff-lens HIGH; second fix round, technical-
+              lens HIGH): the divergence is still LIVE only while the quote
+              sits in a status where /api/quote's own reprice-signal write can
+              still fire — 'approved' (not yet booked) OR 'booked' (via the
+              amendReprice bypass). The FIRST fix round scoped this pill to
+              'approved' only, matching that round's OWN gate at the time —
+              but a later round widened the write's gate to also cover
+              'booked' and never revisited this pill, so it went dark for
+              exactly the highest-money-risk case (a booked, already-amended
+              order) the widening exists to cover. Now reads
+              repriceSignalCanFire (lib/quoteStatus.ts) — the SAME predicate
+              route.ts's gate reads — so the two can never independently
+              drift apart again. Once the quote leaves both statuses (booked
+              orders don't leave 'booked' except to a terminal state; approved
+              orders leave via decline/revive/re-send or moving to 'booked')
+              the portal question this pill flags has been resolved one way
+              or another, so it stops showing here (the panel below still
+              keeps the historical trail regardless of status). */}
+          {repriceSignalCanFire(status) && postApprovalReprices.length > 0 && (
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+              Repriced since approval ({postApprovalReprices.length})
+            </span>
+          )}
           {/* Staff-only toggle (detail page only, not the /admin/quotes list) —
               lets staff set/unset the flag for a hand-built quote that missed
               the migration (e.g. #1191). */}
@@ -284,6 +357,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           )}
         </div>
 
+        <StaffNotesPanel key={id} quoteId={id} />
+
         {/* Design photos (#13 PR5) — read-only thumbnails, base + extras. */}
         {photoThumbs.length > 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
@@ -300,6 +375,22 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               ))}
             </div>
           </div>
+        )}
+
+        {design && (
+          <PortalImageVisibilityControls
+            designId={design.id}
+            portalShowStreetView={design.portalShowStreetView}
+            portalShowSatelliteView={design.portalShowSatelliteView}
+            // Row 429: WIDER than the design freeze on purpose. `isSceneFrozen`
+            // exempts a booked order (the amend path); this confirms on one too,
+            // because a booked customer has approved AND paid. These toggles stay
+            // ALLOWED — they are presentational, and row 370 audits them — but
+            // they ask first.
+            customerApproved={!!quote.customer_approved_at && !quote.is_test}
+            hasStreetImage={design.hasStreetImage}
+            hasSatelliteImage={design.hasSatelliteImage}
+          />
         )}
 
         {/* Timeline */}
@@ -415,10 +506,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dt>
                     Deposit
                     {/* #177 fix 5: surface the percent when it's not the 50% default —
-                        cheaply derivable from the same result.depositRate. */}
-                    {Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100) !== 50 && (
-                      <> ({Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)</>
-                    )}
+                        cheaply derivable from the same result.depositRate. This
+                        stays the rate the FIGURE beside it was priced with, so
+                        the percent and the dollars can never disagree; row 409's
+                        staleness caution below names the configured rate when
+                        the two have drifted apart. */}
+                    {pricedDepositPercent !== 50 && <> ({pricedDepositPercent}%)</>}
                   </dt>
                   <dd>{money(quote.result.depositAmount)}</dd>
                 </div>
@@ -426,6 +519,37 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dt>Balance due</dt>
                   <dd>{money(quote.result.balanceDue)}</dd>
                 </div>
+                {/* Row 409 (staff lens HIGH on PR #968). Tagging a quote NCE
+                    writes inputs.depositPercent and does NOT reprice, by design
+                    — so until someone runs Calculate again, the deposit figures
+                    above are the OLD rate's while the portal, the approve route
+                    and the Valor charge all read the new one (chargesFromResult
+                    prefers inputs.depositPercent). The admin list's deposit chip
+                    shows the new rate, so without this the two staff screens
+                    disagree about one quote with nothing on either to explain
+                    it. This does not invent a corrected dollar figure: a partial
+                    selection prices the deposit off the SELECTED subtotal, not
+                    off this total, so the only honest thing to show is which
+                    rate produced these numbers and which one is configured. */}
+                {caution && (
+                  <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                    {caution.kind === 'recalc' ? (
+                      <>
+                        This quote&rsquo;s deposit is {caution.configured}% ({configuredBasis}), but
+                        the figures above were priced at {caution.priced}%. Reopen the quote and
+                        Calculate again to bring them in line — collection uses the{' '}
+                        {caution.configured}% rate.
+                      </>
+                    ) : (
+                      <>
+                        The figures above were priced at {caution.priced}%, but this order&rsquo;s
+                        deposit was {caution.configured}% ({configuredBasis}). The deposit has
+                        already been settled, so this is a record of the drift, not something to
+                        fix.
+                      </>
+                    )}
+                  </p>
+                )}
               </dl>
             </>
           )}
@@ -596,6 +720,30 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   </li>
                 );
               })}
+            </ol>
+          </div>
+        )}
+
+        {/* Row 344 fix round (staff-lens HIGH): the durable audit trail for a
+            scene-driven reprice of an approved-not-booked quote — mirrors the
+            Amendments panel's shape immediately above. Shown whenever any
+            entries exist, even after the quote has moved past 'approved'
+            (booked/declined/etc.), so the record survives — only the header
+            pill above is scoped to the still-live divergence. */}
+        {postApprovalReprices.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+              Repriced since approval ({postApprovalReprices.length})
+            </h2>
+            <ol className="space-y-3 text-sm">
+              {postApprovalReprices.map((r, i) => (
+                <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
+                  <p className="text-gray-500 text-xs">
+                    {fmtDate(r.at)} · by {r.by ?? 'unknown'} ·{' '}
+                    {r.delta >= 0 ? '+' : '−'}{money(Math.abs(r.delta))} · {money(r.previous_total)} → {money(r.new_total)}
+                  </p>
+                </li>
+              ))}
             </ol>
           </div>
         )}

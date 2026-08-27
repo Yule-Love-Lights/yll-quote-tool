@@ -9,6 +9,9 @@ const { cancelOrder, recordAutoSentSignature } = vi.hoisted(() => ({
 vi.mock('@/lib/supabase', () => ({ isSupabaseServiceConfigured: () => true }));
 vi.mock('@/lib/inventory/orders', () => ({ cancelOrder }));
 vi.mock('@/lib/inventory/purchaseOrder', () => ({ recordAutoSentSignature }));
+// ledger #347: requireOperator is now engaged by default — stub it authorized
+// like the other route.ts test suites do; this suite is about cancel logic.
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
 
 import { POST } from './route';
 

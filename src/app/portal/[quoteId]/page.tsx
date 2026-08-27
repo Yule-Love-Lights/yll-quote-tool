@@ -46,6 +46,7 @@ import { PersonalContact } from '@/components/portal/dark/PersonalContact';
 import { TrustSection } from '@/components/portal/dark/TrustSection';
 import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
+import { StaffPreselectBar } from '@/components/portal/StaffPreselectBar';
 import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
 import { SectionViewTracker } from '@/components/portal/SectionViewTracker';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
@@ -62,13 +63,19 @@ import {
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
-import { deriveIsBooked, resolveApprovalSelectionSeed, resolveBrowsingSelectionSeed } from '@/lib/portal/adapter';
+import {
+  deriveIsBooked,
+  resolveApprovalSelectionSeed,
+  resolveBrowsingSelectionSeed,
+  showStaffPreselectNotice,
+} from '@/lib/portal/adapter';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import { canCustomerRecolor } from '@/lib/serviceType';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
+import { getOperator } from '@/lib/auth/supabaseServer';
 
 type Params = { quoteId: string };
 
@@ -127,10 +134,17 @@ export default async function PortalPage({
   // still propagates normally through Promise.all (it isn't wrapped in a
   // try/catch here), matching the pre-existing "notFound() must not be
   // swallowed" contract documented on resolveQuote itself.
-  const [quote, liveReviews, appSettings] = await Promise.all([
+  // Ledger row 324 — a real authenticated operator session (never merely the
+  // STAFF_DEVICE_COOKIE) reveals the staff-only "Save as customer's starting
+  // selection" bar below. Independent of the other three reads, so it joins
+  // the same Promise.all (perf fix W4-005's pattern) rather than stacking a
+  // fourth round-trip. This never gates the PAGE itself — /portal/ is public
+  // regardless (src/proxy.ts) — it only conditionally reveals extra UI.
+  const [quote, liveReviews, appSettings, operator] = await Promise.all([
     resolveQuote(quoteId),
     fetchGoogleReviews(),
     getAppSettings(),
+    getOperator(),
   ]);
   const team = resolveTeam();
 
@@ -419,6 +433,16 @@ export default async function PortalPage({
         schemes={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.schemes : appSettings.swatches.schemes}
         buildableColorIds={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.buildableColorIds : appSettings.swatches.buildableColorIds}
       >
+        {/* Ledger row 324 — staff-only "Save as customer's starting selection".
+            Gated on a REAL operator session (never a customer) and on the
+            quote not already being approved/booked — an approved quote's
+            frozen snapshot can't be pre-selected, matching the write route's
+            own 'locked' 409 (see staff-selection/route.ts). Inside the
+            provider because it reads the live selection via useSelection(). */}
+        {operator && !isApproved && (
+          <StaffPreselectBar quoteId={quoteId} customerViewed={!!quote.viewedAt} />
+        )}
+
         {/* 1. InteractiveHero — the whole first screen is the product */}
         <InteractiveHero
           firstName={quote.customer.firstName}
@@ -464,6 +488,10 @@ export default async function PortalPage({
           palette={appSettings.colors}
           renderSettings={appSettings.render}
           serviceType={quote.serviceType}
+          // Row 324 fix round (customer MED): a returning customer whose
+          // choices were staff-preselected sees one plain line explaining it
+          // — see showStaffPreselectNotice's own comment for the self-clear.
+          showStaffPreselectNotice={showStaffPreselectNotice(quote.browsingSelection, quote.viewedAt)}
         />
 
         {/* 3.4 Your Event Schedule (#96) — the 3 staff-entered dates as a timeline;
@@ -480,7 +508,7 @@ export default async function PortalPage({
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
             between the totals box above and Your Protection below). Renders
             nothing for single-photo designs. */}
-        {quote.design && (
+        {quote.design?.imageVisibility.street && (
           <PhotoGallery
             design={quote.design}
             palette={appSettings.colors}

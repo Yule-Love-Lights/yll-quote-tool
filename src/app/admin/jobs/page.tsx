@@ -8,6 +8,7 @@ import type { JobAdminCard } from '@/lib/jobs';
 import { JOB_STATUSES, type JobStatus } from '@/lib/jobStatus';
 import { JobStatusBadge, JOB_STATUS_LABELS } from '@/components/admin/JobStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { JobsListSkeleton } from './JobsListSkeleton';
 
@@ -143,6 +144,8 @@ export default function JobsAdminPage() {
                 <tr>
                   <th className="text-left px-3 py-2">Created</th>
                   <th className="text-left px-3 py-2">Job</th>
+                  {/* Row 419: service line, consistent across the admin lists. */}
+                  <th className="text-left px-3 py-2">Service</th>
                   <th className="text-left px-3 py-2">Customer</th>
                   <th className="text-left px-3 py-2">Address</th>
                   <th className="text-left px-3 py-2">Status</th>
@@ -159,6 +162,11 @@ export default function JobsAdminPage() {
                       <Link href={`/admin/jobs/${j.id}`} className="text-blue-600 hover:underline">
                         {j.jobNumber != null ? `#${j.jobNumber}` : j.id.slice(0, 8)}
                       </Link>
+                    </td>
+                    {/* Row 419: em dash when the job has no linked quote — the
+                        job's own `type` can't recover the service line. */}
+                    <td className="px-3 py-2">
+                      {j.serviceType != null ? <ServiceTypeBadge serviceType={j.serviceType} /> : <span className="text-gray-400">—</span>}
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">

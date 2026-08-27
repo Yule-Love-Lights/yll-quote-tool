@@ -105,14 +105,6 @@ export type PermanentQuoteFields = {
   sidesCustomRate?: number;
   backCustomRate?: number;
   /**
-   * Per-side provenance for footage/corners (#88). 'auto' = last written by a
-   * design Refresh, 'manual' = the operator typed it. "Refresh from design"
-   * overwrites 'auto' sides (INCLUDING clearing a side whose design run was
-   * deleted, so a stale run can't keep billing) but preserves 'manual'
-   * (satellite-measured) sides. Absent/legacy reads as 'manual'.
-   */
-  sideSource?: Partial<Record<'front' | 'left' | 'right' | 'back', 'auto' | 'manual'>>;
-  /**
    * Staff "advised for this home" flags per side (#131 — the WW/Stake #12
    * pattern: rides the inputs, saves on Calculate). The portal opens with the
    * recommended sides pre-selected instead of the Whole Home default.
@@ -141,6 +133,32 @@ export type PermanentQuoteFields = {
    * legacy gaps path.
    */
   accessoriesSource?: 'auto' | 'manual';
+  /**
+   * Row 400: per-FIELD provenance for the 8 footage/corners values (footage
+   * and corners reconcile independently — see reconcileSideFootage.ts — so a
+   * side-level flag would lie the moment one field on a side is overridden
+   * and the other isn't). 'auto' = the reconcile derive effect
+   * (QuoteBuilder.tsx) actually stamped this field this run; 'manual' = the
+   * operator typed it (PermanentSection's setMeasure). Absent = never
+   * written by either path (a legacy quote, or a field with no satellite
+   * scale yet). Keyed by the SAME 8 strings as
+   * reconcileSideFootage.ts's PermanentSideFieldKey (not imported — this
+   * file stays import-free by design, see the header comment).
+   *
+   * This replaces the deleted `sideSource` field (row 380): that one could
+   * only ever read 'manual' (its 'auto' writer, applyPermanentAnalysis, was
+   * removed in the S22 revert), so surfacing it would have shown a false
+   * "manually set" badge on every untouched auto-derived side. This field
+   * has a REAL 'auto' writer (the derive effect itself), so the badge it
+   * drives can't lie the way the deleted one would have.
+   */
+  sideMeasureSource?: Partial<Record<
+    | 'frontFootage' | 'frontCorners'
+    | 'leftFootage' | 'leftCorners'
+    | 'rightFootage' | 'rightCorners'
+    | 'backFootage' | 'backCorners',
+    'auto' | 'manual'
+  >>;
 };
 
 /**
@@ -249,7 +267,6 @@ export function makeDefaultPermanentFields(): PermanentQuoteFields {
     trackColor: '9003',
     blackHousing: false,
     maintenanceAddOn: false,
-    sideSource: {},
     trackStyleBySide: {},
   };
 }

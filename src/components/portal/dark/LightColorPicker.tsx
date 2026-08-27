@@ -60,6 +60,19 @@ export function customColorAddedProps(quoteId: string | undefined, serviceType: 
   return { quote_id: quoteId, service_type: serviceType, scheme: 'custom', custom: true, color: colorId };
 }
 
+export function colorPickerIntro(legacyRebook: boolean, previewAvailable: boolean): string {
+  if (legacyRebook) return 'Want to change up your lights this year? Let us know below!';
+  return previewAvailable
+    ? 'Pick a color or pattern — your design recolors instantly above.'
+    : 'Pick the color or pattern you’d like for your lights.';
+}
+
+export function bookedColorRequestIntro(previewAvailable: boolean): string {
+  return previewAvailable
+    ? 'Want a different look? Preview any colour above, then send us the request and we’ll follow up.'
+    : 'Want a different look? Choose any colour above, then send us the request and we’ll follow up.';
+}
+
 export function LightColorPicker() {
   const {
     colorSchemeId,
@@ -141,9 +154,7 @@ export function LightColorPicker() {
           Light color
         </p>
         <p className="text-[14px] md:text-[15px] text-[#A89F87] mb-4">
-          {legacyRebook === true
-            ? 'Want to change up your lights this year? Let us know below!'
-            : 'Pick a color or pattern — your design recolors instantly above.'}
+          {colorPickerIntro(legacyRebook === true, daylightAvailable)}
         </p>
         {/* #61 — daytime⇄lit view toggle, moved here from the hero top bar. Drives
             the hero's day/night view via SelectionContext. Only when a base photo
@@ -318,8 +329,7 @@ export function LightColorPicker() {
             ) : (
               <>
                 <p className="text-[13px] md:text-[14px] text-[#A89F87] mb-2.5">
-                  Want a different look? Preview any colour above, then send us the request and we&apos;ll
-                  follow up.
+                  {bookedColorRequestIntro(daylightAvailable)}
                 </p>
                 <button
                   type="button"

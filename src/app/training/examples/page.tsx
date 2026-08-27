@@ -276,6 +276,10 @@ export default function TrainingExamplesPage() {
 
                 {isOpen && (
                   <div className="border-t border-gray-200 p-3 bg-gray-50">
+                    {/* Row 410 judged this one a KEEP: the panel only exists because the
+                        operator just clicked to expand this row, so the growth is the
+                        gesture they asked for, and the detail's height depends on how many
+                        photos the example has — a fixed skeleton could not match it. */}
                     {loadingDetail && <p className="text-xs text-gray-500">Loading photos…</p>}
                     {detailError && (
                       <p className="text-xs text-red-600">Couldn&rsquo;t load this example: {detailError}</p>

@@ -53,6 +53,20 @@ export class SceneConflictError extends Error {
   }
 }
 
+// Row 367: the OTHER 409 this endpoint can return — the linked quote has a
+// frozen (customer-approved) agreement, so the scene is locked. Distinguished
+// from SceneConflictError because the remedy is the opposite: a conflict is
+// fixed by reloading, a lock is not fixed by anything the editor can do, and
+// telling staff to "reload to see the latest version" would be a lie that
+// loops forever. Carries the server's own message so the copy lives in one
+// place (sceneFreeze.ts).
+export class SceneLockedError extends Error {
+  constructor(message?: string) {
+    super(message ?? 'This design is locked — the customer already approved it.');
+    this.name = 'SceneLockedError';
+  }
+}
+
 export type EditorApi = {
   getDesign(id: string): Promise<Design>;
   updateDesign(id: string, patch: DesignPatch): Promise<Design>;
@@ -119,7 +133,17 @@ export function createEditorApi(designId: string): EditorApi {
         // this write (a concurrent writer already moved the version) — throw
         // a distinguishable error so doSave() can tell this apart from an
         // ordinary network/5xx failure and NOT auto-retry the same overwrite.
-        if (res.status === 409) throw new SceneConflictError();
+        if (res.status === 409) {
+          // Row 367: two different 409s now. `code: 'design-locked'` is the
+          // post-approval freeze; anything else is the row-260 CAS conflict.
+          // Read the body BEFORE deciding — treating a lock as a conflict
+          // would tell staff to reload into the same lock, forever.
+          const body = (await res.json().catch(() => ({}))) as { code?: unknown; error?: unknown };
+          if (body?.code === 'design-locked') {
+            throw new SceneLockedError(typeof body.error === 'string' ? body.error : undefined);
+          }
+          throw new SceneConflictError();
+        }
         if (!res.ok) throw new Error(`save scene failed: ${res.status}`);
         const data = await res.json().catch(() => ({}));
         if (typeof data.version === 'number') newVersion = data.version;

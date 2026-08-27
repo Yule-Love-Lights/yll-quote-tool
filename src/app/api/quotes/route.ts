@@ -8,9 +8,9 @@ export const runtime = 'nodejs';
 // Operator-only routes for listing + bulk-deleting persisted quote rows. Used by
 // /admin/quotes to clean up fake/test entries during development. The operator
 // surface is gated by the session perimeter (ledger #81); these handlers also
-// call requireOperator() as defense in depth — DORMANT until AUTH_GATE_ENABLED
-// =true, so the same-origin /admin/quotes fetches keep working today and ride
-// the operator session cookie once the gate is live.
+// call requireOperator() as defense in depth — engaged by default (ledger
+// #347), so the same-origin /admin/quotes fetches ride the operator session
+// cookie.
 
 // Audit fix (g29-route): the bulk wipe deletes ALL customer PII in a single
 // call. Require an explicit confirmation header IN ADDITION to operator auth so

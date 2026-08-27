@@ -77,8 +77,8 @@ const MINI = (id: string, surface?: string, stringCount?: number, colorPattern?:
   ({ kind: 'strand', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
 const AREA = (id: string, surface: string, stringCount: number, colorPattern: string[], groupId?: string): SceneItem =>
   ({ kind: 'miniArea', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
-const GROUP = (id: string, surface: string, stringCount: number): SceneItem =>
-  ({ kind: 'miniGroup', id, surface, stringCount, memberIds: [], included: true }) as unknown as SceneItem;
+const GROUP = (id: string, surface: string, stringCount: number, colorPattern?: string[]): SceneItem =>
+  ({ kind: 'miniGroup', id, surface, stringCount, colorPattern, memberIds: [], included: true }) as unknown as SceneItem;
 const ROOF = (id: string, surface?: string): SceneItem =>
   ({ kind: 'strand', id, surface, included: true }) as unknown as SceneItem;
 
@@ -185,6 +185,13 @@ describe('projectMaterials — garland / spritzer / mini', () => {
     const lines = projectMaterials(scene([GROUP('g1', 'railing', 4)]), B);
     expect(lines).toEqual([
       { sku: 'MINIWW', qty: 4, category: 'mini', conceptKey: 'mini:Warm White', label: 'Warm White mini (railing) × 4', sceneItemId: 'g1' },
+    ]);
+  });
+
+  it('mini-group authored with a pattern orders that strand at the billed group count', () => {
+    const lines = projectMaterials(scene([GROUP('g1', 'railing', 4, ['red', 'green', 'cool-white'])]), B);
+    expect(lines).toEqual([
+      { sku: '43346', qty: 4, category: 'mini', conceptKey: 'mini:grinch', label: 'grinch mini (railing) × 4', sceneItemId: 'g1' },
     ]);
   });
 });

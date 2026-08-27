@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
 import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
@@ -19,9 +19,11 @@ import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel'
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { listJobsForCustomer } from '@/lib/jobs';
-import { listInvoicesForCustomer } from '@/lib/invoices';
+import { listInvoicesForCustomer, serviceTypesForQuotes } from '@/lib/invoices';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
+import { getApprovedColorLabels } from '@/lib/design/approvedColorLabels';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,8 +59,9 @@ export default async function CustomerDetailPage({
 }) {
   // Defense in depth behind the middleware perimeter — re-check at render so this
   // customer-PII surface never serves anonymously even if the perimeter is
-  // bypassed. Dormant until the auth gate is live (Slice 4).
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // bypassed. Engaged by default; dormant only on the explicit
+  // AUTH_GATE_ENABLED=false opt-out (ledger #347).
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/customers');
   }
   // The route id is either a HighLevel contact id (CRM-linked customers) or a
@@ -123,8 +126,32 @@ export default async function CustomerDetailPage({
   // the resolved customer_id OR belonging to one of the quotes already shown
   // above — the second leg covers legacy rows whose customer_id is still null.
   const quoteIds = quotes.map(q => q.id);
+  // Row 362: the approved light colour per quote, so this profile answers
+  // "what colour did they want?" without opening each quote. Best-effort — an
+  // empty map renders the table exactly as it did before.
+  const colorLookup = await getApprovedColorLabels(quoteIds);
   const jobs = await listJobsForCustomer(customerId, quoteIds);
   const invoices = await listInvoicesForCustomer(customerId, quoteIds);
+  // Row 419: invoices don't carry a service_type — resolve each through its
+  // linked quote. Seeded from the quotes already fetched above, then topped up
+  // for any invoice whose quote fell outside that list: `quotes` is filtered
+  // from the newest-500 SYSTEM-WIDE dashboard query, while the invoices list
+  // is matched by customer_id with no such cap, so a returning customer's
+  // older order would otherwise show a false "no linked quote" em dash
+  // (premerge staff lens MED on this PR).
+  const serviceTypeByQuote = new Map<string, string | null>(quotes.map(q => [q.id, q.service_type]));
+  const uncoveredQuoteIds = [
+    ...new Set(
+      invoices
+        .map(inv => inv.quote_id)
+        .filter((x): x is string => !!x && !serviceTypeByQuote.has(x)),
+    ),
+  ];
+  if (uncoveredQuoteIds.length) {
+    for (const [id, svc] of await serviceTypesForQuotes(uncoveredQuoteIds)) {
+      serviceTypeByQuote.set(id, svc);
+    }
+  }
 
   // Property-aware rebook (WT-53): resolve this customer's properties server-side
   // so RebookButton can scope the clone to a KNOWN building instead of falling
@@ -289,7 +316,12 @@ export default async function CustomerDetailPage({
                 <tr>
                   <th className="text-left px-4 py-2 font-semibold">Created</th>
                   <th className="text-left px-3 py-2 font-semibold">Quote</th>
+                  {/* Row 419 (Jason device note): the Jobs table below already
+                      shows a type; quotes get the real service line, in the
+                      same column position. */}
+                  <th className="text-left px-3 py-2 font-semibold">Service</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
+                  <th className="text-left px-3 py-2 font-semibold">Light colour</th>
                   <th className="text-right px-3 py-2 font-semibold">Total</th>
                   <th className="px-3 py-2"></th>
                 </tr>
@@ -304,7 +336,20 @@ export default async function CustomerDetailPage({
                       {/* Sequential display number (#83) when allocated; falls
                           back to the truncated UUID on legacy rows (BUG-2, S22). */}
                       <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
+                      <td className="px-3 py-2.5"><ServiceTypeBadge serviceType={q.service_type} /></td>
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
+                      {/* Row 362, premerge staff-lens MED: an em dash means
+                          "no colour approved". When the LOOKUP failed it must
+                          not claim that — the whole point of the column is
+                          answering what the customer wanted, and a confident
+                          "none" is worse than an honest "unknown". */}
+                      <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>
+                        {colorLookup.ok ? (
+                          (colorLookup.labels.get(q.id) ?? '—')
+                        ) : (
+                          <span title="Colour lookup unavailable — open the quote to check">unknown</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">
                         <Link href={`/quote/${q.id}`} className="text-xs hover:underline mr-2" style={{ color: 'var(--op-primary)' }}>Open</Link>
@@ -374,6 +419,9 @@ export default async function CustomerDetailPage({
                 <tr>
                   <th className="text-left px-4 py-2 font-semibold">Created</th>
                   <th className="text-left px-3 py-2 font-semibold">Invoice</th>
+                  {/* Row 419: service line resolved through the linked quote
+                      (invoices don't carry their own service_type). */}
+                  <th className="text-left px-3 py-2 font-semibold">Service</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
                   <th className="text-right px-3 py-2 font-semibold">Total</th>
                   <th className="text-right px-3 py-2 font-semibold">Balance</th>
@@ -386,6 +434,16 @@ export default async function CustomerDetailPage({
                   <tr key={inv.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
                     <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(inv.created_at)}</td>
                     <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Invoice ID: ${inv.id}`}>{inv.invoice_number != null ? `#${inv.invoice_number}` : inv.id.slice(0, 8)}</td>
+                    {/* Resolved through the linked quote; an invoice whose
+                        quote isn't in this customer's list stays an em dash
+                        rather than guessing a default. */}
+                    <td className="px-3 py-2.5">
+                      {inv.quote_id && serviceTypeByQuote.has(inv.quote_id) ? (
+                        <ServiceTypeBadge serviceType={serviceTypeByQuote.get(inv.quote_id)} />
+                      ) : (
+                        <span style={{ color: 'var(--op-text-dim)' }}>—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2.5"><InvoiceStatusBadge status={inv.status} /></td>
                     <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(inv.total)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(inv.balance)}</td>

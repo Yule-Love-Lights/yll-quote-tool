@@ -87,8 +87,10 @@ async function latestApprovedQuote(customerId: string): Promise<{ id: string; se
 // Referral page bug batch 2026-07-17 (ledger #41) fix 1: the hero used to
 // show the referrer's RAW base house photo (`design.photoUrl`, no lights;
 // the lights only exist as scene data drawn over the photo). Owner-approved
-// fix: render the SAME live lit-design the portal shows, via the
-// ReferralHeroDesign client island. The 'design' branch below carries
+// fix: render the live lit-design with the same renderer as the portal, via
+// the ReferralHeroDesign client island. Per-quote image visibility deliberately
+// does not change this public referral hero; customer quote payloads and the
+// self-serve design poller enforce it separately. The 'design' branch below carries
 // everything that island needs; the 'photo' branch is the unchanged
 // gallery-photo fallback (no design, opted out, or no photo on the design).
 type HeroResolution =

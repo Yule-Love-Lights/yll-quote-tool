@@ -9,10 +9,9 @@
 //        result screen polls this until the drawing lands.
 //   { error } with 404 (flag off) / 400 (bad id) / 429 (rate limited)
 //
-// Read-only and flag-gated. Returns the SAME { scene, photoUrl } shape the portal
-// hero already exposes for any quote by UUID (loadPortalQuote → PortalQuote.design),
-// so this adds no new data surface — it just lets the pre-portal estimate screen
-// show the customer the measured roofline they were priced on.
+// Read-only and flag-gated. Returns the same { scene, photoUrl } shape as the
+// portal hero while the house view is visible. A staff-hidden house view stays
+// hidden here too, so this public poller never bypasses the portal control.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSelfServeEstimateEnabled } from '@/lib/selfServe/estimateFlag';
@@ -59,7 +58,11 @@ export async function GET(req: NextRequest) {
   // then keep the client polling (or, if the seed truly failed, poll out to no
   // visual — never a blank one).
   const scene = design?.scene;
-  const seeded = !!design?.photoUrl && Array.isArray(scene?.items) && scene.items.length > 0;
+  const seeded =
+    design?.portalShowStreetView === true &&
+    !!design.photoUrl &&
+    Array.isArray(scene?.items) &&
+    scene.items.length > 0;
   if (!design || !seeded) {
     return NextResponse.json({ ready: false }, { status: 200 });
   }

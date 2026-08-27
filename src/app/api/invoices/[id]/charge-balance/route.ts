@@ -73,15 +73,26 @@
 // release valve, mirroring overridePreference exactly; the two can combine
 // (an NCE + cash_check invoice needs both flags to charge the card anyway).
 //
+// Row 341: before charging, RECONCILE the fresh invoice against the quote's
+// current agreed total (computeInvoiceResyncTotals — same formula
+// resyncInvoiceToAgreedTotal uses) — an /amend or /amend-decline whose
+// invoice re-sync lost its CAS race twice (see quoteAmendInvoiceSync.ts)
+// leaves the invoice stale indefinitely with nothing to self-heal it, and
+// this route would otherwise charge that stale figure. Body
+// `{ overrideStale: true }` is the release valve, mirroring
+// overridePreference/overrideNce exactly.
+//
 // Response: { ok, charged, invoice } | { ok:false, reason, error }
 //   reason additionally includes (this idempotency pre-claim):
 //     'charge-in-flight' — a charge is already being attempted (409); retry later.
 //     'already-charged'  — a real txn id is already on file (409); reconcile in Valor.
+//     'invoice-stale'    — the invoice doesn't match the quote's current agreed
+//                          total (409); reconcile it or pass overrideStale.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getInvoice, appendRetiredTxn } from '@/lib/invoices';
+import { getInvoice, appendRetiredTxn, type InvoicePricingInput } from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import {
@@ -94,6 +105,15 @@ import { planBalanceCollection } from '@/lib/balanceCollection';
 import { chargeBalanceOnFile, isAutoChargeEnabled, CHARGE_SLOT_STALE_MS } from '@/lib/integrations/valorBalance';
 import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, reconsentRequiredClause, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
+// Row 341 (staff-lens HIGH): the reconciliation guard below recomputes the
+// SAME invoice-basis figures resyncInvoiceToAgreedTotal would have written,
+// from the quote's CURRENT agreed total — the one place both formulas live.
+import {
+  computeInvoiceResyncTotals,
+  priorBalanceCollectedUsd,
+  clearInvoiceStaleMarkers,
+} from '@/lib/quoteAmendInvoiceSync';
+import { resolveAgreedTotal } from '@/lib/agreedTotal';
 // #173: same EPSILON-nudged + finite-guarded round-to-cents invoices.ts/amend.ts/
 // balanceCollection.ts already alias as round2 — used to keep the stale-balance
 // diagnosis's "difference still owed" free of floating-point noise.
@@ -132,6 +152,12 @@ type QuoteCardRow = {
   approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
   status: QuoteStatus | null;
   is_nce: boolean;
+  // Row 341: the full pricing result + paid deposit — needed by the
+  // reconciliation guard below to recompute the CURRENT agreed total's
+  // expected invoice figures (resolveAgreedTotal + computeInvoiceResyncTotals,
+  // same fields amend/route.ts's own QuoteRow selects for the same reason).
+  result: (InvoicePricingInput & { total: number }) | null;
+  deposit_amount_usd: number | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -146,9 +172,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
 
-  let body: { overrideReconsent?: unknown; overridePreference?: unknown; overrideNce?: unknown } = {};
+  let body: {
+    overrideReconsent?: unknown;
+    overridePreference?: unknown;
+    overrideNce?: unknown;
+    overrideStale?: unknown;
+  } = {};
   try {
-    body = (await req.json()) as { overrideReconsent?: unknown; overridePreference?: unknown; overrideNce?: unknown };
+    body = (await req.json()) as {
+      overrideReconsent?: unknown;
+      overridePreference?: unknown;
+      overrideNce?: unknown;
+      overrideStale?: unknown;
+    };
   } catch {
     body = {};
   }
@@ -157,6 +193,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const overridePreference = body.overridePreference === true;
   // #199: mirrors overridePreference exactly (request-scoped, never persisted).
   const overrideNce = body.overrideNce === true;
+  // Row 341: mirrors overridePreference/overrideNce exactly — the release
+  // valve for the reconciliation guard below.
+  const overrideStale = body.overrideStale === true;
 
   // Gate: no auto-charge capability confirmed → don't attempt anything.
   if (!isAutoChargeEnabled()) {
@@ -192,7 +231,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: qErr } = await sb
     .from('quotes')
-    .select('valor_vault_token, customer_name, customer_email, approval_snapshot, status, is_nce')
+    .select(
+      'valor_vault_token, customer_name, customer_email, approval_snapshot, status, is_nce, result, deposit_amount_usd',
+    )
     .eq('id', invoice.quote_id)
     .single<QuoteCardRow>();
   if (qErr || !quote) {
@@ -408,6 +449,71 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // guard and the settle CAS below both compare against this SAME fresh
   // number, never the stale `invoice.balance` read at request start.
   const chargeAmount = freshInvoice.balance;
+
+  // Row 341 (staff-lens HIGH, money-review): RECONCILIATION guard. The #173
+  // re-read above only protects against a race DURING this request; it
+  // re-reads the invoice, but the invoice ROW ITSELF can already be stale
+  // going in — an earlier /amend or /amend-decline whose invoice re-sync
+  // lost its CAS race (twice; resyncInvoiceToAgreedTotal retries once, then
+  // gives up — quoteAmendInvoiceSync.ts) leaves the invoice sitting at the
+  // WRONG total/balance indefinitely, with nothing to self-heal it. Without
+  // this check, `chargeAmount` above is exactly that stale figure, and this
+  // route would happily charge it — the concrete harm the review named.
+  // Recomputes the SAME expected total/balance a successful resync would
+  // have written — computeInvoiceResyncTotals, the one place that formula
+  // lives — from the quote's CURRENT agreed total (resolveAgreedTotal, the
+  // same precedence amend/route.ts's own previousTotal chain uses), and
+  // compares against the just-re-read `freshInvoice`. A SOFT gate, not a
+  // hard block (this repo has shipped and reverted an over-eager money
+  // freeze before, #199's NCE/cash-preference precedent for exactly this
+  // release-valve shape): `overrideStale` lets an operator who has already
+  // manually verified the figure charge anyway, mirroring
+  // overrideReconsent/overridePreference/overrideNce exactly. Skipped when
+  // the quote has no `result` — nothing to recompute against, the same
+  // permissive default every other quote_id-gated check in this route
+  // already takes on missing data.
+  // Row 404: did the stale-vs-agreed-total check actually RUN AND PASS?
+  // Only that proves the invoice matched the agreed total. Skipped (no
+  // quote.result) proves nothing, and overridden proves the opposite.
+  let staleCheckPassed = false;
+  if (quote.result && !overrideStale) {
+    const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, quote.result);
+    // Row 341 fix round 3 (technical-lens HIGH): pass priorBalanceCollectedUsd
+    // derived from this SAME freshInvoice read — without it, `expected` used
+    // the deposit-only formula while a genuinely-resynced invoice (after this
+    // fix round) now nets out a settled balance payment, so a correctly
+    // resynced invoice with money already collected beyond the deposit would
+    // fail this guard as "stale" every time (a false 409, not a real one).
+    const expected = computeInvoiceResyncTotals(
+      quote.result,
+      quote.deposit_amount_usd ?? 0,
+      agreedTotal,
+      freshInvoice.tax_overridden,
+      priorBalanceCollectedUsd(freshInvoice),
+    );
+    if (Math.abs(expected.balance - freshInvoice.balance) > 0.01) {
+      await releaseClaim('invoice stale vs the quote agreed total');
+      return NextResponse.json(
+        {
+          ok: false,
+          reason: 'invoice-stale',
+          error:
+            `The invoice balance ($${freshInvoice.balance}) doesn't match this order's current agreed total ` +
+            `(expected $${expected.balance}) — a prior amendment's invoice sync may not have landed. Reconcile ` +
+            // Row 388: this used to point at "edit the invoice directly", which
+            // doesn't exist anywhere in this app. "Resync to agreed total"
+            // (POST /api/invoices/:id/resync, the invoice detail page) is the
+            // real remedy — it calls the exact same resyncInvoiceToAgreedTotal
+            // this guard itself compares against.
+            `the invoice (re-run the amendment, or use "Resync to agreed total" on the invoice detail page) ` +
+            `before charging, or pass an explicit override to charge the amount currently on file anyway.`,
+        },
+        { status: 409 },
+      );
+    }
+    // Fell through the 409: the invoice balance equals the agreed total.
+    staleCheckPassed = true;
+  }
 
   const result = await chargeBalanceOnFile({
     vaultToken: quote.valor_vault_token,
@@ -723,6 +829,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   } catch (err) {
     console.warn('[api/invoices/:id/charge-balance] job close failed:', err);
+  }
+
+  // Row 404: the stale-invoice markers had NO in-app path to clear when the
+  // invoice needed no further re-price. `clearInvoiceStaleMarkers` was
+  // reachable only from resyncInvoiceToAgreedTotal, which runs from /amend and
+  // /amend-decline — and /amend hard-rejects with a 409 'no-change' when there
+  // is no real price delta. So an invoice carrying `invoiceResyncFailed` that
+  // was ALREADY correct could never clear it, and the board warning could only
+  // accumulate (the same failure shape as rows 394/404 themselves).
+  //
+  // Gated on staleCheckPassed, NOT merely on a successful charge. Passing that
+  // check means the invoice balance equalled the resolveAgreedTotal-derived
+  // figure that both markers exist to flag a violation of — the same condition
+  // a successful resync establishes — and this charge has now settled the
+  // invoice to paid/$0. An `overrideStale` charge deliberately does NOT clear:
+  // there the operator charged the amount ON FILE, which may differ from the
+  // agreed total, so the discrepancy is still real and the marker is the only
+  // record that this order was billed off a stale figure.
+  //
+  // Best-effort and last, exactly like the txn-record and job-close steps
+  // above: a failure here must never turn a completed charge into an error
+  // response. The marker simply stays until the next resync or passing charge.
+  if (staleCheckPassed) {
+    // Correlated to the snapshot this request's staleness check actually ran
+    // against (read at request start). A concurrent writer that flagged a NEW
+    // marker during the card round-trip trips the CAS, the clear drops, and
+    // that marker survives — see clearInvoiceStaleMarkers' own comment.
+    await clearInvoiceStaleMarkers(
+      invoice.quote_id,
+      '[api/invoices/:id/charge-balance]',
+      (quote.approval_snapshot ?? null) as Record<string, unknown> | null,
+    );
   }
 
   return NextResponse.json({
