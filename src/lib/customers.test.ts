@@ -1025,18 +1025,63 @@ describe('findOrCreateProperty', () => {
     expect(fake.tables.properties[0].address_key).toBe('123 main st');
   });
 
-  // W2-026 (newest-win) — same normalized address_key → refresh the display
-  // address + geo to the newer quote's values.
-  it('W2-026: refreshes display address + geo for the same normalized address', async () => {
+  // W2-026 (newest-win), narrowed by row 403 constraint (e): the display address
+  // still refreshes to the newest quote's formatting, but a bare {lat, lng} with
+  // no precision evidence may NOT touch the coordinate columns. The old contract
+  // let the first caller to wire a geocode through silently overwrite a
+  // rooftop-verified anchor with a town centroid.
+  it('W2-026 + (e): refreshes the display address, but an UNPROVEN geo cannot touch coordinates', async () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
-    const p1 = await findOrCreateProperty('cust-1', '123 Main St', { lat: 1, lng: 2 });
-    const p2 = await findOrCreateProperty('cust-1', '123 MAIN ST.', { lat: 3, lng: 4 }); // same key '123 main st'
+    const verified = {
+      locationType: 'ROOFTOP',
+      partialMatch: false,
+      hasStreetAddress: true,
+      county: 'Suffolk County',
+      state: 'New York',
+    };
+    const p1 = await findOrCreateProperty('cust-1', '123 Main St', { lat: 1, lng: 2, ...verified });
+    // Bare lat/lng, no evidence: display refreshes, coordinates do not.
+    const p2 = await findOrCreateProperty('cust-1', '123 MAIN ST.', { lat: 3, lng: 4 });
     expect(p2?.id).toBe(p1?.id);
     expect(fake.tables.properties).toHaveLength(1); // not a duplicate
     expect(fake.tables.properties[0].address).toBe('123 MAIN ST.'); // display refreshed
-    expect(fake.tables.properties[0].lat).toBe(3); // geo refreshed
-    expect(fake.tables.properties[0].lng).toBe(4);
+    expect(fake.tables.properties[0].lat).toBe(1); // anchor NOT degraded
+    expect(fake.tables.properties[0].lng).toBe(2);
+  });
+
+  it('constraint (e): a VERIFIED newer geo still wins, so real corrections propagate', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const verified = {
+      locationType: 'ROOFTOP',
+      partialMatch: false,
+      hasStreetAddress: true,
+      county: 'Nassau County',
+      state: 'New York',
+    };
+    await findOrCreateProperty('cust-1', '123 Main St', { lat: 1, lng: 2, ...verified });
+    await findOrCreateProperty('cust-1', '123 Main St', { lat: 40.7, lng: -73.6, ...verified });
+    expect(fake.tables.properties[0].lat).toBe(40.7);
+    expect(fake.tables.properties[0].lng).toBe(-73.6);
+  });
+
+  it('constraint (e): a centroid-shaped geo is refused even with coordinates present', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    await findOrCreateProperty('cust-1', '123 Main St', {
+      lat: 40.8,
+      lng: -73.2,
+      locationType: 'APPROXIMATE',
+      partialMatch: true,
+      hasStreetAddress: false,
+      county: 'Suffolk County',
+      state: 'New York',
+    });
+    // Inserted with NULL coordinates: the shape of the failure the S47 near-miss
+    // and the phase-1 backfill both exist to prevent.
+    expect(fake.tables.properties[0].lat ?? null).toBeNull();
+    expect(fake.tables.properties[0].lng ?? null).toBeNull();
   });
 
   it('a second property (rental) for the same customer is a new row', async () => {

@@ -8,33 +8,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { insert, state, getSupabaseServiceClient, recordGeozoneVisit } = vi.hoisted(() => {
+const { insert, state, getSupabaseServiceClient } = vi.hoisted(() => {
   const state: { error: { code?: string; message: string } | null } = { error: null };
   // The route now reads the inserted id back (`.insert(...).select('id')`) so the
   // visit timeline can reference the raw event it came from.
-  const insert = vi.fn((_row: Record<string, unknown>) => ({
-    select: async () => ({ data: state.error ? null : [{ id: 'evt-1' }], error: state.error }),
-  }));
+  const insert = vi.fn(async (_row: Record<string, unknown>) => ({ error: state.error }));
   return {
     insert,
     state,
     getSupabaseServiceClient: vi.fn(() => ({ from: () => ({ insert }) })),
-    recordGeozoneVisit: vi.fn(
-      async (_facts: {
-        bouncieGeozoneId: string;
-        direction: 'ENTER' | 'EXIT';
-        imei: string;
-        occurredAt: string;
-        eventId: string;
-      }) => ({ action: 'ignored' as const, reason: 'test' }),
-    ),
   };
 });
 
-vi.mock('@/lib/integrations/vehicleVisits', async (orig) => ({
-  ...(await orig<typeof import('@/lib/integrations/vehicleVisits')>()),
-  recordGeozoneVisit,
-}));
 
 /** The row handed to `insert` on the nth call. */
 function insertedRow(n = 0): Record<string, unknown> {
@@ -74,7 +59,6 @@ beforeEach(() => {
   process.env.BOUNCIE_WEBHOOK_SECRET = SECRET;
   insert.mockClear();
   state.error = null;
-  recordGeozoneVisit.mockClear();
   getSupabaseServiceClient.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -275,54 +259,5 @@ describe('ROW 403 CONSTRAINT (b) — the perimeter entry', () => {
     expect(isPublicPath('/api/integrations/bouncie', 'POST')).toBe(false);
     expect(isPublicPath('/api/integrations/bouncie/vehicles', 'GET')).toBe(false);
     expect(isPublicPath(`${PATH}/extra`, 'POST')).toBe(false);
-  });
-});
-
-
-describe('the visit timeline is derived, but never at the cost of the capture', () => {
-  const geozone = JSON.stringify({
-    eventType: 'applicationGeozone',
-    imei: '123456789012345',
-    vin: 'V',
-    transactionId: 'tx-1',
-    geozone: {
-      id: 'zone-abc',
-      name: '12 Elm St',
-      event: 'ENTER',
-      timestamp: '2026-08-27T14:00:00.000Z',
-      location: { lat: 40.7, lon: -73.5, heading: 90 },
-    },
-  });
-
-  it('records a visit for a geofence event', async () => {
-    await POST(makeReq(geozone, { authorization: SECRET }));
-    expect(recordGeozoneVisit).toHaveBeenCalledOnce();
-    expect(recordGeozoneVisit.mock.calls[0]![0]).toMatchObject({
-      bouncieGeozoneId: 'zone-abc',
-      direction: 'ENTER',
-      imei: '123456789012345',
-      eventId: 'evt-1',
-    });
-  });
-
-  it('does not try to derive a visit from a non-geofence event', async () => {
-    await POST(makeReq(tripStart, { authorization: SECRET }));
-    expect(recordGeozoneVisit).not.toHaveBeenCalled();
-  });
-
-  it('STILL RETURNS 200 when visit derivation throws', async () => {
-    // The capture is the source of truth and can be reprocessed. Answering
-    // Bouncie with an error would get the webhook retried and eventually
-    // deactivated, losing far more than one derived row.
-    recordGeozoneVisit.mockRejectedValueOnce(new Error('derivation exploded'));
-    const res = await POST(makeReq(geozone, { authorization: SECRET }));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ stored: true });
-  });
-
-  it('does not derive anything when the event was not stored', async () => {
-    state.error = { code: '23505', message: 'duplicate key' };
-    await POST(makeReq(geozone, { authorization: SECRET }));
-    expect(recordGeozoneVisit).not.toHaveBeenCalled();
   });
 });
