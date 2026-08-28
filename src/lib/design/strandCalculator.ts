@@ -176,6 +176,23 @@ export interface SpruceWrapInput {
   wrapSpacingIn: number;
 }
 
+// Straight from the company sheet, same provenance as the bulb-spacing and
+// strand-coverage tables below — deliberately the sheet's own 5-decimal
+// value, NOT Math.PI. The sheet's worked examples were built against
+// 3.14159, so using Math.PI here would silently drift every spruce-wrap
+// result away from what the owner's spreadsheet (and the tests pinned to
+// it) actually produce.
+const SHEET_PI = 3.14159;
+
+// The sheet's own wrap-taper factors: the bottom two-thirds of a wrapped
+// spruce carry proportionally more line per wrap (bottomIn) than the
+// narrower top third (topIn), and the top third's effective circumference is
+// itself only 0.3 of the trunk's full circumference. Not derived, not
+// rounded by us — transcribed as-is.
+const SPRUCE_WRAP_BOTTOM_FACTOR = 0.45;
+const SPRUCE_WRAP_TOP_FACTOR = 0.38;
+const SPRUCE_WRAP_TOP_CIRCUMFERENCE_FACTOR = 0.3;
+
 /**
  * `heightIn = heightFt * 12`
  * `circumferenceIn = (diameterFt * 3.14159) * 12`
@@ -188,10 +205,10 @@ export function spruceWrapFootage(input: SpruceWrapInput): number | null {
   const { heightFt, diameterFt, wrapSpacingIn } = input;
   if (!isNonNegFinite(heightFt) || !isNonNegFinite(diameterFt) || !isPosFinite(wrapSpacingIn)) return null;
   const heightIn = heightFt * 12;
-  const circumferenceIn = diameterFt * 3.14159 * 12;
+  const circumferenceIn = diameterFt * SHEET_PI * 12;
   const wraps = heightIn / wrapSpacingIn;
-  const bottomIn = wraps * 0.45 * circumferenceIn;
-  const topIn = wraps * 0.38 * (0.3 * circumferenceIn);
+  const bottomIn = wraps * SPRUCE_WRAP_BOTTOM_FACTOR * circumferenceIn;
+  const topIn = wraps * SPRUCE_WRAP_TOP_FACTOR * (SPRUCE_WRAP_TOP_CIRCUMFERENCE_FACTOR * circumferenceIn);
   const footage = (bottomIn + topIn) / 12;
   return finiteOrNull(footage);
 }
