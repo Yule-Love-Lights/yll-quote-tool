@@ -173,14 +173,21 @@ export default async function FleetPage({
           </ul>
         </section>
 
-        <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
-          <strong className="text-gray-800">The van is not the person.</strong> Crew can be working
-          after the van leaves, a van can sit somewhere while nobody works, and two people share
-          one van. When the two clocks disagree, that is a question to ask, not an answer. The
-          crew&apos;s own clock below is the payroll record; the GPS side never touches pay.
-        </div>
+        <section className="mt-10 pt-6 border-t border-gray-200">
+          <h2 className="text-base font-semibold text-gray-900 mb-1">The day&apos;s two clocks</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            The crew&apos;s own clock (payroll) beside what the GPS saw, for the day shown above.
+          </p>
 
-        <div className="grid md:grid-cols-2 gap-6">
+          <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+            <strong className="text-gray-800">The van is not the person.</strong> Crew can be
+            working after the van leaves, a van can sit somewhere while nobody works, and two
+            people share one van. When the two clocks disagree, that is a question to ask, not an
+            answer. The crew&apos;s own clock below is the payroll record; the GPS side never
+            touches pay.
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-6">
           <section>
             <h2 className="text-sm font-semibold text-gray-900 mb-2">Crew clock (payroll)</h2>
             <p className="text-xs text-gray-400 mb-2">
@@ -238,7 +245,8 @@ export default async function FleetPage({
               </ul>
             )}
           </section>
-        </div>
+          </div>
+        </section>
 
         <p className="mt-8 text-xs text-gray-400">
           <a href="/admin/geocoding" className="underline">
