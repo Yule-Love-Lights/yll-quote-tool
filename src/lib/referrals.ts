@@ -1,6 +1,8 @@
-// Referral program, PR 1 (ledger #41). Locked product (Naldo, S30): the
-// referrer earns $125 next-season credit per booked friend, stackable — one
-// credit per friend who books, no cap. The friend gets two free 16" spritzers
+// Referral program, PR 1 (ledger #41). Locked product (Naldo, S30; reward
+// widened S72, 2026-08-28): the referrer earns a $125 credit per booked
+// friend, good toward ANY Yule Love Lights service (holiday, permanent,
+// event, bistro) — not next season only. Stackable: one credit per friend
+// who books, no cap. The friend gets two free 16" spritzers
 // on their first booked install; the redemption UI that actually SPENDS a
 // credit is PR 2 — this file only owns the constants + the accrual data path.
 //
@@ -27,7 +29,8 @@ import { normalizePhone } from './customers';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/** Next-season credit a referrer earns per booked friend (USD). */
+/** Credit a referrer earns per booked friend (USD). Spendable on ANY
+ *  service, not next season only (widened S72, 2026-08-28). */
 export const REFERRAL_CREDIT_USD = 125;
 
 /** A booked credit expires this many years after the friend's booking

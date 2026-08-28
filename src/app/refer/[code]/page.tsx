@@ -11,8 +11,14 @@
 // portal (reviews / gallery / steps / protection / FAQ / about / contact,
 // referral page bug batch 2026-07-17, fix 3).
 
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { getReferralByCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import {
+  getReferralByCode,
+  REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
+  REFERRAL_FRIEND_SPRITZERS,
+} from '@/lib/referrals';
 import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getDesignByQuote } from '@/lib/designs';
@@ -37,6 +43,7 @@ import { PersonalContact } from '@/components/portal/dark/PersonalContact';
 import { formatUsd } from '@/components/portal/format';
 import { asServiceType, type ServiceType } from '@/lib/serviceType';
 import { getAppSettings } from '@/lib/appSettings';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { ReferralPageTracker } from './ReferralPageTracker';
 import { ReferralForm } from './ReferralForm';
@@ -66,7 +73,81 @@ type Params = { code: string };
 function firstNameOf(name: string | null): string {
   if (!name) return 'A neighbor';
   const first = name.trim().split(/\s+/)[0];
-  return first || 'A neighbor';
+  if (!first) return 'A neighbor';
+  // Names arrive from GoHighLevel however the customer or a staffer typed
+  // them, and lowercase is common ("david"). This is the first word of a link
+  // preview a stranger sees, so lift the first letter only — never lowercase
+  // the rest, which would wreck McDonald, DeSantis, or an all-caps surname.
+  // Live dev check 2026-08-28 rendered "david thinks you'd love this".
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+// ─── Link preview (Open Graph) ──────────────────────────────────────────────
+// This page's whole job is to be TEXTED by one neighbor to another, so the
+// preview card is the first thing the friend sees, before they ever tap.
+// Without it this route inherited the ROOT layout's metadata, which carries no
+// image and describes the operator console ("quoting, customer portal, and
+// dashboard") — the wrong pitch to a homeowner, and verified live on
+// quote.yulelovelights.com/refer/<code> as the only meta tags served.
+// Wrap-review 2026-08-28, customer lens HIGH.
+//
+// The card image is a real completed job, the same class of photo this page
+// falls back to for its hero. Deliberately NOT the referrer's own house even
+// when we have it: preview images are fetched and cached by messaging
+// platforms, which would put a customer's home in a third-party cache. The
+// page itself still shows their house.
+//
+// noindex: the URL embeds a personal referral code. It should be shareable by
+// the person who owns it, never surfaced in search. Open Graph scrapers ignore
+// robots directives, so the preview card still renders.
+const SHARE_CARD = '/refer-share-card.jpg';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<Params>;
+}): Promise<Metadata> {
+  const { code } = await params;
+  // A bad code must still return usable metadata: the page's own notFound()
+  // owns that case, and a throw here would break the whole response.
+  const referrer = await getReferralByCode(code).catch(() => null);
+  const firstName = referrer ? firstNameOf(referrer.name) : null;
+
+  const title = firstName
+    ? `${firstName} thinks you'd love this`
+    : 'A neighbor sent you this';
+  const description =
+    `${formatUsd(SPRITZER_VALUE_USD)} in free lighting on your first install with Yule Love Lights. ` +
+    'Free quote, no obligation.';
+  const base = appBaseUrl();
+  const url = `${base}/refer/${encodeURIComponent(code)}`;
+  const image = {
+    url: `${base}${SHARE_CARD}`,
+    width: 1200,
+    height: 630,
+    alt: 'A Long Island home lit by Yule Love Lights: warm-white roofline bulbs, lit wreaths, and light-wrapped trees along the driveway',
+  };
+
+  return {
+    title,
+    description,
+    alternates: { canonical: url },
+    robots: { index: false, follow: false },
+    openGraph: {
+      type: 'website',
+      siteName: 'Yule Love Lights',
+      url,
+      title,
+      description,
+      images: [image],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: [image.url],
+    },
+  };
 }
 
 // The referrer's most recently APPROVED quote (customer_approved_at set):
@@ -220,7 +301,8 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
                 Good toward any Yule Love Lights service: holiday, permanent, event and wedding
-                lighting, or bistro. Once you book, they get their credit automatically.
+                lighting, or bistro. Their credit is applied once you book, and it stays good
+                for {REFERRAL_CREDIT_EXPIRY_YEARS} years.
               </p>
             </div>
           </div>
