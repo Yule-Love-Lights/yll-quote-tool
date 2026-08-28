@@ -78,7 +78,10 @@ will be exercised end to end)
   design, including the payload-aware idempotency RPCs, the advisory-lock
   replay protection, the immutability triggers, and the status CHECK. Actor
   columns become operator auth ids per decision 1. The ported list endpoint
-  fixes the copilot's known gap: it returns ALL sources, not manual only.
+  fixes BOTH halves of the copilot's known gap: it returns ALL sources (not
+  manual only), and completed/dismissed tasks stay reachable through a
+  history view or filter (the active list still shows open and blocked per
+  the spec, but finished work must not become invisible).
 - `call_recordings` + `recording_sync_state` (monotonic cursor RPC ports
   as-is) and `call_transcripts` (the copilot's `transcripts` shape:
   raw_text, utterances jsonb, rep_email, direction, duration, outcome
@@ -127,7 +130,11 @@ registered, allowlisted, and left disabled.
 **S3. Verticals and playbooks.** Tables, seeds, read layer, generate and
 distill flows, proposal approve/apply, the versioned-publish helper, and
 the playbook manager UI reachable from the nav this time (the copilot left
-it and the analytics workspace unreachable; the port does not repeat that).
+it and the analytics workspace unreachable per the teardown; the port does
+not repeat that). The recon calls this the largest, most tangled-with-
+itself area: if it does not review comfortably as one PR, split it as
+S3a (tables, seeds, read layer, enough for S4's prompts) and S3b (the
+generate/distill/approve lifecycle and UI), with S4 depending only on S3a.
 
 **S4. Scoring.** `rubric_versions`/`offer_versions` with seeds, the scoring
 engine (model per the copilot: Sonnet-tier; totals computed in code, never
@@ -140,7 +147,11 @@ S2 and S3.
 one-fix rule `fix === null`, the feeling-tier thresholds that fixed a real
 truthy-render bug), the call review browser, on-demand audio playback, and
 card seen-state. Visibility per the ruling: all operators see all cards and
-the review browser; no per-rep scoping. Depends on S4.
+the review browser; no per-rep scoping. Also the Practice Room:
+`practice_sessions`, the four persona states, the turn/length limits, the
+CAS end-and-score claim, reusing the S4 scoring engine, isolated by design
+(writes only to its own table, never to call_scores or any real record).
+Depends on S4.
 
 **S6. Commitments into tasks.** The extractor (Haiku-tier, call-anchored
 time resolution, 30-day offset cap), the faithful TOCTOU persistence port,
@@ -162,9 +173,16 @@ profile. Narrative model tier: keep the copilot's top-tier weekly calls
 (`source_system='quote_tool'`), then per-timer enablement asks to Naldo
 (sync, scoring, commitments hourly staggered; digest Friday; brain review
 Monday; schedules re-confirmed against real call volume at enable time,
-not copied blind), then the copilot retirement: export snapshot (decision
-6), decommission the copilot Supabase project and `yll-ops-hub-staging`,
-archive the copilot repo. Depends on everything.
+not copied blind). Then the copilot retirement, which is destructive and
+gated twice: FIRST the export snapshot (decision 6) is taken and its
+contents verified against the live copilot row counts, with the
+verification shown to Naldo; THEN, only on Naldo's separate explicit go
+naming the deletion, decommission the copilot Supabase project and
+`yll-ops-hub-staging` and archive the copilot repo. No session performs
+the decommission on this plan's authority alone. S8 gets a full review
+round even though its diff may carry no migration or UI of its own: it
+changes what runs on a schedule and destroys a system, which is exactly
+the class the FULL tier exists for. Depends on everything.
 
 ## Risks and residuals, named now
 
