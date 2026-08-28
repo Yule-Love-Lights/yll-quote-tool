@@ -94,7 +94,9 @@ export async function listAdvertisingCampaigns(opts?: { includeInactive?: boolea
   if (!db) return [];
   let query = db.from('advertising_campaigns').select(SELECT);
   if (!opts?.includeInactive) query = query.eq('active', true);
-  const { data, error } = await query.order('created_at', { ascending: false });
+  // Explicitly bounded display read (PostgREST caps unranged selects at
+  // 1000 silently anyway; saying so keeps the truncation visible here).
+  const { data, error } = await query.order('created_at', { ascending: false }).range(0, 999);
   if (error) {
     console.error('listAdvertisingCampaigns error:', error);
     return [];
@@ -102,16 +104,31 @@ export async function listAdvertisingCampaigns(opts?: { includeInactive?: boolea
   return (data ?? []).map((row) => toCampaign(row as Row));
 }
 
+/** Thrown when a rate edit loses a race with another admin's edit: the
+ * audit row's "prior rate" would have been a lie, so the write is refused
+ * instead. Reload, look at the current rate, and edit again. */
+export class CampaignRateConflictError extends Error {
+  constructor() {
+    super('The campaign rate changed while you were editing it. Reload and try again.');
+    this.name = 'CampaignRateConflictError';
+  }
+}
+
 /**
- * Patch a campaign. `actor` is the auth user id of whoever is editing —
- * required for the audit trail when the RATE moves: a rate change decides
- * what every FUTURE acceptance pays, so it must never happen without a
- * trace (admin lens, PR #1057 review).
+ * Patch a campaign. `actor` is REQUIRED — the auth user id of whoever is
+ * editing (or 'system' for an automated write): a rate change decides what
+ * every FUTURE acceptance pays, and it must never happen without a trace
+ * (admin lens + delta-verify, PR #1057 review).
+ *
+ * A rate change is a compare-and-swap against the prior rate this caller
+ * read: if another admin's edit landed in between, the write is refused
+ * (CampaignRateConflictError) rather than logging a wrong "prior" — an
+ * audit trail that lies is worse than none.
  */
 export async function updateAdvertisingCampaign(
   id: string,
   patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean },
-  actor?: string,
+  actor: string,
 ): Promise<AdvertisingCampaign | null> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
@@ -130,26 +147,30 @@ export async function updateAdvertisingCampaign(
   if (patch.active !== undefined) payload.active = patch.active;
 
   // Read the prior rate BEFORE the write, so the audit row can say what the
-  // rate moved FROM — an "it changed" row without the old value cannot
-  // reconstruct pay questions later.
+  // rate moved FROM — and CAS on it below, so what it says is TRUE.
+  const changingRate = payload.rate_cents !== undefined;
   let priorRateCents: number | null = null;
-  if (payload.rate_cents !== undefined) {
+  if (changingRate) {
     const prior = await getAdvertisingCampaign(id);
-    priorRateCents = prior?.rateCents ?? null;
+    if (!prior) throw new Error(`updateAdvertisingCampaign: no campaign found for id ${id.trim()}`);
+    priorRateCents = prior.rateCents;
   }
 
-  const { data, error } = await db
-    .from('advertising_campaigns')
-    .update(payload)
-    .eq('id', id.trim())
-    .select(SELECT)
-    .maybeSingle();
+  let query = db.from('advertising_campaigns').update(payload).eq('id', id.trim());
+  if (changingRate) query = query.eq('rate_cents', priorRateCents);
+  const { data, error } = await query.select(SELECT).maybeSingle();
   if (error) throw new Error(`updateAdvertisingCampaign: ${error.message}`);
-  const updated = data ? toCampaign(data as Row) : null;
+  if (!data) {
+    // With a rate patch, the row existed a moment ago (read above), so a
+    // miss means the CAS lost: someone else moved the rate first.
+    if (changingRate) throw new CampaignRateConflictError();
+    return null;
+  }
+  const updated = toCampaign(data as Row);
 
-  if (updated && payload.rate_cents !== undefined && priorRateCents !== updated.rateCents) {
+  if (changingRate && priorRateCents !== updated.rateCents) {
     await logAdvertisingActivity({
-      actor: actor ?? 'system',
+      actor,
       action: 'rate_changed',
       detail: {
         campaignId: updated.id,

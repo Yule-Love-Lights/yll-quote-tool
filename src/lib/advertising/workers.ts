@@ -124,7 +124,9 @@ export async function listAdvertisingWorkers(opts?: { includeInactive?: boolean 
   if (!db) return [];
   let query = db.from('advertising_workers').select(SELECT);
   if (!opts?.includeInactive) query = query.eq('active', true);
-  const { data, error } = await query.order('display_name', { ascending: true });
+  // Explicitly bounded display read (PostgREST caps unranged selects at
+  // 1000 silently anyway; saying so keeps the truncation visible here).
+  const { data, error } = await query.order('display_name', { ascending: true }).range(0, 999);
   if (error) {
     console.error('listAdvertisingWorkers error:', error);
     return [];

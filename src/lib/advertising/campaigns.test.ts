@@ -13,6 +13,10 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       rows: [] as AnyRow[],
       inserted: [] as AnyRow[],
       activity: [] as AnyRow[],
+      // When set, the NEXT single-row select returns this snapshot instead
+      // of the live row, then clears — models a stale read racing a
+      // concurrent writer.
+      staleReadOnce: null as AnyRow | null,
     },
   },
 }));
@@ -41,6 +45,11 @@ function makeDb() {
               return b;
             },
             maybeSingle() {
+              if (stateRef.current.staleReadOnce) {
+                const stale = stateRef.current.staleReadOnce;
+                stateRef.current.staleReadOnce = null;
+                return Promise.resolve({ data: stale, error: null });
+              }
               const found = stateRef.current.rows.filter((r) => filters.every((f) => f(r)));
               return Promise.resolve({ data: found[0] ?? null, error: null });
             },
@@ -98,6 +107,7 @@ beforeEach(() => {
   stateRef.current.rows = [];
   stateRef.current.inserted = [];
   stateRef.current.activity = [];
+  stateRef.current.staleReadOnce = null;
   dbRef.current = makeDb();
 });
 
@@ -121,10 +131,31 @@ describe('updateAdvertisingCampaign', () => {
     const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
 
-    const updated = await updateAdvertisingCampaign(campaign.id, { rateCents: 300 });
+    const updated = await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
     expect(updated?.rateCents).toBe(300);
 
-    await expect(updateAdvertisingCampaign(campaign.id, { rateCents: 1.5 })).rejects.toThrow(/rate/i);
+    await expect(
+      updateAdvertisingCampaign(campaign.id, { rateCents: 1.5 }, 'admin-user-1'),
+    ).rejects.toThrow(/rate/i);
+  });
+
+  it('a rate change that loses a concurrent-edit race throws and logs nothing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign, CampaignRateConflictError } =
+      await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    // Another admin's edit (250 -> 260) lands between this caller's
+    // prior-rate read and their write: the stored row is at 260, but this
+    // caller's read still sees 250.
+    stateRef.current.rows[0].rate_cents = 260;
+    stateRef.current.staleReadOnce = { ...stateRef.current.rows[0], rate_cents: 250 };
+    stateRef.current.activity = [];
+
+    await expect(
+      updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1'),
+    ).rejects.toThrow(CampaignRateConflictError);
+
+    expect(stateRef.current.rows[0].rate_cents).toBe(260); // the other admin's rate survives
+    expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
   });
 
   it('a rate change writes a rate_changed audit row carrying prior and new rate', async () => {

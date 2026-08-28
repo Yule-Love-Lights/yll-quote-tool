@@ -79,16 +79,26 @@ function makeDb() {
               return Promise.resolve({ data: found[0] ?? null, error: null });
             },
             order(col: string, opts?: { ascending?: boolean }) {
+              const sortKeys: Array<{ col: string; asc: boolean }> = [
+                { col, asc: opts?.ascending !== false },
+              ];
               const sorted = () => {
                 const list = rows().filter((r) => rowMatches(r, filters));
-                const asc = opts?.ascending !== false;
                 return [...list].sort((a, b) => {
-                  const av = String(a[col] ?? '');
-                  const bv = String(b[col] ?? '');
-                  return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+                  for (const k of sortKeys) {
+                    const av = String(a[k.col] ?? '');
+                    const bv = String(b[k.col] ?? '');
+                    const cmp = k.asc ? av.localeCompare(bv) : bv.localeCompare(av);
+                    if (cmp !== 0) return cmp;
+                  }
+                  return 0;
                 });
               };
-              return {
+              const ob = {
+                order(col2: string, opts2?: { ascending?: boolean }) {
+                  sortKeys.push({ col: col2, asc: opts2?.ascending !== false });
+                  return ob;
+                },
                 range(from: number, to: number) {
                   if (stateRef.current.selectError) {
                     return Promise.resolve({ data: null, error: stateRef.current.selectError });
@@ -107,6 +117,7 @@ function makeDb() {
                   return Promise.resolve({ data: sorted().slice(0, 1000), error: null }).then(resolve, reject);
                 },
               };
+              return ob;
             },
           };
           return b;
@@ -462,6 +473,42 @@ describe('rejectPlacement / resubmitPlacement', () => {
     await expect(resubmitPlacement(String(accepted.id))).rejects.toThrow();
   });
 
+  it('a stale reject against a just-accepted placement throws instead of overwriting the pay record (CAS)', async () => {
+    const { rejectPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    // rejectPlacement goes straight to its CAS write, so the race IS the row
+    // already being accepted when this reject arrives.
+    await expect(rejectPlacement(String(p.id), 'other-admin', 'too close')).rejects.toThrow(/accepted/);
+    expect(placementUpdates()).toHaveLength(0);
+  });
+
+  it('a stale resubmit against a just-accepted placement throws instead of reopening it (CAS)', async () => {
+    const { resubmitPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    // Same shape: the CAS (.eq status 'rejected') must refuse to reopen an
+    // accepted pay record however stale the worker's screen was.
+    await expect(resubmitPlacement(String(p.id))).rejects.toThrow(/accepted/);
+    expect(placementUpdates()).toHaveLength(0);
+  });
+
   it('a retried resubmit is idempotent', async () => {
     const { rejectPlacement, resubmitPlacement } = await import('./placements');
     const campaign = seedCampaign();
@@ -675,7 +722,7 @@ describe('earnings math', () => {
         campaign_id: campaign.id,
         worker_id: worker.id,
         status: 'pending',
-        created_at: `2026-08-24T15:00:${String(i % 60).padStart(2, '0')}.${String(i).padStart(3, '0')}Z`,
+        created_at: new Date(Date.UTC(2026, 7, 24, 15, 0, 0) + i * 1000).toISOString(),
       });
     }
 

@@ -142,7 +142,10 @@ export async function listPlacements(opts?: {
   if (opts?.workerId) query = query.eq('worker_id', opts.workerId.trim());
   if (opts?.campaignId) query = query.eq('campaign_id', opts.campaignId.trim());
   if (opts?.status) query = query.eq('status', opts.status);
-  const { data, error } = await query.order('created_at', { ascending: false }).range(0, limit - 1);
+  const { data, error } = await query
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(0, limit - 1);
   if (error) {
     console.error('listPlacements error:', error);
     return [];
@@ -505,8 +508,13 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   for (let from = 0; ; from += PAGE_SIZE) {
     let query = db.from('advertising_placements').select(SELECT);
     if (opts?.workerId) query = query.eq('worker_id', opts.workerId.trim());
+    // The id tiebreaker makes the page order TOTAL: rows sharing one
+    // created_at (a bulk backfill) can otherwise be double-counted or
+    // dropped across a page boundary, which is the exact truncation class
+    // this paging exists to close.
     const { data, error } = await query
       .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) {
       console.error('earningsSummary placements error:', error);
@@ -523,6 +531,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .from('advertising_campaigns')
       .select('id, rate_cents')
       .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (campaignsError) {
       console.error('earningsSummary campaigns error:', campaignsError);
