@@ -46,6 +46,7 @@ import { notifyTelegramAudience } from './telegramRouting';
 import { fieldLeadMessage } from './telegramMessages';
 import { LEAD_SERVICES, SERVICE_FIELD_VALUE } from '@/lib/leads/leadService';
 import { handleCrewTimeMessage } from '@/lib/integrations/crewTimeHandler';
+import { handleMergeRequest } from '@/lib/integrations/mergeRequestHandler';
 
 export type BotIncomingMessage = {
   chatId: string;
@@ -103,6 +104,18 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   // ordinary chatter still falls through untouched.
   const crewTime = await handleCrewTimeMessage(msg.userId, text, { addressed });
   if (crewTime.handled) return crewTime.reply;
+
+  // ── MERGE BY TEXT, same deterministic layer ───────────────────────────────
+  // "merge 1043" puts reviewed code on the live site, so like the pay actions
+  // above it is matched exactly and never reaches the LLM. It is gated on the
+  // SENDER's Telegram id matching the single configured approver, so it stays
+  // inert for everyone else, including admins. The handler only hands the
+  // number to a cloud routine; the review, CI, and branch checks happen there.
+  const mergeRequest = await handleMergeRequest(msg.userId, text, {
+    chatId: msg.chatId,
+    addressed,
+  });
+  if (mergeRequest.handled) return mergeRequest.reply;
 
   if (!addressed) {
     // One exception to the group gate, and it is the important one: a bare

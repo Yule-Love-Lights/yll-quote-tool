@@ -19,8 +19,13 @@
 // being unconfigured (that would be a NEW fail-open on a prod misconfig).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isCrewPath, isPublicPath } from '@/lib/auth/operatorGate';
-import { authGateEngaged, createMiddlewareSupabase, isCrewAccount } from '@/lib/auth/supabaseServer';
+import { isAdvertisingPath, isCrewPath, isPublicPath } from '@/lib/auth/operatorGate';
+import {
+  authGateEngaged,
+  createMiddlewareSupabase,
+  isAdvertisingAccount,
+  isCrewAccount,
+} from '@/lib/auth/supabaseServer';
 
 export async function proxy(req: NextRequest) {
   if (!authGateEngaged()) return NextResponse.next(); // deliberately opted out
@@ -52,6 +57,20 @@ export async function proxy(req: NextRequest) {
         const denied = req.nextUrl.clone();
         denied.pathname = '/login';
         denied.searchParams.set('error', 'crew-account');
+        return NextResponse.redirect(denied);
+      }
+      // Same seam as the crew branch above, for the advertising population
+      // (Naldo's 2026-08-27 ruling). No advertising page or API exists yet —
+      // isAdvertisingPath() is empty — so this branch confines every
+      // advertising session to nothing today, and to exactly the advertising
+      // surface once it exists, without ever widening the crew branch above.
+      if (isAdvertisingAccount(user.app_metadata) && !isAdvertisingPath(pathname)) {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        const denied = req.nextUrl.clone();
+        denied.pathname = '/login';
+        denied.searchParams.set('error', 'advertising-account');
         return NextResponse.redirect(denied);
       }
       return res;
