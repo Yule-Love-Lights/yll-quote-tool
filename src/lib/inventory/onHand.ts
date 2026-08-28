@@ -68,11 +68,22 @@ export async function deleteOnHand(sku: string): Promise<void> {
 // bumps the row out from under us before we win (mirrors designs.ts).
 const MAX_ONHAND_RETRIES = 5;
 
+// The actual before/after/applied on a SKU from one adjustOnHandAtomic call.
+// `applied` is the SIGNED delta that actually landed — it can differ in
+// MAGNITUDE from the requested `delta` when the floor-at-0 clamp bites (e.g. a
+// job asks to deduct 5 but only 3 remain on-hand, so applied is -3, not -5).
+// Row 329 fix (jobs.ts prepareJobMaterials): callers that persist a durable
+// snapshot of what was taken off stock must record `applied`, never the
+// requested `delta` — reversing a snapshot built from the requested amount can
+// over-credit on-hand back above where it started.
+export type OnHandAdjustResult = { before: number; after: number; applied: number };
+
 /**
  * Add `delta` (a SIGNED integer — positive for a receipt, negative for a job
  * decrement) to a SKU's on-hand qty ATOMICALLY, guarded by an updated_at
  * optimistic-concurrency check (modeled on designs.updateExtraPhotosAtomic). The
- * result never goes below 0.
+ * result never goes below 0 — so the ACTUAL applied delta can be smaller in
+ * magnitude than the requested one; the returned `applied` is that ground truth.
  *
  * Why not read-then-absolute-set (upsertOnHand): two writers touching the same
  * SKU — a receipt increment and a job decrement, or two job decrements — each
@@ -91,9 +102,9 @@ export async function adjustOnHandAtomic(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   sku: string,
   delta: number,
-): Promise<void> {
+): Promise<OnHandAdjustResult> {
   const d = Number.isFinite(delta) ? Math.trunc(delta) : 0;
-  if (d === 0) return;
+  if (d === 0) return { before: 0, after: 0, applied: 0 };
   for (let attempt = 0; attempt < MAX_ONHAND_RETRIES; attempt++) {
     const { data, error } = await sb
       .from('inventory_on_hand')
@@ -113,12 +124,13 @@ export async function adjustOnHandAtomic(
         .upsert({ sku, on_hand_qty: seed }, { onConflict: 'sku', ignoreDuplicates: true })
         .select('sku');
       if (insErr) throw new Error(`on-hand insert: ${insErr.message}`);
-      if (Array.isArray(inserted) && inserted.length > 0) return;
+      if (Array.isArray(inserted) && inserted.length > 0) return { before: 0, after: seed, applied: seed };
       continue;
     }
 
     const row = data as { on_hand_qty: number; updated_at: string };
-    const next = Math.max(0, toQty(row.on_hand_qty) + d);
+    const before = toQty(row.on_hand_qty);
+    const next = Math.max(0, before + d);
     const { data: updated, error: updErr } = await sb
       .from('inventory_on_hand')
       .update({ on_hand_qty: next })
@@ -128,7 +140,7 @@ export async function adjustOnHandAtomic(
     if (updErr) throw new Error(`on-hand write: ${updErr.message}`);
     // A non-empty result means our updated_at precondition matched — we won.
     // An empty result means another writer bumped the row first; retry.
-    if (Array.isArray(updated) && updated.length > 0) return;
+    if (Array.isArray(updated) && updated.length > 0) return { before, after: next, applied: next - before };
   }
   throw new Error(`on-hand write: too many concurrent-update retries for ${sku}`);
 }

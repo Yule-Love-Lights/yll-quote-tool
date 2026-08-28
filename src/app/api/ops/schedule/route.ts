@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import {
+  AssignmentRefusedError,
   assignCrewToJob,
   getSchedule,
   isCalendarDate,
@@ -88,6 +89,11 @@ export async function POST(req: NextRequest) {
     const assignment = await assignCrewToJob(parsed.jobId, parsed.crewMemberId, parsed.date);
     return NextResponse.json({ assignment });
   } catch (error) {
+    // Row 356: a refused id (unknown / inactive / office staff) is the
+    // caller's problem, not a server fault — 422 with the reason verbatim.
+    if (error instanceof AssignmentRefusedError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
+    }
     const message = error instanceof Error ? error.message : 'Failed to assign';
     console.error('POST /api/ops/schedule:', message);
     return NextResponse.json({ error: message }, { status: 500 });

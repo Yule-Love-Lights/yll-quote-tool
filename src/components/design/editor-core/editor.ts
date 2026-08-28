@@ -6,7 +6,7 @@ import Konva from "konva";
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
-import { createEditorApi, SceneConflictError } from "./storage";
+import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
 import { createWreath } from "./wreath";
@@ -37,7 +37,8 @@ import {
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
-import { brightnessForPhoto, setBrightnessForPhoto } from "@/lib/design/photoBrightness";
+import { brightnessForPhoto, setBrightnessForPhoto, removeBrightnessForPhoto } from "@/lib/design/photoBrightness";
+import { shouldAdoptPrunedVersion } from "./designVersion";
 import { seedGroupStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
@@ -207,7 +208,7 @@ type ToolState = {
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean; bistroOnly?: boolean } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean; bistroOnly?: boolean; locked?: boolean; onLocked?: () => void } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -544,6 +545,16 @@ export async function renderEditor(
     selectedIds.clear();
     scheduleSave();
     redrawScene();
+    // Row 348: redrawScene() only rebuilds the drawn items (bulbs resize via
+    // activeLightScale(), read fresh off the reverted `scene`) — it never
+    // touches the two slider controls or the tint layer. Left alone, both
+    // sliders keep showing the pre-undo value (and, for brightness, the
+    // canvas keeps the pre-undo tint too, since drawTint() also wasn't
+    // called), so it reads as "did my undo actually work?" right where
+    // staff most reach for Ctrl+Z. Resync all three explicitly.
+    showLightScale(activeLightScale());
+    brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));
+    drawTint();
     updateUndoRedoButtons();
   }
 
@@ -555,6 +566,10 @@ export async function renderEditor(
     selectedIds.clear();
     scheduleSave();
     redrawScene();
+    // Row 348: same resync as undo() above — see its comment.
+    showLightScale(activeLightScale());
+    brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));
+    drawTint();
     updateUndoRedoButtons();
   }
 
@@ -1543,6 +1558,14 @@ export async function renderEditor(
   // is deliberately the only way out — reload-and-reapply-the-edit is a real
   // design decision this fix doesn't make; see showConflictBanner().
   let conflicted = false;
+  // Row 367: the design's post-approval freeze. The host passes `locked` when
+  // the linked quote already carries a customer approval (the SAME predicate
+  // /api/quote and QuoteBuilder use), and `PUT /api/designs/[id]` enforces it
+  // server-side regardless — so a stale tab that mounted before the approval
+  // still finds out, via the SceneLockedError branch in runSave(). Blocks
+  // saving exactly like `conflicted` does, but with its own honest copy: a
+  // reload does not unlock anything.
+  let locked = !!opts.locked;
   // Ledger row 260: every doSave() call chains onto this tail instead of
   // firing its own overlapping PUT. Without this, two saves in flight at once
   // (a slow autosave overlapping a forced #741 corrective save, or a retry
@@ -1555,7 +1578,7 @@ export async function renderEditor(
   let saveTail: Promise<void> = Promise.resolve();
   const savingEl = root.querySelector("#saving") as HTMLElement;
   function doSave(): Promise<void> {
-    saveTail = saveTail.then(() => (conflicted ? undefined : runSave()));
+    saveTail = saveTail.then(() => (conflicted || locked ? undefined : runSave()));
     return saveTail;
   }
   async function runSave() {
@@ -1573,6 +1596,26 @@ export async function renderEditor(
       const result = await api.updateDesign(design.id, { scene, name: design.name, version: design.version ?? null });
       if (typeof result.version === "number") design.version = result.version;
     } catch (err) {
+      if (err instanceof SceneLockedError) {
+        // Row 367: the server refused this write because the linked quote is
+        // customer-approved. Unlike a CAS conflict there is nothing to reload
+        // INTO — the edit is not saved and will not be, so block saving and
+        // say exactly that. No recovery marker (`editorUnsavedDesign`) is
+        // written: that marker exists to flag a LOST race the operator should
+        // recover, and this is a deliberate refusal, not a loss of a race.
+        if (destroyed || seq !== saveSeq) return;
+        locked = true;
+        // Row 367 delta-verify MED: tell the HOST too. This editor just
+        // learned from the server that the quote is approved; the page around
+        // it may still be showing editable money controls from before that
+        // happened, which would 409 on their own next write.
+        try { opts.onLocked?.(); } catch { /* host handler must never break the editor */ }
+        pendingSave = false;
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        savingEl.textContent = "Locked — not saved";
+        showLockedBanner(err.message);
+        return;
+      }
       if (err instanceof SceneConflictError) {
         // Fix round (HIGH, four-lens review): this branch must run BEFORE the
         // `destroyed` early-return below. destroy()'s final teardown flush
@@ -1625,6 +1668,28 @@ export async function renderEditor(
   // for the same reason showTransientNotice is (see its comment above): this
   // file travels unchanged into the standalone design tool, which has no rule
   // for a class this repo invents.
+  // Row 367 — the post-approval freeze banner. Same shape as the conflict
+  // banner, deliberately WITHOUT a Reload button: reloading changes nothing
+  // here, and offering it would send staff round a loop.
+  function showLockedBanner(message?: string) {
+    if (root.querySelector("#scene-locked-banner")) return; // already shown
+    const host = root.querySelector(".editor");
+    if (!host) return;
+    const banner = document.createElement("div");
+    banner.id = "scene-locked-banner";
+    banner.style.cssText = [
+      "position:fixed", "top:12px", "left:50%", "transform:translateX(-50%)", "z-index:9999",
+      "max-width:min(90vw,520px)", "padding:10px 14px", "border-radius:8px",
+      "background:#7a1f1f", "color:#fff2f2", "border:1px solid rgba(255,255,255,0.25)",
+      "box-shadow:0 4px 14px rgba(0,0,0,0.35)", "font-size:13px", "line-height:1.4",
+      "text-align:center",
+    ].join(";");
+    banner.textContent =
+      message ??
+      "This design is locked — the customer already approved it. Changes here are NOT saved.";
+    banner.style.whiteSpace = "normal";
+    host.prepend(banner);
+  }
   function showConflictBanner() {
     if (root.querySelector("#scene-conflict-banner")) return; // already shown
     const host = root.querySelector(".editor");
@@ -1661,6 +1726,7 @@ export async function renderEditor(
   }
   function scheduleSave() {
     if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
+    if (locked) { savingEl.textContent = "Locked — not saved"; showLockedBanner(); return; } // row 367
     if (saveTimer) clearTimeout(saveTimer);
     pendingSave = true;
     savingEl.textContent = "Saving…";
@@ -1817,9 +1883,42 @@ export async function renderEditor(
   // otherwise dangle, render-only, forever), then prune any miniGroup left
   // with zero surviving members. Once this returns, the resident scene
   // matches server truth, so a later teardown flush is harmless.
-  function removePhotoItems(photoId: string) {
+  function removePhotoItems(photoId: string, serverVersion?: number | null) {
+    // Row 371 (staff lens HIGH): adopt the version the server's own prune just
+    // wrote, so this still-mounted editor is not left a version behind — that
+    // used to fail its next save (of a completely unrelated edit, on a
+    // surviving photo) and hit the "Save blocked — reload" banner, discarding
+    // it. `design.version` is otherwise only ever refreshed from this editor's
+    // own save response, in runSave.
+    //
+    // Guarded, per the final pre-merge verify's HIGH: adopt ONLY a version one
+    // ahead of what we hold. A bigger jump means another operator's write sits
+    // between, and that version represents content this client has never read —
+    // adopting it would let the next save pass the CAS and silently overwrite
+    // their work. See shouldAdoptPrunedVersion for the full reasoning.
+    //
+    // Ordered before the no-op early-return below on purpose: a deleted photo
+    // carrying NO drawn items still bumps the version (its brightness entry is
+    // pruned), and that is exactly the case the early return skips.
+    if (shouldAdoptPrunedVersion(design.version, serverVersion)) {
+      design.version = serverVersion as number;
+    }
+
+    // Row 371 fix round (delta-verify MED): prune the deleted photo's
+    // brightness override from the RESIDENT scene too. This is not cosmetic
+    // bookkeeping — adopting the version above means the next autosave now
+    // SUCCEEDS its CAS, and an autosave writes the whole scene, so a client
+    // still holding the key would write it straight back over the server's
+    // prune and resurrect the exact orphan this row exists to remove. Same
+    // pure helper the server prune uses, so the two cannot drift.
+    const prunedScene = removeBrightnessForPhoto(scene, photoId);
     const nextItems = removeItemsForPhoto(scene.items, photoId);
-    if (nextItems === scene.items) return; // nothing tagged to this photo — no-op
+    // Both comparisons are REFERENCE checks by contract: removeItemsForPhoto and
+    // removeBrightnessForPhoto each return the scene/array they were given when
+    // there is nothing to remove (see their own docs). If either ever starts
+    // returning a fresh object unconditionally, this no-op check silently stops
+    // being one and every photo delete commits an empty undo step.
+    if (nextItems === scene.items && prunedScene === scene) return; // nothing on this photo at all — no-op
 
     // #741 defect 1 (round 2, HIGH): also scrub every EXISTING undo/redo
     // snapshot's copy of this photo's items — commit() below only appends a
@@ -1832,9 +1931,13 @@ export async function renderEditor(
     // this delete just correctly pruned, re-entering the #227/#254 dead-
     // billing failure through undo. `future` doesn't need the same treatment:
     // commit() unconditionally clears it right below, on every call.
+    // Row 371: the same scrub covers the brightness key, for the same reason —
+    // undo() restores a whole snapshot and then autosaves it, so a snapshot
+    // still carrying the key would reintroduce it through Ctrl+Z.
     past = past.map((s) => {
-      const filtered = removeItemsForPhoto(s.items, photoId);
-      return filtered === s.items ? s : { ...s, items: filtered };
+      const pruned = removeBrightnessForPhoto(s, photoId);
+      const filtered = removeItemsForPhoto(pruned.items, photoId);
+      return filtered === pruned.items ? pruned : { ...pruned, items: filtered };
     });
 
     // #741 defect 2: no in-canvas toast here (unlike deleteSelected's
@@ -1842,7 +1945,7 @@ export async function renderEditor(
     // server-side prune up to QuoteBuilder's persistent banner (the
     // authoritative channel: it reflects what the server actually did).
     // Firing both duplicated one removal into two differently-worded notices.
-    scene = { ...scene, items: nextItems };
+    scene = { ...prunedScene, items: nextItems };
     commit();
     redrawScene();
 
@@ -6139,7 +6242,7 @@ export async function renderEditor(
 export type EditorHandle = (() => void) & {
   flushSave?: () => Promise<void>;
   discardPending?: () => boolean;
-  removePhotoItems?: (photoId: string) => void;
+  removePhotoItems?: (photoId: string, serverVersion?: number | null) => void;
 };
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {

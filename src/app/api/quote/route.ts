@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, repriceSignalCanFire, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import {
@@ -24,6 +24,9 @@ import {
 } from '@/lib/quoteBuildTiming';
 import type { QuoteBuildStartReason } from '@/lib/quoteBuildTimerClient';
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { roundMoney } from '@/lib/money';
+import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
+import { latestConsentAmendment } from '@/lib/amend';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -478,8 +481,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid permanent.trackColor' }, { status: 400 });
     }
     // #192 — per-side track style override (optional). An unknown key is
-    // silently ignored (mirrors sideSource's leniency); a PRESENT recognized
-    // side key must carry a valid TrackStyle value.
+    // silently ignored; a PRESENT recognized side key must carry a valid
+    // TrackStyle value.
     if (pf.trackStyleBySide !== undefined) {
       if (!isObj(pf.trackStyleBySide) || Array.isArray(pf.trackStyleBySide)) {
         return NextResponse.json({ error: 'permanent.trackStyleBySide must be an object if provided' }, { status: 400 });
@@ -538,6 +541,27 @@ export async function POST(req: NextRequest) {
     for (const f of ['splittersNeeded', 'jumpBoosters'] as const) {
       if (pf[f] !== undefined && !isNonNegNumber(pf[f])) {
         return NextResponse.json({ error: `permanent.${f} must be a non-negative number if provided` }, { status: 400 });
+      }
+    }
+    // Row 400: per-field footage/corners provenance, mirrors accessoriesSource
+    // above — an unknown key is silently ignored; a PRESENT recognized key
+    // must be 'auto' or 'manual'.
+    if (pf.sideMeasureSource !== undefined) {
+      if (!isObj(pf.sideMeasureSource) || Array.isArray(pf.sideMeasureSource)) {
+        return NextResponse.json({ error: 'permanent.sideMeasureSource must be an object if provided' }, { status: 400 });
+      }
+      const measureFields = [
+        'frontFootage', 'frontCorners', 'leftFootage', 'leftCorners',
+        'rightFootage', 'rightCorners', 'backFootage', 'backCorners',
+      ] as const;
+      for (const k of measureFields) {
+        const v = (pf.sideMeasureSource as Record<string, unknown>)[k];
+        if (v !== undefined && v !== 'auto' && v !== 'manual') {
+          return NextResponse.json(
+            { error: `permanent.sideMeasureSource.${k} must be 'auto' or 'manual' if provided` },
+            { status: 400 },
+          );
+        }
       }
     }
   }
@@ -975,42 +999,299 @@ export async function POST(req: NextRequest) {
           gatedIsNce,
         );
 
+    // Row 376: this bookkeeping used to be awaited inline here — up to four
+    // sequential DB round trips (each a 5s-timeout withDbTimeout call: start,
+    // maybe link, maybe re-read target state, maybe complete) chained onto
+    // Calculate's response, the most frequent staff action. send/mark-sent
+    // already defer their own timer completion via after() (see
+    // queueQuoteBuildSessionCompletion below); this makes Calculate match.
+    // Nothing in the response body (below) reads `started`/`linked` — it's
+    // pure bookkeeping — so it's safe to move wholesale into after().
     if (saved && quoteBuildTimerId && quoteBuildStartReason && operator) {
       const timerTargetEligible = isUpdate
         ? existing?.is_test === false && existing.view_only === false && deriveStatus(existing) === 'draft'
         : !isTest;
       if (timerTargetEligible) {
-        const started = await startQuoteBuildSession({
-          timerId: quoteBuildTimerId,
-          startReason: quoteBuildStartReason,
-          operator,
-          quoteId: saved.id,
-          startedAt: quoteSaveStartedAt,
-        });
-        let linked = false;
-        if (
-          started.ok &&
-          started.row.id === quoteBuildTimerId &&
-          (started.row.quote_id === null || started.row.quote_id === saved.id)
-        ) {
-          linked = started.row.quote_id === saved.id || await linkQuoteBuildSession({
+        const savedId = saved.id;
+        // Premerge technical MED: the deferred body wraps in try/catch per this
+        // codebase's own after() convention (queueQuoteBuildSessionCompletion,
+        // estimate/route.ts) — every helper self-catches today, but that is a
+        // fragile invariant, and an unhandled rejection after the response is
+        // the one failure shape nothing upstream can contain.
+        after(async () => {
+          try {
+          const started = await startQuoteBuildSession({
             timerId: quoteBuildTimerId,
-            quoteId: saved.id,
-            operatorId: operator.id,
+            startReason: quoteBuildStartReason,
+            operator,
+            quoteId: savedId,
+            startedAt: quoteSaveStartedAt,
           });
-        }
-        if (linked) {
-          const latestTarget = await quoteBuildSessionTargetState(saved.id);
-          if (latestTarget?.kind === 'sent' && started.ok && started.row.sent_at == null) {
-            await completeQuoteBuildSession({
-              quoteId: saved.id,
+          let linked = false;
+          if (
+            started.ok &&
+            started.row.id === quoteBuildTimerId &&
+            (started.row.quote_id === null || started.row.quote_id === savedId)
+          ) {
+            linked = started.row.quote_id === savedId || await linkQuoteBuildSession({
               timerId: quoteBuildTimerId,
+              quoteId: savedId,
               operatorId: operator.id,
-              sentAt: latestTarget.sentAt,
             });
           }
+          if (linked) {
+            const latestTarget = await quoteBuildSessionTargetState(savedId);
+            if (latestTarget?.kind === 'sent' && started.ok && started.row.sent_at == null) {
+              await completeQuoteBuildSession({
+                quoteId: savedId,
+                timerId: quoteBuildTimerId,
+                operatorId: operator.id,
+                sentAt: latestTarget.sentAt,
+              });
+            }
+          } else {
+            console.warn('[quote/route] quote build timer could not be linked after save');
+          }
+          } catch (err) {
+            // Metric bookkeeping only — a failure here must never escape the
+            // deferred task. Logged so a dead timing pipeline is noticeable.
+            console.error('[quote/route] deferred quote build timer bookkeeping failed:', err);
+          }
+        });
+      }
+    }
+
+    // Row 344 Part B: a scene-driven reprice of an APPROVED, NOT-YET-BOOKED
+    // quote. deposit%/price-override/label-override/bistro-footage are
+    // already hard-locked above (the #177 / row-331 freezes); this covers
+    // every OTHER field that can move `result.total` here — PermanentSection
+    // per-side footage/corners, holiday roofline footage, and any
+    // design-projected change. That LAST category includes a mini-light
+    // GROUPING edit (editor.ts's groupSelectedMini): grouping only touches
+    // the SCENE via its own scheduleSave() and has no billing effect on its
+    // own — the billed count only changes once the next Calculate re-projects
+    // the scene through applyProjectionToInputs (above) and reaches this
+    // exact route — so this one check covers both of row 344's named
+    // triggers, not just the footage fields.
+    //
+    // Deliberately NOT a refusal: staff legitimately correct a footage/
+    // measurement error on an approved-not-booked quote, and the sanctioned
+    // amend flow requires deposit_paid_at, so it can't reach this pre-booking
+    // window at all — there is no other path. Until now this happened with
+    // NO staff-facing signal and NO audit trail (only a console.warn existed
+    // for an unrelated NCE-tag gate a few lines above, not this case). is_test
+    // exempt, matching every other freeze/signal in this file.
+    let repricedAfterApproval:
+      | {
+          previousTotalUsd: number;
+          newTotalUsd: number;
+          deltaUsd: number;
+          portalShowsFrozenPrice: boolean;
+          // Second fix round (staff-lens HIGH): the REASON portalShowsFrozenPrice
+          // is false, distinguished for QuoteBuilder.tsx's notice — an accepted
+          // amendment (always a BOOKED quote; the remedy is the amend flow, since
+          // decline/revive/re-send structurally refuses a booked order) vs a
+          // missing frozen-pricing snapshot (remedy depends on status; see the
+          // notice copy).
+          hasAcceptedAmendment: boolean;
+        }
+      | undefined;
+    // Fix round (technical-lens MED): the ORIGINAL gate here (`!existing
+    // .deposit_paid_at`) covered only the approved-not-booked window. But
+    // QuoteBuilder.tsx sends `amendReprice: true` on EVERY save of a booked
+    // quote (not only the one save that immediately follows an accepted
+    // amendment), and this route's own `amendRepriceAllowed` carve-out
+    // (above) lets that save through the REPRICE_LOCKED_STATUSES freeze — so
+    // a booked quote CAN reach this point too, whenever amendRepriceAllowed
+    // let it. Once ANY amendment has been accepted, adapter.ts's
+    // quoteRowToPortalQuote treats row.result as UNCONDITIONALLY authoritative
+    // going forward (see its own latestAcceptedAmendment comment) — so a
+    // further scene edit that changes the total WITHOUT then being recorded
+    // through the sanctioned /amend + /amend-consent flow silently changes
+    // what the portal shows, with no staff signal and no consent trail.
+    //
+    // Second fix round (technical-lens HIGH): the gate itself now reads
+    // repriceSignalCanFire(deriveStatus(existing)) — lib/quoteStatus.ts's
+    // shared predicate ('approved' or 'booked') — the SAME one the admin
+    // quote detail page's "Repriced since approval" pill reads, so the
+    // write-fires condition here and the pill-shows condition there can
+    // never independently drift apart again. (They did, once: this gate
+    // widened to cover 'booked' one fix round before the pill did, and the
+    // pill went dark for exactly the booked-and-amended case this gate
+    // exists to cover.) Safe to derive from status alone here because of an
+    // invariant the EARLIER REPRICE_LOCKED_STATUSES check already
+    // established: a 'booked' status can only reach this line when
+    // amendRepriceAllowed was true (a false amendRepriceAllowed on a
+    // booked/terminal status already 409'd above) — so
+    // `deriveStatus(existing) === 'booked'` at this point implies the bypass
+    // was used, no separate check needed.
+    if (
+      saved &&
+      isUpdate &&
+      existing?.customer_approved_at &&
+      repriceSignalCanFire(deriveStatus(existing)) &&
+      !existing.is_test
+    ) {
+      const newTotalUsd = roundMoney(result.total);
+      // Third fix round (technical-lens MED): this used to gate the fresh
+      // fetch below behind a cheap pre-check comparing newTotalUsd against
+      // resolveAgreedTotal(existing.approval_snapshot, ...) — the SAME stale,
+      // request-start snapshot the second fix round's HIGH-1/MED exist to
+      // stop trusting. That pre-check was not merely stale, it was UNSAFE: if
+      // a concurrent writer (an amendment accept, a colour-request
+      // auto-apply) changed the true agreed basis between request-start and
+      // this line, AND this save's own newly-computed total happened to land
+      // within a cent of the STALE previous value — an ordinary shape for a
+      // price-neutral edit — the pre-check read "no change" and skipped the
+      // fetch entirely, silently suppressing BOTH the staff notice and the
+      // audit-trail write for a real, unrecorded divergence. The charged
+      // price was never at risk (already persisted by updateQuote above);
+      // what went dark was the very mechanism this fix round exists to keep
+      // honest.
+      //
+      // There is no cheaper way to answer "did the basis change?" than
+      // reading the basis — any signal cheap enough to check without a query
+      // (e.g. an `updated_at` comparison) still needs its own fresh read to
+      // stay honest, so it buys nothing over just reading approval_snapshot
+      // directly. Fixed by always fetching fresh here, unconditionally,
+      // whenever the outer gate above already put this save in the
+      // repriceable window (approved-or-booked, non-test) — no pre-check, no
+      // path that can suppress it. Cost: one additional indexed
+      // single-column SELECT by primary key, and ONLY on a save of a quote
+      // that is already approved or booked (drafts/sent quotes never reach
+      // this gate at all) — a small, bounded addition next to the writes
+      // (updateQuote, the reschedule GHL push below) this same route already
+      // performs unconditionally on that population. Not load-tested; stated
+      // as reasoning, not measurement, per this repo's own rule that an
+      // unverified claim must be said to be unverified.
+      //
+      // Everything shown to staff AND everything persisted derives from this
+      // ONE fetch (second fix round's fix, preserved): `existing`-basis
+      // numbers are the fallback only when the service client is unavailable
+      // or the fetch itself errors — preserving "the signal never silently
+      // depends on the audit write succeeding" for that narrow case, where
+      // there is no persisted entry to disagree with in the first place.
+      const sb = getSupabaseServiceClient();
+      let basisSnapshot = existing.approval_snapshot;
+      let fetchFailed = false;
+      if (sb) {
+        const { data: freshRow, error: freshErr } = await sb
+          .from('quotes')
+          .select('approval_snapshot')
+          .eq('id', quoteId as string)
+          .maybeSingle<{ approval_snapshot: typeof existing.approval_snapshot }>();
+        if (freshErr) {
+          fetchFailed = true;
+          console.error(
+            '[quote/route] row 344: could not re-fetch approval_snapshot for the reprice audit entry:',
+            freshErr.message,
+          );
         } else {
-          console.warn('[quote/route] quote build timer could not be linked after save');
+          basisSnapshot = freshRow?.approval_snapshot ?? existing.approval_snapshot ?? {};
+        }
+      }
+      // The customer's actual agreed total — resolveAgreedTotal (the SAME
+      // canonical basis invoicing/tax-override/free-items/apply-color-request
+      // already use): the last NON-DECLINED amendment's new_total when one
+      // exists (the booked-and-previously-amended case this gate covers),
+      // else approval_snapshot.customerSelection.currentTotalUsd (the
+      // approved-not-booked case), else the stored full result/total for an
+      // old/legacy snapshot. Derived from `basisSnapshot` (fresh when
+      // available, per the fetch above), so a concurrent write that already
+      // changed the agreed total is reflected here.
+      const previousTotalUsd = resolveAgreedTotal(
+        // QuoteRaw's approval_snapshot.customerSelection is typed narrower
+        // (only the color fields getQuoteRaw's other callers need) than
+        // AgreedTotalSnapshot's currentTotalUsd — same underlying jsonb
+        // column, real values, just a type-modeling gap. resolveAgreedTotal
+        // itself is fully defensive (finiteMoney guards every rung), so this
+        // mirrors apply-color-request.ts's own call exactly, just cast
+        // instead of locally re-typed.
+        basisSnapshot as AgreedTotalSnapshot,
+        existing.result ?? { total: existing.total ?? 0 },
+      );
+      const deltaUsd = roundMoney(newTotalUsd - previousTotalUsd);
+      // Sub-cent float noise is not a real reprice (mirrors amend.ts's own
+      // ONE_CENT threshold for the same reason). Checked ONCE, against the
+      // fresh basis — no earlier, stale-basis gate exists that could disagree
+      // with it and suppress this check from ever running.
+      if (Math.abs(deltaUsd) >= 0.01) {
+        // Fix round (staff-lens HIGH): whether the portal is ACTUALLY still
+        // showing the approved figure. adapter.ts's quoteRowToPortalQuote
+        // freezes the portal to approval_snapshot.pricing only when it's
+        // present AND no amendment has been accepted yet, else it falls BACK
+        // to live row.result — the very number this save just changed. This
+        // mirrors adapter.ts's latestAcceptedAmendment condition exactly (the
+        // same latestConsentAmendment lookup, same accepted-status check) so
+        // the two can never disagree on which case they're in.
+        const hasAcceptedAmendment =
+          latestConsentAmendment(basisSnapshot?.amendments)?.consent?.status === 'accepted';
+        const portalShowsFrozenPrice = !hasAcceptedAmendment && Boolean(basisSnapshot?.pricing);
+        repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd, portalShowsFrozenPrice, hasAcceptedAmendment };
+        // Durable audit record — best-effort AND CAS'd (fix round, technical/
+        // admin-lens HIGH). Only attempted when we actually have a fresh,
+        // error-free basis to CAS against (sb-null / fetch-error already
+        // logged above); the STAFF SIGNAL just above is never gated on this
+        // succeeding. The original version here did a blind read (`existing`,
+        // captured at request start) then write, with no conditional —
+        // exactly the shape apply-color-request.ts's dismiss action and
+        // color-change-request.ts warn against for this SAME column: a
+        // concurrent writer (most concretely apply-color-request /
+        // color-change-request, which touch approval_snapshot on this same
+        // pre-booking-adjacent window) could land in between our read and our
+        // write, and the blind write would silently drop THEIR change — a
+        // customer's pendingColorRequest or a staff apply's customerSelection
+        // — while only adding an audit line. Mirrors apply-color-request.ts's
+        // CAS idiom: CAS on the SAME basisSnapshot everything above was
+        // derived from, via `.eq('approval_snapshot', JSON.stringify(
+        // basisSnapshot))`. On a lost race we do NOT retry-loop: this entry
+        // is pure audit metadata (the reprice itself already landed via
+        // updateQuote above, independent of this write), so dropping ONE
+        // trail entry when a concurrent writer won the race is the accepted,
+        // survivable outcome — same tradeoff the original comment already
+        // named, now enforced by a CAS instead of assumed by a blind write.
+        // What must NEVER happen is this write clobbering the concurrent
+        // writer's own change, which the CAS prevents structurally.
+        if (sb && !fetchFailed) {
+          const freshSnapshot = basisSnapshot ?? {};
+          const priorEntries = Array.isArray(freshSnapshot.postApprovalReprices)
+            ? freshSnapshot.postApprovalReprices
+            : [];
+          const entry = {
+            at: new Date().toISOString(),
+            by: operator?.email ?? null,
+            previous_total: previousTotalUsd,
+            new_total: newTotalUsd,
+            delta: deltaUsd,
+          };
+          const { data: repriceAuditRows, error: repriceAuditError } = await sb
+            .from('quotes')
+            .update({
+              approval_snapshot: {
+                ...freshSnapshot,
+                postApprovalReprices: [...priorEntries, entry],
+              },
+            })
+            .eq('id', quoteId as string)
+            // Serialize jsonb explicitly — PostgREST string-interpolates
+            // filter values (mirrors apply-color-request.ts).
+            .eq('approval_snapshot', JSON.stringify(freshSnapshot))
+            .select('id');
+          if (repriceAuditError) {
+            console.error(
+              '[quote/route] row 344: failed to record post-approval reprice audit entry:',
+              repriceAuditError.message,
+            );
+          } else if (!repriceAuditRows || repriceAuditRows.length === 0) {
+            // Lost the race to a concurrent approval_snapshot writer (e.g.
+            // apply-color-request / color-change-request). Accepted,
+            // survivable: drop this one audit entry rather than clobber
+            // whatever they just wrote.
+            console.warn(
+              '[quote/route] row 344: reprice audit entry dropped — approval_snapshot changed concurrently for quote',
+              quoteId,
+            );
+          }
         }
       }
     }
@@ -1169,6 +1450,12 @@ export async function POST(req: NextRequest) {
       // insert — saveQuote never sets it) so the builder can show a small
       // notice instead of the save silently succeeding with a stale link.
       ...(saved?.identityFrozen ? { identityFrozen: true } : {}),
+      // Row 344 Part B — set only when THIS save actually reprices an
+      // approved-not-booked quote (see the computation above). The builder
+      // shows a staff-facing notice off this; propagated even if the
+      // best-effort audit-trail write above failed, so the signal never
+      // silently depends on that write succeeding.
+      ...(repricedAfterApproval ? { repricedAfterApproval } : {}),
     });
   } catch (err) {
     console.error('Quote calculation error:', err);

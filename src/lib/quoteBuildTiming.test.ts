@@ -21,6 +21,7 @@ vi.mock('./supabase', () => ({
 import {
   completeQuoteBuildSession,
   computeQuoteBuildTimingStats,
+  QUOTE_BUILD_IDLE_CAP_SECONDS,
   getOwnedQuoteBuildSession,
   linkQuoteBuildSession,
   listQuoteBuildTimingStats,
@@ -78,6 +79,7 @@ describe('computeQuoteBuildTimingStats', () => {
         averageSeconds: 360,
         medianSeconds: 180,
         p90Seconds: 1200,
+        excludedCount: 0,
       },
       {
         operatorId: '33333333-3333-4333-8333-333333333333',
@@ -86,6 +88,7 @@ describe('computeQuoteBuildTimingStats', () => {
         averageSeconds: 1800,
         medianSeconds: 1800,
         p90Seconds: 1800,
+        excludedCount: 0,
       },
     ]);
   });
@@ -102,6 +105,46 @@ describe('computeQuoteBuildTimingStats', () => {
         }),
       ]),
     ).toEqual([]);
+  });
+
+  // Ledger row 374: the session is wall-clock and nothing pauses it, so a draft
+  // opened before lunch and sent after would otherwise dominate the average.
+  it('excludes a session past the idle cap from the figures and counts it separately', () => {
+    const stats = computeQuoteBuildTimingStats([
+      row({ started_at: '2026-08-21T12:00:00.000Z', sent_at: '2026-08-21T12:10:00.000Z' }),
+      row({
+        id: '44444444-4444-4444-8444-444444444444',
+        started_at: '2026-08-21T09:00:00.000Z',
+        sent_at: '2026-08-21T17:00:00.000Z', // eight hours, a resumed draft
+      }),
+    ]);
+
+    expect(stats).toEqual([
+      expect.objectContaining({
+        count: 1,
+        averageSeconds: 600, // the ten-minute build only, not the eight-hour one
+        excludedCount: 1,
+      }),
+    ]);
+  });
+
+  it('keeps a staffer visible with no usable sessions rather than dropping them', () => {
+    expect(
+      computeQuoteBuildTimingStats([
+        row({ started_at: '2026-08-21T00:00:00.000Z', sent_at: '2026-08-21T09:00:00.000Z' }),
+      ]),
+    ).toEqual([
+      expect.objectContaining({ operatorLabel: 'Alex', count: 0, excludedCount: 1 }),
+    ]);
+  });
+
+  it('keeps a session exactly at the cap, excluding only what runs past it', () => {
+    const atCap = computeQuoteBuildTimingStats([
+      row({ started_at: '2026-08-21T12:00:00.000Z', sent_at: '2026-08-21T14:00:00.000Z' }),
+    ]);
+    expect(atCap).toEqual([
+      expect.objectContaining({ count: 1, averageSeconds: QUOTE_BUILD_IDLE_CAP_SECONDS, excludedCount: 0 }),
+    ]);
   });
 
   it('keeps former staff visible through the stored label', () => {
@@ -603,6 +646,7 @@ describe('listQuoteBuildTimingStats', () => {
           averageSeconds: 600,
           medianSeconds: 600,
           p90Seconds: 600,
+          excludedCount: 0,
         },
       ],
     });

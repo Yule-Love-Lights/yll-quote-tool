@@ -9,7 +9,7 @@ const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps, notif
     listQuotes: vi.fn(async (): Promise<unknown[]> => []),
     listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
     listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false })),
-    listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
+    listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalDue: 0, truncated: false })),
     notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
     tg: { enabled: true, configured: true },
   }));
@@ -68,7 +68,7 @@ beforeEach(() => {
   listQuotes.mockResolvedValue([]);
   listFulfillmentCards.mockResolvedValue([]);
   listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false });
-  listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
+  listDueFollowUps.mockResolvedValue({ ok: true, items: [], totalDue: 0, truncated: false });
   process.env.CRON_SECRET = SECRET;
 });
 afterEach(() => {
@@ -112,7 +112,7 @@ describe('GET /api/ops/digest', () => {
     // deliberately DIFFER here — pins that the digest text shows totalLeads,
     // plus the residual "N filtered" (totalOpen − totalLeads = 24).
     listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 64, totalLeads: 40, truncated: true });
-    listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}] });
+    listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}], totalDue: 2, truncated: false });
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, sent: true });
     expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);

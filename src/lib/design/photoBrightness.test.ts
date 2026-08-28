@@ -1,9 +1,31 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Scene } from './sceneTypes';
-import { brightnessForPhoto, setBrightnessForPhoto } from './photoBrightness';
+import { brightnessForPhoto, clampBrightness, setBrightnessForPhoto, removeBrightnessForPhoto } from './photoBrightness';
 
 const LEGACY_SCENE: Scene = { yardsticks: [], items: [], brightness: 35 };
+
+// Row 348 (S49 wrap admin lens): the PUT route clamps brightness at write
+// time with this helper, since nothing clamps it at read time the way
+// normalizeLightScale clamps lightScale on every render path.
+describe('clampBrightness', () => {
+  it('falls back to neutral (50) for anything that is not a real number', () => {
+    for (const bad of [undefined, null, '80', '', {}, [], true, NaN, Infinity, -Infinity]) {
+      expect(clampBrightness(bad)).toBe(50);
+    }
+  });
+
+  it('clamps into [0,100] instead of trusting the stored value', () => {
+    expect(clampBrightness(-50)).toBe(0);
+    expect(clampBrightness(9000)).toBe(100);
+  });
+
+  it('passes an in-range value through untouched', () => {
+    expect(clampBrightness(0)).toBe(0);
+    expect(clampBrightness(35)).toBe(35);
+    expect(clampBrightness(100)).toBe(100);
+  });
+});
 
 describe('per-photo design brightness', () => {
   it('keeps the existing scene brightness as the fallback for legacy designs', () => {
@@ -83,5 +105,67 @@ describe('per-photo design brightness', () => {
     expect(gallery).toContain('brightness: brightnessForPhoto(design.scene, p.id)');
     expect(gallery).toContain("scene={scenesByPhotoId.get(p.id ?? 'base')!}");
     expect(gallery).toContain('scene={scene}');
+  });
+
+  // Row 348: undo()/redo() reassign `scene` and call redrawScene(), which
+  // fixes the CANVAS (bulbs resize via activeLightScale()), but neither used
+  // to resync the brightness slider or repaint its tint — Konva canvas code
+  // has no component-render test infra here (see lightScale.test.ts's own
+  // note on why editor.ts can't be imported in this headless environment), so
+  // this pins the fix as source text the way the test above already does.
+  it('resyncs the brightness control + tint in both undo() and redo()', () => {
+    const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+    const editor = source('../../components/design/editor-core/editor.ts');
+    const [undoBody] = editor.match(/function undo\(\) \{[\s\S]*?\n  \}/) ?? [''];
+    const [redoBody] = editor.match(/function redo\(\) \{[\s\S]*?\n  \}/) ?? [''];
+
+    for (const body of [undoBody, redoBody]) {
+      expect(body).toContain('redrawScene();');
+      expect(body).toContain('brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));');
+      expect(body).toContain('drawTint();');
+    }
+  });
+});
+
+// Row 371: the deleted photo's brightness override lives in its own map, not
+// on an item, so an item-only prune never reached it. This helper is the ONE
+// definition of that prune — the server (removeDesignExtraPhoto) and the live
+// editor (removePhotoItems) both call it, and the editor's copy is
+// load-bearing: it saves the whole scene, so a client that kept the key would
+// write it back over the server's prune on the very next edit.
+describe('removeBrightnessForPhoto (row 371)', () => {
+  const scene = {
+    yardsticks: [],
+    items: [],
+    brightness: 50,
+    extraPhotoBrightness: { 'photo-a': 70, 'photo-b': 30 },
+  } as unknown as Parameters<typeof removeBrightnessForPhoto>[0];
+
+  it('drops only the named photo, leaving every other override intact', () => {
+    const next = removeBrightnessForPhoto(scene, 'photo-a');
+    expect(next.extraPhotoBrightness).toEqual({ 'photo-b': 30 });
+    expect(next.brightness).toBe(50); // the scene-level value is untouched
+  });
+
+  it('returns the SAME scene object when there is nothing to remove, so callers can compare by reference', () => {
+    expect(removeBrightnessForPhoto(scene, 'photo-never-had-one')).toBe(scene);
+    const noMap = { yardsticks: [], items: [] } as unknown as Parameters<typeof removeBrightnessForPhoto>[0];
+    expect(removeBrightnessForPhoto(noMap, 'photo-a')).toBe(noMap);
+  });
+
+  it('does not mutate the scene it was given', () => {
+    removeBrightnessForPhoto(scene, 'photo-a');
+    expect(scene.extraPhotoBrightness).toEqual({ 'photo-a': 70, 'photo-b': 30 });
+  });
+
+  // An explicit entry of 0 is a real value (fully dark), not an absent one —
+  // a truthiness check here would leave that key behind.
+  it('removes an entry whose value is 0', () => {
+    const dark = {
+      yardsticks: [],
+      items: [],
+      extraPhotoBrightness: { 'photo-a': 0 },
+    } as unknown as Parameters<typeof removeBrightnessForPhoto>[0];
+    expect(removeBrightnessForPhoto(dark, 'photo-a').extraPhotoBrightness).toEqual({});
   });
 });

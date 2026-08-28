@@ -3,6 +3,13 @@ import type { DashboardQuote } from './types';
 import type { ViewEventRow } from './activity';
 import type { WorkflowJob, WorkflowInvoice } from './workflowBoard';
 import type { NeedsActionJob, NeedsActionInvoice } from './needsAction';
+// Row 389 (S49): the ONE place that knows the two approval_snapshot marker
+// names (paymentBlocked, invoiceResyncFailed) a frozen/unreconciled invoice
+// carries — see its own comment in quoteAmendInvoiceSync.ts. Both dashboard
+// invoice reads below derive WorkflowInvoice.stale / NeedsActionInvoice.stale
+// from it so the two pure, no-IO board modules never need to know the marker
+// shape themselves.
+import { isStaleInvoiceSnapshot } from '@/lib/quoteAmendInvoiceSync';
 
 /**
  * Discriminated result for the dashboard quotes read. AUDIT FIX
@@ -144,13 +151,13 @@ export async function listJobsForWorkflowBoard(limit = 1000): Promise<WorkflowJo
 
 /**
  * Invoices for the Workflow board's Invoices column (ledger #83 Phase 3). Read-only,
- * server-side aggregation source — just `status` + `balance` (the board sums the
- * outstanding balance for the column total). BEST-EFFORT: returns [] on any error —
- * including the `invoices` table not existing yet — so the dashboard still renders
- * (Invoices column shows zeros) before the 2026-06-27-invoices.sql migration is
- * applied. Mirrors listJobsForWorkflowBoard, including the #93 test-quote isolation
- * (a test quote's invoice is a real invoices row; exclude it via the quote link).
- * Server-only.
+ * server-side aggregation source — `status` + `balance` (the board sums the
+ * outstanding balance for the column total) plus a derived `stale` flag (row 389).
+ * BEST-EFFORT: returns [] on any error — including the `invoices` table not existing
+ * yet — so the dashboard still renders (Invoices column shows zeros) before the
+ * 2026-06-27-invoices.sql migration is applied. Mirrors listJobsForWorkflowBoard,
+ * including the #93 test-quote isolation (a test quote's invoice is a real invoices
+ * row; exclude it via the quote link). Server-only.
  */
 export async function listInvoicesForWorkflowBoard(limit = 1000): Promise<WorkflowInvoice[]> {
   const sb = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -170,15 +177,29 @@ export async function listInvoicesForWorkflowBoard(limit = 1000): Promise<Workfl
     // row, so it would inflate the board's Invoices column unless excluded. is_test
     // lives only on the quote — derive it via the quote link (same pattern as
     // listJobsForWorkflowBoard). Invoices with no quote_id are kept.
+    // Row 389: the SAME quotes join also carries approval_snapshot, so a stale-
+    // invoice flag (isStaleInvoiceSnapshot) costs nothing extra — one round-trip
+    // already fetches the quote row this needs.
     const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
     const testQuoteIds = new Set<string>();
+    const staleQuoteIds = new Set<string>();
     if (quoteIds.length) {
-      const { data: qrows } = await sb.from('quotes').select('id, is_test').in('id', quoteIds);
-      for (const q of (qrows ?? []) as Array<{ id: string; is_test: boolean | null }>) {
+      const { data: qrows } = await sb
+        .from('quotes')
+        .select('id, is_test, approval_snapshot')
+        .in('id', quoteIds);
+      for (const q of (qrows ?? []) as Array<{
+        id: string;
+        is_test: boolean | null;
+        approval_snapshot: { paymentBlocked?: unknown; invoiceResyncFailed?: unknown } | null;
+      }>) {
         if (q.is_test) testQuoteIds.add(q.id);
+        if (isStaleInvoiceSnapshot(q.approval_snapshot)) staleQuoteIds.add(q.id);
       }
     }
-    return invoices.filter((i) => !(i.quote_id && testQuoteIds.has(i.quote_id)));
+    return invoices
+      .filter((i) => !(i.quote_id && testQuoteIds.has(i.quote_id)))
+      .map((i) => ({ ...i, stale: !!(i.quote_id && staleQuoteIds.has(i.quote_id)) }));
   } catch (err) {
     console.warn('listInvoicesForWorkflowBoard failed:', err);
     return [];
@@ -261,7 +282,35 @@ export async function loadNeedsActionData(
   }
 
   const jobs = (jobsResult.data ?? []) as unknown as NeedsActionJob[];
-  const invoices = (invoicesResult.data ?? []) as unknown as NeedsActionInvoice[];
+  const rawInvoices = (invoicesResult.data ?? []) as unknown as NeedsActionInvoice[];
+
+  // Row 389: same derivation as listInvoicesForWorkflowBoard above — a
+  // second small join (this function's own `quotes` param is the dashboard's
+  // ALREADY-FILTERED list, not guaranteed to contain every quote an invoice
+  // here links to, so it can't be reused for this lookup). Best-effort: an
+  // error here degrades to "no invoice flagged stale", never to dropping any
+  // invoice or throwing — the collect-balance nag is more useful un-flagged
+  // than missing.
+  let invoices = rawInvoices;
+  const invQuoteIds = [...new Set(rawInvoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
+  if (invQuoteIds.length) {
+    const { data: qrows, error: qErr } = await sb
+      .from('quotes')
+      .select('id, approval_snapshot')
+      .in('id', invQuoteIds);
+    if (qErr) {
+      console.warn('loadNeedsActionData stale-invoice lookup failed:', qErr.message);
+    } else {
+      const staleQuoteIds = new Set<string>();
+      for (const q of (qrows ?? []) as Array<{
+        id: string;
+        approval_snapshot: { paymentBlocked?: unknown; invoiceResyncFailed?: unknown } | null;
+      }>) {
+        if (isStaleInvoiceSnapshot(q.approval_snapshot)) staleQuoteIds.add(q.id);
+      }
+      invoices = rawInvoices.map((i) => ({ ...i, stale: !!(i.quote_id && staleQuoteIds.has(i.quote_id)) }));
+    }
+  }
 
   return { quotes, jobs, invoices };
 }

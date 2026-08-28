@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
-import { calculateQuote, type LineItem } from '@/lib/pricing/pricingEngine';
+import { calculateQuote, BUSINESS_RULES, type LineItem } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -66,9 +66,13 @@ export default function DesignSummary({ designId, refreshKey = 0 }: Props) {
         applyProjectionToInputs(
           {
             santasFootage: 0,
-            santasDifficulty: 'medium',
+            // Inert here (0 ft prices to $0, and this object is never persisted
+            // — it exists only to price the per-unit projection for this panel),
+            // but pointed at the shared constant anyway so nobody has to
+            // re-derive whether it is inert. One value, no exceptions.
+            santasDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
             gingerbreadFootage: 0,
-            gingerbreadDifficulty: 'medium',
+            gingerbreadDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
             winterWonderlandFootage: 0,
             winterWonderlandDifficulty: 'medium',
             stakeLightingFootage: 0,

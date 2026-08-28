@@ -8,6 +8,9 @@ import {
   canSubmitStaffNote,
   loadStaffNotes,
   mergeStaffNote,
+  oldestStaffNoteCursor,
+  redactStaffNote,
+  staffNotesPageQuery,
   mergeStaffNotes,
   postStaffNote,
 } from './StaffNotesPanel';
@@ -21,14 +24,201 @@ const NOTE = {
   createdBy: '22222222-2222-4222-8222-222222222222',
   createdByLabel: 'Naldo',
   createdAt: '2026-08-21T14:00:00.000Z',
+  // Row 372: an ordinary, never-withdrawn note.
+  redactedAt: null,
+  redactedByLabel: null,
+  redactedReason: null,
 };
+
+describe('StaffNotesList — the older-notes control (row 373)', () => {
+  it('offers a way to READ the older notes, not just a note that they exist', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} hasMore onLoadMore={() => {}} />,
+    );
+    expect(html).toContain('Show older notes');
+  });
+
+  it('renders no control when the page holds every note', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).not.toContain('Show older notes');
+  });
+
+  // Staff lens MED: a failed older-page fetch used to render its message down
+  // inside the "Add an internal note" form, reading like a failed SAVE, in the
+  // loader's generic wording ("Could not load notes" — as if there were none).
+  it('shows an older-page failure beside the button, and says the notes are still there', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList
+        notes={[NOTE]}
+        loading={false}
+        hasMore
+        olderError="Could not load the older notes. They are still there — try again."
+        onLoadMore={() => {}}
+      />,
+    );
+    expect(html).toContain('still there');
+    expect(html).toContain('role="alert"');
+    // The button survives the failure — those notes have not gone anywhere.
+    expect(html).toContain('Show older notes');
+  });
+
+  it('disables the control while an older page is in flight', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} hasMore loadingMore onLoadMore={() => {}} />,
+    );
+    expect(html).toContain('disabled');
+    expect(html).toContain('Loading…');
+  });
+});
+
+// ─── Row 372: a withdrawn note ──────────────────────────────────────────────
+// staff_notes is append-only down to the grants, so a note written in error —
+// or one naming someone who should not be named — could only be removed by
+// deleting the whole quote. A withdrawal keeps the row and the attribution and
+// replaces the text.
+describe('StaffNotesList — withdrawn notes (row 372)', () => {
+  const WITHDRAWN = {
+    ...NOTE,
+    body: '[Note withdrawn]',
+    redactedAt: '2026-08-25T10:00:00.000Z',
+    redactedByLabel: 'Jason',
+    redactedReason: 'Wrong customer',
+  };
+
+  it('keeps a withdrawn note in the timeline, marked, with both attributions', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[WITHDRAWN]} loading={false} />);
+    expect(html).toContain('[Note withdrawn]');
+    expect(html).toContain('Naldo'); // who wrote it — the record of that stays
+    expect(html).toContain('withdrawn');
+    expect(html).toContain('Jason'); // who withdrew it
+    expect(html).toContain('Wrong customer');
+  });
+
+  it('offers the control on an ordinary note and never on an already-withdrawn one', () => {
+    const live = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} onRedact={() => {}} />,
+    );
+    expect(live).toContain('Withdraw');
+
+    const done = renderToStaticMarkup(
+      <StaffNotesList notes={[WITHDRAWN]} loading={false} onRedact={() => {}} />,
+    );
+    // "withdrawn" appears in the attribution line; the BUTTON must not.
+    expect(done).not.toContain('>Withdraw<');
+  });
+
+  it('renders no control at all for a caller that does not pass one', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).not.toContain('>Withdraw<');
+  });
+
+  it('disables only the note being withdrawn, not its neighbours', () => {
+    const other = { ...NOTE, id: 'other-id', body: 'Second note' };
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE, other]} loading={false} onRedact={() => {}} redactingId={NOTE.id} />,
+    );
+    expect(html).toContain('Withdrawing…');
+    expect(html).toContain('>Withdraw<'); // the other one is still offered
+  });
+});
+
+describe('StaffNotesList — a withdrawal outcome sits with its note (row 372)', () => {
+  it('renders the message against the note it concerns, not elsewhere', () => {
+    const other = { ...NOTE, id: 'other-id', body: 'Second note' };
+    const html = renderToStaticMarkup(
+      <StaffNotesList
+        notes={[NOTE, other]}
+        loading={false}
+        onRedact={() => {}}
+        redactNotice={{ id: NOTE.id, message: 'Could not withdraw the note' }}
+      />,
+    );
+    expect(html).toContain('Could not withdraw the note');
+    expect(html).toContain('role="alert"');
+    // Exactly once — against one note, not repeated under every note.
+    expect(html.split('Could not withdraw the note').length - 1).toBe(1);
+  });
+
+  it('renders nothing extra when there is no outcome to report', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} onRedact={() => {}} />);
+    expect(html).not.toContain('role="alert"');
+  });
+});
+
+describe('staff-note withdrawal transport (row 372)', () => {
+  it('PATCHes the note id and reason to the quote-scoped route', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ note: { ...NOTE, body: '[Note withdrawn]' } }), { status: 200 }),
+    );
+
+    const result = await redactStaffNote(QUOTE_ID, NOTE.id, 'Wrong customer', fetcher);
+    expect(result.alreadyRedacted).toBe(false);
+
+    expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noteId: NOTE.id, reason: 'Wrong customer' }),
+    });
+  });
+
+  it('reports an already-withdrawn note so the second staffer learns their reason was not kept', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ note: { ...NOTE, redactedByLabel: 'Jason' }, alreadyRedacted: true }),
+          { status: 200 },
+        ),
+    );
+    const result = await redactStaffNote(QUOTE_ID, NOTE.id, 'my reason', fetcher);
+    expect(result.alreadyRedacted).toBe(true);
+    expect(result.note.redactedByLabel).toBe('Jason');
+  });
+
+  it('throws the server message rather than pretending the note was withdrawn', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'Note not found on this quote' }), { status: 404 }),
+    );
+    await expect(redactStaffNote(QUOTE_ID, NOTE.id, '', fetcher)).rejects.toThrow('Note not found on this quote');
+  });
+});
 
 describe('staff-note transport', () => {
   it('loads only the quote-scoped internal route', async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ notes: [NOTE] }), { status: 200 }));
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ notes: [NOTE], hasMore: false }), { status: 200 }),
+    );
 
-    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual([NOTE]);
+    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual({ notes: [NOTE], hasMore: false });
     expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, { cache: 'no-store' });
+  });
+
+  // ── Row 373: paging transport ─────────────────────────────────────────────
+  it('sends the page cursor as both halves, url-encoded', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ notes: [], hasMore: false }), { status: 200 }),
+    );
+
+    await loadStaffNotes(QUOTE_ID, fetcher, { createdAt: NOTE.createdAt, id: NOTE.id });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/quotes/${QUOTE_ID}/staff-notes?beforeCreatedAt=${encodeURIComponent(NOTE.createdAt)}&beforeId=${NOTE.id}`,
+      { cache: 'no-store' },
+    );
+  });
+
+  // An old server (or a garbled body) that omits the flag must leave the
+  // "Show older notes" button AVAILABLE. An extra click costs nothing; a
+  // wrongly-hidden button hides notes, which is the whole point of this row.
+  it('assumes there may be more when the response omits hasMore', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ notes: [NOTE] }), { status: 200 }));
+    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual({ notes: [NOTE], hasMore: true });
+  });
+
+  it('builds the next-page cursor from the OLDEST loaded note, and nothing from an empty list', () => {
+    const older = { ...NOTE, id: 'older-id', createdAt: '2026-08-20T09:00:00.000Z' };
+    expect(oldestStaffNoteCursor([NOTE, older])).toEqual({ createdAt: older.createdAt, id: older.id });
+    expect(oldestStaffNoteCursor([])).toBeNull();
+    expect(staffNotesPageQuery(null)).toBe('');
   });
 
   it('posts the exact body and idempotency key', async () => {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 
 /**
  * Dispatch / day view (P4P Phase 3).
@@ -65,7 +66,14 @@ type DayCapacity = {
 };
 type CrewMember = { id: string; displayName: string; active: boolean };
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Row 335: the ET business day, not the UTC calendar day. The UTC form
+// (`toISOString().slice(0, 10)`) opened this page on TOMORROW every evening
+// from ~8pm ET (~7pm during EST) — tomorrow's jobs, crew and capacity with no
+// cue. Same clock the midnight auto-close uses (etDayKey is DST-correct via
+// Intl); pure, so client-safe to import here. Exported with an injectable
+// `now` so the evening case is unit-testable (this repo has no jsdom).
+export const defaultScheduleDay = (now: Date = new Date()) => etDayKey(now);
+const today = () => defaultScheduleDay();
 const hours = (n: number) => `${Math.round(n * 10) / 10}h`;
 
 export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
@@ -352,7 +360,22 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
         </>
       )}
 
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-4 text-sm text-red-600">
+          {error}
+          {/* The coordinate refusal names the geocoding page; make that a real
+              link rather than a destination the staffer has to type (S68 staff
+              lens: an unlinked page is this repo's inert-feature class). */}
+          {error.includes('geocoding page') && (
+            <>
+              {' '}
+              <a href="/admin/geocoding" className="underline font-medium">
+                Open the geocoding page
+              </a>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }

@@ -82,6 +82,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/integrations/homeworks/signed', // home.works signed webhook (shared-secret in the route)
   '/api/integrations/whatsapp/webhook', // Twilio WhatsApp webhook (signature-verified in the route, #82)
   '/api/integrations/telegram/webhook', // Telegram Bot webhook (secret-token verified in the route, #82 alt channel)
+  '/api/integrations/bouncie/webhook', // Bouncie fleet-GPS webhook (shared-secret verified in the route, row 403 phase 2) — a Bouncie request carries no operator session, so without this entry the perimeter 401s it before the route's own secret check runs. Capture-only: the route writes to vehicle_events and nothing else, never to job_segments/shifts/jobs (constraint (a): GPS never writes payroll).
   '/api/inventory/purchase-order/auto-send', // Vercel Cron (CRON_SECRET-guarded, #82 auto-PO)
   '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82 low-stock alarm)
   '/api/dashboard/ghl/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 inbox safety-net poll)
@@ -92,6 +93,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
   '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest — same Bearer guard as low-stock-alert; a cron request carries no operator session so it must be allowlisted to reach its own CRON_SECRET check)
   '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs. Deliberately NOT under /api/ops/v1, so it stays outside the crew surface.
+  '/api/ops/vehicle-poll', // Vercel Cron (CRON_SECRET-guarded, row 403 fleet position poll) — same reason as every cron here: no operator session, so the perimeter must let it reach its own secret check. Writes vehicle positions and visits only; never payroll (constraint (a)).
   '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest — was silently 401'd by this perimeter from #666's merge until the S47 wrap review caught it)
   '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping — same gap, same fix)
   '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron

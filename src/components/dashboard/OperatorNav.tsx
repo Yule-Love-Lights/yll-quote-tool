@@ -14,10 +14,18 @@ type NavItem = { label: string; href: string; match: OperatorArea[] };
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/', match: ['home'] },
   { label: 'Inbox', href: '/inbox', match: ['inbox'] },
-  { label: 'Leads', href: '/admin/leads', match: ['leads'] },
+  // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
+  // page and everything behind it stay live — reachable by URL and from any
+  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
+  // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
+  // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
+  // Fleet shares the jobs area (both light up together — an accepted cosmetic
+  // cost of not widening OperatorArea). Unlinked pages are this repo's known
+  // inert-feature class; the S68 staff lens caught /admin/fleet shipping as one.
+  { label: 'Fleet', href: '/admin/fleet', match: ['jobs'] },
   { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },
   { label: 'Insights', href: '/insights', match: ['insights'] },
@@ -156,7 +164,12 @@ export function OperatorNav({
             md (768px): the 9-item row needs ~832px, so at md it overflowed the
             viewport → horizontal page scroll on iPad portrait (#56, S22). 768–1023
             uses the hamburger below. */}
-        <ul className="hidden lg:flex items-center gap-1 text-sm">
+        {/* gap-0.5, not gap-1 (premerge staff MED on this PR): with the "+ New
+            quote" CTA added, the row overflowed 1024px by ~20px whenever the
+            Inbox badge showed — measured in headless Chromium, the exact
+            iPad-width horizontal-scroll class #56/S22 fixed. Ten gaps × 2px
+            saved = exactly the overflow. */}
+        <ul className="hidden lg:flex items-center gap-0.5 text-sm">
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
@@ -165,6 +178,22 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          {/* "+ New quote" (Jason, 2026-08-26): the dashboard header's CTA,
+              duplicated here for one-click access from every page. The
+              homepage copy stays — this is an addition, not a move. Styled
+              as the CTA it is, not a nav tab, so it never takes the
+              active-tab highlight (that is Quotes' job for /quote/*). */}
+          <li>
+            {/* px-2.5 (not the tabs' px-3): 4px of extra headroom on top of
+                the gap fix above, so the 1024px fit isn't zero-margin. */}
+            <Link
+              href="/quote/new"
+              className="px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
           {/* Always mounted (ledger #347 fix round) — reserves its layout
               width so every link to its left never jumps once the session
               check resolves. `visibility: hidden` (not a conditional
@@ -204,6 +233,18 @@ export function OperatorNav({
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* "+ New quote" first in the mobile menu — same one-click-access
+              ask as the desktop CTA above. */}
+          <li>
+            <Link
+              href="/quote/new"
+              onClick={() => setOpen(false)}
+              className="flex items-center px-4 py-3 text-sm font-semibold border-b"
+              style={{ borderColor: 'var(--op-border)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link

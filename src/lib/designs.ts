@@ -1,8 +1,14 @@
 import sharp from 'sharp';
+import { readSceneLock } from '@/lib/design/sceneFreeze';
+import { recordDesignChange } from '@/lib/design/designAudit';
+import { satelliteLinesEqual } from '@/lib/design/satelliteLinesEqual';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
 import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
+// Row 371: the ONE definition of "prune this photo's brightness override",
+// shared with the editor so the two sides of a photo delete cannot disagree.
+import { removeBrightnessForPhoto } from './design/photoBrightness';
 import {
   seedSceneFromAnalysis,
   analysisSeedHasContent,
@@ -626,6 +632,13 @@ export async function updateDesignPortalVisibility(
 export type UpdateSceneOutcome =
   | { ok: true; version: number }
   | { ok: false; reason: 'conflict' }
+  // Row 367: the linked quote carries a frozen (customer-approved) agreement,
+  // so the picture they signed off on must not change. Callers surface this as
+  // a 409 with `code: 'design-locked'`, NOT as a generic failure.
+  | { ok: false; reason: 'locked' }
+  // Row 367: the freeze state could not be READ. Neither a lock nor a licence
+  // to write — callers surface it as a retryable 5xx.
+  | { ok: false; reason: 'unverified' }
   | { ok: false; reason: 'error' };
 
 async function casWriteScene(
@@ -658,6 +671,34 @@ export async function updateDesignSceneGuarded(
   const sb = getSb();
   if (!sb) return { ok: false, reason: 'error' };
 
+  // Row 367 — the design's post-approval freeze, enforced HERE rather than in
+  // any one route. The first cut of this guard lived inline in
+  // `PUT /api/designs/[id]` and two premerge lenses independently found the
+  // same hole: `seed-analysis`, `seed-roofline` and the photo-delete prune all
+  // call THIS function directly and sailed straight past it, so "Re-analyze
+  // This View" could silently rewrite a signed-off design. Gating the shared
+  // writer instead of each caller means a route added tomorrow is covered by
+  // construction. `updateDesignScene` (the unguarded sibling below) is
+  // deliberately NOT gated: its only two callers seed a row that was inserted
+  // moments earlier and has no quote link yet.
+  const lock = await readSceneLock(id);
+  if (!lock.ok) return { ok: false, reason: 'unverified' };
+  if (lock.locked) return { ok: false, reason: 'locked' };
+
+  // Row 423: the only design writes that reach a signed-off quote are the ones
+  // row 367 deliberately allows on a BOOKED order (the amend path), which is
+  // exactly the set the owner needs a record of. Recorded here rather than in
+  // each route for the same reason the freeze is: one place, no bypass. The
+  // recorder is best-effort and never throws, and it only touches the database
+  // at all when `auditable` says there is a frozen agreement to record against
+  // — an ordinary draft autosave pays nothing.
+  const auditAfterWrite = async (outcome: UpdateSceneOutcome): Promise<UpdateSceneOutcome> => {
+    if (outcome.ok && lock.auditable && lock.quoteId) {
+      await recordDesignChange(id, lock.quoteId);
+    }
+    return outcome;
+  };
+
   if (expectedVersion == null) {
     const { data: currentRow, error: readError } = await sb
       .from('designs')
@@ -669,10 +710,10 @@ export async function updateDesignSceneGuarded(
       return { ok: false, reason: 'error' };
     }
     if (!currentRow) return { ok: false, reason: 'error' }; // no such design
-    return casWriteScene(sb, id, scene, (currentRow as { version: number }).version);
+    return auditAfterWrite(await casWriteScene(sb, id, scene, (currentRow as { version: number }).version));
   }
 
-  return casWriteScene(sb, id, scene, expectedVersion);
+  return auditAfterWrite(await casWriteScene(sb, id, scene, expectedVersion));
 }
 
 // Link an existing design to a quote (set when the operator clicks "Calculate
@@ -920,18 +961,58 @@ export async function uploadDesignSatellite(
 
 // Store the staff's current satellite measurement polylines (pushed by the
 // builder at Calculate — the natural "measurement finalized" moment).
+export type UpdateSatelliteLinesOutcome =
+  | { ok: true }
+  // Row 427: the quote is customer-approved AND these lines actually DIFFER
+  // from what is stored, i.e. this is a redraw or a deletion of the trace the
+  // customer signed off on — which the portal renders. An identical re-write
+  // (the ordinary re-Calculate) is NOT refused; see satelliteLinesEqual.
+  | { ok: false; reason: 'locked' }
+  | { ok: false; reason: 'unverified' }
+  | { ok: false; reason: 'error' };
+
 export async function updateDesignSatelliteLines(
   id: string,
   lines: DesignSatelliteLines,
-): Promise<boolean> {
+): Promise<UpdateSatelliteLinesOutcome> {
   const sb = getSb();
-  if (!sb) return false;
+  if (!sb) return { ok: false, reason: 'error' };
+
+  const lock = await readSceneLock(id);
+  if (!lock.ok) return { ok: false, reason: 'unverified' };
+  if (lock.locked) {
+    // Only a real CHANGE is refused. Jason's ruling (2026-08-27) is that a
+    // re-Calculate on an approved quote must keep working, and it re-persists
+    // the same lines it already had; the staff lens showed the other half,
+    // that the trace is hand-editable and lands on the customer's portal.
+    // Comparing settles both without a blanket gate.
+    const { data: current, error: readErr } = await sb
+      .from('designs')
+      .select('satellite_lines')
+      .eq('id', id)
+      .maybeSingle<{ satellite_lines: DesignSatelliteLines | null }>();
+    if (readErr) {
+      console.warn('updateDesignSatelliteLines: stored-trace read failed:', readErr.message);
+      return { ok: false, reason: 'unverified' };
+    }
+    if (!satelliteLinesEqual(current?.satellite_lines ?? null, lines)) {
+      return { ok: false, reason: 'locked' };
+    }
+    // Identical — fall through and let the no-op write land, so the caller's
+    // ordinary success path is completely unchanged.
+  }
+
   const { error } = await sb.from('designs').update({ satellite_lines: lines }).eq('id', id);
   if (error) {
     console.error('Supabase updateDesignSatelliteLines error:', error);
-    return false;
+    return { ok: false, reason: 'error' };
   }
-  return true;
+  // Row 427 (premerge technical MED): the trace is portal-visible and, on a
+  // BOOKED order, still changeable — the same combination that earned the scene
+  // its row-423 trail. Recorded through the same helper, so "who changed this
+  // drawing and when" covers the satellite half too rather than only the scene.
+  if (lock.auditable && lock.quoteId) await recordDesignChange(id, lock.quoteId);
+  return { ok: true };
 }
 
 // Download a private-bucket object back to base64 (training capture snapshots
@@ -1219,8 +1300,38 @@ export async function addDesignExtraPhoto(
 // staff-facing "these were removed" notice — mirrors the #255 seed-analysis
 // route's identical shape so QuoteBuilder can render both with one message.
 export type PrunedMiniGroupReport = { surface: string | null; stringCount: number };
-type RemoveDesignExtraPhotoResult = { ok: boolean; prunedMiniGroups: PrunedMiniGroupReport[] };
-const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [] };
+type RemoveDesignExtraPhotoResult = {
+  ok: boolean;
+  prunedMiniGroups: PrunedMiniGroupReport[];
+  /** Row 371 (staff lens HIGH): the design's version AFTER this function's own
+   *  scene prune, or null when it wrote nothing. The editor tracks `version`
+   *  and only ever refreshes it from its OWN save response (editor.ts's
+   *  runSave), so a server-side prune silently left the still-mounted editor a
+   *  version behind — its next save then lost the CAS and tripped the
+   *  "Save blocked — reload" banner, discarding a live edit. Handing the new
+   *  version back lets the client adopt it instead. */
+  version: number | null;
+  /** Row 367: the scene prune did NOT happen, and why. The photo's storage
+   *  object and its `extra_photos` entry are already gone by the time the prune
+   *  runs, so failing the request would be a lie — but silently returning a
+   *  clean `ok: true` is worse: the deleted photo's scene items survive,
+   *  invisible and still billing, which is the exact #741 class this prune
+   *  exists to prevent.
+   *
+   *    'locked'      the quote was approved between the route's pre-flight
+   *                  check and the prune. Nothing staff can do; the items stay.
+   *    'unverified'  the freeze state could not be READ (a transient DB
+   *                  failure inside the check). Delta-verify round 2 MED: this
+   *                  is a failure surface the freeze check itself ADDED, so
+   *                  folding it into the pre-existing silent `'error'` path
+   *                  would be inheriting a swallow rather than accepting one.
+   *
+   *  A plain `'error'` (the CAS write itself failing) keeps its pre-existing
+   *  behaviour — logged, not surfaced — because that predates this work and
+   *  widening it is a separate decision. */
+  sceneNotPruned?: 'locked' | 'unverified';
+};
+const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [], version: null };
 
 // Remove one extra photo: its storage object, its array entry, AND every scene
 // item drawn on it (an item tagged to a deleted photo would otherwise be
@@ -1287,6 +1398,8 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // the scene column instead of extra_photos.
   const MAX_SCENE_PRUNE_RETRIES = 5;
   let prunedMiniGroups: PrunedMiniGroupReport[] = [];
+  let prunedVersion: number | null = null;
+  let sceneNotPruned: 'locked' | 'unverified' | undefined; // row 371: see RemoveDesignExtraPhotoResult
   try {
     let settled = false;
     for (let attempt = 0; attempt < MAX_SCENE_PRUNE_RETRIES && !settled; attempt++) {
@@ -1299,9 +1412,42 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       const freshRow = freshData as { scene?: DesignScene | null; version?: number | null } | null;
       const freshScene = freshRow?.scene ?? scene;
       const freshVersion = freshRow?.version ?? null;
-      if (!freshScene || !Array.isArray(freshScene.items) || !freshScene.items.some(it => it.photoId === photoId)) {
+      // Row 371: the per-photo BRIGHTNESS entry is pruned here too. It lives in
+      // its own map (`scene.extraPhotoBrightness`), not on an item, so a photo
+      // carrying a brightness override but NO drawn items would take the
+      // "nothing to prune" exit below and leave the key behind forever — which
+      // is why this is checked alongside the items rather than folded into the
+      // items branch.
+      const hasItemsOnPhoto =
+        Array.isArray(freshScene?.items) && freshScene.items.some(it => it.photoId === photoId);
+      const hasBrightnessEntry =
+        freshScene?.extraPhotoBrightness != null &&
+        Object.prototype.hasOwnProperty.call(freshScene.extraPhotoBrightness, photoId);
+      if (!freshScene || (!hasItemsOnPhoto && !hasBrightnessEntry)) {
         settled = true; // nothing (left) to prune — including a retry where a concurrent write already dropped these items
         break;
+      }
+      if (!hasItemsOnPhoto) {
+        // Brightness-only prune: leave `items` completely alone. Running the
+        // miniGroup prune here would drop groups orphaned by something else
+        // entirely, which is not this function's job and would change billing.
+        const outcome = await updateDesignSceneGuarded(
+          id,
+          removeBrightnessForPhoto(freshScene, photoId),
+          freshVersion,
+        );
+        if (outcome.ok) {
+          prunedVersion = outcome.version;
+          settled = true;
+          break;
+        }
+        if (outcome.reason === 'locked' || outcome.reason === 'unverified') {
+          sceneNotPruned = outcome.reason;
+          settled = true;
+          break;
+        }
+        if (outcome.reason === 'error') throw new Error('scene prune write failed');
+        continue; // 'conflict' — retry from a fresh read
       }
       const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
       // #227: pruneOrphanedMiniGroups drops any miniGroup left with zero
@@ -1316,11 +1462,29 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
         it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
       ));
       const afterGroupIds = new Set(keptItems.filter(isMiniGroup).map(g => g.id));
-      const outcome = await updateDesignSceneGuarded(id, { ...freshScene, items: keptItems }, freshVersion);
+      // Row 371: same brightness-key prune as the items-free branch above, in
+      // the one write rather than a second CAS round-trip.
+      const outcome = await updateDesignSceneGuarded(
+        id,
+        { ...removeBrightnessForPhoto(freshScene, photoId), items: keptItems },
+        freshVersion,
+      );
       if (outcome.ok) {
+        prunedVersion = outcome.version;
         prunedMiniGroups = beforeGroups
           .filter(g => !afterGroupIds.has(g.id))
           .map(g => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
+        settled = true;
+        break;
+      }
+      // Row 367 delta-verify HIGH: the two outcome variants row 367 added are
+      // TERMINAL, not retryable. Falling through to `continue` burned all five
+      // retries and then threw into the outer catch, which only logs — so the
+      // function still answered `ok: true` while the deleted photo's scene
+      // items survived. A freeze will not clear by retrying, and an
+      // unverifiable read is not a race either.
+      if (outcome.reason === 'locked' || outcome.reason === 'unverified') {
+        sceneNotPruned = outcome.reason;
         settled = true;
         break;
       }
@@ -1333,7 +1497,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }
 
-  return { ok: true, prunedMiniGroups };
+  return { ok: true, prunedMiniGroups, version: prunedVersion, sceneNotPruned };
 }
 
 // Rename the BASE photo (#13) — null/empty clears back to "Photo 1".

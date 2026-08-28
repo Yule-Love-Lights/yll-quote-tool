@@ -1,0 +1,34 @@
+-- =====================================================================
+-- Row 329: enable RLS on public.inventory_orders (2026-08-24).
+--
+-- Flagged by the Supabase advisor (S44 review): inventory_orders shipped
+-- RLS-disabled at creation (2026-07-06-inventory-orders.sql), unlike its
+-- inventory_catalog / inventory_on_hand siblings, which were swept to
+-- RLS-enabled-with-no-policies by 2026-06-28-enable-rls-all-tables.sql — that
+-- sweep predates inventory_orders' creation by over a week and never touched
+-- it (see migrations/FULL-SCHEMA.sql's posture note, "inventory_orders" bullet,
+-- for the full history). Left RLS-disabled since, and reachable with the anon
+-- key — a live prod exposure on a table that holds real supplier purchase
+-- orders.
+--
+-- CODE-FIRST VERIFIED: every consumer of inventory_orders
+-- (src/lib/inventory/orders.ts — listOrders, sumOpenOnOrder, recordOrder,
+-- markOrderSent, cancelOrder, receiveOrder) exclusively uses
+-- getSupabaseServiceClient() (the service-role client, which bypasses RLS
+-- entirely). Nothing in src/ reads or writes this table via the anon client.
+-- Every API route that calls these functions gates on requireOperator()
+-- first. So RLS-enabled-with-no-policies matches the table's "classic"
+-- service-role-only siblings (inventory_catalog, inventory_on_hand, quotes,
+-- jobs, etc. — see FULL-SCHEMA.sql's posture note) and changes nothing for
+-- any real code path — it only closes the anon-key hole.
+--
+-- HOW TO APPLY: per AGENTS.md's migration-application rules, an RLS-policy
+-- change on an EXISTING table is explicitly NOT on the safe/additive
+-- allowlist ("RLS-enable-with-zero-policies on a brand-new table only —
+-- never on an existing table"), so this migration is INTENTIONALLY LEFT
+-- UNAPPLIED by the PR that adds it. Ask the dev before applying (Supabase
+-- MCP apply_migration, or paste into the SQL Editor and Run), then verify
+-- with a real anon-key query that inventory_orders now returns nothing.
+-- =====================================================================
+
+alter table public.inventory_orders enable row level security;

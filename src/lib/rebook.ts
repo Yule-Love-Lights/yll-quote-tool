@@ -3,6 +3,7 @@ import { cloneDesignToNewQuote } from './designs';
 import { allocateNumber } from './displayId';
 import { getCustomer, unarchiveProperty } from './customers';
 import { asServiceType, canCarryNceOrYllNeighborTag, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -151,9 +152,9 @@ function applyNceDepositDefault(inputs: unknown, isNce: boolean, resetOnOff: boo
   const current = (inputs as { depositPercent?: unknown }).depositPercent;
   if (isNce) {
     if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
-    return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
+    return { ...(inputs as Record<string, unknown>), depositPercent: NCE_DEPOSIT_PERCENT };
   }
-  if (resetOnOff && current === 40) {
+  if (resetOnOff && current === NCE_DEPOSIT_PERCENT) {
     return { ...(inputs as Record<string, unknown>), depositPercent: 0 };
   }
   return inputs;

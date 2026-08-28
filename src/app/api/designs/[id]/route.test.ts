@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
 const {
+  auditSbRef,
   getDesignWithPhoto,
   updateDesignSceneGuarded,
   linkDesignToQuote,
@@ -23,6 +24,7 @@ const {
   updateDesignPortalVisibility: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   isConfigured: { current: true },
+  auditSbRef: { current: null as unknown },
 }));
 
 vi.mock('@/lib/designs', () => ({
@@ -37,10 +39,15 @@ vi.mock('@/lib/designs', () => ({
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => isConfigured.current,
+  // Row 370: the visibility-audit helper reads designs.quote_id + the quote
+  // snapshot through the service client, then appends via the REAL
+  // appendQuoteAuditEntry — auditSbRef seeds a per-test fake.
+  getSupabaseServiceClient: () => auditSbRef.current,
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: requireOperatorMock,
+  getOperator: vi.fn(async () => ({ id: 'op-1', email: 'jason@yulelovelights.com' })),
 }));
 
 import { GET, PUT } from './route';
@@ -65,12 +72,40 @@ beforeEach(() => {
   getDesignWithPhoto.mockResolvedValue({ id: VALID_ID, scene: validScene, version: 1 });
   updateDesignSceneGuarded.mockResolvedValue({ ok: true, version: 2 });
   linkDesignToQuote.mockResolvedValue(true);
-  updateDesignSatelliteLines.mockResolvedValue(true);
+  updateDesignSatelliteLines.mockResolvedValue({ ok: true });
   updateDesignPortalVisibility.mockResolvedValue({
     portalShowStreetView: true,
     portalShowSatelliteView: true,
   });
+  // Row 367: the scene write now resolves the linked quote's approval state
+  // through the service client, so every scene test needs one. Default = an
+  // UNLINKED design (nothing signed off), which is the pre-row-367 behaviour.
+  // Also stops the row-370 tests below leaking their own client into the next
+  // test, which they did before this line existed.
+  auditSbRef.current = makeFreezeFake({ quoteId: null }).client;
 });
+
+// Row 367 — a minimal service-client fake. The freeze lookup itself moved into
+// the shared writer (see the row-367 describe at the bottom), so all this does
+// now is give `recordVisibilityAudit` a client and stop the row-370 tests below
+// leaking their own client into whatever test runs next, which they did before
+// this existed.
+function makeFreezeFake(opts: { quoteId?: string | null; quote?: Record<string, unknown> | null }) {
+  function from(table: string) {
+    const b = {
+      select: () => b,
+      eq: () => b,
+      async maybeSingle() {
+        if (table === 'designs') return { data: { quote_id: opts.quoteId ?? null }, error: null };
+        return { data: opts.quote ?? null, error: null };
+      },
+      update: () => b,
+      then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+    };
+    return b;
+  }
+  return { client: { from } };
+}
 
 describe('GET /api/designs/[id]', () => {
   it('401s when the operator gate denies', async () => {
@@ -305,6 +340,55 @@ describe('PUT /api/designs/[id]', () => {
     expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, perPhotoScene, 4);
   });
 
+  // Row 348 FIX ROUND: the per-photo map filters rather than coerces, and this
+  // pins why. `brightnessForPhoto` reads
+  // `extraPhotoBrightness?.[photoId] ?? baseBrightness`, so a null/garbage entry
+  // INHERITS the scene's brightness. `clampBrightness` returns 50 for anything
+  // non-numeric — correct for the scene-level field (which already defaults with
+  // `?? 50`) but wrong per photo, where it would silently pin that photo at 50
+  // and stop it inheriting. Dropping the unusable entry preserves the inherit
+  // behaviour exactly, since a missing key reads identically to a null one.
+  it('DROPS a non-numeric per-photo brightness so it keeps inheriting the base, never pins it to 50', async () => {
+    const scene = {
+      ...validScene,
+      brightness: 80,
+      extraPhotoBrightness: { 'left-photo': null, 'mid-photo': undefined, 'right-photo': 40 },
+    } as unknown as Record<string, unknown>;
+    const res = await PUT(makeReq({ scene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    const persisted = (updateDesignSceneGuarded as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as {
+      extraPhotoBrightness: Record<string, number>;
+      brightness: number;
+    };
+    // The unusable entries are gone entirely — NOT rewritten to 50.
+    expect(persisted.extraPhotoBrightness).toEqual({ 'right-photo': 40 });
+    expect(persisted.extraPhotoBrightness['left-photo']).toBeUndefined();
+    // ...and the scene-level value still clamps normally.
+    expect(persisted.brightness).toBe(80);
+  });
+
+  // Row 348 (admin LOW): a caller-supplied brightness outside [0,100] must be
+  // clamped before it reaches storage — nothing downstream clamps it on read
+  // the way lightScale is (see photoBrightness.ts's clampBrightness comment).
+  it('clamps an out-of-range brightness (base + per-photo) before persisting', async () => {
+    const wildScene = {
+      ...validScene,
+      brightness: 9000,
+      extraPhotoBrightness: { 'left-photo': -50, 'right-photo': 40 },
+    };
+    const res = await PUT(makeReq({ scene: wildScene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(
+      VALID_ID,
+      {
+        ...validScene,
+        brightness: 100,
+        extraPhotoBrightness: { 'left-photo': 0, 'right-photo': 40 },
+      },
+      4,
+    );
+  });
+
   it('treats an omitted version as null (the adopt path) rather than crashing', async () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(200);
@@ -364,5 +448,172 @@ describe('PUT /api/designs/[id]', () => {
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.conflict).toBe(true);
+  });
+});
+
+// ── Row 370: portal-visibility changes are audited onto the linked quote ──
+// The append itself is the REAL appendQuoteAuditEntry (row 411's hardened
+// shape) running against a fake that models PostgREST's serialized CAS filter.
+function makeAuditFake(opts: { quoteId: string | null; snapshot: unknown }) {
+  const state = { snapshot: opts.snapshot };
+  const updates: Array<Record<string, unknown>> = [];
+  function from(table: string) {
+    const q = { table, op: 'select' as 'select' | 'update', payload: null as Record<string, unknown> | null, casMatch: true };
+    const b = {
+      select: () => b,
+      update(payload: Record<string, unknown>) {
+        q.op = 'update';
+        q.payload = payload;
+        return b;
+      },
+      eq(col: string, val: unknown) {
+        if (col === 'approval_snapshot')
+          q.casMatch = typeof val === 'string' && JSON.stringify(state.snapshot) === val;
+        return b;
+      },
+      async maybeSingle() {
+        if (q.table === 'designs') return { data: { quote_id: opts.quoteId }, error: null };
+        return { data: { approval_snapshot: state.snapshot }, error: null };
+      },
+      then(resolve: (v: unknown) => void) {
+        if (q.table === 'quotes' && q.op === 'update' && q.casMatch) {
+          updates.push(q.payload!);
+          state.snapshot = (q.payload as { approval_snapshot: unknown }).approval_snapshot;
+          return resolve({ data: [{ id: opts.quoteId }], error: null });
+        }
+        return resolve({ data: [], error: null });
+      },
+    };
+    return b;
+  }
+  return { client: { from }, updates };
+}
+
+describe('PUT /api/designs/[id] — portal-visibility audit (row 370)', () => {
+  const FROZEN = { currentTotalUsd: 5000, customerSelection: { depositRate: 0.5 } };
+
+  it('appends who/when/what onto the linked quote when a snapshot exists', async () => {
+    const fake = makeAuditFake({ quoteId: OTHER_ID, snapshot: FROZEN });
+    auditSbRef.current = fake.client;
+    const res = await PUT(makeReq({ portalShowStreetView: false }), ctx());
+    expect(res.status).toBe(200);
+    expect(fake.updates).toHaveLength(1);
+    const written = fake.updates[0].approval_snapshot as Record<string, unknown>;
+    // frozen agreement intact, audit appended
+    expect(written.currentTotalUsd).toBe(5000);
+    const trail = written.portalVisibilityChanges as Array<Record<string, unknown>>;
+    expect(trail).toHaveLength(1);
+    expect(trail[0].by).toBe('jason@yulelovelights.com');
+    expect(trail[0].designId).toBe(VALID_ID);
+    expect(trail[0].changes).toEqual({ portalShowStreetView: false });
+  });
+
+  it('SKIPS (writes nothing) for a quote never approved — NULL snapshot', async () => {
+    // appendQuoteAuditEntry's unconfirmed-snapshot guard: there is no frozen
+    // agreement to dispute, and writing one from nothing is the reviewed
+    // data-loss class. The visibility save itself still succeeds.
+    const fake = makeAuditFake({ quoteId: OTHER_ID, snapshot: null });
+    auditSbRef.current = fake.client;
+    const res = await PUT(makeReq({ portalShowSatelliteView: false }), ctx());
+    expect(res.status).toBe(200);
+    expect(fake.updates).toHaveLength(0);
+  });
+
+  it('SKIPS for an unlinked design, and an audit failure never fails the save', async () => {
+    const fake = makeAuditFake({ quoteId: null, snapshot: FROZEN });
+    auditSbRef.current = fake.client;
+    expect((await PUT(makeReq({ portalShowStreetView: true }), ctx())).status).toBe(200);
+    expect(fake.updates).toHaveLength(0);
+    // client missing entirely (throwing accessor) — save still succeeds
+    auditSbRef.current = null;
+    expect((await PUT(makeReq({ portalShowStreetView: true }), ctx())).status).toBe(200);
+  });
+});
+
+// ── Row 367: the design's post-approval freeze ────────────────────────────────
+// The guard itself lives in the SHARED writer (`updateDesignSceneGuarded`, so
+// seed-analysis / seed-roofline / the photo-delete prune are covered by
+// construction — four premerge lenses independently found that a route-level
+// check missed all three). What THIS route owns is the mapping from the
+// writer's outcome to an honest HTTP answer, which is what these pin. The
+// predicate and the lookup are covered in src/lib/design/sceneFreeze.test.ts.
+describe('PUT /api/designs/[id] — post-approval design freeze (row 367)', () => {
+  it('maps a locked write to a 409 carrying a distinguishable code', async () => {
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'locked' });
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('design-locked');
+    // The code is what stops the editor mistaking this for the row-260 CAS
+    // conflict and telling staff to "reload" into the same lock forever.
+    expect(body.error).toContain('already approved');
+  });
+
+  it('maps an UNVERIFIED freeze read to a retryable 500, never a 409', async () => {
+    // Both other answers are wrong here: a 409 would block this editor's saves
+    // permanently on a transient DB blip AND tell staff a live quote is
+    // approved; a 200 would be the exact drift row 367 closes. A 500 keeps the
+    // edit queued for the editor's own backoff retry.
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'unverified' });
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
+  });
+
+  it('still maps a CAS conflict to its own 409 shape, unchanged', async () => {
+    // Regression guard on the row-260 contract: adding a second kind of 409
+    // must not blur the first. `conflict: true` and NO `code`.
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'conflict' });
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.conflict).toBe(true);
+    expect(body.code).toBeUndefined();
+  });
+
+  it('never routes a non-scene write through the scene writer', async () => {
+    // Row 427 UPDATE: satelliteLines is no longer un-frozen — it is frozen on
+    // an actual CHANGE only (see the satellite-trace describe below), which is
+    // what let Jason's "a re-Calculate must keep working" ruling and the freeze
+    // coexist. What stays true, and is what this pins, is that neither
+    // satelliteLines nor portal-visibility goes through the SCENE writer.
+    expect((await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx())).status).toBe(200);
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+    expect((await PUT(makeReq({ portalShowStreetView: false }), ctx())).status).toBe(200);
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+  });
+});
+
+// ── Row 427: the satellite trace is frozen on a real CHANGE, not on approval ──
+// Jason ruled the trace must stay writable so an ordinary re-Calculate on an
+// approved quote keeps working; a premerge staff lens showed staff could also
+// redraw or DELETE the roofline the customer approved, which the portal
+// renders. `updateDesignSatelliteLines` compares before refusing; this pins how
+// the route reports each outcome.
+describe('PUT /api/designs/[id] — satellite trace outcomes (row 427)', () => {
+  it('409s a real trace change with the shared design-locked code', async () => {
+    updateDesignSatelliteLines.mockResolvedValueOnce({ ok: false, reason: 'locked' });
+    const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('design-locked');
+    // The copy must NOT say "this quote is locked" flatly — an unchanged
+    // re-Calculate on the very same quote is allowed, and staff need to know
+    // that or they will think the quote is unusable.
+    expect(body.error).toContain('without changing the lines still works');
+  });
+
+  it('maps an unverifiable freeze read to a retryable 500, not a lock', async () => {
+    updateDesignSatelliteLines.mockResolvedValueOnce({ ok: false, reason: 'unverified' });
+    const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
+  });
+
+  it('still reports an ordinary write failure as a plain 500', async () => {
+    updateDesignSatelliteLines.mockResolvedValueOnce({ ok: false, reason: 'error' });
+    const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
   });
 });

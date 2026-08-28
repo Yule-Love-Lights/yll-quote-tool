@@ -23,6 +23,7 @@ import { resolveAgreedTotal } from '@/lib/agreedTotal';
 import { addFreeLineItem, removeFreeLineItem } from '@/lib/freeItemEdit';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import { casSwapApprovalSnapshot } from '@/lib/quoteAudit';
 
 export const runtime = 'nodejs';
 
@@ -256,17 +257,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Atomically bind the line-item/result write to the exact snapshot we read.
   // A financial amend or another free-item edit that wins this race changes the
   // jsonb value, so this stale writer cannot erase its trail or pricing result.
-  const { data: updatedQuotes, error: upErr } = await sb
-    .from('quotes')
-    .update({ inputs: newInputs, result: newResult, approval_snapshot: newSnapshot })
-    .eq('id', id)
-    .eq('approval_snapshot', JSON.stringify(baseSnap))
-    .select('id');
-  if (upErr) {
-    console.error('[api/quotes/:id/free-items] update failed:', upErr);
+  // Row 411: the CAS write is the shared primitive now — `inputs`/`result`
+  // ride as extraColumns in the SAME update, because splitting them from the
+  // snapshot write would reopen exactly the race this CAS closes.
+  const casOutcome = await casSwapApprovalSnapshot(
+    sb,
+    id,
+    baseSnap as Record<string, unknown>,
+    newSnapshot as Record<string, unknown>,
+    '[api/quotes/:id/free-items]',
+    { inputs: newInputs, result: newResult },
+  );
+  if (casOutcome === 'error') {
     return NextResponse.json({ error: 'Failed to save the change' }, { status: 500 });
   }
-  if (!updatedQuotes || updatedQuotes.length === 0) {
+  if (casOutcome === 'conflict') {
     return NextResponse.json(
       { error: 'The order changed while you were editing — please retry.', code: 'concurrent-edit' },
       { status: 409 },

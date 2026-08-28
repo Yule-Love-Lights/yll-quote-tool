@@ -132,7 +132,9 @@ export default async function InboxPage() {
           <PendingColorRequestsSection items={colorRequestsRes.items} nowMs={now.getTime()} />
         )}
 
-        {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}
+        {followRes.ok && followRes.items.length > 0 && (
+          <FollowUpStrip initialItems={followRes.items} totalDue={followRes.totalDue} />
+        )}
 
         {/* WT-41: above the 100-item page cap, the oldest items are what's shown
             (by design — they're the longest-waiting) but the newest customer

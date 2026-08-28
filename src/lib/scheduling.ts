@@ -113,7 +113,25 @@ type JobRowForSchedule = {
   rates_are_placeholder: boolean;
 };
 
-/** Assign a crew member to a job for a day. Idempotent on the unique constraint. */
+/**
+ * Row 356: a refusal the CALLER caused (unknown / inactive / office crew id),
+ * as opposed to an infrastructure failure. The API route maps this to a 4xx
+ * with the message verbatim, so a stale dropdown or a direct POST gets told
+ * exactly why instead of a generic 500.
+ */
+export class AssignmentRefusedError extends Error {}
+
+/**
+ * Assign a crew member to a job for a day. Idempotent on the unique constraint.
+ *
+ * Row 356: the office/field boundary is enforced HERE, at the state change,
+ * not only in `listActiveFieldCrew` feeding the dropdown — a direct POST, a
+ * stale cached id, or a future integration must not be able to assign office
+ * staff (or an inactive member) to a field job. The check-then-insert has a
+ * benign TOCTOU window (someone deactivating the member mid-request), which
+ * is fine: the guard exists to stop ids that are ALREADY wrong, and the FK
+ * still guarantees the row references a real crew member.
+ */
 export async function assignCrewToJob(
   jobId: string,
   crewMemberId: string,
@@ -124,6 +142,58 @@ export async function assignCrewToJob(
   }
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
+
+  const { data: crewData, error: crewError } = await db
+    .from('crew_members')
+    .select('id, active, is_office')
+    .eq('id', crewMemberId.trim())
+    .maybeSingle();
+  if (crewError) throw new Error(`assignCrewToJob: crew lookup: ${crewError.message}`);
+  const crew = crewData as unknown as { id: string; active: boolean; is_office: boolean } | null;
+  if (!crew) {
+    throw new AssignmentRefusedError('Unknown crew member — refresh and pick from the current roster.');
+  }
+  if (crew.is_office) {
+    // Same rule the dropdown enforces (listActiveFieldCrew): office staff are
+    // operators, not installers, and must never land on a field job.
+    throw new AssignmentRefusedError('Office staff cannot be assigned to field jobs.');
+  }
+  if (!crew.active) {
+    throw new AssignmentRefusedError('That crew member is inactive and cannot be assigned.');
+  }
+
+  // NALDO'S RULE, 2026-08-27: a job cannot go on the schedule unless its
+  // property has verified coordinates. This is what makes the GPS timeline
+  // trustworthy by construction — a scheduled job can always be watched, so a
+  // missing timeline can never be mistaken for a crew that did not show up.
+  // The fix path is the geocode fix-list: correct the address there and it
+  // verifies on save. Enforced HERE at the write, per the row-356 precedent:
+  // a dropdown filter alone would not stop a direct POST or a stale id.
+  const { data: jobData, error: jobError } = await db
+    .from('jobs')
+    .select('id, property_id')
+    .eq('id', jobId.trim())
+    .maybeSingle();
+  if (jobError) throw new Error(`assignCrewToJob: job lookup: ${jobError.message}`);
+  const job = jobData as unknown as { id: string; property_id: string | null } | null;
+  if (!job) throw new AssignmentRefusedError('Unknown job.');
+  if (!job.property_id) {
+    throw new AssignmentRefusedError(
+      'This job has no property linked, so it cannot be scheduled until it does.',
+    );
+  }
+  const { data: propData, error: propError } = await db
+    .from('properties')
+    .select('id, lat, lng')
+    .eq('id', job.property_id)
+    .maybeSingle();
+  if (propError) throw new Error(`assignCrewToJob: property lookup: ${propError.message}`);
+  const prop = propData as unknown as { id: string; lat: number | null; lng: number | null } | null;
+  if (!prop || prop.lat == null || prop.lng == null) {
+    throw new AssignmentRefusedError(
+      'This property has no verified coordinates yet. Fix its address on the geocoding page, then schedule it.',
+    );
+  }
 
   const { data, error } = await db
     .from('job_assignments')

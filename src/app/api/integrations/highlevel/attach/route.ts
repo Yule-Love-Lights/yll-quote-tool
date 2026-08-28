@@ -43,6 +43,7 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, quoteRowToIdentity } from '@/lib/customers';
 import { wasEverApproved } from '@/lib/quoteStatus';
+import { appendQuoteAuditEntry } from '@/lib/quoteAudit';
 
 export const runtime = 'nodejs';
 
@@ -112,6 +113,17 @@ async function logIdentityRefusal(
   baseSnapshot: unknown,
   entry: Pick<IdentityRefusalEntry, 'action' | 'attemptedContactId' | 'attemptedContact' | 'stage'>,
 ): Promise<void> {
+  // Row 411: the read-modify-write + value-CAS + null-guard + single-retry
+  // shape that used to live inline here (with the reviewed data-loss bug fix)
+  // is now src/lib/quoteAudit.ts's appendQuoteAuditEntry — one hardened copy
+  // shared with the amend and free-items writes instead of three drifting
+  // ones. The semantics are unchanged: best-effort, silent retry once on a
+  // lost race, SKIP (never coerce to {}) when the observed snapshot is
+  // unconfirmed, because losing an audit line is acceptable and replacing the
+  // frozen agreement to record one is not.
+  // Fix round (staff lens LOW on PR #970): the old inline code ran getOperator
+  // INSIDE its try — a throw here must never turn a routine refusal response
+  // into a 500, because this whole function is a best-effort audit line.
   try {
     const operator = await getOperator();
     const newEntry: IdentityRefusalEntry = {
@@ -119,81 +131,16 @@ async function logIdentityRefusal(
       at: new Date().toISOString(),
       ...entry,
     };
-    let snapshot: unknown = baseSnapshot;
-    // Up to 2 attempts (initial + one retry on a lost optimistic-concurrency
-    // race). Mirrors the sibling idiom's single-retry posture — their retry
-    // is "ask the caller to resubmit" (a 409); ours is silent, since this is
-    // a background audit write, never the action the caller is waiting on.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      // Fix-round HIGH (data-loss bug, caught by review): every caller below
-      // now passes either a confirmed row read or the `{ ok: false }` case
-      // filtered out BEFORE this function is even called — but this function
-      // must not depend on every future caller getting that right. `null`/
-      // `undefined` here is a BUG SIGNAL, never "the snapshot is legitimately
-      // empty" — a caller whose fresh read failed (RLS denial, timeout, a
-      // connection blip; none of these throw, they return `{ data: null,
-      // error }`) must never have that coerced into `{}` and then WRITTEN
-      // BACK, which would REPLACE — not merge onto — the real
-      // approval_snapshot: the agreed total, deposit, frozen line items,
-      // approvedAt/staffApproved, and the customer's colour selection. The
-      // value CAS below is a SECOND, independent guard against exactly this
-      // (a filter on `JSON.stringify({})` will not match a populated or a
-      // genuinely-NULL column either) — never rely on the CAS alone; this
-      // check is the real fix. Losing an audit line is an acceptable
-      // outcome; this function must never risk the frozen agreement to
-      // record one.
-      if (snapshot == null) {
-        console.warn(
-          `[api/integrations/highlevel/attach] identity-refusal audit SKIPPED for quote ${quoteId} (attempt ${attempt}) — no confirmed approval_snapshot to merge onto; refusing to risk overwriting the frozen agreement.`,
-        );
-        return;
-      }
-      const prior = typeof snapshot === 'object' ? (snapshot as Record<string, unknown>) : {};
-      const priorRefusals = Array.isArray(prior.identityChangeRefusals) ? prior.identityChangeRefusals : [];
-      const newSnapshot = { ...prior, identityChangeRefusals: [...priorRefusals, newEntry] };
-      const { data, error } = await client
-        .from('quotes')
-        .update({ approval_snapshot: newSnapshot })
-        .eq('id', quoteId)
-        // Value CAS — mirrors amend/route.ts + free-items/route.ts exactly.
-        // PostgREST string-interpolates filter values; JSON.stringify is
-        // required or the object serializes to "[object Object]" and this
-        // filter can never match (see either sibling's identical comment).
-        .eq('approval_snapshot', JSON.stringify(prior))
-        .select('id');
-      if (error) {
-        console.warn(
-          `[api/integrations/highlevel/attach] identity-refusal audit write failed for quote ${quoteId}:`,
-          error.message,
-        );
-        return;
-      }
-      if (data && data.length > 0) return; // landed
-      if (attempt === 0) {
-        // Lost the race — something else (most likely the customer's own
-        // /approve or /pay, or a staff amend) wrote approval_snapshot in the
-        // gap. Re-read fresh and retry once against the CURRENT value. A
-        // failed re-read (or no row) sets `snapshot` to `undefined`, which
-        // the top-of-loop check above catches on the next iteration —
-        // never silently coerced to `{}` here.
-        const fresh = await readApprovalSnapshot(client, quoteId);
-        snapshot = fresh.ok ? fresh.snapshot : undefined;
-        continue;
-      }
-      // Second miss: give up. This is a best-effort AUDIT write, not the
-      // refusal itself — the refusal response is already built by the
-      // caller independent of this function, so losing this race twice
-      // costs one missing audit line, never a lost refusal.
-      console.warn(
-        `[api/integrations/highlevel/attach] identity-refusal audit write lost the optimistic-concurrency race twice for quote ${quoteId}; entry not recorded.`,
-      );
-      return;
-    }
-  } catch (err) {
-    console.warn(
-      `[api/integrations/highlevel/attach] identity-refusal audit write threw for quote ${quoteId}:`,
-      err,
+    await appendQuoteAuditEntry(
+      client,
+      quoteId,
+      'identityChangeRefusals',
+      newEntry,
+      '[api/integrations/highlevel/attach]',
+      baseSnapshot,
     );
+  } catch (err) {
+    console.warn(`[api/integrations/highlevel/attach] identity-refusal audit write threw for quote ${quoteId}:`, err);
   }
 }
 

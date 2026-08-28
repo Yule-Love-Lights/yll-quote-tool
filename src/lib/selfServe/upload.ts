@@ -5,16 +5,24 @@
 // 'self_serve_upload'. It lands in the staff dashboard like any draft; staff trace +
 // price it by hand, then send it. The contact step then attaches who the customer is.
 
-import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { saveQuote } from '@/lib/quotes';
 import { createDesign } from '@/lib/designs';
 
 // A fully-zeroed holiday input set — no measurement yet (staff design by hand).
-const EMPTY_HOLIDAY_INPUTS: QuoteInputs = {
+//
+// Premerge technical lens, 2026-08-27: the roofline difficulties here are NOT
+// inert just because footage is 0. They are stored EXPLICITLY, so when staff
+// reopen this draft `inputsToFormData`'s `?? rooflineDefaultDifficulty` fallback
+// never fires and the dropdown pre-selects whatever is written here — for
+// exactly the "nobody decided this" reason the always-Easy rule exists. I had
+// reasoned past this on the grounds that 0 ft × any rate is 0, which is true of
+// the price at creation and false of the state on reopen.
+export const EMPTY_HOLIDAY_INPUTS: QuoteInputs = {
   santasFootage: 0,
-  santasDifficulty: 'medium',
+  santasDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
   gingerbreadFootage: 0,
-  gingerbreadDifficulty: 'medium',
+  gingerbreadDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
   winterWonderlandFootage: 0,
   winterWonderlandDifficulty: 'medium',
   stakeLightingFootage: 0,

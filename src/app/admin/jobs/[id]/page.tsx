@@ -11,6 +11,7 @@ import { NceBadge } from '@/components/admin/NceBadge';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
+import { priorCollectedWarning } from '@/lib/quoteAmendInvoiceSync';
 import type { JobDetail } from '@/lib/jobs';
 import { JobsListSkeleton } from '../JobsListSkeleton';
 
@@ -26,6 +27,24 @@ const money = (n: number | null | undefined) =>
     : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+
+// Fix round 3 (Finding LOW, PR #926): pure extraction of the cancel action
+// message, mirroring ColorRequestPanel.tsx's applyOutcomeFromResponse — this
+// repo's pattern for testing a fetch-response-driven string without
+// jsdom/testing-library. Widened to cue on `stockNeedsAttention` (a
+// stock-reversal caveat — most importantly the PENDING_STOCK_SNAPSHOT refusal
+// note) in addition to `refundNeeded`, mirroring PipelineActionsMenu.tsx's
+// cancelAlertMessage.
+export function cancelActionMessage(body: {
+  alreadyCancelled?: boolean;
+  refundNeeded?: boolean;
+  stockNeedsAttention?: boolean;
+  note?: string;
+}): string {
+  if (body.alreadyCancelled) return 'Already cancelled.';
+  const cue = body.refundNeeded || body.stockNeedsAttention ? '⚠️ ' : '';
+  return `${cue}Order cancelled.${body.note ? ` ${body.note}` : ''}`;
+}
 
 export default function JobDetailPage() {
   const params = useParams<{ id: string }>();
@@ -125,7 +144,17 @@ export default function JobDetailPage() {
             ? ' Customer must re-approve the new total before the balance is charged.'
             : '') +
           (d.overpayment ? ' Overpayment — refund manually in Valor.' : '') +
-          notifyNote,
+          notifyNote +
+          // Row 341 fix round 3 (MED finding): the route computes and returns
+          // this flag specifically so a lost invoice re-sync (a losing CAS
+          // race, twice) doesn't read as a clean success — before this, no
+          // caller ever read it, so the warning it exists to surface never
+          // reached anyone. A durable marker also lands on the quote
+          // (quoteAmendInvoiceSync.ts's flagInvoiceResyncFailed) for the case
+          // nobody sees this response, but THIS is the synchronous one.
+          (body.invoiceResyncFailed
+            ? ' ⚠️ The linked invoice could not be re-synced — reconcile it manually before charging the balance.'
+            : ''),
       );
       setAmendReason('');
       await load();
@@ -150,17 +179,10 @@ export default function JobDetailPage() {
       const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'Failed');
-      setActionMsg(
-        body.alreadyCancelled
-          ? 'Already cancelled.'
-          // #110 W7-001: surface the route's refund note on EVERY cancel. The old
-          // code only warned on a paid INVOICE (body.refundedInvoice), so a
-          // booked-but-not-invoiced order whose 50% DEPOSIT was already charged
-          // (the common pre-install cancel) showed a bare "Order cancelled." while
-          // a real refund was owed. The route already computes refundedDeposit +
-          // refundNeeded + a note; consume them, with a ⚠️ cue when a refund is due.
-          : `${body.refundNeeded ? '⚠️ ' : ''}Order cancelled.${body.note ? ` ${body.note}` : ''}`,
-      );
+      // #110 W7-001 / fix round 3 (Finding LOW, PR #926): surface the route's
+      // refund + stock-reversal notes on every cancel, with a ⚠️ cue — see
+      // cancelActionMessage's doc comment above.
+      setActionMsg(cancelActionMessage(body));
       await load();
     } catch (err) {
       setActionMsg(err instanceof Error ? err.message : 'Failed');
@@ -217,11 +239,43 @@ export default function JobDetailPage() {
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Customer</h2>
-              <p className="text-gray-800 font-medium">{data.customerName ?? '—'}</p>
+              {/* Row 418: link to the customer profile (mirrors /admin/jobs'
+                  list idiom — customerRouteId rule; a walk-in with no id stays
+                  plain text). */}
+              <p className="text-gray-800 font-medium">
+                {data.customerRouteId ? (
+                  <Link
+                    href={`/customers/${encodeURIComponent(data.customerRouteId)}`}
+                    className="hover:underline"
+                    style={{ color: 'var(--op-primary)' }}
+                  >
+                    {data.customerName ?? '—'}
+                  </Link>
+                ) : (
+                  data.customerName ?? '—'
+                )}
+              </p>
               {data.customerAddress && <p className="text-sm text-gray-500">{data.customerAddress}</p>}
               <p className="text-sm text-gray-500">
                 {[data.customerPhone, data.customerEmail].filter(Boolean).join(' · ') || '—'}
               </p>
+              {/* Row 362: the approved light colour, on the screen the crew
+                  actually builds from. Rendered as a chip rather than a line of
+                  grey text because getting this wrong means the wrong lights go
+                  on a real house — Kristie Tibbetts was told Champagne by SMS
+                  while her order still read "Staff's pick", and nothing on this
+                  page would have shown the difference. Absent only when the
+                  quote has no approved selection. */}
+              {data.lightColorLabel && (
+                <p className="mt-2 text-sm">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Light colour
+                  </span>{' '}
+                  <span className="ml-1 inline-block rounded px-2 py-0.5 text-sm font-medium bg-amber-50 text-amber-900 border border-amber-200">
+                    {data.lightColorLabel}
+                  </span>
+                </p>
+              )}
               {data.job.quote_id && (
                 <div className="mt-2 flex gap-3 text-sm">
                   <Link href={`/quote/${data.job.quote_id}`} className="text-blue-700 hover:underline">
@@ -338,6 +392,29 @@ export default function JobDetailPage() {
                       </p>
                     );
                   })()}
+                  {/* Row 388: compact, read-only notice — the flagged figures +
+                      the override/resync actions live on the invoice detail
+                      page (row 414's panel, row 388's resync button); this is
+                      just a pointer so a crew-facing job page isn't the only
+                      place someone finds out the invoice needs attention. */}
+                  {(data.staleMarkers.paymentBlocked || data.staleMarkers.invoiceResyncFailed) && (
+                    <p
+                      className="mt-2 rounded-md border px-3 py-2 text-xs"
+                      style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
+                      role="status"
+                    >
+                      ⚠ This order has an unreconciled invoice marker
+                      {data.staleMarkers.invoiceResyncFailed && data.staleMarkers.paymentBlocked
+                        ? ' (a re-sync failed and a payment was refused)'
+                        : data.staleMarkers.invoiceResyncFailed
+                          ? ' (a re-sync failed)'
+                          : ' (a payment was refused)'}
+                      .{' '}
+                      <Link href={`/admin/invoices/${data.invoice.id}`} className="font-semibold underline">
+                        Review on the invoice →
+                      </Link>
+                    </p>
+                  )}
                 </>
               ) : (
                 <>
@@ -441,6 +518,33 @@ export default function JobDetailPage() {
                 portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
                 for a price INCREASE only (a decrease never blocks, and the invoice page can override).
               </p>
+              {/* Row 395 fix round 2 (delta-verify MED, real): moved here from
+                  /admin/invoices/[id] (Jason's ruling), but relocating alone
+                  didn't fix what row 395 was actually about — this panel
+                  rendered unconditionally on every view, same as the removed
+                  page, just on a screen staff open more often. Measured
+                  against prod: all 4 real invoices satisfy
+                  priorBalanceCollectedUsd > 0, so "smaller population" was
+                  never true either.
+                  Gated on amendReason having content, not just data.invoice
+                  existing — this is the actual point of use: the inferred
+                  figure only drives money once computeInvoiceResyncTotals
+                  runs on submit, and typing a reason is the operator
+                  starting exactly that. An untouched page (the common case —
+                  most visits here are to LOOK, not amend) now stays quiet.
+                  Sits ABOVE the textarea, same as before: it appears the
+                  instant a reason is typed, before the sibling "customer
+                  sees this" caution has been read past. */}
+              {data.invoice &&
+                amendReason.trim().length > 0 &&
+                (() => {
+                  const priorNote = priorCollectedWarning(data.invoice!);
+                  return priorNote ? (
+                    <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      {priorNote}
+                    </div>
+                  ) : null;
+                })()}
               {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
                   AmendmentConsentCard renders it verbatim to the customer while the
                   re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).
