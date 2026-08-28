@@ -82,35 +82,6 @@ describe('initPostHog — fails open when unconfigured', () => {
     expect(init).toHaveBeenCalledTimes(1);
   });
 
-  it('registers staff_device when the yll_staff_device cookie is present', async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
-    vi.stubGlobal('window', {});
-    vi.stubGlobal('document', { cookie: 'foo=bar; yll_staff_device=1' });
-    const { initPostHog } = await import('./posthog');
-    expect(initPostHog()).toBe(true);
-    expect(register).toHaveBeenCalledWith({ staff_device: true });
-  });
-
-  it('does not register staff_device without the cookie', async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
-    vi.stubGlobal('window', {});
-    vi.stubGlobal('document', { cookie: 'foo=bar' });
-    const { initPostHog } = await import('./posthog');
-    expect(initPostHog()).toBe(true);
-    expect(register).not.toHaveBeenCalled();
-  });
-
-  it('init still succeeds when register throws (fail open)', async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
-    vi.stubGlobal('window', {});
-    vi.stubGlobal('document', { cookie: 'yll_staff_device=1' });
-    register.mockImplementation(() => {
-      throw new Error('boom');
-    });
-    const { initPostHog } = await import('./posthog');
-    expect(initPostHog()).toBe(true);
-  });
-
   it('fails open when posthog.init itself throws', async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
     vi.stubGlobal('window', {});
@@ -157,6 +128,33 @@ describe('track — safe no-op wrapper', () => {
     const { initPostHog, track } = await import('./posthog');
     initPostHog();
     expect(() => track('quote_sent')).not.toThrow();
+  });
+});
+
+describe('registerStaffDevice — staff-device super property', () => {
+  it('registers staff_device once PostHog can initialize', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    const { registerStaffDevice } = await import('./posthog');
+    registerStaffDevice();
+    expect(register).toHaveBeenCalledWith({ staff_device: true });
+  });
+
+  it('no-ops (no register call) when PostHog cannot initialize', async () => {
+    // No NEXT_PUBLIC_POSTHOG_KEY set.
+    const { registerStaffDevice } = await import('./posthog');
+    registerStaffDevice();
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it('never throws even if posthog.register throws', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    register.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    const { registerStaffDevice } = await import('./posthog');
+    expect(() => registerStaffDevice()).not.toThrow();
   });
 });
 
