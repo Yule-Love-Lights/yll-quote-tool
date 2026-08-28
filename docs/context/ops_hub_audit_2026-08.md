@@ -292,7 +292,10 @@ the plan doc's do-not-enable list. Epic #217's commitment extraction survives in
 this scope, but its display design (Telegram digest surfaces) is superseded
 by the task-list ruling; its binding money/audit criteria still apply. The
 HighLevel transcript endpoint may replace Deepgram, unproven until the probe
-runs.
+runs. Visibility ruling (2026-08-27): the copilot's rep-vs-coach walls do NOT
+carry over; all operators see all coaching data (cards, call review,
+scoreboard), matching how the rest of the tool works. Admin-only stays
+limited to settings and account management.
 
 ## 9. First PR-sized slice per workstream
 
@@ -331,9 +334,10 @@ feedback cards, commitments-as-tasks; the exact set is the merge-plan
 session's deliverable, fresh tables, no data migrated). Column additions:
 `job_assignments.start_time` (nullable) and a prep-notes field (location to be
 decided: `jobs` or `job_assignments`) for My Day; a per-sign rate setting
-(app_settings or a rate column on campaigns) in cents. Worker identity is a
-question for Naldo (section 13) before any advertising table references
-`crew_members` or a new table.
+(app_settings or a rate column on campaigns) in cents. Worker identity is ruled (section 13,
+question 1): a separate `advertising_workers` table sharing only the auth
+store, never `crew_members`; accepted placements stamp the per-sign rate in
+cents at acceptance.
 
 ## 11. Routes and pages likely needed
 
@@ -372,28 +376,29 @@ logged out, per the standing pitfall.
 
 ## 13. Questions for Naldo before code is written
 
-1. **Who are advertising workers?** Same people as crew (then a flag on
-   `crew_members`, like `is_office`) or a separate population (gig/1099, then
-   their own table sharing only the auth store)? This decides the schema and
-   cannot be derived from code.
-2. **Sign locations:** placements will often not be customer properties.
-   Confirm placements stand alone (own GPS and suggested address, optional
-   link to a property when it is one).
+1. **Who are advertising workers?** ANSWERED 2026-08-27: a separate
+   population. They get their own worker records (an `advertising_workers`
+   table) and their own login marker, sharing only the Supabase auth store.
+   Never `crew_members` rows.
+2. **Sign locations:** resolved as the design default (Naldo's own prompt
+   describes intersection and neighborhood placements): placements stand
+   alone with their own GPS and suggested address, optional link to a
+   `properties` row when the location is a customer's house.
 3. **The two leftover Supabase projects:** ANSWERED 2026-08-27. Retire the
    copilot repo, the copilot Supabase project, and `yll-ops-hub-staging` after
    the merge lands; export snapshot first.
-4. **Schedule:** should `/admin/schedule` get its nav slot now? My Day depends
-   on office actually creating assignments (`job_assignments` has never held a
-   row).
+4. **Schedule:** ANSWERED 2026-08-27: yes, add the nav slot now. A one-line
+   `OperatorNav.tsx` change; workstream A carries it (kept out of this
+   docs-only PR).
 5. **Seed-rates session:** still required before any pay number (crew or
    advertising efficiency views) can display. When?
 6. **Calls scope:** ANSWERED 2026-08-27 by the Call Copilot teardown. The
    copilot does not stay separate; its keep-list merges into the Cool Tool
    (workstream D) with fresh tables and no data migration, and calls are the
    first build after role hardening.
-7. **Per-sign rate changes:** when the $2.50 rate changes later, do already
-   accepted placements keep their historical rate (recommended: stamp the rate
-   on the placement at acceptance) or repay at the new rate?
+7. **Per-sign rate changes:** ANSWERED 2026-08-27: stamp the rate on the
+   placement at acceptance (in cents). Rate changes affect future acceptances
+   only; payroll history never moves.
 8. **Sign inventory timing:** confirm phase 2 (catalog SKU plus manual
    reconciliation first); per-unit tracking only after placements prove the
    workflow.
