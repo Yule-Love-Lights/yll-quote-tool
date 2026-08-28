@@ -70,3 +70,35 @@ describe('OperatorNav — Schedule nav item (Naldo, 2026-08-27)', () => {
     expect(scheduleLinkMatch![0]).toContain('background:var(--brand-evergreen)');
   });
 });
+
+describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-role-hardening fix round)', () => {
+  // Adding the 11th top-level item (Schedule) measured a real 45px page-level
+  // horizontal overflow at 1024px in headless Chromium (the #56/S22 class),
+  // masked on the FIRST fix attempt by two multi-word labels ("+ New quote",
+  // "Sign out") silently wrapping onto a second line instead of shrinking —
+  // which a plain scrollWidth check can't see. This suite has no jsdom/layout
+  // environment (see the file header), so it cannot re-run that browser
+  // measurement — that lives in the PR's manual Playwright verification. What
+  // IS testable here is that the fix's load-bearing pieces are actually
+  // present in the markup, so a future "cleanup" can't silently remove them
+  // and reopen either failure mode (the overflow, or the invisible wrap).
+  it('forces the 11 top-level tab links to a single line at every breakpoint (lg:px-1.5 xl:px-3)', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    const linkMatch = html.match(/<a[^>]*href="\/admin\/jobs"[^>]*>/);
+    expect(linkMatch).not.toBeNull();
+    expect(linkMatch![0]).toContain('lg:px-1.5');
+    expect(linkMatch![0]).toContain('xl:px-3');
+  });
+
+  it('forces the "+ New quote" CTA and "Sign out" to stay single-line (whitespace-nowrap) so neither can hide behind a silent wrap', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    const ctaMatch = html.match(/<a[^>]*href="\/quote\/new"[^>]*>/);
+    expect(ctaMatch).not.toBeNull();
+    expect(ctaMatch![0]).toContain('whitespace-nowrap');
+    const signOutMatch = html.match(/<button[^>]*>\s*Sign out/);
+    expect(signOutMatch).not.toBeNull();
+    // The className attribute sits before the closing '>' of the opening tag.
+    const signOutOpenTag = html.slice(0, html.indexOf('Sign out')).split('<button').pop();
+    expect(signOutOpenTag).toContain('whitespace-nowrap');
+  });
+});
