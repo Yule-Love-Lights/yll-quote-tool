@@ -10,9 +10,11 @@
 // of reading, every time.
 
 import { OperatorShell } from '@/components/OperatorShell';
-import { loadFleetDay, MIN_DWELL_MINUTES } from '@/lib/fleetDay';
+import { loadFleetDay, listFleetDays, MIN_DWELL_MINUTES } from '@/lib/fleetDay';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
-import { addDays } from '@/lib/opsMidnightClose';
+import { FleetMap, type FleetMapPin } from '@/components/admin/FleetMap';
+import { MinutesSince } from '@/components/admin/MinutesSince';
+import { DEPOT } from '@/lib/integrations/vehicleProximity';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,8 +34,21 @@ export default async function FleetPage({
 }) {
   const params = (await searchParams) ?? {};
   const raw = Array.isArray(params.date) ? params.date[0] : params.date;
-  const date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : etDayKey(new Date());
-  const day = await loadFleetDay(date);
+  const today = etDayKey(new Date());
+  const date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : today;
+  const [day, daysWithData] = await Promise.all([loadFleetDay(date), listFleetDays()]);
+  const isToday = date === today;
+
+  const pins: FleetMapPin[] = day.vehicles
+    .filter((v) => v.lastLat != null && v.lastLng != null && v.signal !== 'never')
+    .map((v) => ({
+      id: v.id,
+      label: v.label,
+      lat: v.lastLat as number,
+      lng: v.lastLng as number,
+      signal: v.signal as 'live' | 'stale',
+      seenLabel: fmtTime(v.lastSeenAt),
+    }));
 
   return (
     <OperatorShell active="jobs">
@@ -49,27 +64,39 @@ export default async function FleetPage({
           <p className="text-sm text-gray-500 mt-1">
             Where the vans are, and the day&apos;s two clocks side by side.
           </p>
-          <p className="text-sm mt-2">
-            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
-              ← previous day
-            </a>
-            {date !== etDayKey(new Date()) && (
-              <>
-                {' · '}
-                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
-                  next day →
-                </a>
-                {' · '}
-                <a href="/admin/fleet" className="underline text-gray-600">
-                  today
-                </a>
-              </>
+          <form method="get" className="mt-3 flex items-center gap-2 text-sm">
+            <input
+              type="date"
+              name="date"
+              defaultValue={date}
+              className="rounded border border-gray-300 px-2 py-1"
+            />
+            <button type="submit" className="rounded border border-gray-300 px-3 py-1 text-gray-700">
+              Go
+            </button>
+            {!isToday && (
+              <a href="/admin/fleet" className="underline text-gray-600">
+                today
+              </a>
             )}
-            {' · '}
-            <a href="/admin/geocoding" className="underline text-gray-600">
-              addresses needing fixes
-            </a>
-          </p>
+          </form>
+          {daysWithData.length > 0 && (
+            <p className="text-sm text-gray-500 mt-2">
+              Days with data:{' '}
+              {daysWithData.map((d, i) => (
+                <span key={d}>
+                  {i > 0 && ' · '}
+                  {d === date ? (
+                    <span className="font-medium text-gray-900">{d}</span>
+                  ) : (
+                    <a href={`/admin/fleet?date=${d}`} className="underline">
+                      {d}
+                    </a>
+                  )}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
 
         {day.errors.length > 0 && (
@@ -80,13 +107,28 @@ export default async function FleetPage({
 
         <section className="mb-8">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">Vehicles now</h2>
+          <FleetMap pins={pins} depot={{ lat: DEPOT.lat, lng: DEPOT.lng }} />
           <ul className="space-y-2">
             {day.vehicles.length === 0 && (
               <li className="text-sm text-gray-500">No vehicles registered.</li>
             )}
             {day.vehicles.map((v) => (
               <li key={v.id} className="rounded-lg border border-gray-200 p-3 flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-900">{v.label}</span>
+                <span className="text-sm font-medium text-gray-900">
+                  {v.label}
+                  {isToday && v.signal === 'live' && v.openVisit && (
+                    <span className="font-normal text-gray-600">
+                      {' '}
+                      · At{' '}
+                      {v.openVisit.kind === 'depot'
+                        ? 'Depot'
+                        : v.openVisit.jobNumber != null
+                          ? `Job #${v.openVisit.jobNumber}`
+                          : 'a job'}{' '}
+                      · <MinutesSince sinceIso={v.openVisit.enteredAt} />
+                    </span>
+                  )}
+                </span>
                 {v.signal === 'live' && v.lastLat != null && (
                   <a
                     className="text-sm underline"
@@ -173,6 +215,13 @@ export default async function FleetPage({
             )}
           </section>
         </div>
+
+        <p className="mt-8 text-xs text-gray-400">
+          <a href="/admin/geocoding" className="underline">
+            Addresses needing fixes
+          </a>{' '}
+          — properties whose address could not be verified; their jobs cannot be scheduled.
+        </p>
       </main>
     </OperatorShell>
   );

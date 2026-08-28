@@ -181,3 +181,76 @@ built. That is deliberate: each step should pay for itself.
 - **Takedown season.** Durations for takedowns and installs are different jobs
   wearing the same customer. They should probably never share a prediction.
 - **Multi-day jobs.** Nothing here handles a job spanning two days.
+
+---
+
+# Addendum, 2026-08-28: decisions from Naldo and Jason's call
+
+Source: their recorded conversation on 2026-08-28, reviewed with Naldo the same
+day. These answer some open questions above and add requirements. Where this
+addendum conflicts with the sections above, this addendum wins.
+
+## Vehicles get a daily driver list, assigned by hand
+
+The "crew or vehicle?" open question above is answered: **someone in the office
+assigns people to vehicles, per day, by hand.** The vehicle is not the person,
+so the schedule must record who rides in which vehicle each day. If the crew
+takes Naldo's van today, the schedule says so; if they take the truck and
+trailer, the schedule says that. This is what lets the GPS trace of a vehicle
+be read as "where that team was" without guessing.
+
+Naldo also uses this in reverse: when he is out doing maintenance or heading to
+help a crew, the office can see where his vehicle is and answer "where is he"
+without calling him.
+
+Minimum shape: a per-day assignment of crew member to vehicle, alongside the
+existing job assignment. Currently registered: one vehicle (the 2023 RAM
+Promaster van). The truck and trailer's tracker is not activated yet; a ledger
+row holds the activation steps.
+
+## What GPS should mark, once scheduling exists
+
+Naldo's list, in his words: when the vehicle arrives at the job, when it leaves
+the job, when it leaves the depot for the day, and when the day ends. All of it
+already lands in `vehicle_visits`. Scheduling makes it readable by giving each
+day an ordered job list to compare against.
+
+The GPS-versus-manual-clock comparison stays a BACKUP check on clock-ins, never
+the payroll record. That rule is unchanged and structural.
+
+## Page layout: fleet stays one page, time tracking moves out
+
+Agreed on the call:
+
+- **The fleet page is a map-and-glance page only.** Live map with a pin per
+  vehicle, an "at this place for N minutes" readout, and later "next job is N
+  minutes away". The crew clock column on it shows the FIELD group only.
+- **Time tracking gets its own Staff section**, built by Jason, from his own
+  mock. One page, tabs: all-staff hours (office, crew, warehouse), with
+  approve-and-pay flows; a separate "automatic hours" section fed by the GPS
+  timeline, clearly its own thing and never merged into the manual records;
+  and a P4P tab.
+- **P4P is its own later project.** It is math-heavy (pay by expected job time
+  rather than hours), Naldo has reference material for it, and it gets its own
+  kickoff. Do not fold it casually into the hours tab.
+
+## A hard requirement for the hours tab, from Jason's Copilot pain
+
+In Copilot, marking hours as paid is all-or-nothing per day: paying someone for
+part of a day means editing the day's record and moving the remainder
+somewhere else by hand. The new hours tab must support **marking off part of a
+day's hours as paid** directly. Jason named this as the thing he hates most
+about the tool being replaced; do not rebuild the limitation.
+
+## Access decision
+
+The fleet page stays visible to **all office operators**. Jason raised limiting
+it to just himself and Naldo; Naldo decided against on 2026-08-28. Recorded so
+the earlier conversation is not re-litigated by accident.
+
+## Timeline
+
+Copilot is being dropped this month and next bills on the 16th. Scheduling (day
+ordering plus the vehicle assignment above) is wanted inside roughly two weeks
+so the switch does not leave a gap. The customer "on my way" texts keep their
+rules from the section above and still ship behind a switch.
