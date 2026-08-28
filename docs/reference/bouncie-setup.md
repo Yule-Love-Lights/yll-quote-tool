@@ -260,7 +260,7 @@ trailing slash. Bouncie compares them character for character.
 
 Visit `/api/integrations/bouncie/start` while logged into the quote tool. That
 mints a one-time value, sends you to Bouncie's approval screen, and brings you
-back to Settings → Accounts with the result on screen.
+back to Settings → Bouncie with the result on screen.
 
 **Start from that URL, not from Bouncie's own authorize link.** The callback
 refuses a request that did not begin here, which is what stops someone else's
@@ -268,7 +268,7 @@ Bouncie account being connected in place of yours.
 
 ## What the outcomes mean
 
-Settings → Accounts shows one of these after connecting:
+Settings → Bouncie shows one of these after connecting:
 
 | Message | What to do |
 | --- | --- |
@@ -290,7 +290,7 @@ will read it regularly.
 connection. Reconnect from Step 5.
 
 **The one thing to watch for:** if the map stops showing positions, check
-Settings → Accounts before assuming the trackers are at fault. A revoked or
+Settings → Bouncie before assuming the trackers are at fault. A revoked or
 expired grant and a dead device look the same from the outside.
 
 ---
@@ -536,3 +536,19 @@ message time. The tool already sends customer ADDRESSES to Google for
 geocoding, so this is the same counterparty and a similar exposure — but it is
 a new flow, and it should be acknowledged when that feature is built, the same
 way the Bouncie flow was killed on sight.
+
+
+---
+
+# Settings → Bouncie
+
+The integration has its own section now (Settings → Bouncie), like Telegram and
+HighLevel: connection health, when the token last refreshed, per-device signal,
+the webhook state, and the Connect/Reconnect button. Connection outcomes land
+there, including three added from real failures:
+
+| Message | What to do |
+| --- | --- |
+| Bouncie rejected our app credentials | BOUNCIE_CLIENT_SECRET in Vercel does not match the CLIENT SECRET on the app page. The usual cause is the API KEY pasted instead — both hide behind SHOW buttons. Re-copy from OAuth 2.0 Credentials, redeploy, retry. |
+| Bouncie had a problem on their end | Their outage. Wait a few minutes, connect again. |
+| Could not reach Bouncie | Network. Check the connection, retry. |
