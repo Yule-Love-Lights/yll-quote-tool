@@ -22,18 +22,14 @@ const ITEMS: NavItem[] = [
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
-  // Schedule shares the jobs area, same as Fleet directly below (both light up
-  // together — an accepted cosmetic cost of not widening OperatorArea).
-  // src/app/admin/schedule/page.tsx and loading.tsx both already render
-  // OperatorShell active="jobs" — "Schedule lives under the Jobs nav item" per
-  // loading.tsx's own comment — so this nav item matches that existing,
-  // deliberate design rather than introducing a new 'schedule' OperatorArea
-  // value nothing else declares. Naldo approved this nav item 2026-08-27.
+  // Schedule shares the jobs area: src/app/admin/schedule/page.tsx and
+  // loading.tsx both render OperatorShell active="jobs" ("Schedule lives under
+  // the Jobs nav item" per loading.tsx's own comment). Naldo approved this nav
+  // item 2026-08-27.
   { label: 'Schedule', href: '/admin/schedule', match: ['jobs'] },
-  // Fleet shares the jobs area (both light up together — an accepted cosmetic
-  // cost of not widening OperatorArea). Unlinked pages are this repo's known
-  // inert-feature class; the S68 staff lens caught /admin/fleet shipping as one.
-  { label: 'Fleet', href: '/admin/fleet', match: ['jobs'] },
+  // Fleet is its own area (Naldo, 2026-08-28: Jobs and Fleet lighting up
+  // together was a bug, not an accepted cost).
+  { label: 'Fleet', href: '/admin/fleet', match: ['fleet'] },
   { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },
   { label: 'Insights', href: '/insights', match: ['insights'] },
