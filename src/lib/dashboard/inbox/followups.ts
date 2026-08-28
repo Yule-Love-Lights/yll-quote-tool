@@ -1,4 +1,5 @@
-// Follow-up logic: "due today" (pinned in the top strip) and the system-created
+// Follow-up logic: "due today" (shown as a count beside the In-the-works
+// awaiting bucket, and in the morning ops digest) and the system-created
 // follow-ups (e.g. a quote was sent and got no reply). Pure: the day boundary is
 // America/New_York and `now` is passed in, so it's deterministic + testable.
 //
@@ -21,7 +22,7 @@ export const FOLLOWUP_REASONS = {
 export const DEFAULT_FOLLOW_UP_DAYS = 3;
 
 /**
- * True when a follow-up should appear in today's strip: its due date is the
+ * True when a follow-up counts as due today: its due date is the
  * current ET calendar day OR earlier (overdue follow-ups keep surfacing rather
  * than silently disappearing).
  */
