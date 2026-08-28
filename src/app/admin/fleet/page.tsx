@@ -12,8 +12,10 @@
 import { OperatorShell } from '@/components/OperatorShell';
 import { loadFleetDay, listFleetDays, MIN_DWELL_MINUTES } from '@/lib/fleetDay';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { addDays } from '@/lib/opsMidnightClose';
 import { FleetMap, type FleetMapPin } from '@/components/admin/FleetMap';
 import { MinutesSince } from '@/components/admin/MinutesSince';
+import { AutoRefresh } from '@/components/admin/AutoRefresh';
 import { DEPOT } from '@/lib/integrations/vehicleProximity';
 
 export const dynamic = 'force-dynamic';
@@ -65,6 +67,9 @@ export default async function FleetPage({
             Where the vans are, and the day&apos;s two clocks side by side.
           </p>
           <form method="get" className="mt-3 flex items-center gap-2 text-sm">
+            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
+              ← previous
+            </a>
             <input
               type="date"
               name="date"
@@ -75,9 +80,14 @@ export default async function FleetPage({
               Go
             </button>
             {!isToday && (
-              <a href="/admin/fleet" className="underline text-gray-600">
-                today
-              </a>
+              <>
+                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
+                  next →
+                </a>
+                <a href="/admin/fleet" className="underline text-gray-600">
+                  today
+                </a>
+              </>
             )}
           </form>
           {daysWithData.length > 0 && (
@@ -105,9 +115,19 @@ export default async function FleetPage({
           </div>
         )}
 
+        {isToday && <AutoRefresh seconds={120} />}
+
         <section className="mb-8">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">Vehicles now</h2>
-          <FleetMap pins={pins} depot={{ lat: DEPOT.lat, lng: DEPOT.lng }} />
+          {isToday && (
+            <>
+              <FleetMap pins={pins} depot={{ lat: DEPOT.lat, lng: DEPOT.lng }} />
+              <p className="text-xs text-gray-400 -mt-2 mb-4">
+                Green pin: live. Amber pin: no signal, last known spot. Gray dot: depot. Updates
+                every 2 minutes.
+              </p>
+            </>
+          )}
           <ul className="space-y-2">
             {day.vehicles.length === 0 && (
               <li className="text-sm text-gray-500">No vehicles registered.</li>
@@ -163,6 +183,10 @@ export default async function FleetPage({
         <div className="grid md:grid-cols-2 gap-6">
           <section>
             <h2 className="text-sm font-semibold text-gray-900 mb-2">Crew clock (payroll)</h2>
+            <p className="text-xs text-gray-400 mb-2">
+              Field crew only. Office staff clock in from the dashboard header and are not shown
+              here.
+            </p>
             {day.shifts.length === 0 ? (
               <p className="text-sm text-gray-500">No shifts recorded this day.</p>
             ) : (

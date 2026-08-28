@@ -230,8 +230,12 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
 }
 
 /**
- * Distinct ET days (newest first) that have fleet data on either clock, for
- * the fleet page's day list. Window: the last 45 days, capped to maxDays.
+ * Distinct ET days (newest first) that have fleet data — a vehicle visit or a
+ * FIELD-crew shift — for the fleet page's day list. Office-only clock-in days
+ * are skipped: after the field-only filter above, such a day renders an empty
+ * page, so listing it is a dead link (staff lens finding, PR #1040). The
+ * office filter fails OPEN: if the crew lookup errors, every shift day counts.
+ * Window: the last 45 days, capped to maxDays.
  */
 export async function listFleetDays(maxDays = 21): Promise<string[]> {
   const sb = getSupabaseServiceClient();
@@ -239,11 +243,31 @@ export async function listFleetDays(maxDays = 21): Promise<string[]> {
   const since = new Date(Date.now() - 45 * 24 * 3600_000).toISOString();
   const [visitsRes, shiftsRes] = await Promise.all([
     sb.from('vehicle_visits').select('entered_at').gte('entered_at', since).returns<{ entered_at: string }[]>(),
-    sb.from('shifts').select('clock_in_at').gte('clock_in_at', since).returns<{ clock_in_at: string }[]>(),
+    sb
+      .from('shifts')
+      .select('crew_member_id, clock_in_at')
+      .gte('clock_in_at', since)
+      .returns<{ crew_member_id: string; clock_in_at: string }[]>(),
   ]);
+  const shiftRows = shiftsRes.data ?? [];
+  const officeIds = new Set<string>();
+  const crewIds = [...new Set(shiftRows.map((s) => s.crew_member_id))];
+  if (crewIds.length) {
+    const crewRes = await sb
+      .from('crew_members')
+      .select('id, is_office')
+      .in('id', crewIds)
+      .returns<{ id: string; is_office: boolean }[]>();
+    for (const c of crewRes.data ?? []) {
+      if (c.is_office) officeIds.add(c.id);
+    }
+  }
   const days = new Set<string>();
   for (const v of visitsRes.data ?? []) days.add(etDayKey(new Date(v.entered_at)));
-  for (const s of shiftsRes.data ?? []) days.add(etDayKey(new Date(s.clock_in_at)));
+  for (const s of shiftRows) {
+    if (officeIds.has(s.crew_member_id)) continue;
+    days.add(etDayKey(new Date(s.clock_in_at)));
+  }
   return [...days].sort().reverse().slice(0, maxDays);
 }
 

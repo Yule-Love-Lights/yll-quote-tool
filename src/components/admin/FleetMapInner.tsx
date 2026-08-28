@@ -33,6 +33,13 @@ export default function FleetMapInner({
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
+  // The page auto-refreshes every 2 minutes, which hands this component a NEW
+  // pins array each time even when nothing moved. Keying the effect on the
+  // CONTENT keeps the map (and the operator's pan/zoom) alive across refreshes
+  // that changed nothing, and rebuilds only on a real position/signal change.
+  const pinsKey = JSON.stringify(pins);
+  const depotKey = `${depot.lat},${depot.lng}`;
+
   useEffect(() => {
     if (!ref.current) return;
     let map: L.Map | null = null;
@@ -86,7 +93,9 @@ export default function FleetMapInner({
     return () => {
       map?.remove();
     };
-  }, [pins, depot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pinsKey/depotKey
+    // are the content of pins/depot; see the comment above the keys.
+  }, [pinsKey, depotKey]);
 
   return (
     <div

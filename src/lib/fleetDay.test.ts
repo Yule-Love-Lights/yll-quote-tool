@@ -149,15 +149,40 @@ describe('loadFleetDay open visit', () => {
 
 describe('listFleetDays', () => {
   it('returns distinct ET days from both clocks, newest first', async () => {
-    // 2026-08-27T23:30Z is still Aug 27 ET; 2026-08-28T01:30Z is Aug 27 ET too
-    // (21:30 the previous evening), so the two dedupe into one day.
+    // 2026-08-28T01:30Z is Aug 27 ET (21:30 the previous evening), so it
+    // dedupes into the 27th rather than adding a fourth day.
     queue('vehicle_visits', {
       data: [{ entered_at: '2026-08-28T11:00:00Z' }, { entered_at: '2026-08-28T01:30:00Z' }],
       error: null,
     });
-    queue('shifts', { data: [{ clock_in_at: '2026-08-26T12:00:00Z' }], error: null });
+    queue('shifts', {
+      data: [{ crew_member_id: 'c-field', clock_in_at: '2026-08-26T12:00:00Z' }],
+      error: null,
+    });
+    queue('crew_members', { data: [{ id: 'c-field', is_office: false }], error: null });
 
     const days = await listFleetDays();
     expect(days).toEqual(['2026-08-28', '2026-08-27', '2026-08-26']);
+  });
+
+  it('skips a day whose only activity is office clock-ins', async () => {
+    queue('vehicle_visits', { data: [], error: null });
+    queue('shifts', {
+      data: [
+        { crew_member_id: 'c-office', clock_in_at: '2026-08-26T12:00:00Z' },
+        { crew_member_id: 'c-field', clock_in_at: '2026-08-25T12:00:00Z' },
+      ],
+      error: null,
+    });
+    queue('crew_members', {
+      data: [
+        { id: 'c-office', is_office: true },
+        { id: 'c-field', is_office: false },
+      ],
+      error: null,
+    });
+
+    const days = await listFleetDays();
+    expect(days).toEqual(['2026-08-25']);
   });
 });
