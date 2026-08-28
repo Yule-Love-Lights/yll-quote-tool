@@ -10,9 +10,13 @@
 // of reading, every time.
 
 import { OperatorShell } from '@/components/OperatorShell';
-import { loadFleetDay, MIN_DWELL_MINUTES } from '@/lib/fleetDay';
+import { loadFleetDay, listFleetDays, MIN_DWELL_MINUTES } from '@/lib/fleetDay';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { addDays } from '@/lib/opsMidnightClose';
+import { FleetMap, type FleetMapPin } from '@/components/admin/FleetMap';
+import { MinutesSince } from '@/components/admin/MinutesSince';
+import { AutoRefresh } from '@/components/admin/AutoRefresh';
+import { DEPOT } from '@/lib/integrations/vehicleProximity';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,8 +36,21 @@ export default async function FleetPage({
 }) {
   const params = (await searchParams) ?? {};
   const raw = Array.isArray(params.date) ? params.date[0] : params.date;
-  const date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : etDayKey(new Date());
-  const day = await loadFleetDay(date);
+  const today = etDayKey(new Date());
+  const date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : today;
+  const [day, daysWithData] = await Promise.all([loadFleetDay(date), listFleetDays()]);
+  const isToday = date === today;
+
+  const pins: FleetMapPin[] = day.vehicles
+    .filter((v) => v.lastLat != null && v.lastLng != null && v.signal !== 'never')
+    .map((v) => ({
+      id: v.id,
+      label: v.label,
+      lat: v.lastLat as number,
+      lng: v.lastLng as number,
+      signal: v.signal as 'live' | 'stale',
+      seenLabel: fmtTime(v.lastSeenAt),
+    }));
 
   return (
     <OperatorShell active="jobs">
@@ -45,30 +62,9 @@ export default async function FleetPage({
           >
             Yule Love Lights
           </p>
-          <h1 className="text-xl font-semibold text-gray-900">Fleet — {date}</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Fleet</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Where the vans are, and the day&apos;s two clocks side by side.
-          </p>
-          <p className="text-sm mt-2">
-            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
-              ← previous day
-            </a>
-            {date !== etDayKey(new Date()) && (
-              <>
-                {' · '}
-                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
-                  next day →
-                </a>
-                {' · '}
-                <a href="/admin/fleet" className="underline text-gray-600">
-                  today
-                </a>
-              </>
-            )}
-            {' · '}
-            <a href="/admin/geocoding" className="underline text-gray-600">
-              addresses needing fixes
-            </a>
+            Where the vans are right now, and the day&apos;s two clocks below.
           </p>
         </div>
 
@@ -78,15 +74,41 @@ export default async function FleetPage({
           </div>
         )}
 
+        {isToday && <AutoRefresh seconds={120} />}
+
         <section className="mb-8">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">Vehicles now</h2>
+          {isToday && (
+            <>
+              <FleetMap pins={pins} depot={{ lat: DEPOT.lat, lng: DEPOT.lng }} />
+              <p className="text-xs text-gray-400 -mt-2 mb-4">
+                Green pin: live. Amber pin: no signal, last known spot. Gray dot: depot. Updates
+                every 2 minutes.
+              </p>
+            </>
+          )}
           <ul className="space-y-2">
             {day.vehicles.length === 0 && (
               <li className="text-sm text-gray-500">No vehicles registered.</li>
             )}
             {day.vehicles.map((v) => (
               <li key={v.id} className="rounded-lg border border-gray-200 p-3 flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-900">{v.label}</span>
+                <span className="text-sm font-medium text-gray-900">
+                  {v.label}
+                  {isToday && v.openVisit && (
+                    <span className="font-normal text-gray-600">
+                      {' '}
+                      · At{' '}
+                      {v.openVisit.kind === 'depot'
+                        ? 'Depot'
+                        : v.openVisit.jobNumber != null
+                          ? `Job #${v.openVisit.jobNumber}`
+                          : 'a job'}{' '}
+                      since {fmtTime(v.openVisit.enteredAt)} ·{' '}
+                      <MinutesSince sinceIso={v.openVisit.enteredAt} />
+                    </span>
+                  )}
+                </span>
                 {v.signal === 'live' && v.lastLat != null && (
                   <a
                     className="text-sm underline"
@@ -100,7 +122,9 @@ export default async function FleetPage({
                 )}
                 {v.signal === 'stale' && (
                   <span className="text-sm text-amber-700">
-                    No signal since {fmtTime(v.lastSeenAt)} — position unknown, not parked
+                    {isToday && v.openVisit
+                      ? `Tracker asleep since ${fmtTime(v.lastSeenAt)} (normal when parked)`
+                      : `No signal since ${fmtTime(v.lastSeenAt)} — position unknown, not parked`}
                   </span>
                 )}
                 {v.signal === 'never' && (
@@ -111,16 +135,70 @@ export default async function FleetPage({
           </ul>
         </section>
 
-        <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
-          <strong className="text-gray-800">The van is not the person.</strong> Crew can be working
-          after the van leaves, a van can sit somewhere while nobody works, and two people share
-          one van. When the two clocks disagree, that is a question to ask, not an answer. The
-          crew&apos;s own clock below is the payroll record; the GPS side never touches pay.
-        </div>
+        <section className="mt-10 pt-6 border-t border-gray-200">
+          <h2 className="text-base font-semibold text-gray-900 mb-1">
+            The day&apos;s two clocks — {date}
+          </h2>
+          <p className="text-sm text-gray-500 mb-3">
+            The crew&apos;s own clock (payroll) beside what the GPS saw, for the chosen day.
+          </p>
+          <form method="get" className="mb-2 flex items-center gap-2 text-sm">
+            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
+              ← previous
+            </a>
+            <input
+              type="date"
+              name="date"
+              defaultValue={date}
+              className="rounded border border-gray-300 px-2 py-1"
+            />
+            <button type="submit" className="rounded border border-gray-300 px-3 py-1 text-gray-700">
+              Go
+            </button>
+            {!isToday && (
+              <>
+                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
+                  next →
+                </a>
+                <a href="/admin/fleet" className="underline text-gray-600">
+                  today
+                </a>
+              </>
+            )}
+          </form>
+          {daysWithData.length > 0 && (
+            <p className="text-sm text-gray-500 mb-4">
+              Days with data:{' '}
+              {daysWithData.map((d, i) => (
+                <span key={d}>
+                  {i > 0 && ' · '}
+                  {d === date ? (
+                    <span className="font-medium text-gray-900">{d}</span>
+                  ) : (
+                    <a href={`/admin/fleet?date=${d}`} className="underline">
+                      {d}
+                    </a>
+                  )}
+                </span>
+              ))}
+            </p>
+          )}
 
-        <div className="grid md:grid-cols-2 gap-6">
+          <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+            <strong className="text-gray-800">The van is not the person.</strong> Crew can be
+            working after the van leaves, a van can sit somewhere while nobody works, and two
+            people share one van. When the two clocks disagree, that is a question to ask, not an
+            answer. The crew&apos;s own clock below is the payroll record; the GPS side never
+            touches pay.
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-6">
           <section>
             <h2 className="text-sm font-semibold text-gray-900 mb-2">Crew clock (payroll)</h2>
+            <p className="text-xs text-gray-400 mb-2">
+              Field crew only. Office staff clock in from the dashboard header and are not shown
+              here.
+            </p>
             {day.shifts.length === 0 ? (
               <p className="text-sm text-gray-500">No shifts recorded this day.</p>
             ) : (
@@ -164,15 +242,29 @@ export default async function FleetPage({
                         ? fmtTime(v.exitedAt)
                         : v.vehicleSignal === 'live'
                           ? 'still there'
-                          : `last seen ${fmtTime(v.vehicleLastSeenAt)} — no signal, may have left`}
+                          : `still there (tracker asleep since ${fmtTime(v.vehicleLastSeenAt)})`}
                       {v.minutes != null && ` · ${v.minutes} min`}
+                      {v.exitedAt === null && isToday && (
+                        <>
+                          {' · '}
+                          <MinutesSince sinceIso={v.enteredAt} /> so far
+                        </>
+                      )}
                     </p>
                   </li>
                 ))}
               </ul>
             )}
           </section>
-        </div>
+          </div>
+        </section>
+
+        <p className="mt-8 text-xs text-gray-400">
+          <a href="/admin/geocoding" className="underline">
+            Addresses needing fixes
+          </a>{' '}
+          — properties whose address could not be verified; their jobs cannot be scheduled.
+        </p>
       </main>
     </OperatorShell>
   );
