@@ -26,16 +26,39 @@
 
 - The routine may open PRs. It never merges anything. Standing repo rule: a human
   merges every PR, and each PR still needs its premerge lens review first.
+- **Who runs that review:** routine PRs get merged only from a Claude Code session
+  that has run the `/premerge` lens review on them first. Never merge a routine PR
+  from the GitHub UI directly, even with green checks. Green checks prove the gates,
+  not the review. Every routine PR body repeats this instruction.
 - Quote-tool bugs in money math, pricing, payments, or auth are report-only for the
   routine. Those fixes go through a normal reviewed session.
+- **SHARED-ownership paths are report-only too** (per the AGENTS.md ownership table):
+  `src/lib/quotes.ts`, `designs.ts`, `supabase*`, `sceneTypes.ts`,
+  `src/lib/integrations/**`, `src/app/layout.tsx`, `globals.css`, `package.json` and
+  the lockfile, tsconfig/eslint/next config, `AGENTS.md`, `.claude/**`, and
+  `.github/workflows/**`. The routine never edits these.
+- A fix that touches Jason's owned area (portal, quote builder, pricing, design
+  editor, training, settings, inbox) must say so in the PR body ("touches Jason's
+  area") and the daily report lists it under "needs Jason's look". Ownership stays
+  with the area owner; the routine only proposes.
 - The website (WordPress) side is report-only. No WordPress or Elementor writes.
 - PostHog is read-only for the routine. No insight, dashboard, or flag mutations.
 - Hard cap: 3 bug-fix PRs per run. Anything beyond that is reported, not fixed.
+  This cap lives in the prompt, not in code, so it is an instruction the model
+  follows rather than a technical limit. The backlog rule below is the backstop.
+- **Backlog rule:** before fixing anything, the routine counts its own still-open
+  PRs. At 5 or more, it opens no new fix PRs that day (report-only mode) and flags
+  the backlog in the Telegram summary. Routine PRs left unreviewed for 7 days get
+  named in the report as stale: merge, close, or hand to a working session.
+- The routine runs on Sonnet 5 (routing table: builds run Sonnet; never Fable).
 
 ## How to pause or kill it
 
 - Pause: claude.ai/code/routines, open "PostHog daily review", toggle off Repeats.
 - Kill: same page, delete the routine. Past run sessions stay in the session list.
+- A run already in progress: each run is a normal cloud session listed on the
+  routine's detail page; open it and stop it there. Worst case if one finishes
+  anyway is bounded: no merges, no prod writes, PostHog read-only, capped output.
 - Runs bill Naldo's subscription usage like any other session (daily run cap applies).
 
 ## Fallback runners (if routines fail us)
@@ -68,28 +91,48 @@ Step 2, triage every finding into exactly one bucket:
   "PostHog daily report" GitHub issues and the open pull request list, and do not
   re-report or re-fix a finding already covered there.
 
-Step 3, fix quote tool bugs. For each QUOTE TOOL BUG, up to a hard cap of 3 per run:
-reproduce the failure from the code, write a failing test first when the shape allows
-it, fix it, and run the gates (npx tsc --noEmit, npm run lint, npm test). Only proceed
-when all three are green. Open one pull request per bug on a claude/ branch. The PR
-body must say "run for Naldo", cite the PostHog evidence (event, count, a sample
-session id), describe the fix in plain English, and state that it needs a premerge
-lens review before any merge. NEVER merge anything. Never push to master. If a bug
-touches money math, pricing, payments, or auth, do not fix it; report it as
-needs-human with the evidence.
+Step 3, fix quote tool bugs. First count your own still-open pull requests from
+previous runs of this routine. If 5 or more are open, fix nothing today: report
+everything instead and flag the backlog in the Telegram summary. Otherwise, for each
+QUOTE TOOL BUG, up to a hard cap of 3 per run: reproduce the failure from the code,
+write a failing test first when the shape allows it, fix it, and run the gates
+(npx tsc --noEmit, npm run lint, npm test). Only proceed when all three are green.
+Open one pull request per bug on a claude/ branch. The PR body must say "run for
+Naldo", cite the PostHog evidence (event name, count, a sample session id, never raw
+customer field values), describe the fix in plain English, and end with: "Needs a
+premerge lens review before any merge. Do not merge this from the GitHub UI; open a
+Claude Code session and run /premerge first." NEVER merge anything. Never push to
+master.
+
+Report-only exclusions, no exceptions: do not fix a bug that touches money math,
+pricing, payments, or auth. Do not edit any SHARED-ownership path: src/lib/quotes.ts,
+src/lib/designs.ts, any supabase* file, src/lib/sceneTypes.ts,
+src/lib/integrations/, src/app/layout.tsx, globals.css, package.json, the lockfile,
+tsconfig or eslint or next config, AGENTS.md, anything under .claude/, or anything
+under .github/workflows/. Report those as needs-human with the evidence. If a fix
+touches the portal, quote builder, pricing engine, design editor, training, settings,
+or inbox (Jason's owned area), add "touches Jason's area" to the PR body and list it
+under "needs Jason's look" in the report.
 
 Step 4, write the report. Create a GitHub issue in this repository titled
 "PostHog daily report YYYY-MM-DD" with sections: Bugs fixed (PR links), Bugs needing
-a human, Website findings, Suggestions (best three first), Noise skipped. Short and
-plain. On a quiet day with nothing found, still create the issue with a one-line
-"quiet day" note so a silent failure is never mistaken for a quiet day.
+a human, Needs Jason's look, Website findings, Suggestions (best three first), Noise
+skipped. Short and plain. On a quiet day with nothing found, still create the issue
+with a one-line "quiet day" note so a silent failure is never mistaken for a quiet
+day. Reference PostHog data by session id, event name, and count only. Never quote
+raw customer field values (email, phone, name, address) from event properties or
+URLs into the issue, a PR, or Telegram; a GitHub issue is durable and visible to
+everyone with repo access.
 
 Step 5, send the Telegram summary. Use the TELEGRAM_BOT_TOKEN and
 TELEGRAM_REPORT_CHAT_ID environment variables and POST to
 https://api.telegram.org/bot<token>/sendMessage. Keep it under 15 lines: counts,
 PR links, the top three suggestions, and a link to the day's issue. Never include
 secrets in any message, issue, or PR. If the Telegram send fails, still finish the
-report issue and note the failure in it.
+report issue and note the failure in it by variable name and HTTP status only
+(for example "Telegram send failed, TELEGRAM_BOT_TOKEN request returned 401").
+Never paste the request URL or the response body anywhere; the URL contains the
+bot token.
 
 Rules that always hold: PostHog is read-only (no insight, dashboard, or feature flag
 changes). No production data writes anywhere. No secrets in any output. Plain
