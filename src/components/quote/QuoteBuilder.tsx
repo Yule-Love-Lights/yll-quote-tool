@@ -437,6 +437,20 @@ function miniSurfaceLabel(surface: string | null): string {
   return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
 }
 
+// SHADOW MODE (deterministic-satellite-footage): copy for a roofline whose
+// model-stated satellite footage disagrees >25% with what its own drawn
+// lines measure. The live-corpus measurement (scripts/satellite-footage-report.ts)
+// shows the model's STATED number is currently the more accurate of the two
+// — the drawn-line computation is noisy — so this reads as a "double-check
+// the lines" flag, never as "trust the computed number instead."
+function formatSatelliteDisagreement(label: string, statedFt: number | string, computedFt: number): string {
+  return (
+    `Heads up: the AI's ${label} footage (${statedFt}ft) does not match its own drawn satellite lines ` +
+    `(about ${computedFt}ft). Its stated number is usually the more reliable of the two. Worth a quick ` +
+    `look at the drawn lines before sending.`
+  );
+}
+
 // Row 269 fix round FIX 2 (two-lens MED — dishonest null-case copy): renders
 // one channel's classified delivery status for the already-sent notice below
 // — see alreadySentChannels' own state comment for where these
@@ -1466,6 +1480,17 @@ export default function QuoteBuilder({
   // Degraded-but-recoverable notice (e.g. the analyzer is down): the photos load
   // and staff design manually. Distinct from analysisError (hard/blocking).
   const [analysisWarning, setAnalysisWarning] = useState<string | null>(null);
+  // SHADOW MODE (deterministic-satellite-footage): per-roofline flag text when
+  // the model's stated satellite footage disagrees >25% with what its own
+  // drawn lines measure. Kept separate from analysisWarning (whose banner
+  // header reads "Auto-design unavailable" — wrong for this case) so it gets
+  // its own amber note. Cleared per-roofline the moment the operator redraws
+  // that roofline's satellite lines (see getSetter) so it never describes
+  // lines that have already been fixed.
+  const [satelliteFootageDisagreement, setSatelliteFootageDisagreement] = useState<{
+    santas: string | null;
+    gingerbread: string | null;
+  }>({ santas: null, gingerbread: null });
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
 
@@ -2296,6 +2321,9 @@ export default function QuoteBuilder({
         seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteSantasLines(updater);
+        // SHADOW MODE: the operator just redrew these lines — the note
+        // describing the old ones is stale the moment this fires.
+        setSatelliteFootageDisagreement((prev) => (prev.santas == null ? prev : { ...prev, santas: null }));
       };
     }
     if (type === 'gingerbread') {
@@ -2303,6 +2331,8 @@ export default function QuoteBuilder({
         seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteGingerbreadLines(updater);
+        // SHADOW MODE: same as above, for the gingerbread/ridge roofline.
+        setSatelliteFootageDisagreement((prev) => (prev.gingerbread == null ? prev : { ...prev, gingerbread: null }));
       };
     }
     if (type === 'stake') {
@@ -2973,6 +3003,8 @@ export default function QuoteBuilder({
         setSatellitePreview(dataUrl);
         setSatelliteSantasLines([]);
         setSatelliteGingerbreadLines([]);
+        // SHADOW MODE: the old lines this note described are gone.
+        setSatelliteFootageDisagreement({ santas: null, gingerbread: null });
         setSatelliteC9Lines([]);
         setSatelliteStakeLines([]);
         setSatelliteBistroLines([]);
@@ -3369,18 +3401,22 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
-    // SHADOW MODE (deterministic-satellite-footage): informational-only
-    // banner text when the model's stated satellite footage disagrees with
-    // what its own drawn lines measure — never changes any form/pricing
-    // field, purely a "double-check this one" nudge for staff.
-    const disagreementNote = [
-      r.satelliteSantasFootageDisagrees && r.computedSatelliteSantasFootage != null
-        ? `Santa's: model said ${r.satelliteSantasFootage ?? '?'}ft, drawn lines measure ~${r.computedSatelliteSantasFootage}ft`
-        : null,
-      r.satelliteGingerbreadFootageDisagrees && r.computedSatelliteGingerbreadFootage != null
-        ? `Gingerbread: model said ${r.satelliteGingerbreadFootage ?? '?'}ft, drawn lines measure ~${r.computedSatelliteGingerbreadFootage}ft`
-        : null,
-    ].filter(Boolean).join('; ');
+    // SHADOW MODE (deterministic-satellite-footage): flag text, per roofline,
+    // when the model's stated satellite footage disagrees >25% with what its
+    // own drawn lines measure — never changes any form/pricing field. Routed
+    // through satelliteFootageDisagreement (the amber double-check banner
+    // below), not analysisNotes, and cleared per-roofline in getSetter when
+    // the operator redraws that roofline's lines.
+    setSatelliteFootageDisagreement({
+      santas:
+        r.satelliteSantasFootageDisagrees && r.computedSatelliteSantasFootage != null
+          ? formatSatelliteDisagreement("Santa's", r.satelliteSantasFootage ?? '?', r.computedSatelliteSantasFootage)
+          : null,
+      gingerbread:
+        r.satelliteGingerbreadFootageDisagrees && r.computedSatelliteGingerbreadFootage != null
+          ? formatSatelliteDisagreement('Gingerbread', r.satelliteGingerbreadFootage ?? '?', r.computedSatelliteGingerbreadFootage)
+          : null,
+    });
     // Row 209: tell the operator when a field's footage was deliberately
     // NOT taken from this analysis, so a number that looks unchanged after
     // "Re-analyze" reads as intentional rather than as a stale UI.
@@ -3394,10 +3430,7 @@ export default function QuoteBuilder({
       keptFootageFields.length > 0
         ? ` Footage for ${keptFootageFields.join(' + ')} kept from the drawn satellite lines — this analysis's street estimate was not applied. (Want the street estimate instead? Delete those satellite lines and re-analyze, or type the number directly.)`
         : '';
-    setAnalysisNotes(
-      `${r.notes} (confidence: ${r.confidence})${keptFootageNote}` +
-      (disagreementNote ? ` ⚠ satellite footage disagreement — ${disagreementNote}` : ''),
-    );
+    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})${keptFootageNote}`);
     const photoNeedsSave = !!(
       data.photoBase64 &&
       data.photoMediaType &&
@@ -3454,6 +3487,8 @@ export default function QuoteBuilder({
       if (!ok) return false;
       setSatelliteSantasLines([]);
       setSatelliteGingerbreadLines([]);
+      // SHADOW MODE: the old lines this note described are gone.
+      setSatelliteFootageDisagreement({ santas: null, gingerbread: null });
       setSatelliteC9Lines([]);
       setSatelliteStakeLines([]);
       setSatelliteBistroLines([]);
@@ -6551,6 +6586,18 @@ Send anyway?`,
                     )}
                   </strong>
                   {analysisNotes}
+                </div>
+              )}
+              {(satelliteFootageDisagreement.santas || satelliteFootageDisagreement.gingerbread) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+                  <strong className="block mb-1">Double-check the drawn satellite lines</strong>
+                  {[satelliteFootageDisagreement.santas, satelliteFootageDisagreement.gingerbread]
+                    .filter((note): note is string => note != null)
+                    .map((note, i) => (
+                      <p key={i} className={i > 0 ? 'mt-1' : undefined}>
+                        {note}
+                      </p>
+                    ))}
                 </div>
               )}
               {analysisWarning && (

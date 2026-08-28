@@ -19,10 +19,15 @@ export type SatMeasureLine = { points: [number, number][] };
 // The satellite is 640×640 at zoom=20 (Static Maps) — mirrors QuoteBuilder.SAT_PX.
 const SAT_PX = 640;
 
-// Aspect-corrected normalized polyline length — mirrors QuoteBuilder.polylineLength
+// Aspect-corrected normalized polyline length — mirrors
+// polylineLengthAspectUnits in src/lib/design/polylineFootage.ts, the
+// canonical shared implementation QuoteBuilder itself now imports (as
+// `polylineLength`; its own local copy was deleted 2026-08-24, see that
+// file's comment at the old call site).
 // (dx in width-units; dy scaled by 1/aspect so diagonals reflect real pixels).
-// Duplicated (a few lines) rather than shared to avoid churning the holiday
-// builder's internals; the test below locks the math.
+// Duplicated here (a few lines) on purpose — this is the deliberate,
+// documented duplicate for the permanent vertical, to avoid churning the
+// holiday builder's internals; the test below locks the math.
 function polylineLength(lines: SatMeasureLine[], aspect: number): number {
   const yScale = aspect > 0 ? 1 / aspect : 1;
   let total = 0;

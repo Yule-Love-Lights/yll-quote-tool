@@ -199,7 +199,16 @@ async function main() {
   const bucketCounts: Record<string, number> = {};
   for (const r of reports) bucketCounts[r.bucket] = (bucketCounts[r.bucket] ?? 0) + 1;
 
-  const computable = reports.filter((r) => r.bucket === 'computable');
+  // Fix round (PR #918, admin lens MED): `excluded` is this repo's own
+  // bad-data flag on training_examples and is honored everywhere else — the
+  // headline accuracy stats must not silently include rows staff already
+  // flagged as bad. Filter them out here and print how many were dropped so
+  // the omission is visible, not silent. The per-row `rows` array in the JSON
+  // artifact below still carries every row (including excluded ones, each
+  // already marked with its own `excluded` field) for anyone auditing by hand.
+  const computableAll = reports.filter((r) => r.bucket === 'computable');
+  const excludedComputableCount = computableAll.filter((r) => r.excluded).length;
+  const computable = computableAll.filter((r) => !r.excluded);
   const disagreeCount = computable.filter((r) => r.santas.disagreesFromThreshold || r.gingerbread.disagreesFromThreshold).length;
 
   const collectPct = (getter: (lr: LineReport) => number | null): number[] =>
@@ -211,8 +220,13 @@ async function main() {
 
   console.log('\n=== Corpus summary ===\n');
   console.log('Row buckets:', JSON.stringify(bucketCounts, null, 2));
-  console.log(`Computable rows: ${computable.length} of ${reports.length} total`);
-  console.log(`Rows (of computable) with a shadow-mode disagreement flag (>25% model-vs-computed on either line): ${disagreeCount}`);
+  console.log(`Computable rows: ${computableAll.length} of ${reports.length} total`);
+  console.log(
+    `Excluded (excluded=true, bad-data) computable rows omitted from the headline stats below: ` +
+      `${excludedComputableCount} of ${computableAll.length}`,
+  );
+  console.log(`Rows feeding the headline stats below: ${computable.length}`);
+  console.log(`Rows (of the above) with a shadow-mode disagreement flag (>25% model-vs-computed on either line): ${disagreeCount}`);
   console.log(`Mean |model-stated vs staff-final| %  (n=${modelVsStaffPcts.length}): ${fmtPct(mean(modelVsStaffPcts))}`);
   console.log(`Mean |code-computed vs staff-final| % (n=${computedVsStaffPcts.length}): ${fmtPct(mean(computedVsStaffPcts))}`);
 
@@ -229,7 +243,18 @@ async function main() {
         {
           generatedAt: new Date().toISOString(),
           bucketCounts,
+          // Fix round (PR #918): computableCount now means "rows feeding the
+          // headline stats below" -- i.e. excluded=true rows are already
+          // dropped, matching disagreeCount/meanModelVsStaffPct/
+          // meanComputedVsStaffPct, which were always computed this way after
+          // the fix. computableCountRaw + excludedComputableCount are new,
+          // additive fields carrying the pre-filter number and the drop count
+          // so nothing here is silently redefined without a way to recover
+          // the old total. Every row (including excluded ones) is still in
+          // `rows`, each already carrying its own `excluded` flag.
           computableCount: computable.length,
+          computableCountRaw: computableAll.length,
+          excludedComputableCount,
           totalCount: reports.length,
           disagreeCount,
           meanModelVsStaffPct: mean(modelVsStaffPcts),
