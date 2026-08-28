@@ -28,6 +28,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { updateProperty, archiveProperty, unarchiveProperty, type PropertyRow } from '@/lib/customers';
+import { propertyHasJobs } from '@/lib/scheduling';
 
 export const runtime = 'nodejs';
 
@@ -130,6 +131,20 @@ export async function POST(
   }
 
   if (archived !== undefined) {
+    // Archiving a property that a JOB references would strand the job: the
+    // property leaves the geocode fix-list, which is the only path to ever
+    // giving it coordinates, so the job could never be scheduled and nothing
+    // would say why. Refuse with a plain reason instead (2026-08-28; job
+    // #1045 is the live example). Unarchiving needs no guard.
+    if (archived && (await propertyHasJobs(propertyId))) {
+      return NextResponse.json(
+        {
+          error: 'This property has a job attached. Fix its address instead of archiving it.',
+          code: 'has-jobs',
+        },
+        { status: 409 },
+      );
+    }
     const { data, error } = archived
       ? await archiveProperty(customerId, propertyId)
       : await unarchiveProperty(customerId, propertyId);

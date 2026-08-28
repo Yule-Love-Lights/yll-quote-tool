@@ -377,3 +377,28 @@ export async function listUnscheduledJobs(fromDate: string): Promise<{
 
   return { jobs, errors: [] };
 }
+
+/**
+ * Whether any job references this property. The geocode fix-list's Archive
+ * button asks before hiding a property: an archived property leaves the
+ * fix-list, and the fix-list is the ONLY path to ever giving that property
+ * coordinates — so archiving one with a job would make the job permanently
+ * unschedulable and invisible (Naldo hit exactly this shape with job #1045).
+ *
+ * Fails SAFE: a lookup error reports true (blocks the archive). Refusing an
+ * archive is a retry; hiding a real job is not.
+ */
+export async function propertyHasJobs(propertyId: string): Promise<boolean> {
+  const db = getSupabaseServiceClient();
+  if (!db) return true;
+  const { data, error } = await db
+    .from('jobs')
+    .select('id')
+    .eq('property_id', propertyId)
+    .limit(1);
+  if (error) {
+    console.error('propertyHasJobs: lookup failed:', error.message);
+    return true;
+  }
+  return ((data as unknown as { id: string }[] | null) ?? []).length > 0;
+}

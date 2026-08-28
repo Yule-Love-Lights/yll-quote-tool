@@ -20,11 +20,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, updatePropertyMock, archivePropertyMock, unarchivePropertyMock } = vi.hoisted(() => ({
+const { requireOperatorMock, updatePropertyMock, archivePropertyMock, unarchivePropertyMock, propertyHasJobsMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   updatePropertyMock: vi.fn(),
   archivePropertyMock: vi.fn(),
   unarchivePropertyMock: vi.fn(),
+  propertyHasJobsMock: vi.fn(async () => false),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
@@ -39,6 +40,10 @@ vi.mock('@/lib/customers', () => ({
   updateProperty: updatePropertyMock,
   archiveProperty: archivePropertyMock,
   unarchiveProperty: unarchivePropertyMock,
+}));
+
+vi.mock('@/lib/scheduling', () => ({
+  propertyHasJobs: propertyHasJobsMock,
 }));
 
 import { POST } from './route';
@@ -79,6 +84,28 @@ beforeEach(() => {
   updatePropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
   archivePropertyMock.mockResolvedValue({ data: { ...SOME_ROW, archived_at: '2026-01-02T00:00:00Z' }, error: null });
   unarchivePropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
+  propertyHasJobsMock.mockResolvedValue(false);
+});
+
+// The geocode fix-list's Archive button guard (2026-08-28): a property a job
+// references must refuse to archive, or the job's address disappears from the
+// only surface that can ever give it coordinates.
+describe('archive is refused while a job references the property', () => {
+  it('returns 409 has-jobs and never archives', async () => {
+    propertyHasJobsMock.mockResolvedValue(true);
+    const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('has-jobs');
+    expect(archivePropertyMock).not.toHaveBeenCalled();
+  });
+
+  it('does not guard UNarchiving', async () => {
+    propertyHasJobsMock.mockResolvedValue(true);
+    const res = await POST(makeReq({ archived: false }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(200);
+    expect(unarchivePropertyMock).toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/customers/[customerId]/properties/[propertyId] — operator gate', () => {
