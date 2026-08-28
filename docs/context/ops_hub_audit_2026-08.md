@@ -11,7 +11,7 @@
 ## 1. What already exists
 
 **Office side: essentially complete.** The nav today is Home, Inbox, Customers,
-Quotes, Jobs, Invoices, Inventory, Insights, Settings (`OperatorNav.tsx`). The
+Quotes, Jobs, Fleet, Invoices, Inventory, Insights, Settings (`OperatorNav.tsx`). The
 Inbox is already the office work queue the plan asks for: one queue for every
 unanswered customer message across GHL, Gmail, the quote form, and Homeworks,
 grouped by contact, with claim/release per operator, escalation levels (amber at
@@ -69,8 +69,8 @@ engine, `docs/superpowers/plans/2026-08-06-post-call-commitment-engine.md`,
 hardened by two review rounds) and entirely unbuilt; its `call_commitments`
 table exists nowhere.
 
-**Schema and conventions.** 38 tables, all RLS-enabled; default posture is zero
-policies plus service-role-only access. Newer money is integer cents
+**Schema and conventions.** 45 tables in `migrations/FULL-SCHEMA.sql`; the
+default posture is RLS enabled with zero policies and service-role-only access. Newer money is integer cents
 (`base_rate_cents`, `labor_revenue_cents`); legacy quoting money is numeric
 dollars. Timestamps are timestamptz UTC with America/New_York conversion in app
 code. Append-only audit tables (`dashboard_activity` shape), CAS and
