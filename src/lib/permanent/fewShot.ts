@@ -48,6 +48,10 @@ export type PermanentFewShotExample = {
   // directly) — passed through from the AI's original pass, or [] when there
   // was none.
   jumps: PermanentJump[];
+  // Staff-typed "what did the AI get wrong here?" note (row.notes, already
+  // sanitized — capped + control-chars stripped — at write time by
+  // trainingExamples.ts's sanitizeNotes). Mirrors holiday's aiFailureNotes.
+  notes: string | null;
 };
 
 function asJumps(v: unknown): PermanentJump[] {
@@ -68,6 +72,7 @@ export function rowToPermanentFewShot(row: PermanentTrainingExampleRow): Permane
     finalSatelliteLines: row.final_satellite_lines,
     finalStreetRuns: row.final_street_runs ?? [],
     jumps: asJumps((row.original_analysis as { jumps?: unknown } | null)?.jumps),
+    notes: row.notes,
   };
 }
 
@@ -197,7 +202,13 @@ export async function buildPermanentFewShotMessages(
       back: ex.finalSatelliteLines.back,
       streetRuns: ex.finalStreetRuns,
       jumps: ex.jumps,
-      notes: '',
+      // Mirrors photoAnalysis.ts's buildFewShotMessages: only inject a
+      // pitfall line when a staff note was actually typed, so a null note
+      // produces the same empty-string field it always has.
+      // Mirrors photoAnalysis.ts's buildFewShotMessages: only inject a
+      // pitfall line when a staff note was actually typed, so a null note
+      // produces the same empty-string field it always has.
+      notes: ex.notes ? `Known AI pitfall on this house: ${ex.notes}` : '',
       confidence: 'high',
     };
     messages.push({ role: 'assistant', content: [{ type: 'text', text: JSON.stringify(assistantPayload) }] });
