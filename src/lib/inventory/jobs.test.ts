@@ -1,8 +1,29 @@
-import { describe, it, expect } from 'vitest';
-import { isActiveFulfillment, groupByStage, computeStockDeductions, selectedSceneItemIds, type FulfillmentCard } from './jobs';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  isActiveFulfillment,
+  groupByStage,
+  computeStockDeductions,
+  selectedSceneItemIds,
+  listFulfillmentCards,
+  PENDING_STOCK_SNAPSHOT,
+  type FulfillmentCard,
+} from './jobs';
 import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import type { Scene, StrandItem, SpritzerItem, GarlandItem } from '@/lib/design/sceneTypes';
+
+// Row 382: listFulfillmentCards needs a real DB — mocked only for the
+// describe block below that exercises it. Every OTHER test in this file
+// tests pure functions and never touches supabase, so this mock is inert for
+// them (vi.mock is file-scoped and hoisted, but currentDb starts null and is
+// only ever set inside the block that needs it).
+let currentDb: unknown = null;
+let billingJobs: Record<string, unknown>[] = [];
+vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
+vi.mock('../jobs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../jobs')>();
+  return { ...actual, listJobs: vi.fn(async () => billingJobs) };
+});
 
 const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   id: 'j1',
@@ -18,6 +39,7 @@ const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   isTest: false,
   highlevelContactId: null,
   customerId: null,
+  stockSnapshotPending: false,
   ...over,
 });
 
@@ -219,5 +241,50 @@ describe('selectedSceneItemIds — (d) mutually-exclusive roofline', () => {
     const keep = selectedSceneItemIds(rooflineScene, rooflineResult, rooflineInputs, snapshot);
     expect(keep!.has('front1')).toBe(true);
     expect(keep!.has('ridge1')).toBe(true);
+  });
+});
+
+// Row 382: nothing enumerated a job stuck at PENDING_STOCK_SNAPSHOT before —
+// this proves listFulfillmentCards actually computes the flag the digest
+// (prepDigest.test.ts) relies on, from a live-shaped DB read.
+describe('listFulfillmentCards — stockSnapshotPending (row 382)', () => {
+  function makeDb(stockRows: { id: string; stock_deductions: unknown }[]) {
+    return {
+      from(table: string) {
+        return {
+          select: () => ({
+            in: async () => {
+              if (table === 'quotes') return { data: [] };
+              if (table === 'jobs') return { data: stockRows };
+              return { data: [] };
+            },
+          }),
+        };
+      },
+    };
+  }
+
+  it('flags a card whose stock_deductions is the PENDING sentinel', async () => {
+    billingJobs = [
+      { id: 'j1', job_number: 1, quote_id: null, design_id: null, fulfillment_stage: 'ready_for_install', status: 'to_schedule', line_items: [], install_date: null, customer_id: null },
+    ];
+    currentDb = makeDb([{ id: 'j1', stock_deductions: PENDING_STOCK_SNAPSHOT }]);
+    const cards = await listFulfillmentCards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0].stockSnapshotPending).toBe(true);
+  });
+
+  it('does NOT flag a card with a real snapshot array, or with null (never prepped / true legacy)', async () => {
+    billingJobs = [
+      { id: 'j1', job_number: 1, quote_id: null, design_id: null, fulfillment_stage: 'ready_for_install', status: 'to_schedule', line_items: [], install_date: null, customer_id: null },
+      { id: 'j2', job_number: 2, quote_id: null, design_id: null, fulfillment_stage: 'to_be_ordered', status: 'to_schedule', line_items: [], install_date: null, customer_id: null },
+    ];
+    currentDb = makeDb([
+      { id: 'j1', stock_deductions: [{ sku: 'SKU-A', before: 10, deducted: 2, after: 8 }] },
+      { id: 'j2', stock_deductions: null },
+    ]);
+    const cards = await listFulfillmentCards();
+    expect(cards.find((c) => c.id === 'j1')?.stockSnapshotPending).toBe(false);
+    expect(cards.find((c) => c.id === 'j2')?.stockSnapshotPending).toBe(false);
   });
 });

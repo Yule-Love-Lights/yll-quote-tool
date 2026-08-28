@@ -50,6 +50,11 @@ export type NeedsActionInvoice = {
   status: string;
   balance: number;
   created_at: string;
+  // Row 389 (S49): true when this repo already knows `balance` is a frozen,
+  // unreconciled figure (see isStaleInvoiceSnapshot in
+  // quoteAmendInvoiceSync.ts, derived by queries.ts's loadNeedsActionData).
+  // Optional so every existing fixture/caller keeps compiling as "not stale".
+  stale?: boolean;
 };
 
 /** Everything `buildNeedsAction` needs — no DB calls inside the fn. */
@@ -190,13 +195,20 @@ export function buildNeedsAction(input: NeedsActionInput): NeedsActionItem[] {
         const ageDays = ageDaysFrom(inv.created_at, nowMs);
         if (ageDays >= BALANCE_THRESHOLD_DAYS) {
           const floor = floorDays(ageDays);
+          // Row 389: a stale invoice's balance is a FROZEN figure (row 378/341
+          // deliberately don't correct it) — say so in the nag itself rather
+          // than presenting it as gospel, same reasoning as the Workflow
+          // board's staleCount. Never change what's collected, only the copy.
+          const detail = inv.stale
+            ? `Invoice ${pluralDays(floor)} old — collect balance (~${formatUsd(inv.balance)}, unreconciled — verify before collecting)`
+            : `Invoice ${pluralDays(floor)} old — collect balance ${formatUsd(inv.balance)}`;
           items.push({
             kind: 'collect-balance',
             quoteId: q.id,
             quoteNumber: q.quote_number ?? null,
             serviceType: q.service_type,
             label: customerLabel(q),
-            detail: `Invoice ${pluralDays(floor)} old — collect balance ${formatUsd(inv.balance)}`,
+            detail,
             ageDays,
             href: `/admin/invoices/${inv.id}`,
           });

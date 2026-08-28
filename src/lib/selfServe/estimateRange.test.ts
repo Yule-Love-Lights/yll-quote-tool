@@ -110,9 +110,14 @@ describe('analysisToHolidayInputs', () => {
   it('maps street footage + difficulties and zeroes everything else', () => {
     const inputs = analysisToHolidayInputs(makeResult());
     expect(inputs.santasFootage).toBe(120);
-    expect(inputs.santasDifficulty).toBe('medium');
+    // Jason, 2026-08-27: the analyzer's own difficulty read is IGNORED. The
+    // fixture's result says 'medium' for santas and 'hard' for gingerbread;
+    // both must come back Easy ($8/ft), because roofline difficulty is a manual
+    // staff decision and a customer-facing estimate must not be moved by how a
+    // photo happened to read.
+    expect(inputs.santasDifficulty).toBe('easy');
     expect(inputs.gingerbreadFootage).toBe(200);
-    expect(inputs.gingerbreadDifficulty).toBe('hard');
+    expect(inputs.gingerbreadDifficulty).toBe('easy');
     expect(inputs.winterWonderlandFootage).toBe(0);
     expect(inputs.stakeLightingFootage).toBe(0);
     expect(inputs.miniLightItems).toEqual([]);
@@ -198,5 +203,33 @@ describe('isMeasurable', () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+// Jason, 2026-08-27 — roofline difficulty is manual, full stop.
+describe('analysisToHolidayInputs — roofline difficulty is never taken from the AI', () => {
+  it('returns Easy for every difficulty the analyzer can report', () => {
+    // The whole point of the change: whatever the analyzer says, the customer's
+    // self-serve estimate prices roofline at $8/ft until a staff member decides
+    // otherwise in the builder.
+    for (const reported of ['easy', 'medium', 'hard'] as const) {
+      const inputs = analysisToHolidayInputs(
+        makeResult({ santasDifficulty: reported, gingerbreadDifficulty: reported }),
+      );
+      expect(inputs.santasDifficulty).toBe('easy');
+      expect(inputs.gingerbreadDifficulty).toBe('easy');
+    }
+  });
+
+  it('prices the same house identically no matter how the photo reads', () => {
+    // Same footage, opposite difficulty reads -> identical inputs, so identical
+    // money. Before this change the 'hard' read priced roofline 50% higher.
+    const easyRead = analysisToHolidayInputs(
+      makeResult({ santasDifficulty: 'easy', gingerbreadDifficulty: 'easy' }),
+    );
+    const hardRead = analysisToHolidayInputs(
+      makeResult({ santasDifficulty: 'hard', gingerbreadDifficulty: 'hard' }),
+    );
+    expect(hardRead).toEqual(easyRead);
   });
 });

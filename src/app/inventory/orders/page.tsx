@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 type POLine = { sku: string; name: string; needed: number; onHand: number; onOrder: number; order: number };
 type PO = { lines: POLine[]; jobCount: number };
@@ -227,7 +228,9 @@ export default function OrdersPage() {
         {ordersError && <p className="text-sm mb-4" style={{ color: '#b91c1c' }}>Couldn&apos;t load open orders: {ordersError}</p>}
 
         {ordersLoading ? (
-          <p className="text-sm py-10 text-center" style={{ color: 'var(--op-text-dim)' }}>Loading open orders…</p>
+          // Row 410: placeholder cards at the real order-card height, so the
+          // page does not jump when the orders land.
+          <SkeletonRows label="Loading open orders…" rows={2} rowClassName="h-28" className="flex flex-col gap-4" />
         ) : openOrders.length === 0 ? (
           <div className="rounded-lg border p-8 text-sm text-center" style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-dim)', background: 'var(--op-bg-raised)' }}>
             No open orders.

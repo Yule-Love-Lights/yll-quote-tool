@@ -16,6 +16,7 @@ import { formatIncludedHeading, formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
+import { resolvePortalImageVisibility } from '@/lib/portal/imageVisibility';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -179,9 +180,22 @@ export type WhatsIncludedProps = {
   // pricing/approve). These seasonal fee sections are HOLIDAY-ONLY via a positive
   // match, so a FUTURE vertical won't inherit them either. Absent ⇒ holiday.
   serviceType?: ServiceType;
+  // Row 324 fix round (customer MED): true when the customer's CURRENT
+  // starting selection was set by staff (not a genuine customer edit) AND
+  // they've viewed the portal before — see adapter.ts's
+  // showStaffPreselectNotice for the gating + self-clear reasoning. Absent/
+  // false ⇒ no line, unchanged from before this fix.
+  showStaffPreselectNotice?: boolean;
 };
 
-export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
+export function WhatsIncluded({
+  items,
+  design,
+  palette,
+  renderSettings,
+  serviceType,
+  showStaffPreselectNotice,
+}: WhatsIncludedProps) {
   // Holiday (or a legacy/null service_type, which reads as holiday) is the only
   // vertical carrying the seasonal rush/takedown + early-install fee toggles.
   // Positive-match on holiday — never `!== 'permanent'` — so a FUTURE vertical
@@ -205,6 +219,17 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
         : undefined;
   const satelliteLabelOverrides =
     serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
+  const drawableSatelliteGroups = design
+    ? selectDrawableLineGroups(
+        design.satelliteLines,
+        allowedSatelliteKeys,
+        satelliteLabelOverrides,
+      )
+    : [];
+  const imageLayout = resolvePortalImageVisibility(
+    !!design?.imageVisibility.street && !!design.photoUrl,
+    !!design?.imageVisibility.satellite && !!design.satelliteUrl && drawableSatelliteGroups.length > 0,
+  );
   const {
     isItemSelected,
     toggleItem,
@@ -285,6 +310,14 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             </p>
           )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
+          {/* Row 324 fix round (customer MED): framed as service, not
+              correction — a returning customer whose selection was
+              staff-preselected gets one plain heads-up, never a banner. */}
+          {showStaffPreselectNotice && (
+            <p className="mt-3 text-[13px] text-[#A89F87]">
+              Your installer set these starting choices for you — change anything you like.
+            </p>
+          )}
         </div>
 
         <ul className={`grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 ${itemsReadOnly ? 'pointer-events-none' : ''}`}>
@@ -364,8 +397,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             the page; on tablet/mobile they stack full-width. Without satellite
             data, the lit render stays full-width on its own. */}
         {design &&
-          (!!design.satelliteUrl &&
-          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys, satelliteLabelOverrides).length > 0 ? (
+          (imageLayout.state === 'both' ? (
             <div
               className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
               style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
@@ -380,9 +412,15 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                 <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
               </div>
             </div>
-          ) : (
+          ) : imageLayout.state === 'street-only' ? (
             <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType ?? null} />
-          ))}
+          ) : imageLayout.state === 'satellite-only' ? (
+            <SatelliteRoofView
+              design={design}
+              allowedSatelliteKeys={allowedSatelliteKeys}
+              labelOverrides={satelliteLabelOverrides}
+            />
+          ) : null)}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a

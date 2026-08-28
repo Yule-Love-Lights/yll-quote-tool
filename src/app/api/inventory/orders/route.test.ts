@@ -7,6 +7,9 @@ const { listOrders } = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase', () => ({ isSupabaseServiceConfigured: () => true }));
 vi.mock('@/lib/inventory/orders', () => ({ listOrders }));
+// ledger #347: requireOperator is now engaged by default — stub it authorized
+// like the other route.ts test suites do; this suite is about listing logic.
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
 
 import { GET } from './route';
 

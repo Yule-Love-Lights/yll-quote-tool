@@ -89,7 +89,13 @@ Each spawn brief must be self-contained (the agent has no other context):
   lighting company; `master` auto-deploys; who owns what per AGENTS.md).
 - Which lens it is (paste or point at the matching `.claude/agents/lens-*.md`
   definition).
-- The exact findings-file path it must write to.
+- The exact findings-file path it must write to — and the instruction to
+  create that file EARLY (on its first observation) and keep updating it as
+  it works, never saving the write for the end. The failure mode is the
+  session PROCESS dying, which kills every in-flight agent; an agent that
+  buffered its findings leaves nothing (S50 lost both close-review agents
+  this way, S51 lost four premerge lenses the next day, and the one partial
+  report that survived came from the single early-writing agent).
 
 ## Step 3: collect findings, respawn stalls once
 

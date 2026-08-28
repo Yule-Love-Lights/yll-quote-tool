@@ -20,5 +20,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const { id } = await params;
   const result = await prepareJobMaterials(id);
   if (!result) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  // Row 329: a real claim-update failure (not "already prepped") — never a 200.
+  if (!result.ok) return NextResponse.json(result, { status: 500 });
   return NextResponse.json(result);
 }

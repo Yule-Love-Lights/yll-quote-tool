@@ -70,6 +70,13 @@ function makeSb(
   quote: Row | null,
   fresh: Row | null = quote,
   quoteUpdateRows: Row[] = [{ id: ID }],
+  // Row 341: lets a test simulate resyncInvoiceToAgreedTotal's CAS losing —
+  // pass [] to make every 'invoices' update match zero rows (both the first
+  // attempt AND the one retry, since this fake has no per-call sequencing;
+  // that's fine for a test proving the ROUTE surfaces resynced:false, since
+  // the module's own retry-then-succeed behavior is covered directly in
+  // quoteAmendInvoiceSync.test.ts).
+  invoiceUpdateRows: Row[] = [{ id: 'inv-updated' }],
 ) {
   const updates: { quotes: Row[]; invoices: Row[] } = { quotes: [], invoices: [] };
   const eqCalls: Array<[string, unknown]> = [];
@@ -94,7 +101,14 @@ function makeSb(
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({ data: fresh, error: null }),
     then: (resolve: (v: unknown) => void) => {
-      const data = updating && table === 'quotes' ? quoteUpdateRows : null;
+      // Row 339: resyncInvoiceToAgreedTotal's invoices write now carries a
+      // `.select('id')` CAS (see quoteAmendInvoiceSync.ts) and reads its own
+      // data.length to detect a lost race — so an 'invoices' update must
+      // resolve a matched row here too, not just the 'quotes' table's own
+      // update, or every real (non-race) resync in this file would look like
+      // a lost race. Defaults to always reporting a hit; row 341's failure
+      // test overrides `invoiceUpdateRows` to [] to simulate a lost race.
+      const data = updating ? (table === 'quotes' ? quoteUpdateRows : invoiceUpdateRows) : null;
       updating = false;
       resolve({ data, error: null });
     },
@@ -655,7 +669,15 @@ describe('POST /api/quotes/[id]/amend', () => {
     const quoteWrite = sb.updates.quotes[0];
     const snap = quoteWrite.approval_snapshot as { amendments?: Array<{ invoice_basis?: unknown }> };
     const persisted = snap.amendments?.[snap.amendments.length - 1];
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 4598.21, new_total: 5150, delta: 551.79 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 4598.21,
+      new_total: 5150,
+      delta: 551.79,
+      // liveInvoice carries no deposit_applied/total of its own to derive a
+      // prior-collected figure from, so this is the deposit-only formula:
+      // 5150 (new_total) − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 2650.
+      new_balance: 2650,
+    });
 
     // The SMS agrees with that SAME stamp — not with the trail basis (5600 /
     // 600.00), which is what a resync-outcome-driven notify would have sent
@@ -697,7 +719,14 @@ describe('POST /api/quotes/[id]/amend', () => {
       amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
     };
     const persisted = snap.amendments?.[snap.amendments!.length - 1];
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 4900, new_total: 5600, delta: 700 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 4900,
+      new_total: 5600,
+      delta: 700,
+      // freshInvoice has no deposit_applied/total of its own — deposit-only:
+      // 5600 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 3100.
+      new_balance: 3100,
+    });
   });
 
   // Delta-verify MEDIUM-HIGH (fix round 5): a null→non-null transition across
@@ -729,7 +758,14 @@ describe('POST /api/quotes/[id]/amend', () => {
       amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
     };
     const persisted = snap.amendments?.[snap.amendments!.length - 1];
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 4000, new_total: 5600, delta: 1600 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 4000,
+      new_total: 5600,
+      delta: 1600,
+      // Deposit-only (no deposit_applied/total on this fixture's invoice):
+      // 5600 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 3100.
+      new_balance: 3100,
+    });
 
     // The re-sync ALSO fired — not skipped on the stale (null) initial read.
     expect(sb.updates.invoices).toHaveLength(1);
@@ -767,11 +803,54 @@ describe('POST /api/quotes/[id]/amend', () => {
     };
     const persisted = snap.amendments?.[snap.amendments!.length - 1];
     // Stamped from the ORIGINAL read (5000), not silently dropped.
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 5000, new_total: 5600, delta: 600 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 5000,
+      new_total: 5600,
+      delta: 600,
+      // Deposit-only (no deposit_applied/total on this fixture's invoice):
+      // 5600 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 3100.
+      new_balance: 3100,
+    });
     // Re-sync also ran (not skipped) — resyncInvoiceToAgreedTotal's own
     // internal fallback (freshInvoice ?? invoice) used the SAME originalInvoice.
     expect(sb.updates.invoices).toHaveLength(1);
     expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
+  });
+
+  // Row 341 (staff-lens HIGH, this fix round): the route used to discard
+  // resyncInvoiceToAgreedTotal's return value entirely and report `ok:true`
+  // unconditionally. Simulate the invoices-table CAS losing on every attempt
+  // (invoiceUpdateRows: []) — the amendment trail entry is still recorded
+  // (already-persisted invoice_basis, unchanged), but the response must now
+  // say the invoice itself was NOT updated.
+  it('surfaces invoiceResyncFailed:true when the invoice CAS write never lands, without failing the amendment itself', async () => {
+    const sb = makeSb(BOOKED_QUOTE, BOOKED_QUOTE, [{ id: ID }], []);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const staleInvoice = { id: 'inv-1', balance: 2500, status: 'draft' as const, tax_overridden: false, total: 4900 };
+    getInvoiceByJobMock.mockResolvedValue(staleInvoice); // every getInvoiceByJob call (incl. the retry) sees it unchanged
+
+    const res = await POST(req({ reason: 'extra wreath' }), ctx());
+    const json = await res.json();
+
+    // The amendment is still recorded — a resync failure never undoes it.
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.invoiceResyncFailed).toBe(true);
+    // Both attempts (the initial write + the one retry) genuinely tried.
+    expect(sb.updates.invoices).toHaveLength(2);
+  });
+
+  it('leaves invoiceResyncFailed:false when there is no linked invoice to sync at all', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue(null);
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    const res = await POST(req({ reason: 'extra wreath' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.invoiceResyncFailed).toBe(false);
   });
 
   it('falls back to the trail balance when there is no invoice yet', async () => {
@@ -1027,6 +1106,10 @@ describe('POST /api/quotes/[id]/amend → portal read path — card/SMS/email mo
       previous_total: 4598.21,
       new_total: 5150,
       delta: 551.79,
+      // Deposit-only (no deposit_applied on this fixture's invoice):
+      // 5150 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 2650 — matches the
+      // invoice write asserted at "2) The invoice was actually billed" above.
+      new_balance: 2650,
     });
 
     // 4) Feed that EXACT persisted row back through the REAL portal read

@@ -14,11 +14,17 @@ const MAX_HITS = 5; // cap each hit list so a common surname never balloons a re
 
 // Bot wording over the canonical lifecycle — deriveStatus stays the single
 // source of truth for WHICH state a quote is in; only the phrasing is local.
+const SENT_LABEL = 'Sent, not viewed';
+// Row 327: 'approved' (customer signed, deposit not yet paid) reuses the
+// exact 'sent' wording rather than its own — mirrors quoteStatus.ts's
+// APPROVED_DISPLAYS_AS (ledger row 242: no separate 'approved' stage
+// anywhere else in the quote lane; QuoteBuilder.tsx's header pill does the
+// same thing, reusing sent's label+color rather than 'viewed's).
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft, not sent',
-  sent: 'Sent, not viewed',
+  sent: SENT_LABEL,
   viewed: 'Sent + viewed',
-  approved: 'Approved, deposit pending',
+  approved: SENT_LABEL,
   booked: 'Booked (deposit paid)',
   changes_requested: 'Changes requested',
   declined: 'Declined',

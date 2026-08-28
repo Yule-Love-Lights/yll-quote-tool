@@ -128,6 +128,15 @@ export type AmendmentTrailEntry = {
     previous_total: number;
     new_total: number;
     delta: number;
+    // Row 341 fix round 3 (resolveAmendmentBasis's identical deposit-only
+    // flaw — see quoteAmendInvoiceSync.ts's priorBalanceCollectedUsd): the
+    // invoice-basis balance, computed by the SAME computeInvoiceResyncTotals
+    // formula that now nets out a settled balance payment (not just the
+    // deposit). Optional — absent on any entry written before this field
+    // existed, or when no invoice existed at amend time — resolveAmendmentBasis
+    // falls back to the deposit-only trail formula in both those cases,
+    // exactly as it already does for previous_total/new_total/delta.
+    new_balance?: number;
   };
   // Total-changing amendments start pending. The public portal replaces this
   // with an accepted, server-stamped signature — or a declined refusal —
@@ -282,11 +291,27 @@ export function resolveAmendmentBasis(amendment: AmendmentTrailEntry): {
   const previousTotalUsd = basis ? basis.previous_total : amendment.previous_total;
   const newTotalUsd = basis ? basis.new_total : amendment.new_total;
   const deltaUsd = basis ? basis.delta : amendment.delta;
+  // Row 341 fix round 3 (technical-lens HIGH, the resync-side fix's own
+  // divergence risk, re-derived and confirmed real): prefer the invoice-basis
+  // new_balance — computed by computeInvoiceResyncTotals, which nets out a
+  // settled balance payment beyond the deposit — over the deposit-only
+  // `newTotal − deposit_applied` fallback. Without this, a customer whose
+  // balance was already partly/fully collected (a Valor webhook settlement,
+  // a manual mark-paid) would be TOLD a balance that ignores that payment —
+  // the exact invoice-side bug this fix round closed, but on the message the
+  // customer actually reads (SMS/email/portal), not just the invoices row.
+  // Absent (no invoice at amend time, or an entry written before this field
+  // existed) falls back to the pre-fix deposit-only formula — correct in
+  // both cases: no invoice means no balance could have been collected yet.
+  const newBalanceUsd =
+    basis && typeof basis.new_balance === 'number' && Number.isFinite(basis.new_balance)
+      ? basis.new_balance
+      : round2(Math.max(0, newTotalUsd - amendment.deposit_applied));
   return {
     previousTotalUsd,
     newTotalUsd,
     deltaUsd,
-    newBalanceUsd: round2(Math.max(0, newTotalUsd - amendment.deposit_applied)),
+    newBalanceUsd,
   };
 }
 

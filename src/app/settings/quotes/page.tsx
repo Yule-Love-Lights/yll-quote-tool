@@ -5,7 +5,7 @@
 import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { QuotesSettings } from '@/components/settings/QuotesSettings';
 import { EventRatesSettings } from '@/components/settings/EventRatesSettings';
 import { PermanentRatesSettings } from '@/components/settings/PermanentRatesSettings';
@@ -16,11 +16,11 @@ import { PortalSwatchEditor } from '@/components/settings/PortalSwatchEditor';
 export const dynamic = 'force-dynamic';
 
 export default async function QuotesSettingsPage() {
-  // #81 defense-in-depth (dormant until AUTH_GATE_ENABLED): this page carries
-  // destructive dev tools, so gate it behind operator auth like the rest of the
-  // operator surface. No-op until the flag is on (then the middleware perimeter +
-  // this check both apply).
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // #81 defense-in-depth: this page carries destructive dev tools, so gate it
+  // behind operator auth like the rest of the operator surface. Engaged by
+  // default; dormant only on the explicit AUTH_GATE_ENABLED=false opt-out
+  // (ledger #347) — then both the middleware perimeter and this check apply.
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/settings/quotes');
   }
 

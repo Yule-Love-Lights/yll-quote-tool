@@ -7,7 +7,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
+const {
+  completeQuoteBuildSession,
+  linkQuoteBuildSession,
+  quoteBuildSessionTargetState,
+  save,
+  startQuoteBuildSession,
+  update,
+  getRaw,
+  rawRef,
+  operatorRef,
+} = vi.hoisted(() => ({
+  completeQuoteBuildSession: vi.fn(),
+  linkQuoteBuildSession: vi.fn(),
+  quoteBuildSessionTargetState: vi.fn(),
+  startQuoteBuildSession: vi.fn(),
   // Typed varargs so `.mock.calls[n]` is an indexable unknown[] (the permanent
   // dispatch tests read positional args like calls[0][3] = serviceType).
   save: vi.fn(async (..._args: unknown[]) => ({ id: 'new-id' })),
@@ -56,7 +70,24 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       } | null;
       // FIX B (#237 fix round): the two other gates the re-push needs.
       is_test?: boolean;
+      view_only?: boolean;
       highlevel_contact_id?: string | null;
+      // Row 344 Part B: the stored total + frozen approval snapshot, read
+      // back to detect + record a post-approval reprice.
+      total?: number | null;
+      approval_snapshot?: {
+        customerSelection?: { currentTotalUsd?: number };
+        postApprovalReprices?: unknown[];
+        // MED fix round: a booked-and-amended quote's accepted amendment
+        // trail, read by resolveAgreedTotal + the hasAcceptedAmendment
+        // check (mirrors the real AmendmentTrailEntry/consent shape).
+        amendments?: Array<{
+          new_total: number;
+          delta: number;
+          consent?: { status?: string | null } | null;
+        }>;
+        pricing?: unknown;
+      } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -66,6 +97,13 @@ vi.mock('@/lib/quotes', () => ({
   saveQuote: save,
   updateQuote: update,
   getQuoteRaw: getRaw,
+}));
+
+vi.mock('@/lib/quoteBuildTiming', () => ({
+  completeQuoteBuildSession,
+  linkQuoteBuildSession,
+  quoteBuildSessionTargetState,
+  startQuoteBuildSession,
 }));
 
 // FIX B (#237 fix round): only pushEventDateToGhl is mocked (spied on) — the
@@ -114,15 +152,71 @@ vi.mock('next/server', async (importOriginal) => {
 // quotes.ghl_event_date_pushed via a fresh getSupabaseServiceClient() call
 // inside the after() task — mocked here the same way approve/send route
 // tests mock the data layer, capturing update payloads.
-const { sbUpdatePayloads } = vi.hoisted(() => ({ sbUpdatePayloads: [] as Array<Record<string, unknown>> }));
+//
+// Row 344 fix round (technical/admin-lens HIGH): the post-approval-reprice
+// audit write now re-fetches approval_snapshot fresh and CASes on it (see
+// route.ts's row-344 comment), mirroring apply-color-request.ts's own CAS
+// idiom. The chain is now `.select('approval_snapshot').eq('id',
+// ...).maybeSingle()` for the re-fetch, and
+// `.update(...).eq('id', ...).eq('approval_snapshot', json).select('id')`
+// for the conditional write — so the mock builder needs to be a generic
+// chainable/thenable, not the single-`.eq()`-then-object the old GHL-only
+// shape supported. `freshApprovalSnapshotRef` lets a test simulate a
+// concurrent writer landing between the route's read and its write (default
+// undefined = "nothing concurrent", which makes the re-fetch return null and
+// the route fall back to `existing.approval_snapshot` — i.e. every
+// pre-existing assertion below keeps working unmodified). `casResultRef`
+// controls whether the conditional update behaves as having WON or LOST
+// that race (default 'win' = updatedRows non-empty).
+const { sbUpdatePayloads, freshApprovalSnapshotRef, casResultRef } = vi.hoisted(() => ({
+  sbUpdatePayloads: [] as Array<Record<string, unknown>>,
+  freshApprovalSnapshotRef: { current: undefined as Record<string, unknown> | undefined },
+  casResultRef: { current: 'win' as 'win' | 'lose' },
+}));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
-    from: () => ({
-      update: (payload: Record<string, unknown>) => {
-        sbUpdatePayloads.push(payload);
-        return { eq: async () => ({ error: null }) };
-      },
-    }),
+    from: () => {
+      let isUpdate = false;
+      let hasSelect = false;
+      const builder: {
+        select: (cols: string) => typeof builder;
+        eq: (col: string, val: unknown) => typeof builder;
+        update: (payload: Record<string, unknown>) => typeof builder;
+        maybeSingle: () => Promise<{ data: unknown; error: null }>;
+        then: (resolve: (v: { data: unknown; error: null }) => void) => void;
+      } = {
+        select: (_cols: string) => {
+          hasSelect = true;
+          return builder;
+        },
+        eq: (_col: string, _val: unknown) => builder,
+        update: (payload: Record<string, unknown>) => {
+          isUpdate = true;
+          sbUpdatePayloads.push(payload);
+          return builder;
+        },
+        maybeSingle: async () => ({
+          data:
+            freshApprovalSnapshotRef.current !== undefined
+              ? { approval_snapshot: freshApprovalSnapshotRef.current }
+              : null,
+          error: null,
+        }),
+        // Only the write chains (update().eq()...select()) ever resolve via
+        // `await builder` directly (no terminal .maybeSingle()) — the plain
+        // GHL-stamp update (no .select()) resolves { error: null } same as
+        // before; the row-344 CAS write (has .select('id')) resolves a rows
+        // array so the route can detect a lost race.
+        then: (resolve) => {
+          if (isUpdate && hasSelect) {
+            resolve({ data: casResultRef.current === 'win' ? [{ id: 'x' }] : [], error: null });
+          } else {
+            resolve({ data: null, error: null });
+          }
+        },
+      };
+      return builder;
+    },
   }),
 }));
 
@@ -202,7 +296,17 @@ beforeEach(() => {
   afterCallCount.current = 0;
   lastAfterTask.current = null;
   sbUpdatePayloads.length = 0;
+  freshApprovalSnapshotRef.current = undefined;
+  casResultRef.current = 'win';
   getDesignMock.mockResolvedValue(null);
+  completeQuoteBuildSession.mockResolvedValue(true);
+  linkQuoteBuildSession.mockResolvedValue(true);
+  quoteBuildSessionTargetState.mockResolvedValue({ kind: 'draft' });
+  startQuoteBuildSession.mockImplementation(async (input: { timerId: string; quoteId?: string }) => ({
+    ok: true,
+    kind: 'started',
+    row: { id: input.timerId, quote_id: input.quoteId ?? null, sent_at: null },
+  }));
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
   rawRef.current = {
@@ -387,11 +491,41 @@ describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it('accepts a well-formed trackStyleBySide, ignoring an unknown key (mirrors sideSource leniency)', async () => {
+  it('accepts a well-formed trackStyleBySide, ignoring an unknown key', async () => {
     const inputs = permInputs(120);
     inputs.permanent = {
       ...(inputs.permanent as Record<string, unknown>),
       trackStyleBySide: { front: 'parapet', left: 'single', notASide: 'parapet' },
+    };
+    const res = await POST(makeReq({ serviceType: 'permanent', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  // Row 400 — per-field footage/corners provenance, mirrors trackStyleBySide's trio above.
+  it('rejects a non-object sideMeasureSource with 400', async () => {
+    const res = await POST(badPerm({ sideMeasureSource: 'manual' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ARRAY sideMeasureSource with 400 (isObj alone admits arrays)', async () => {
+    const res = await POST(badPerm({ sideMeasureSource: [] }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid VALUE on a recognized sideMeasureSource key with 400', async () => {
+    const res = await POST(badPerm({ sideMeasureSource: { frontFootage: 'yes' } }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-formed sideMeasureSource, ignoring an unknown key', async () => {
+    const inputs = permInputs(120);
+    inputs.permanent = {
+      ...(inputs.permanent as Record<string, unknown>),
+      sideMeasureSource: { frontFootage: 'manual', leftCorners: 'auto', notAField: 'auto' },
     };
     const res = await POST(makeReq({ serviceType: 'permanent', inputs }));
     expect(res.status).toBe(200);
@@ -810,6 +944,137 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       undefined,
       undefined,
     );
+  });
+});
+
+describe('POST /api/quote — quote build timer association', () => {
+  // Row 376: this bookkeeping moved from an inline await into after() (like
+  // send/mark-sent's queueQuoteBuildSessionCompletion), so Calculate's
+  // response no longer waits on it. The OLD contract this test asserted —
+  // the response promise stays unsettled while the timer start is in
+  // flight — is exactly the behavior row 376 removed. Proven here the other
+  // way: startQuoteBuildSession's promise is deliberately never resolved,
+  // and the response still settles.
+  it('starts the timer via after(), and the response settles without waiting on it', async () => {
+    const timerId = '11111111-2222-4333-8444-555555555555';
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    startQuoteBuildSession.mockReturnValueOnce(new Promise(() => {}));
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteBuildTimerId: timerId,
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    // Proves the bookkeeping was actually scheduled via after() (not a bare
+    // `void` call, which the mocked after() below would make pass too) AND
+    // that the call itself already fired even though its own promise is
+    // still pending above.
+    expect(afterCallCount.current).toBe(1);
+    expect(startQuoteBuildSession).toHaveBeenCalledWith({
+      timerId,
+      startReason: 'contact_selected',
+      quoteId: 'new-id',
+      operator: { id: 'op-1', email: 'a@b.com', role: 'operator' },
+      startedAt: expect.any(String),
+    });
+    expect(linkQuoteBuildSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed timer id before saving', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteBuildTimerId: 'not-a-uuid' }));
+
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+    expect(linkQuoteBuildSession).not.toHaveBeenCalled();
+  });
+
+  it('requires the timer id and start reason together', async () => {
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteBuildTimerId: '11111111-2222-4333-8444-555555555555',
+    }));
+
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('links the timer on an existing saved draft too', async () => {
+    const timerId = '11111111-2222-4333-8444-555555555555';
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    rawRef.current = {
+      ...rawRef.current!,
+      is_test: false,
+      view_only: false,
+    };
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteId: REAL_UUID,
+      quoteBuildTimerId: timerId,
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(startQuoteBuildSession).toHaveBeenCalledWith({
+      timerId,
+      startReason: 'contact_selected',
+      quoteId: 'existing-id',
+      operator: { id: 'op-1', email: 'a@b.com', role: 'operator' },
+      startedAt: expect.any(String),
+    });
+  });
+
+  it('never associates a timer to a test quote', async () => {
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      isTest: true,
+      quoteBuildTimerId: '11111111-2222-4333-8444-555555555555',
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(linkQuoteBuildSession).not.toHaveBeenCalled();
+  });
+
+  it('links an earlier unlinked start and completes it when Send wins during save', async () => {
+    const timerId = '11111111-2222-4333-8444-555555555555';
+    const sentAt = '2026-08-21T12:10:00.000Z';
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    startQuoteBuildSession.mockResolvedValueOnce({
+      ok: true,
+      kind: 'existing',
+      row: { id: timerId, quote_id: null, sent_at: null },
+    });
+    quoteBuildSessionTargetState.mockResolvedValueOnce({ kind: 'sent', sentAt });
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteBuildTimerId: timerId,
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    // The link/complete calls happen a couple of `await`s deep inside the
+    // after() task (start -> link -> re-read target -> complete), past the
+    // point Calculate's own response has already resolved — await the whole
+    // task explicitly before asserting on them, per the file's own
+    // lastAfterTask convention (see its declaration comment above).
+    await lastAfterTask.current;
+    expect(linkQuoteBuildSession).toHaveBeenCalledWith({
+      timerId,
+      quoteId: 'new-id',
+      operatorId: 'op-1',
+    });
+    expect(completeQuoteBuildSession).toHaveBeenCalledWith({
+      quoteId: 'new-id',
+      timerId,
+      operatorId: 'op-1',
+      sentAt,
+    });
   });
 });
 
@@ -1441,6 +1706,363 @@ describe('POST /api/quote — booked-quote re-price gate (W1-003)', () => {
     const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Row 344 Part B: a scene-driven reprice (e.g. footage/corners, or a
+// mini-light regroup routed through Calculate) of an approved-not-yet-booked
+// quote is still ALLOWED (proven above — this row is not a new refusal), but
+// must now surface a staff-facing signal + a durable audit entry. Mirrors the
+// #177/row-331 suites' shape: base fixture approved-not-booked, one field
+// changes the total, assert on the RESPONSE + the audit write instead of a
+// 409.
+describe('POST /api/quote — staff signal + audit trail for a post-approval reprice (row 344 Part B)', () => {
+  const APPROVED_UNBOOKED_ROW = {
+    quote_sent_at: '2026-01-01T00:00:00Z',
+    customer_approved_at: '2026-01-02T00:00:00Z',
+    deposit_paid_at: null,
+    viewed_at: '2026-01-01T00:00:00Z',
+    status: 'approved' as const,
+    is_test: false,
+    total: 1000,
+    approval_snapshot: { customerSelection: { currentTotalUsd: 1000 } },
+  };
+
+  it('surfaces repricedAfterApproval + writes an audit entry when a footage edit actually moves the total', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { total: number };
+      repricedAfterApproval?: {
+        previousTotalUsd: number;
+        newTotalUsd: number;
+        deltaUsd: number;
+        portalShowsFrozenPrice: boolean;
+        hasAcceptedAmendment: boolean;
+      };
+    };
+    // The engine isn't mocked — cross-check against whatever it actually
+    // priced rather than hardcoding a dollar figure.
+    expect(body.result.total).toBeGreaterThan(0);
+    expect(body.repricedAfterApproval).toBeDefined();
+    expect(body.repricedAfterApproval).toEqual({
+      previousTotalUsd: 1000, // read from approval_snapshot.customerSelection.currentTotalUsd, NOT existing.total
+      newTotalUsd: body.result.total,
+      deltaUsd: body.result.total - 1000,
+      // APPROVED_UNBOOKED_ROW's snapshot carries no `pricing` field — the
+      // adapter's fallback fires, so the portal is already showing the NEW
+      // price (staff-lens HIGH fix; see the companion test below for the
+      // frozen-pricing-present case).
+      portalShowsFrozenPrice: false,
+      // No amendments at all pre-deposit — the OTHER reason
+      // portalShowsFrozenPrice can be false (second fix round, staff-lens HIGH).
+      hasAcceptedAmendment: false,
+    });
+    // Durable audit entry appended to approval_snapshot.postApprovalReprices —
+    // the SAME sb.update() the GHL event-date stamp uses (mocked once, module-
+    // wide), so assert on payload shape rather than call count.
+    expect(sbUpdatePayloads).toContainEqual({
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 1000 },
+        postApprovalReprices: [
+          {
+            at: expect.any(String),
+            by: null, // no operator set in this test (operatorRef.current stays null)
+            previous_total: 1000,
+            new_total: body.result.total,
+            delta: body.result.total - 1000,
+          },
+        ],
+      },
+    });
+  });
+
+  it('reports portalShowsFrozenPrice: true when the snapshot DOES carry frozen pricing', async () => {
+    rawRef.current = {
+      ...APPROVED_UNBOOKED_ROW,
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 1000 },
+        // Presence alone is what adapter.ts checks (row.approval_snapshot?.pricing
+        // ?? null) — shape doesn't matter to this route, only to the adapter.
+        pricing: { total: 1000 },
+      } as unknown as (typeof APPROVED_UNBOOKED_ROW)['approval_snapshot'],
+    };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: { portalShowsFrozenPrice: boolean } };
+    expect(body.repricedAfterApproval?.portalShowsFrozenPrice).toBe(true);
+  });
+
+  // Row 344 fix round (technical/admin-lens HIGH — negative control): the
+  // original code built its update payload straight off `existing`, the row
+  // read at REQUEST START. Prove the fix actually re-reads: land a
+  // concurrent writer's field (a customer's pendingColorRequest, exactly the
+  // apply-color-request.ts/color-change-request.ts column this HIGH named)
+  // in the mocked re-fetch and assert it survives into the write instead of
+  // being silently dropped by a stale-based payload.
+  it('re-fetches approval_snapshot fresh right before writing — a concurrent writer field survives the merge', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    freshApprovalSnapshotRef.current = {
+      customerSelection: { currentTotalUsd: 1000 },
+      pendingColorRequest: { colorSchemeId: 'red' },
+    };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const payload = sbUpdatePayloads.at(-1) as { approval_snapshot: Record<string, unknown> };
+    // The concurrent writer's field made it into the write — proof the base
+    // was the FRESH re-fetch, not the stale `existing` snapshot (which never
+    // had pendingColorRequest at all).
+    expect(payload.approval_snapshot.pendingColorRequest).toEqual({ colorSchemeId: 'red' });
+    expect(payload.approval_snapshot.postApprovalReprices).toHaveLength(1);
+  });
+
+  it('drops the audit entry (no retry, no clobber) when it loses the CAS race to a concurrent approval_snapshot writer', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    casResultRef.current = 'lose';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await POST(
+        makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        repricedAfterApproval?: { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number };
+      };
+      // The reprice SIGNAL never depends on the best-effort audit write
+      // succeeding (matches the route's own "propagated even if the write
+      // failed" comment).
+      expect(body.repricedAfterApproval).toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('reprice audit entry dropped'),
+        REAL_UUID,
+      );
+      // Exactly one write attempt — a lost race is accepted and dropped,
+      // never blindly retried (which could itself re-clobber whatever the
+      // concurrent writer just landed).
+      expect(sbUpdatePayloads).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does NOT signal or write an audit entry when the resubmit does not actually change the total', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    // Same footage as `total: 1000` implies nothing changed — validInputs()
+    // (all-zero) already proved elsewhere in this file to reprice to the
+    // SAME total the "still re-prices an approved-but-unbooked quote in
+    // place" fixture used, so pin previousTotalUsd to match it exactly: 0.
+    rawRef.current.total = 0;
+    rawRef.current.approval_snapshot = { customerSelection: { currentTotalUsd: 0 } };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+
+  // Third fix round (technical-lens MED): a prior version of this route gated
+  // the fresh fetch behind a cheap pre-check comparing newTotalUsd against
+  // resolveAgreedTotal(existing.approval_snapshot, ...) — the STALE,
+  // request-start snapshot. If a concurrent writer changed the TRUE agreed
+  // basis, and this save's own new total happened to coincide with the STALE
+  // previous value, that pre-check read "no change" and silently skipped the
+  // fetch, the notice, AND the audit write — even though a real, unrecorded
+  // divergence existed against the fresh basis. Construct exactly that shape:
+  // validInputs() alone reprices to $0 (established above), so a STALE
+  // snapshot claiming currentTotalUsd: 0 makes a stale-basis pre-check see
+  // zero delta — while the FRESH snapshot (a concurrent staff correction)
+  // claims 300, a REAL $300 divergence the fix must still catch.
+  it('a concurrent write must not be masked by a stale-vs-new coincidence — the notice and the audit entry fire against the FRESH basis, not the stale one', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    rawRef.current.total = 0;
+    rawRef.current.approval_snapshot = { customerSelection: { currentTotalUsd: 0 } }; // stale: matches newTotalUsd (0)
+    freshApprovalSnapshotRef.current = { customerSelection: { currentTotalUsd: 300 } }; // fresh: does NOT match
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      repricedAfterApproval?: { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number };
+    };
+    // Fires — a stale-basis pre-check would have suppressed this entirely.
+    expect(body.repricedAfterApproval).toBeDefined();
+    expect(body.repricedAfterApproval).toEqual({
+      previousTotalUsd: 300, // the FRESH basis, not the stale 0
+      newTotalUsd: 0,
+      deltaUsd: -300,
+      portalShowsFrozenPrice: false,
+      hasAcceptedAmendment: false,
+    });
+    const payload = sbUpdatePayloads.at(-1) as { approval_snapshot: { postApprovalReprices: Array<{ previous_total: number; new_total: number; delta: number }> } };
+    const persisted = payload.approval_snapshot.postApprovalReprices.at(-1)!;
+    expect(persisted.previous_total).toBe(300);
+    expect(persisted.new_total).toBe(0);
+    expect(persisted.delta).toBe(-300);
+  });
+
+  it('is_test quotes are exempt — no signal, no audit write', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW, is_test: true };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+
+  it('a BOOKED quote (deposit already paid) never reaches this check — that reprice is either locked or the sanctioned amendReprice path', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW, status: 'booked' as const, deposit_paid_at: '2026-01-03T00:00:00Z' };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    // Booked + not amendReprice → REPRICE_LOCKED_STATUSES 409s before this
+    // route ever reaches the row-344 check, so the audit write never fires.
+    expect(res.status).toBe(409);
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+
+  it('an unapproved (draft/sent) quote is never signaled — this is a post-approval-only concern', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW, customer_approved_at: null, status: 'sent' as const };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+});
+
+// Row 344 fix round (technical-lens MED): QuoteBuilder.tsx sends
+// `amendReprice: true` on EVERY save of a booked quote, not only the one
+// save that immediately follows an accepted amendment. Once ANY amendment
+// has been accepted, adapter.ts treats live row.result as unconditionally
+// authoritative for the portal from then on — so a FURTHER scene edit that
+// changes the total via this bypass, without a NEW amendment being recorded
+// through /amend + /amend-consent, used to silently re-diverge what the
+// portal shows with zero staff signal. The fix widens the SAME
+// repricedAfterApproval gate to also cover this window, using
+// resolveAgreedTotal (not the raw customerSelection figure) as the
+// "previous" basis so an already-amended quote compares against what was
+// actually last agreed, not the pre-amendment original.
+describe('POST /api/quote — staff signal for a scene-driven reprice of a BOOKED, already-amended quote (row 344 fix round MED)', () => {
+  const ACCEPTED_AMENDMENT = { new_total: 1200, delta: 200, consent: { status: 'accepted' } };
+  const BOOKED_AMENDED_ROW = {
+    quote_sent_at: '2026-01-01T00:00:00Z',
+    customer_approved_at: '2026-01-02T00:00:00Z',
+    deposit_paid_at: '2026-01-03T00:00:00Z',
+    viewed_at: '2026-01-01T00:00:00Z',
+    status: 'booked' as const,
+    is_test: false,
+    total: 1200,
+    approval_snapshot: { amendments: [ACCEPTED_AMENDMENT] },
+  };
+
+  it('surfaces repricedAfterApproval, basis = the AMENDMENT total (not customerSelection/existing.total), portalShowsFrozenPrice: false', async () => {
+    rawRef.current = { ...BOOKED_AMENDED_ROW };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { total: number };
+      repricedAfterApproval?: {
+        previousTotalUsd: number;
+        newTotalUsd: number;
+        deltaUsd: number;
+        portalShowsFrozenPrice: boolean;
+        hasAcceptedAmendment: boolean;
+      };
+    };
+    expect(body.repricedAfterApproval).toBeDefined();
+    expect(body.repricedAfterApproval).toEqual({
+      previousTotalUsd: 1200, // the ACCEPTED amendment's new_total, via resolveAgreedTotal
+      newTotalUsd: body.result.total,
+      deltaUsd: body.result.total - 1200,
+      // Once an amendment is accepted, adapter.ts ALWAYS shows live
+      // row.result (never frozen) — the portal is already showing this new,
+      // unrecorded price.
+      portalShowsFrozenPrice: false,
+      // The REASON portalShowsFrozenPrice is false here (second fix round,
+      // staff-lens HIGH) — distinguishes this from the "no frozen pricing at
+      // all" case below, so QuoteBuilder.tsx's notice can diagnose correctly.
+      hasAcceptedAmendment: true,
+    });
+  });
+
+  // Second fix round (technical-lens MED): the notice figures and the
+  // persisted audit entry must come from the SAME basis. Simulate a
+  // concurrent writer (another staffer recording+accepting a SECOND
+  // amendment) landing between request-start (`existing`, which the mock
+  // reads via getRaw) and the CAS re-fetch (freshApprovalSnapshotRef, per the
+  // supabase mock's own doc comment above) — the notice's previousTotalUsd
+  // AND the persisted entry's previous_total must both reflect the FRESH
+  // amendment's new_total (1500), never the stale existing-based one (1200).
+  it('the notice and the persisted audit entry agree on the SAME (fresh) basis when a concurrent amendment lands mid-request', async () => {
+    rawRef.current = { ...BOOKED_AMENDED_ROW };
+    const CONCURRENT_SECOND_AMENDMENT = { new_total: 1500, delta: 300, consent: { status: 'accepted' } };
+    freshApprovalSnapshotRef.current = { amendments: [ACCEPTED_AMENDMENT, CONCURRENT_SECOND_AMENDMENT] };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { total: number };
+      repricedAfterApproval?: { previousTotalUsd: number; deltaUsd: number };
+    };
+    // The notice: basis is the FRESH latest amendment (1500), not the stale
+    // one existing (request-start) still held (1200).
+    expect(body.repricedAfterApproval?.previousTotalUsd).toBe(1500);
+    expect(body.repricedAfterApproval?.deltaUsd).toBe(body.result.total - 1500);
+    // The persisted entry: same basis, same numbers — not a second, different
+    // one computed some other way.
+    const payload = sbUpdatePayloads.at(-1) as { approval_snapshot: { postApprovalReprices: Array<{ previous_total: number; new_total: number; delta: number }> } };
+    const persisted = payload.approval_snapshot.postApprovalReprices.at(-1)!;
+    expect(persisted.previous_total).toBe(1500);
+    expect(persisted.new_total).toBe(body.result.total);
+    expect(persisted.delta).toBe(body.result.total - 1500);
+  });
+
+  it('is inert (no signal) when this save does NOT reach the amendReprice bypass — a booked quote WITHOUT the flag still 409s before this code', async () => {
+    rawRef.current = { ...BOOKED_AMENDED_ROW };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+  });
+
+  it('a booked quote with NO amendment yet (first-ever amendReprice preview) still uses the pre-amendment logic: pricing presence gates portalShowsFrozenPrice', async () => {
+    rawRef.current = {
+      ...BOOKED_AMENDED_ROW,
+      approval_snapshot: { pricing: { total: 1000 } }, // no amendments recorded yet
+      total: 1000,
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: { portalShowsFrozenPrice: boolean } };
+    expect(body.repricedAfterApproval?.portalShowsFrozenPrice).toBe(true);
   });
 });
 
