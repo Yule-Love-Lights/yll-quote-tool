@@ -5336,7 +5336,19 @@ Send anyway?`,
         // adding it read as a self-correction that could not fire. The design
         // routes that DO return it self-correct through noteDesignLocked()
         // below instead.
-        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        // Row 444 joins this set for the same reason the other three are in it:
+        // setResult(null) has already nulled the breakdown, and every pricing
+        // control lives inside `{result && (...)}`, so without the restore below
+        // a staffer who clicks Calculate on a migrated quote is left staring at
+        // a red banner with no way back short of a reload. The tab self-corrects
+        // to server truth - which for a migrated order is "these figures are not
+        // ours to recompute" - instead of staying editable and re-erroring.
+        const LOCK_CODES = new Set([
+          'price-override-locked',
+          'label-override-locked',
+          'bistro-footage-locked',
+          'migrated-quote-locked',
+        ]);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
           setBaselineResult(prevBaseline);

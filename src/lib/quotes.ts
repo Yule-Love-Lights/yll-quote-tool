@@ -71,6 +71,10 @@ export type QuoteListItem = {
   // writes a minimal snapshot — so a surface that implies "this is what was
   // agreed" would be wrong a third of the time.
   deposit_rate_frozen: boolean;
+  /** Row 444: migrated from the retired home.works CRM, so its figures are the
+   *  customer's real agreed/paid amounts and this engine cannot reproduce them.
+   *  Surfaced so staff can see why the quote refuses to re-price. */
+  migrated: boolean;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -85,7 +89,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
       // Row 409: the three deposit inputs are pulled as scalar JSON paths, not
       // as whole `inputs`/`result`/`approval_snapshot` blobs — those are large
       // and this list runs 500 rows deep.
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, is_nce, view_only, highlevel_contact_id, customer_id, deposit_percent_raw:inputs->>depositPercent, result_deposit_rate_raw:result->>depositRate, snapshot_deposit_rate_raw:approval_snapshot->customerSelection->>depositRate',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, is_nce, view_only, highlevel_contact_id, customer_id, deposit_percent_raw:inputs->>depositPercent, result_deposit_rate_raw:result->>depositRate, snapshot_deposit_rate_raw:approval_snapshot->customerSelection->>depositRate, homeworks_raw:approval_snapshot->>homeworks',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -94,11 +98,12 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
     return [];
   }
   return (data ?? []).map((row) => {
-    const { deposit_percent_raw, result_deposit_rate_raw, snapshot_deposit_rate_raw, ...rest } =
+    const { deposit_percent_raw, result_deposit_rate_raw, snapshot_deposit_rate_raw, homeworks_raw, ...rest } =
       row as Record<string, unknown>;
     const snapshotRate = numberOrUndefined(snapshot_deposit_rate_raw);
     return {
-      ...(rest as Omit<QuoteListItem, 'deposit_rate' | 'deposit_rate_frozen'>),
+      ...(rest as Omit<QuoteListItem, 'deposit_rate' | 'deposit_rate_frozen' | 'migrated'>),
+      migrated: homeworks_raw != null,
       deposit_rate: resolveQuoteDepositRate({
         depositPercent: numberOrUndefined(deposit_percent_raw),
         resultRate: numberOrUndefined(result_deposit_rate_raw),
@@ -118,6 +123,24 @@ export function numberOrUndefined(v: unknown): number | undefined {
   if (typeof v !== 'string' || v.trim() === '') return undefined;
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * True when this quote's money came from the retired home.works CRM rather than
+ * from our pricing engine (the #1049 migration stamps `approval_snapshot.
+ * homeworks`).
+ *
+ * This matters because those figures are the customer's ACTUAL agreed and paid
+ * amounts, copied verbatim, and the engine provably cannot reproduce them: it
+ * disagrees with the charged tax on 8 of the 14 Homeworks invoices (per-line
+ * rounding, two rates on one invoice, one rate absent from the document). So a
+ * recompute is not a refresh, it is a silent replacement of what somebody paid.
+ * Ledger row 444.
+ */
+export function isMigratedQuote(
+  approvalSnapshot: { [key: string]: unknown } | null | undefined,
+): boolean {
+  return !!approvalSnapshot && approvalSnapshot.homeworks != null;
 }
 
 // Row 409 — the deposit rate (0-1) a quote is on, for DISPLAY. Precedence
