@@ -18,6 +18,14 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { MIN_DWELL_MINUTES, STALE_POSITION_MINUTES } from '@/lib/integrations/vehicleProximity';
 import { etMidnightAfter, addDays } from '@/lib/opsMidnightClose';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+
+export type FleetOpenVisit = {
+  kind: 'job' | 'depot';
+  jobNumber: number | null;
+  address: string | null;
+  enteredAt: string;
+};
 
 export type FleetVehicleNow = {
   id: string;
@@ -27,6 +35,11 @@ export type FleetVehicleNow = {
   lastSeenAt: string | null;
   /** Explicit, so the UI can never render a stale dot as a live one. */
   signal: 'live' | 'stale' | 'never';
+  /** The visit still open for this vehicle within the loaded day, if any —
+   * what "At Depot · 43 min" on the live tile is built from. The page only
+   * renders it for TODAY with a live signal; an open visit on a stale vehicle
+   * already says "may have left" in the timeline. */
+  openVisit: FleetOpenVisit | null;
 };
 
 export type FleetVisit = {
@@ -96,6 +109,7 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
       lastLng: v.last_lng,
       lastSeenAt: v.last_seen_at,
       signal,
+      openVisit: null,
     });
   }
 
@@ -139,6 +153,23 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
     }
   }
 
+  // The latest still-open visit per vehicle, surfaced on the "Vehicles now"
+  // tile. Visits are ordered by entered_at, so the last open one wins.
+  const openByVehicle = new Map<string, FleetOpenVisit>();
+  for (const v of visitRows) {
+    if (v.exited_at !== null) continue;
+    const label = v.job_id ? jobLabel.get(v.job_id) : undefined;
+    openByVehicle.set(v.vehicle_id, {
+      kind: v.kind,
+      jobNumber: label?.jobNumber ?? null,
+      address: v.kind === 'depot' ? 'Depot' : (label?.address ?? null),
+      enteredAt: v.entered_at,
+    });
+  }
+  for (const veh of out.vehicles) {
+    veh.openVisit = openByVehicle.get(veh.id) ?? null;
+  }
+
   for (const v of visitRows) {
     const label = v.job_id ? jobLabel.get(v.job_id) : undefined;
     const sig = signalById.get(v.vehicle_id);
@@ -168,16 +199,26 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
   const shiftRows = shiftsRes.data ?? [];
   const crewIds = [...new Set(shiftRows.map((s) => s.crew_member_id))];
   const crewName = new Map<string, string>();
+  const officeIds = new Set<string>();
   if (crewIds.length) {
     const crewRes = await sb
       .from('crew_members')
-      .select('id, display_name')
+      .select('id, display_name, is_office')
       .in('id', crewIds)
-      .returns<{ id: string; display_name: string }[]>();
+      .returns<{ id: string; display_name: string; is_office: boolean }[]>();
     if (crewRes.error) out.errors.push(`crew_members: ${crewRes.error.message}`);
-    for (const c of crewRes.data ?? []) crewName.set(c.id, c.display_name);
+    for (const c of crewRes.data ?? []) {
+      crewName.set(c.id, c.display_name);
+      if (c.is_office) officeIds.add(c.id);
+    }
   }
   for (const s of shiftRows) {
+    // Field group only (Naldo, 2026-08-28): this page is about the people in
+    // the vans; office staff use the same clock but do not belong here. Only a
+    // POSITIVE is_office=true excludes — a shift whose crew row failed to load
+    // stays visible as '(unknown)', because hiding a payroll row behind a
+    // failed lookup is the silent-empty class this repo keeps getting bitten by.
+    if (officeIds.has(s.crew_member_id)) continue;
     out.shifts.push({
       crewName: crewName.get(s.crew_member_id) ?? '(unknown)',
       clockInAt: s.clock_in_at,
@@ -186,6 +227,48 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
   }
 
   return out;
+}
+
+/**
+ * Distinct ET days (newest first) that have fleet data — a vehicle visit or a
+ * FIELD-crew shift — for the fleet page's day list. Office-only clock-in days
+ * are skipped: after the field-only filter above, such a day renders an empty
+ * page, so listing it is a dead link (staff lens finding, PR #1040). The
+ * office filter fails OPEN: if the crew lookup errors, every shift day counts.
+ * Window: the last 45 days, capped to maxDays.
+ */
+export async function listFleetDays(maxDays = 21): Promise<string[]> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return [];
+  const since = new Date(Date.now() - 45 * 24 * 3600_000).toISOString();
+  const [visitsRes, shiftsRes] = await Promise.all([
+    sb.from('vehicle_visits').select('entered_at').gte('entered_at', since).returns<{ entered_at: string }[]>(),
+    sb
+      .from('shifts')
+      .select('crew_member_id, clock_in_at')
+      .gte('clock_in_at', since)
+      .returns<{ crew_member_id: string; clock_in_at: string }[]>(),
+  ]);
+  const shiftRows = shiftsRes.data ?? [];
+  const officeIds = new Set<string>();
+  const crewIds = [...new Set(shiftRows.map((s) => s.crew_member_id))];
+  if (crewIds.length) {
+    const crewRes = await sb
+      .from('crew_members')
+      .select('id, is_office')
+      .in('id', crewIds)
+      .returns<{ id: string; is_office: boolean }[]>();
+    for (const c of crewRes.data ?? []) {
+      if (c.is_office) officeIds.add(c.id);
+    }
+  }
+  const days = new Set<string>();
+  for (const v of visitsRes.data ?? []) days.add(etDayKey(new Date(v.entered_at)));
+  for (const s of shiftRows) {
+    if (officeIds.has(s.crew_member_id)) continue;
+    days.add(etDayKey(new Date(s.clock_in_at)));
+  }
+  return [...days].sort().reverse().slice(0, maxDays);
 }
 
 export { MIN_DWELL_MINUTES };
