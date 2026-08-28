@@ -20,6 +20,17 @@ describe('validateNewUser', () => {
     expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'superuser', name: 'Bob' }).ok).toBe(false);
   });
 
+  // Advertising role hardening (Naldo's 2026-08-27 ruling): advertising is a
+  // SEPARATE population carved out by its own marker (ADVERTISING_ROLE /
+  // isAdvertisingAccount in supabaseServer.ts), never a third OperatorRole
+  // value. This door creates operator accounts ONLY — ROLES here is still
+  // exactly ['admin', 'operator'] (unmodified), so 'advertising' already fails
+  // the same way 'crew' does. This test pins that this door can never become a
+  // route to creating an advertising (or crew) account by accident.
+  it("rejects 'advertising' — this door creates operator accounts only, never advertising or crew", () => {
+    expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'advertising', name: 'Ad Agency' }).ok).toBe(false);
+  });
+
   it('rejects a missing/blank name (required on create)', () => {
     expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'operator', name: '' }).ok).toBe(false);
     expect(validateNewUser({ email: 'a@x.com', password: 'longenough', role: 'operator', name: '   ' }).ok).toBe(false);
