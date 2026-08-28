@@ -92,6 +92,8 @@ Expected office work:
 
 The preferred first direction is to keep office work inside the existing Cool Tool areas, especially Inbox for customer and follow-up work. A separate Office Tasks system should only be added if Inbox and follow-ups cannot cover manual internal tasks cleanly.
 
+Resolved 2026-08-27: that condition is met. The Quote Tool has no task container (the follow-up strip is one quote-send reminder), and extracted call commitments need somewhere to live. Naldo ruled that the call copilot's Office Tasks feature moves across as the single task list, fed by manual entry, call commitments, and the follow-up strip. See the Call Copilot teardown and `ops_hub_audit_2026-08.md`. The spec below governs the ported version.
+
 If a durable Office Tasks model is added later, it should start manual-only and include:
 
 - 24-hour default due time.
@@ -262,6 +264,8 @@ Sign inventory can live inside the existing Inventory section, using the same ba
 ## Call / HighLevel / Railway Area
 
 Call, HighLevel, transcript, grading, and coaching features are desired future areas, but they need a separate audit before implementation.
+
+That audit happened 2026-08-27: the Call Copilot teardown (Naldo's keep-or-cut calls on all ~50 copilot features) plus `ops_hub_audit_2026-08.md`. Ruling: the copilot's keep-list (grading pipeline, Office Tasks, practice, scoreboard, personal-details scan) merges into the Cool Tool with fresh tables and no data migration; the live-call side and Twilio are dropped; the copilot repo and both leftover Supabase projects retire after the merge; and a read-only HighLevel transcript probe runs before the merge plan is written.
 
 Known direction:
 

@@ -7,6 +7,20 @@
 > integrations, and schema; production row counts were measured directly against
 > the live Supabase projects the same day. No code was written, no migrations
 > created, no production data changed.
+>
+> **Updated the same evening** after Naldo's Call Copilot teardown (the "Call
+> Copilot Teardown" artifact, audited against yll-call-copilot master fb1bf32)
+> and his four follow-up rulings. The teardown changes this plan in three
+> places, all applied below: Office Tasks moves across as the one task list
+> (reversing this audit's first recommendation), the calls workstream widens
+> from "bridge only" to merging the whole grading pipeline into the Cool Tool,
+> and calls become the first build after role hardening. Data ruling: nothing
+> migrates from the copilot database; the merged features start fresh in the
+> Quote Tool project, and the copilot repo plus both leftover Supabase projects
+> retire after the merge. One caution recorded here on purpose: retiring the
+> copilot project deletes the 1,211 historical transcripts, 260 scores, and
+> 1,200 learnings with it, so take a cheap one-time export snapshot before
+> decommissioning, even though none of it is being migrated.
 
 ## 1. What already exists
 
@@ -114,10 +128,17 @@ first real use, not an extension of a proven system.
 
 ## 3. What should be reused
 
-- The Inbox as the office work queue. Do not build an Office Tasks system now;
-  the audit found no manual task type the Inbox plus follow-ups cannot carry.
-  Revisit only if a real workload appears that is not anchored to a customer
-  message (the durable Office Tasks spec in the plan doc stays the fallback).
+- The Inbox as the office MESSAGE queue, unchanged. This audit first
+  recommended against a separate Office Tasks system; Naldo reversed that on
+  2026-08-27 after the Call Copilot teardown, and the reversal is right: call
+  commitments need a container, and the Quote Tool's follow-up strip is one
+  quote-send reminder, not a task list. Office Tasks (built and tested in the
+  copilot repo, its tables never applied to production) moves across as the
+  single task list, fed by three sources: manual entry, extracted call
+  commitments, and the follow-up strip. It matches the durable-tasks spec the
+  plan doc already carries (24-hour default due, open/blocked/completed/
+  dismissed, required reasons, idempotent, audited). Moving across means
+  porting through this repo's conventions and gates, not copy-paste.
 - `crewAuth.ts` wholesale for My Day auth: session to pay identity, fail
   closed, refuses operator sessions. The biggest ready-made piece.
 - The crew/time ledger and its money math as the only time system. My Day and
@@ -211,20 +232,25 @@ first real use, not an extension of a proven system.
   (`/api/advertising/**`), gated by a new `ADVERTISING_ROLE` marker, invisible
   to office by default, with the admin review screens living under the admin
   side, not the worker side.
-- Calls: surfaced inside existing office surfaces (Inbox/Insights and the
-  Telegram digest) per epic #217; no new top-level section.
+- Calls: the merged coaching surfaces (feedback cards, call review browser,
+  scoreboard, practice room) plus the one task list. Commitments surface as
+  tasks, never a separate promises screen. Exact nav placement is the
+  merge-plan session's job.
 
 ## 7. Recommended build order
 
-1. Role hardening (must precede any advertising account existing).
-2. Admin view-switch plus the minimal role-aware nav mechanism.
-3. Advertising schema plus worker capture flow (photo + GPS + reverse-geocode
+1. Role hardening (small, first regardless; must precede any advertising
+   account existing).
+2. Calls merge, per the teardown and Naldo's priority ruling: the read-only
+   HighLevel transcript probe first, then a dedicated merge-plan session, then
+   Office Tasks as the container, then the grading pipeline.
+3. Admin view-switch plus the minimal role-aware nav mechanism.
+4. Advertising schema plus worker capture flow (photo + GPS + reverse-geocode
    suggestion), pay math test-first at $2.50 per accepted sign in cents.
-4. Admin review flow (accept/reject/bulk accept, address correction), then
+5. Admin review flow (accept/reject/bulk accept, address correction), then
    worker earnings views, then duplicate-detection aids.
-5. Crew My Day read-only slice, then actions (arrive/depart/complete) reusing
+6. Crew My Day read-only slice, then actions (arrive/depart/complete) reusing
    the ledger.
-6. Calls bridge: execute epic #217 slice 1 as already designed.
 7. Sign inventory per-unit tracking (phase 2, after placements prove the
    workflow; signs ride as a catalog SKU with manual reconciliation until then).
 
@@ -248,11 +274,21 @@ several signs can legitimately stand near one intersection.
 Telegram stays primary. Needs two small schema additions (assignment start
 time, prep notes) before it can show what the plan promises.
 
-**D. HighLevel Calls.** Adopt epic #217 (commitments bridge from copilot
-scores) rather than building ingestion/transcription here; the copilot already
-does that in production. Automatic-recording questions stay deferred per the
-plan doc; any durable-worker decision waits until #217's consumption pattern
-proves insufficient.
+**D. HighLevel Calls (rescoped 2026-08-27 by the Call Copilot teardown).**
+Merge the copilot's keep-list into the Cool Tool and retire the copilot:
+the grading pipeline steps 1 through 7 (HighLevel recording sync, transcript,
+junk gate, outcome labeling, rubric scoring, rep feedback cards, weekly
+rollups), Office Tasks as the one task list with commitments as a source,
+practice room, scoreboard, the personal-details scan, and maybe the call
+queue (only if it feeds the Inbox). Cut: everything live-call (Twilio,
+softphone, media bridge, phone login), call console, screen pop, contact
+search, the rest of the second mile. Fresh tables in the Quote Tool database,
+no data migration. The Quote Tool's cron infrastructure owns the timers the
+copilot always left off. Epic #217's commitment extraction survives inside
+this scope, but its display design (Telegram digest surfaces) is superseded
+by the task-list ruling; its binding money/audit criteria still apply. The
+HighLevel transcript endpoint may replace Deepgram, unproven until the probe
+runs.
 
 ## 9. First PR-sized slice per workstream
 
@@ -273,17 +309,22 @@ proves insufficient.
   behind the crew marker, page allowlisted in the proxy, verified with a real
   crew login, logged out, and as an operator. Uses date-level assignments as
   they are; start-time/prep-notes columns come in the next slice.
-- **D:** epic #217 slice 1 exactly as its plan defines it (the
-  `call_commitments` table lives in the quote-tool DB per its binding
-  criteria); re-verify the plan's premises against current master first, since
-  it predates the Hub scrap.
+- **D:** the read-only HighLevel transcript probe. A paste-able script using
+  the copilot's GHL credentials against ONE completed YLL call, no writes:
+  does the message export return the call, does the transcription endpoint's
+  media channel separate rep from customer, and does the newer API version it
+  requires break anything the sync uses. Its answer shapes the merge plan
+  (Deepgram stays or goes), so it runs before the merge-plan session writes
+  any slices.
 
 ## 10. Database tables likely needed
 
 New: `advertising_campaigns`, `advertising_placements`,
 `advertising_activity`, later `advertising_runs` if campaigns need
-sub-batches, later `inventory_items` (per-unit sign tracking, phase 2),
-`call_commitments` (workstream D, per #217). Column additions:
+sub-batches, later `inventory_items` (per-unit sign tracking, phase 2), and
+the calls-merge set (Office Tasks tables, recordings/transcripts/scores/
+feedback cards, commitments-as-tasks; the exact set is the merge-plan
+session's deliverable, fresh tables, no data migrated). Column additions:
 `job_assignments.start_time` (nullable) and a prep-notes field (location to be
 decided: `jobs` or `job_assignments`) for My Day; a per-sign rate setting
 (app_settings or a rate column on campaigns) in cents. Worker identity is a
@@ -333,16 +374,18 @@ logged out, per the standing pitfall.
 2. **Sign locations:** placements will often not be customer properties.
    Confirm placements stand alone (own GPS and suggested address, optional
    link to a property when it is one).
-3. **The two leftover Supabase projects:** decommission `yll-ops-hub-staging`?
-   Drop the seven `ops_*` tables from the copilot project? Nothing in the new
-   direction uses either.
+3. **The two leftover Supabase projects:** ANSWERED 2026-08-27. Retire the
+   copilot repo, the copilot Supabase project, and `yll-ops-hub-staging` after
+   the merge lands; export snapshot first.
 4. **Schedule:** should `/admin/schedule` get its nav slot now? My Day depends
    on office actually creating assignments (`job_assignments` has never held a
    row).
 5. **Seed-rates session:** still required before any pay number (crew or
    advertising efficiency views) can display. When?
-6. **Calls scope:** is adopting epic #217 as the calls workstream the right
-   call, and does the copilot stay a separate project long-term?
+6. **Calls scope:** ANSWERED 2026-08-27 by the Call Copilot teardown. The
+   copilot does not stay separate; its keep-list merges into the Cool Tool
+   (workstream D) with fresh tables and no data migration, and calls are the
+   first build after role hardening.
 7. **Per-sign rate changes:** when the $2.50 rate changes later, do already
    accepted placements keep their historical rate (recommended: stamp the rate
    on the placement at acceptance) or repay at the new rate?
@@ -358,7 +401,9 @@ logged out, per the standing pitfall.
   cents, CHECK-tied states, private bucket, is_test, FULL-SCHEMA same PR).
 - Workstream C slice 1: crew My Day read slice (constraints: new namespace,
   requireCrew, logged-out verification, no payroll display).
-- Workstream D slice 1: re-verify and execute epic #217 slice 1 (existing row
-  217 already carries the epic; add a pointer note rather than a new row).
-- Cleanup row: Naldo decisions on `yll-ops-hub-staging` and the copilot
-  `ops_*` tables (question 3 above).
+- Workstream D slice 1: the read-only HighLevel transcript probe, then the
+  calls merge-plan session (row 217 gets a pointer note: superseded-in-part by
+  the teardown's task-list ruling).
+- Cleanup row: retire the copilot repo, the copilot Supabase project, and
+  `yll-ops-hub-staging` after the merge lands (ruled 2026-08-27), with a
+  one-time export snapshot of transcripts/scores/learnings taken first.
