@@ -46,7 +46,7 @@ function etOffsetMinutes(instant: Date): number {
   return sign * (Number(parsed[2]) * 60 + Number(parsed[3] ?? 0));
 }
 
-function addDays(dayKey: string, days: number): string {
+export function addDays(dayKey: string, days: number): string {
   const [y, mo, d] = dayKey.split('-').map(Number);
   const dt = new Date(Date.UTC(y!, mo! - 1, d!));
   dt.setUTCDate(dt.getUTCDate() + days);

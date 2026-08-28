@@ -1,4 +1,13 @@
 -- =====================================================================
+-- ⚠️ SUPERSEDED — DO NOT APPLY. Never reached any database.
+--
+-- Replaced by 2026-08-28-vehicle-visits-polling.sql on Naldo's 2026-08-27 call:
+-- customer coordinates stay inside the quote tool, so there are no Bouncie
+-- geofences, no job_geozones table, and no per-vehicle zone bookkeeping. The
+-- schedule is the watch list, read at poll time. Kept for history only.
+-- =====================================================================
+
+-- =====================================================================
 -- The GPS visit timeline — the SECOND CLOCK (ledger row 403, phase 3b).
 --
 -- WHAT THIS IS FOR. Naldo, 2026-08-27: *"they'll have two clocks: their main

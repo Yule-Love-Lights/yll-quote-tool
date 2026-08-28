@@ -4712,12 +4712,38 @@ export default function QuoteBuilder({
     try {
       void quoteBuildTimerRef.current?.link(savedQuoteId);
       const quoteBuildTimerId = quoteBuildTimerRef.current?.currentId();
-      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteBuildTimerId }),
-      });
-      const data = await res.json();
+      const postSend = (confirmUnderBilled: boolean) =>
+        fetch(`/api/quotes/${savedQuoteId}/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(confirmUnderBilled ? { 'x-confirm-underbilled': 'yes' } : {}),
+          },
+          body: JSON.stringify({ quoteBuildTimerId }),
+        });
+      let res = await postSend(false);
+      let data = await res.json();
+      // Ledger row 434: the route refuses a FIRST send that would under-bill a
+      // mini group (more drawn members than the billed string count) until it is
+      // confirmed. Ask once, in the operator's own words, and resend with the
+      // confirm header if they accept. Declining leaves the quote UNSENT so they
+      // can go fix the count.
+      if (res.status === 428 && data.code === 'underbilled-mini-groups') {
+        const proceed = window.confirm(
+          `${data.error}
+
+Send anyway?`,
+        );
+        if (!proceed) {
+          setSendStatus('idle');
+          setSendBlockedMsg(
+            'Send cancelled. Adjust the group String count fields, then Calculate and send again.',
+          );
+          return;
+        }
+        res = await postSend(true);
+        data = await res.json();
+      }
       const failedChannels = Array.isArray(data.failedChannels)
         ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
         : [];
