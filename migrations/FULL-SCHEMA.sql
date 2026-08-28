@@ -2885,3 +2885,55 @@ create index if not exists vehicle_visits_entered_idx
   on public.vehicle_visits (entered_at desc);
 
 alter table public.vehicle_visits enable row level security;
+
+-- ─── installments ───────────────────────────────────────────────────────────
+-- Payment plans (Homeworks migration, 2026-08-28). Three customers pay their
+-- 2026 job monthly. Homeworks had no instalment feature — Jason collected each
+-- payment by hand and edited the invoice — so the schedule lived only in his
+-- notes. One row per scheduled payment.
+--
+-- THE DEPOSIT IS NOT A ROW HERE. quotes.deposit_amount_usd stays the running
+-- total collected, so for any quote carrying a plan:
+--     deposit_amount_usd = initial deposit + every instalment marked paid
+-- src/lib/installments.ts's markInstallmentPaid moves both together, and its
+-- reconcilePlan surfaces any drift on /admin/installments rather than letting
+-- two different numbers both look authoritative.
+create table if not exists public.installments (
+  id                uuid primary key default gen_random_uuid(),
+  quote_id          uuid not null references public.quotes(id) on delete cascade,
+  seq               integer not null,
+  amount_usd        numeric(10,2) not null check (amount_usd > 0),
+
+  -- NULL when the payment falls due after the install rather than on a date.
+  due_date          date,
+  due_on_completion boolean not null default false,
+
+  paid_at           timestamptz,
+  -- 'homeworks' for money collected before the migration, 'valor' for a card
+  -- charge through this tool, 'manual' for cash/check recorded by staff.
+  paid_source       text check (paid_source in ('homeworks', 'valor', 'manual')),
+  valor_txn_id      text,
+  note              text,
+
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+
+  unique (quote_id, seq),
+
+  -- Dated or due-on-completion, never both and never neither. This is what
+  -- stops a due-on-completion payment from ever being auto-charged on a date.
+  constraint installments_due_shape check (
+    (due_on_completion and due_date is null) or (not due_on_completion and due_date is not null)
+  )
+);
+
+create index if not exists installments_quote_idx on public.installments (quote_id, seq);
+
+-- "What is owed and when" — the working read, soonest first.
+create index if not exists installments_outstanding_idx
+  on public.installments (due_date)
+  where paid_at is null and not due_on_completion;
+
+create trigger installments_updated_at
+  before update on public.installments
+  for each row execute function dashboard_set_updated_at();
