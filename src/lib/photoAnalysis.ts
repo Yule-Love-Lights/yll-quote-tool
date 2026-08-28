@@ -2,6 +2,13 @@ import sharp from 'sharp';
 import { getClaudeClient } from './claude';
 import type { StoredReferenceAsset } from './referenceAssets';
 import { footageFromLines, satelliteFootageDisagrees } from './design/polylineFootage';
+import {
+  buildDoorAnchorPrompt,
+  isValidDoorAnchorModelResult,
+  doorAnchorScaleFromModelResult,
+  rescaleFtPerPxToOriginal,
+  type DoorAnchorSource,
+} from './design/doorAnchor';
 
 // Fail-safe (analyzer outage): when the Claude analysis fails, the analyze
 // routes still return the Street View + satellite imagery so staff can design
@@ -88,6 +95,22 @@ export type PhotoAnalysisResult = {
   // (polylineFootage.ts). Always false when the computed value is null.
   satelliteSantasFootageDisagrees: boolean;
   satelliteGingerbreadFootageDisagrees: boolean;
+  // SHADOW MODE (door-anchor scale, spike PR #922): a feet-per-pixel scale
+  // derived from a SEPARATE, cheap vision call that locates the front door
+  // or garage door in the STREET photo (src/lib/design/doorAnchor.ts) — a
+  // candidate alternative to the staff-placed yardstick (measured
+  // unreliable: one address yardsticked twice disagreed by 72%). Nothing
+  // that reaches pricing, projection, or the analyzer's own detections reads
+  // these three fields today; they exist to start collecting real-world
+  // agreement data against the yardstick (scripts/door-anchor-report.ts).
+  // Rescaled into the ORIGINAL uploaded photo's pixel space (same space the
+  // design editor's yardstick lives in — see rescaleFtPerPxToOriginal).
+  // ALL THREE null together whenever the door-anchor call fails, times out,
+  // or the model reports no door/garage-door anchor — this must never throw
+  // or delay the caller (see runDoorAnchorShadow below).
+  doorAnchorFtPerPx: number | null;
+  doorAnchorSource: DoorAnchorSource | null;
+  doorAnchorConfidence: number | null;
   preferredSource: 'street' | 'satellite';
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
@@ -740,6 +763,103 @@ async function buildReferenceMessages(references: StoredReferenceAsset[]) {
 
 export { type FewShotExample };
 
+// SHADOW MODE (door-anchor scale, spike PR #922): model + hard timeout for
+// the second, cheap vision call. Model matches the main analyzer call above
+// (same tier the spike measured its numbers on — see doorAnchor.ts). Timeout
+// is a few seconds of margin over the spike's observed per-call latency
+// (78/78 live calls succeeded with no retries needed); analyze-photo/
+// analyze-address are both maxDuration=60 routes that already spend 20-40s
+// on the main call, so this must degrade to null well before eating into
+// that budget rather than risk timing out the customer-facing response.
+const DOOR_ANCHOR_MODEL = 'claude-sonnet-4-6';
+const DOOR_ANCHOR_TIMEOUT_MS = 8000;
+
+type DoorAnchorShadowFields = {
+  doorAnchorFtPerPx: number | null;
+  doorAnchorSource: DoorAnchorSource | null;
+  doorAnchorConfidence: number | null;
+};
+
+const NULL_DOOR_ANCHOR: DoorAnchorShadowFields = {
+  doorAnchorFtPerPx: null,
+  doorAnchorSource: null,
+  doorAnchorConfidence: null,
+};
+
+// Strips a "data:image/...;base64," prefix if present. Local copy of the
+// same 2-line check downscaleImageForVision already does inline (twice) —
+// duplicated here rather than touching that function's body, which stays
+// byte-identical to before this change.
+function rawBase64(input: string): string {
+  const comma = input.indexOf(',');
+  return input.startsWith('data:') && comma >= 0 ? input.slice(comma + 1) : input;
+}
+
+// SHADOW MODE (door-anchor scale): a SEPARATE, cheap vision call that asks
+// the model to locate the front door / garage door in the STREET photo and
+// derive a feet-per-pixel scale (src/lib/design/doorAnchor.ts has the
+// prompt/parsing/math — this function is the I/O + failure-isolation shell
+// around it). FAILURE-ISOLATED end to end and TIME-BOUNDED: any decode
+// failure, API error, timeout, or schema-invalid model response degrades
+// every field to null via NULL_DOOR_ANCHOR — this must NEVER throw and must
+// NEVER take longer than DOOR_ANCHOR_TIMEOUT_MS, so it can never delay or
+// fail the customer-facing analyze response. Never mutates or reads the
+// main analysis result — fully independent of it.
+async function runDoorAnchorShadow(
+  client: NonNullable<ReturnType<typeof getClaudeClient>>,
+  base64Image: string,
+  mediaType: string,
+): Promise<DoorAnchorShadowFields> {
+  const attempt = (async (): Promise<DoorAnchorShadowFields> => {
+    const { base64: sentBase64, mediaType: sentMediaType } = await downscaleImageForVision(base64Image, mediaType);
+    const [sentMeta, originalMeta] = await Promise.all([
+      sharp(Buffer.from(sentBase64, 'base64')).metadata(),
+      sharp(Buffer.from(rawBase64(base64Image), 'base64')).metadata(),
+    ]);
+    const sentW = sentMeta.width ?? null;
+    const sentH = sentMeta.height ?? null;
+    if (!sentW || !sentH) return NULL_DOOR_ANCHOR;
+
+    const response = await client.messages.create({
+      model: DOOR_ANCHOR_MODEL,
+      max_tokens: 300,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: sentMediaType, data: sentBase64 } },
+            { type: 'text', text: buildDoorAnchorPrompt(sentW, sentH) },
+          ],
+        },
+      ],
+    });
+    const textBlock = response.content.find((b) => b.type === 'text');
+    if (!textBlock || textBlock.type !== 'text') return NULL_DOOR_ANCHOR;
+    const parsed = extractJson(textBlock.text.trim());
+    if (!isValidDoorAnchorModelResult(parsed)) return NULL_DOOR_ANCHOR;
+    const scale = doorAnchorScaleFromModelResult(parsed);
+    if (!scale) return NULL_DOOR_ANCHOR;
+
+    const originalW = originalMeta.width ?? 0;
+    const ftPerPx = rescaleFtPerPxToOriginal(scale.ftPerPx, sentW, originalW);
+    return { doorAnchorFtPerPx: ftPerPx, doorAnchorSource: scale.source, doorAnchorConfidence: scale.confidence };
+  })();
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<DoorAnchorShadowFields>((resolve) => {
+    timer = setTimeout(() => resolve(NULL_DOOR_ANCHOR), DOOR_ANCHOR_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([attempt, timeout]);
+  } catch {
+    // Anything the attempt threw (decode failure, API rejection, malformed
+    // response) — never propagate, never delay the caller.
+    return NULL_DOOR_ANCHOR;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type SatelliteReference = {
   base64: string;
   mediaType: 'image/jpeg' | 'image/png';
@@ -779,6 +899,13 @@ export async function analyzePhoto(
   if (!validMediaTypes.includes(mediaType as typeof validMediaTypes[number])) {
     throw new Error(`Unsupported image type: ${mediaType}`);
   }
+
+  // SHADOW MODE (door-anchor scale): kicked off HERE, NOT awaited — it runs
+  // CONCURRENTLY with the few-shot/reference assembly and the main vision
+  // call below, so its latency (a single ~2-5s call per the spike) overlaps
+  // the main call's 20-40s instead of stacking after it. Awaited once, right
+  // before the return, with its own hard timeout — see runDoorAnchorShadow.
+  const doorAnchorPromise = runDoorAnchorShadow(client, base64Image, mediaType);
 
   const { satellite, references = [], houseStyleHint, corpusBiasNote, mode = 'design' } = options;
 
@@ -966,6 +1093,12 @@ export async function analyzePhoto(
     finalGingerbreadLines, satelliteImgWidthPx, satelliteImgHeightPx, satellite?.feetPerPixel,
   );
 
+  // SHADOW MODE (door-anchor scale): awaited last, after all the other
+  // post-processing above has had time to run concurrently with it. Already
+  // internally time-bounded (DOOR_ANCHOR_TIMEOUT_MS) and failure-isolated —
+  // this await can never throw and never waits longer than that timeout.
+  const doorAnchor = await doorAnchorPromise;
+
   return {
     ...parsed,
     // Fix round (PR #916): stamp the prompt version that actually produced
@@ -997,6 +1130,11 @@ export async function analyzePhoto(
       computedSatelliteGingerbreadFootage == null ? null : Math.round(computedSatelliteGingerbreadFootage),
     satelliteSantasFootageDisagrees: satelliteFootageDisagrees(finalSatelliteSantasFootage, computedSatelliteSantasFootage),
     satelliteGingerbreadFootageDisagrees: satelliteFootageDisagrees(finalSatelliteGingerbreadFootage, computedSatelliteGingerbreadFootage),
+    // SHADOW MODE fields — see the PhotoAnalysisResult type comment and
+    // runDoorAnchorShadow. Always all-null together on any failure/timeout.
+    doorAnchorFtPerPx: doorAnchor.doorAnchorFtPerPx,
+    doorAnchorSource: doorAnchor.doorAnchorSource,
+    doorAnchorConfidence: doorAnchor.doorAnchorConfidence,
     preferredSource: parsed.preferredSource === 'satellite' ? 'satellite' : 'street',
     // W5-026: enum-validate AFTER box-normalization — a detection with a
     // hallucinated box gets dropped by normalizeBoxArray first; one with a
