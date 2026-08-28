@@ -85,6 +85,7 @@ function rowFromUpsert(upserted: Record<string, unknown>): TrainingExampleRow {
     satellite_feet_per_pixel: null,
     satellite_lines: null,
     original_analysis: null,
+    prompt_version: null,
     final_scene: SIMPLE_SCENE,
     final_inputs: upserted.final_inputs as TrainingExampleRow['final_inputs'],
   };

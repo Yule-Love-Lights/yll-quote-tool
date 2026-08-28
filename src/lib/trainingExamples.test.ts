@@ -52,7 +52,7 @@ function row(overrides: Partial<TrainingExampleRow> = {}): TrainingExampleRow {
     street_photo_base64: 'AAAA', street_media_type: 'image/jpeg', street_w: 1000, street_h: 500,
     satellite_base64: null, satellite_media_type: null, satellite_w: null, satellite_h: null,
     satellite_feet_per_pixel: null, satellite_lines: null,
-    original_analysis: null,
+    original_analysis: null, prompt_version: null,
     final_scene: SCENE,
     final_inputs: { santasFootage: 50, santasDifficulty: 'medium', gingerbreadFootage: 0, gingerbreadDifficulty: 'medium' },
     ...overrides,
@@ -316,6 +316,77 @@ describe('captureTrainingExample footage sanitization (W5-030)', () => {
     const finalInputs = getUpsertedRow()!.final_inputs as Record<string, unknown>;
     expect(finalInputs.winterWonderlandFootage).toBe(25);
     expect(finalInputs.stakeLightingFootage).toBe(12);
+  });
+});
+
+// ─── prompt_version stamping (fix round, PR #916) ──────────────────────────
+// The captured row's prompt_version must come from whatever promptVersion was
+// already stamped into design.seed_analysis at ANALYSIS time (by analyzePhoto,
+// src/lib/photoAnalysis.ts), never re-stamped fresh at capture time — a design
+// can be analyzed under one prompt and sent/captured under a different one.
+
+describe('captureTrainingExample prompt_version stamping (fix round, PR #916)', () => {
+  beforeEach(() => {
+    quoteRef.current = null;
+    designRef.current = null;
+    sbRef.current = null;
+  });
+
+  it('copies promptVersion off design.seed_analysis into the captured row', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', inputs: {} };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+      seed_analysis: { santasFootage: 40, promptVersion: 'v2-segmented-2026-08-28' },
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    await captureTrainingExample({ quoteId: 'q1', source: 'manual' });
+
+    expect(getUpsertedRow()!.prompt_version).toBe('v2-segmented-2026-08-28');
+  });
+
+  it('stamps null when seed_analysis predates the promptVersion field (legacy row)', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', inputs: {} };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+      seed_analysis: { santasFootage: 40 }, // no promptVersion key
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    await captureTrainingExample({ quoteId: 'q1', source: 'manual' });
+
+    expect(getUpsertedRow()!.prompt_version).toBeNull();
+  });
+
+  it('stamps null when the design has no seed_analysis at all (manual design, no AI run)', async () => {
+    quoteRef.current = { id: 'q1', customer_address: '1 Main', inputs: {} };
+    designRef.current = {
+      id: 'design-1',
+      scene: SIMPLE_SCENE,
+      photo_path: 'p.jpg',
+      photo_w: 1000,
+      photo_h: 500,
+      satellite_path: null,
+      seed_analysis: null,
+    };
+    const { client, getUpsertedRow } = makeCaptureSb();
+    sbRef.current = client;
+
+    await captureTrainingExample({ quoteId: 'q1', source: 'manual' });
+
+    expect(getUpsertedRow()!.prompt_version).toBeNull();
   });
 });
 

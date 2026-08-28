@@ -627,6 +627,12 @@ create extension if not exists vector;
 alter table training_examples
   add column if not exists embedding vector(1024);
 
+-- Fix round (PR #916): which ANALYZER_PROMPT_VERSION (src/lib/photoAnalysis.ts)
+-- produced original_analysis — see migrations/2026-08-28-training-examples-
+-- prompt-version.sql for the full rationale. Null = pre-versioning row.
+alter table training_examples
+  add column if not exists prompt_version text;
+
 create or replace function match_training_examples(
   query_embedding vector(1024),
   match_count int
