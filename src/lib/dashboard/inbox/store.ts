@@ -1368,10 +1368,10 @@ export async function markItemFollowed(
     return { ok: false, error: msg };
   }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
-  // Row 430 (premerge STAFF lens, HIGH): "I followed up" is the answer to
+  // PR #1005 (premerge STAFF lens, HIGH): "I followed up" is the answer to
   // "you should follow up", so it retires this item's due nag. Before this,
   // the ONLY staff-initiated way to close a quote_sent_no_reply follow-up was
-  // the strip's Done button; row 430 deleted that strip, and every remaining
+  // the strip's Done button; PR #1005 deleted that strip, and every remaining
   // close path is a system one (quoteFollowUpDecision's 'close' branch when
   // the quote is approved or goes dead, sweepOrphanedFollowUps,
   // sweepResolvedItemFollowUps) or a whole-conversation action
@@ -1412,7 +1412,7 @@ export async function markItemFollowed(
   // they reply". Round 1 called that case "correct rather than a leak"
   // because an unanswered customer outranks a snooze; that reasoning holds
   // for the NAG, and was still the wrong thing to promise in the UI. Not
-  // closing it leaves that path exactly as it was before row 430 — no
+  // closing it leaves that path exactly as it was before PR #1005 — no
   // regression, no false promise. `from` is the pre-update snapshot and the
   // UPDATE does not touch status, so it is the right read; when it is
   // undefined (row vanished, or a failed read) this correctly does nothing.
@@ -1858,7 +1858,7 @@ export async function ensureFollowUp(input: {
     // early-return above already covers the steady state.
     //
     // Row 287(b) (Jason's ruling, same "HANDLED MEANS DONE" principle as row
-    // 252, whose own follow-up-Done coupling row 430 has since deleted along
+    // 252, whose own follow-up-Done coupling PR #1005 has since deleted along
     // with the strip that drove it): 'handled' now skips too, not just
     // 'completed'/'dismissed'. Before this, a follow-up an operator had
     // explicitly marked Done re-armed to 'pending' on the very next reconcile
@@ -1974,7 +1974,7 @@ export async function ensureFollowUp(input: {
 export async function closeFollowUp(inboxItemId: string, reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
-  // Row 430 fix-round delta-verify (LOW): wrapped, matching its sibling
+  // PR #1005 fix-round delta-verify (LOW): wrapped, matching its sibling
   // closeFollowUpsForResolvedItem's non-fatal contract. Row 320(b) already
   // handled a RETURNED error here; a THROWN one (a dropped socket, a DNS
   // failure) still escaped to the caller. That was survivable while every
@@ -2665,7 +2665,7 @@ export type DueFollowUpsResult =
   | { ok: false; error: string };
 
 /**
- * Pending follow-ups due today or overdue (ET). Row 430 deleted the top
+ * Pending follow-ups due today or overdue (ET). PR #1005 deleted the top
  * strip this fed; today it backs the "N follow-ups due" count beside the
  * In-the-works awaiting bucket AND (#229)
  * the morning digest's named "overdue follow-ups" detail.
@@ -3029,7 +3029,7 @@ export type InWorksResult =
       // #307 review fix 2: true when either of the two needsLookReason evidence
       // lookups (quote status, pending follow-up) failed and fell back to an
       // empty result — meaning some row may be missing its reason and reads as
-      // settled when the evidence for that couldn't be checked. Row 430: that
+      // settled when the evidence for that couldn't be checked. PR #1005: that
       // now covers the AWAITING bucket too (a missing "Follow-up due" pill),
       // not just 'handled' rows missing a "Needs a look" reason.
       evidenceIncomplete: boolean;
@@ -3047,7 +3047,7 @@ const IN_WORKS_SELECT =
 
 // #307: the 'handled' bucket alone also needs direction (rule b) to compute
 // "Needs a look" — the 'awaiting' bucket's query stays on the narrower
-// IN_WORKS_SELECT. Row 430 gives awaiting rows needsLookReason rule (c)
+// IN_WORKS_SELECT. PR #1005 gives awaiting rows needsLookReason rule (c)
 // (follow-up due) from a set keyed on id, which this select already carries;
 // rules (a) and (b) still do not apply there, so this column stays
 // handled-only. See listInWorks' awaiting mapping for why only rule (c).
@@ -3169,7 +3169,7 @@ async function fetchQuoteStatusesById(
  * sibling above: `failed` tells listInWorks this specific lookup didn't
  * complete, rather than being indistinguishable from "nothing pending".
  *
- * Row 430: bounded to follow-ups actually DUE (due_at before the ET start of
+ * PR #1005: bounded to follow-ups actually DUE (due_at before the ET start of
  * tomorrow — the same bound listDueFollowUps uses, via the same
  * etMidnightAfter, so the two can never drift onto different definitions of
  * "due"). Before this it matched any PENDING row, and every nag is created
@@ -3177,7 +3177,7 @@ async function fetchQuoteStatusesById(
  * quote sent an hour ago would have rendered "Follow-up due" immediately,
  * which is a false claim on staff's screen. Zero rows differ in prod today
  * (33 pending, all 33 already due, measured 2026-08-27); this is the
- * structural fix, not an incident. It matters now because row 430 feeds this
+ * structural fix, not an incident. It matters now because PR #1005 feeds this
  * set to the AWAITING bucket too, where a freshly-followed-up quote is the
  * normal case rather than the exception.
  */
@@ -3211,7 +3211,7 @@ async function fetchPendingFollowUpItemIds(
  *  handled items that aren't yet dismissed or completed (handled). Both sorted
  *  stalest-first so the longest-waiting surface at the top. Every 'handled' row
  *  carries needsLookReason (#307) — computed from two BATCHED lookups (a
- *  quote-status map + a due-follow-up set), never a per-row query; row 430 also
+ *  quote-status map + a due-follow-up set), never a per-row query; PR #1005 also
  *  gives every AWAITING row the follow-up-due reason from that same set (see
  *  the comment at its mapping call for why only that one rule applies there).
  *  `evidenceIncomplete` (#307 review fix 2) is true when either of those two
@@ -3241,7 +3241,7 @@ export async function listInWorks(limit = 200, now: Date = new Date()): Promise<
 
   const awaitingRows = (aw.data ?? []) as unknown as Record<string, unknown>[];
   const handledRows = (hd.data ?? []) as unknown as Record<string, unknown>[];
-  // Row 430: BOTH buckets now, not handled-only. The "Follow-ups due today"
+  // PR #1005: BOTH buckets now, not handled-only. The "Follow-ups due today"
   // strip that used to carry this signal at the top of /inbox is deleted in
   // this same change; 31 of its 33 live rows were anchored to items sitting in
   // the AWAITING bucket (measured 2026-08-27), so scoping this lookup to
@@ -3293,7 +3293,7 @@ export async function listInWorks(limit = 200, now: Date = new Date()): Promise<
     });
   });
 
-  // Row 430: the awaiting bucket gets ONLY the follow-up-due reason, never the
+  // PR #1005: the awaiting bucket gets ONLY the follow-up-due reason, never the
   // other two needsLookReason rules. That is deliberate, not an oversight:
   // rule (a) "Quote unanswered" is true of nearly every row in this bucket by
   // construction (you followed up on a sent, unapproved quote — that is what

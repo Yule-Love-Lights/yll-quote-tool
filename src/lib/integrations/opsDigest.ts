@@ -171,7 +171,7 @@ export type OpsDigestData = {
    *  a quiet/noise-free morning stays clean; null on a failed inbox read
    *  (same fail-soft contract as inboxOpenCount). */
   inboxFilteredCount: number | null;
-  /** Follow-ups due today or overdue. Row 430 deleted the /inbox follow-up
+  /** Follow-ups due today or overdue. PR #1005 deleted the /inbox follow-up
    *  strip this once mirrored, so the digest is now the primary named view of
    *  these (the page shows the same exact count beside "Awaiting their reply")
    *  (still INCLUDES legacy-rebook-anchored ones — unchanged, existing

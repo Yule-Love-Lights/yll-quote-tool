@@ -660,7 +660,7 @@ describe('colorRequestConfirmMessage (row 321 — pure)', () => {
 // Row 309: act()'s router.refresh() re-renders the whole InboxPage server
 // component, so it is gated on the actions that actually move a follow-up
 // rather than firing after every successful action.
-// Row 430: 'Followed' JOINED that set — markItemFollowed now closes the item's
+// PR #1005: 'Followed' JOINED that set — markItemFollowed now closes the item's
 // quote_sent_no_reply nag itself, and the awaiting bucket's "N follow-ups due"
 // count is server-rendered, so it needs the refresh to stay honest.
 describe('retiresFollowUp (rows 309/430 — which actions can retire a due follow-up)', () => {
@@ -669,7 +669,7 @@ describe('retiresFollowUp (rows 309/430 — which actions can retire a due follo
     expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
   });
 
-  it('is true for followed — row 430 made it close the nag', () => {
+  it('is true for followed — PR #1005 made it close the nag', () => {
     expect(retiresFollowUp('/api/dashboard/followed')).toBe(true);
   });
 

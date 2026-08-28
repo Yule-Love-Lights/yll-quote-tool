@@ -88,7 +88,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
     const withAwaiting = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
     );
-    // Row 430: the sentence gained a qualifier when the deleted follow-up
+    // PR #1005: the sentence gained a qualifier when the deleted follow-up
     // strip's signal moved onto these rows as a “Follow-up due” pill — a flat
     // “nothing to do” would contradict a pill rendered directly below it. The
     // two-path claim this test exists to pin (“followed up”, never “replied”) is
@@ -493,19 +493,19 @@ describe('retiresFollowUp (rows 309/430 — which action can retire a due follow
     expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
   });
 
-  // Row 430: markItemFollowed now closes the item's quote_sent_no_reply nag,
+  // PR #1005: markItemFollowed now closes the item's quote_sent_no_reply nag,
   // so Followed retires one too. This assertion was toBe(false) and had to
   // flip with the behaviour — the refresh keeps this section's own
   // server-rendered "N follow-ups due" count honest after the click.
-  it('is true for followed — row 430 made it close the nag', () => {
+  it('is true for followed — PR #1005 made it close the nag', () => {
     expect(retiresFollowUp('/api/dashboard/followed')).toBe(true);
   });
 });
 
-// Row 430 (premerge staff + customer lenses, MED, converged): the deleted
+// PR #1005 (premerge staff + customer lenses, MED, converged): the deleted
 // strip carried a COUNT; the pills that replaced it carry none. This is
 // listDueFollowUps' exact uncapped total, rendered beside the bucket heading.
-describe('the awaiting bucket shows how many follow-ups are due (row 430)', () => {
+describe('the awaiting bucket shows how many follow-ups are due (PR #1005)', () => {
   const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
 
   it('renders the due count beside the heading', () => {

@@ -1735,7 +1735,7 @@ describe('listInWorks — parallel fetch (#185)', () => {
         data: [{ id: QUOTE_UUID, approval_snapshot: { pendingColorRequest: { label: "Staff's pick" } } }],
         error: null,
       },
-      // Row 430: the awaiting bucket now feeds the due-follow-up lookup too,
+      // PR #1005: the awaiting bucket now feeds the due-follow-up lookup too,
       // so this router must answer for follow_ups even with an empty handled
       // bucket — it short-circuited on an empty id list before.
       follow_ups: { data: [], error: null },
@@ -1781,7 +1781,7 @@ describe('listInWorks — parallel fetch (#185)', () => {
     let inboxCallIndex = 0;
     const router = makeTableRouter({
       quotes: { data: [{ id: QUOTE_UUID, approval_snapshot: {} }], error: null },
-      // Row 430: the awaiting bucket now feeds the due-follow-up lookup too,
+      // PR #1005: the awaiting bucket now feeds the due-follow-up lookup too,
       // so this router must answer for follow_ups even with an empty handled
       // bucket — it short-circuited on an empty id list before.
       follow_ups: { data: [], error: null },
@@ -1824,7 +1824,7 @@ describe('listInWorks — parallel fetch (#185)', () => {
     let inboxCallIndex = 0;
     const router = makeTableRouter({
       quotes: { data: null, error: { message: 'connection reset' } },
-      // Row 430: the awaiting bucket now feeds the due-follow-up lookup too,
+      // PR #1005: the awaiting bucket now feeds the due-follow-up lookup too,
       // so this router must answer for follow_ups even with an empty handled
       // bucket — it short-circuited on an empty id list before.
       follow_ups: { data: [], error: null },
@@ -2238,16 +2238,16 @@ describe('listInWorks — parallel fetch (#185)', () => {
   });
 });
 
-// ─── listInWorks — the awaiting bucket's "Follow-up due" pill (row 430) ────
+// ─── listInWorks — the awaiting bucket's "Follow-up due" pill (PR #1005) ────
 //
-// Row 430 deleted the "Follow-ups due today" strip from the top of /inbox
+// PR #1005 deleted the "Follow-ups due today" strip from the top of /inbox
 // because every one of its rows was already rendered further down the same
 // page. 31 of the 33 live nags were anchored to items in the AWAITING bucket
 // (measured against prod 2026-08-27), so the strip's one non-duplicated
 // signal — WHICH rows have a follow-up actually due — moves onto those rows
 // as a pill rather than being dropped.
 
-describe('listInWorks — awaiting rows carry the follow-up-due pill (row 430)', () => {
+describe('listInWorks — awaiting rows carry the follow-up-due pill (PR #1005)', () => {
   const awaitingRow = {
     id: 'i-aw',
     source: 'quotetool',
@@ -3255,7 +3255,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     ]);
     sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
 
-    // Row 430: the operator-facing Done button, and the store helper behind
+    // PR #1005: the operator-facing Done button, and the store helper behind
     // it, are gone with the "Follow-ups due today" strip; the surviving way a
     // nag reaches 'done' is the system auto-close, which is what this setup
     // now uses. The re-arm behaviour under test is unchanged.
@@ -3496,7 +3496,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     // theory that a merely-'handled' item is still a "still-open conversation"
     // that must keep getting nagged. That read of 'handled' was wrong: per
     // "HANDLED MEANS DONE" (the same principle row 252 applied in the other
-    // direction, in a coupling row 430 has since deleted), an
+    // direction, in a coupling PR #1005 has since deleted), an
     // operator explicitly marking the follow-up Done on a 'handled' item is a
     // real assertion the task is dealt with, and re-arming it on the very next
     // tick just undid their click. A genuinely new customer message reopens
@@ -6231,7 +6231,7 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
-    // Row 430: markItemFollowed now closes the item's due nag on success, so
+    // PR #1005: markItemFollowed now closes the item's due nag on success, so
     // this harness has to answer for follow_ups too - a real consequence of
     // the new behaviour, not a fixture convenience.
     const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder({ data: [{ id: 'fu-1' }], error: null });
@@ -6248,7 +6248,7 @@ describe('markItemFollowed — status guard (row 306)', () => {
     return { from, updateCalls, activityCalls, followUpCalls };
   }
 
-  // Row 430 (premerge STAFF lens, HIGH). The deleted follow-up strip's Done
+  // PR #1005 (premerge STAFF lens, HIGH). The deleted follow-up strip's Done
   // button was the only staff-initiated way to retire a quote_sent_no_reply
   // nag; without a replacement the "Follow-up due" pill that inherited its
   // signal would stay lit until the deal itself ended. "I followed up" is the
@@ -6410,7 +6410,7 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
     const { builder: rereadBuilder } = makeBuilder(rereadResult ?? priorResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
-    // Row 430: a successful Followed stamp now also closes the item's due nag,
+    // PR #1005: a successful Followed stamp now also closes the item's due nag,
     // so this harness answers for follow_ups and captures the calls - the
     // gate is on the PRIOR status, which only this harness can set.
     const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder({ data: [{ id: 'fu-1' }], error: null });

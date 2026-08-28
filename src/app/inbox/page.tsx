@@ -56,7 +56,7 @@ export default async function InboxPage() {
   );
   const [openR, dueR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
   const openRes = openR.value;
-  // Row 430: read ONLY for the exact due count shown beside "Awaiting their
+  // PR #1005: read ONLY for the exact due count shown beside "Awaiting their
   // reply". The uncapped `totalDue` is the same number the morning digest
   // prints, and it is deliberately the count rather than the rows: the pills
   // themselves come from listInWorks' own capped fetch, so this line stays

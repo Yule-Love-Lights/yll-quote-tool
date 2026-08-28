@@ -473,7 +473,7 @@ export function colorRequestConfirmMessage(): string {
  *  follow-up — rather than firing after every successful act() — keeps a
  *  Handled click from paying that cost for a nag it cannot have touched.
  *
- *  Row 430 ADDED 'Followed': markItemFollowed now closes the item's
+ *  PR #1005 ADDED 'Followed': markItemFollowed now closes the item's
  *  quote_sent_no_reply nag itself (see its own doc for why "I followed up"
  *  answers that nag). This sentence used to read "never from markItemHandled
  *  or markItemFollowed" and went false the moment that landed. The refresh
@@ -975,7 +975,7 @@ export function InboxList({
       } else if (retiresFollowUp(path)) {
         // Row 309: this row's own optimistic removal above already keeps
         // THIS list correct — router.refresh() exists to reach the rest of the
-        // page. Row 430: the sibling that used to need it was the FollowUpStrip
+        // page. PR #1005: the sibling that used to need it was the FollowUpStrip
         // (now deleted); today it is the awaiting bucket's server-rendered
         // "N follow-ups due" count. See retiresFollowUp's doc comment for
         // which actions are scoped in (dismiss, completed, and — since row
