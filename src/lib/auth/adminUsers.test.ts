@@ -108,4 +108,31 @@ describe('listNonCrewOperators', () => {
     const sb = { auth: { admin: { listUsers } } } as unknown as SupabaseClient;
     await expect(listNonCrewOperators(sb)).rejects.toThrow('boom');
   });
+
+  // Advertising role hardening (technical-lens fix round): the same trap as
+  // crew above. Without this exclusion, an advertising login would be offered
+  // as an "eligible operator" in the Staff panel's office-onboarding picker
+  // and could be linked to a crew_members pay row like a real operator.
+  it('EXCLUDES advertising logins too, for the same reason as crew (raw-role check, before roleOf flattens it to operator)', async () => {
+    const pages = [
+      {
+        data: {
+          users: [
+            { id: 'op-1', email: 'ann@x.com', app_metadata: { role: 'operator', name: 'Ann' } },
+            { id: 'crew-1', email: 'sonson@x.com', app_metadata: { role: 'crew', name: 'SonSon' } },
+            { id: 'ad-1', email: 'agency@x.com', app_metadata: { role: 'advertising', name: 'Agency' } },
+          ],
+          nextPage: null,
+        },
+        error: null,
+      },
+    ];
+    const listUsers = vi.fn(async ({ page }: { page: number }) => pages[page - 1]);
+    const sb = { auth: { admin: { listUsers } } } as unknown as SupabaseClient;
+
+    const accounts = await listNonCrewOperators(sb);
+    expect(accounts.map((a) => a.id)).toEqual(['op-1']);
+    expect(accounts.some((a) => a.id === 'crew-1')).toBe(false);
+    expect(accounts.some((a) => a.id === 'ad-1')).toBe(false);
+  });
 });
