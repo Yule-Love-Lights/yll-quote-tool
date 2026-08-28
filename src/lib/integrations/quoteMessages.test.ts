@@ -29,6 +29,8 @@ import {
   receiptSmsBody,
   receiptEmailHtml,
   referralLinkEmailHtml,
+  referralEarnedSmsBody,
+  referralEarnedEmailHtml,
   colorChangeAppliedEmailHtml,
 } from './quoteMessages';
 
@@ -1011,16 +1013,94 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     expect(receiptEmailHtml(args('Susan'))).toContain('Hi Susan,');
   });
 
+  // Review fix 4: the SMS/email fired the moment a referrer actually earns
+  // are the exact moment someone assumes they were given money, so both
+  // must say plainly, next to the amount, that it is a credit, not cash.
+  it('referralEarnedSmsBody states the credit-not-cash distinction next to the amount', () => {
+    const body = referralEarnedSmsBody('Riley', 125, 'https://x/refer/abc');
+    expect(body).toContain('$125');
+    expect(body).toContain("It's a credit, not cash");
+    expect(body).not.toContain('—');
+  });
+
+  it('referralEarnedEmailHtml states the credit-not-cash distinction next to the amount', () => {
+    const html = referralEarnedEmailHtml('Riley', 125, 'https://x/refer/abc');
+    expect(html).toContain('$125');
+    expect(html).toContain('credit, not cash');
+    expect(html).toContain('any Yule Love Lights service');
+    expect(html).not.toContain('—');
+  });
+
+  const REFERRAL_LINK_REWARD_TERMS = { creditUsd: 125, creditExpiryYears: 2, spritzerCount: 2, spritzerSizeInches: 16 };
+
   it('referralLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
     const referralUrl = 'https://x/refer/abc';
-    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl })).toContain('Hi Susan,');
-    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl })).toContain('Hi Susan,');
+    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi Susan,',
+    );
+    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi Susan,',
+    );
   });
 
   it("referralLinkEmailHtml still falls back to 'there' (unchanged) for a missing/blank name", () => {
     const referralUrl = 'https://x/refer/abc';
-    expect(referralLinkEmailHtml({ firstName: null, referralUrl })).toContain('Hi there,');
-    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl })).toContain('Hi there,');
+    expect(referralLinkEmailHtml({ firstName: null, referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi there,',
+    );
+    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi there,',
+    );
+  });
+
+  it('referralLinkEmailHtml states the credit toward ANY service (not a same-service repeat) and dollarizes the spritzer reward', () => {
+    const html = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+    });
+    expect(html).toContain('$125 in credit');
+    expect(html).toContain('any Yule Love Lights service');
+    expect(html).toContain('$170 in free lighting');
+    expect(html).not.toContain('next YLL job');
+    expect(html).not.toContain('—');
+  });
+
+  // Review fix 5: this email is sent before any friend has booked, so a
+  // bare "good for 2 years" reads as "from today." The expiry actually
+  // stamps at the friend's booking (accrueOnBooking, src/lib/referrals.ts).
+  // Also proves the year count is a real parameter, never a hardcoded
+  // "two years" literal (it used to be one).
+  it('referralLinkEmailHtml derives the expiry years from a real parameter and says the clock starts at the friend\'s booking', () => {
+    const html = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+    });
+    expect(html).toContain('good for 2 years from when they book');
+
+    const htmlWithDifferentExpiry = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+      creditExpiryYears: 3,
+    });
+    expect(htmlWithDifferentExpiry).toContain('good for 3 years from when they book');
+    expect(htmlWithDifferentExpiry).not.toContain('good for 2 years');
+  });
+
+  // Review fix 9: "you get $X in credit... They get $Y in free lighting"
+  // used to read as a direct comparison in one sentence. Now split into two
+  // paragraphs, and the friend's reward is framed as something the
+  // referrer is GIVING, not a competing prize.
+  it('referralLinkEmailHtml does not present the referrer credit and the friend gift as a side-by-side comparison', () => {
+    const html = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+    });
+    expect(html).not.toContain('book. They get');
+    expect(html).toContain('also be giving them');
   });
 
   it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {

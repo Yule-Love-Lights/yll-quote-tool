@@ -517,10 +517,13 @@ crew member's house is on that screen every evening and weekend.
 
 Naldo's "keep all data, always open" decision (2026-08-27) covered STORING
 around the clock. Showing the live position at any hour is a further
-consequence, and it is recorded here as one rather than slipped in: if a
-narrower rule is ever wanted (say, the live tile blanks outside work hours
-while history stays), it is a small change to the fleet page. Until then, the
-display follows the storage decision.
+consequence, and it was put to him as its own question.
+
+**APPROVED by Naldo, 2026-08-27** ("I approve", given with the switch-on go).
+The live tile shows every vehicle's current position at any hour, including
+the take-home van at the crew member's home. If a narrower rule is ever wanted
+(the live tile blanking outside work hours while history stays), it is a small
+change to the fleet page.
 
 This makes telling the crew, in writing, before the devices go in, matter
 more — not less.
