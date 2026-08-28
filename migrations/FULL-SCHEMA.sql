@@ -643,6 +643,33 @@ as $$
   limit match_count;
 $$;
 
+-- Lightweight sibling of match_training_examples (2026-08-24 migration) --
+-- returns only id/final_scene/street_w/street_h, no base64 image columns.
+-- Used to RANK a wide similarity candidate pool cheaply (mini-light
+-- retrieval bias, fewShot.ts) without paying full-row bytes for candidates
+-- discarded immediately after ranking. Never a substitute for
+-- match_training_examples -- callers hydrate only their final selected ids.
+create or replace function match_training_examples_lite(
+  query_embedding vector(1024),
+  match_count int
+)
+returns table (
+  id uuid,
+  final_scene jsonb,
+  street_w int,
+  street_h int
+)
+language sql
+stable
+as $$
+  select id, final_scene, street_w, street_h
+  from training_examples
+  where excluded = false
+    and embedding is not null
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+
 
 -- ---------------------------------------------------------------------
 -- 8. app_settings  (task #32 Phase 1)
