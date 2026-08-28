@@ -150,6 +150,7 @@ async function migrate(rec: Rec) {
 
   let quoteId: string;
   let prior: Record<string, unknown> | null = null;
+  let existingPriorTool: unknown = null;
 
   if (rec.existingQuoteNumber) {
     const { data: existing, error: readErr } = await sb
@@ -160,6 +161,9 @@ async function migrate(rec: Rec) {
     if (readErr || !existing) throw new Error(`${rec.key}: quote #${rec.existingQuoteNumber} not found`);
     quoteId = (existing as { id: string }).id;
     // Prior values kept so a correction is never silent and is reversible by hand.
+    existingPriorTool =
+      ((existing as { approval_snapshot: Record<string, unknown> | null }).approval_snapshot?.homeworks as
+        Record<string, unknown> | undefined)?.priorTool ?? null;
     prior = {
       total: (existing as { total: number | null }).total,
       depositAmountUsd: (existing as { deposit_amount_usd: number | null }).deposit_amount_usd,
@@ -167,6 +171,24 @@ async function migrate(rec: Rec) {
       serviceType: (existing as { service_type: string }).service_type,
     };
   } else {
+    // Idempotency guard (premerge technical lens, PR #1049). saveQuote is a
+    // plain INSERT, so without this a second `--live` run would create a
+    // duplicate quote, job and sometimes invoice for every record that has no
+    // pre-existing quote to update — silently doubling the migrated revenue.
+    // Every other write in this migration already refuses to repeat itself
+    // (createJobFromQuote and createInvoiceFromJob are idempotent, the status
+    // helpers reject same-state transitions, homeworks-ghl-prep declines to
+    // make a second card); this was the one path that could.
+    const { data: already } = await sb
+      .from('quotes')
+      .select('id, quote_number')
+      .eq('approval_snapshot->homeworks->>key', rec.key)
+      .maybeSingle();
+    if (already) {
+      const prev = already as { id: string; quote_number: number | null };
+      console.log(`    already migrated as #${prev.quote_number} — skipping, nothing written`);
+      return;
+    }
     const saved = await saveQuote(
       rec.customer, inputs, result, rec.serviceType, false, null, null, rec.ghlContactId,
     );
@@ -177,10 +199,28 @@ async function migrate(rec: Rec) {
 
   const portal = buildPortalLineItems(result);
   const selectedItemIds = portal ? billableLineItemIds(portal.lineItems, portal.roofline) : [];
+  // currentDepositUsd is LOAD-BEARING and was missing in the first run
+  // (premerge customer lens, PR #1049): without it the portal adapter's
+  // buildApproval falls back to "50% of the total", so Rodney — who paid his
+  // $8,101.87 in full — would have been told on his own portal that we hold a
+  // 50% deposit of about $4,050.94 and will collect the rest after his install.
+  // The real figure is what was actually collected.
   const snapshot = {
     staffApproved: { at: stamp, by: 'homeworks-migration' },
-    ...(selectedItemIds.length ? { customerSelection: { packageId: 'D' as const, selectedItemIds } } : {}),
-    homeworks: { ...h, key: rec.key, migratedAt: new Date().toISOString(), ...(prior ? { priorTool: prior } : {}) },
+    ...(selectedItemIds.length
+      ? { customerSelection: { packageId: 'D' as const, selectedItemIds, currentDepositUsd: h.paid } }
+      : {}),
+    homeworks: {
+      ...h,
+      key: rec.key,
+      migratedAt: new Date().toISOString(),
+      // Only ever write priorTool ONCE. A re-run would otherwise capture the
+      // ALREADY-CORRECTED figures as if they were the originals, which is
+      // exactly what happened to Asharib #1000 on the first pass and had to be
+      // restored by hand — an audit trail that quietly lies is worse than none.
+      ...(prior && !existingPriorTool ? { priorTool: prior } : {}),
+      ...(existingPriorTool ? { priorTool: existingPriorTool } : {}),
+    },
   };
 
   const update: Record<string, unknown> = {
@@ -200,6 +240,12 @@ async function migrate(rec: Rec) {
     customer_address: rec.customer.address,
   };
   if (rec.isNce) update.is_nce = true;
+  // 11 of these were parked legacy_rebook DRAFTS from the Jobber send wave.
+  // They are now booked Homeworks records, so the flag is false — the portal
+  // adapter checks it ahead of service type, and leaving it set risks a second,
+  // live-recomputed total appearing beside the frozen one (premerge customer
+  // lens, PR #1049).
+  update.legacy_rebook = false;
   if (rec.existingQuoteNumber) update.highlevel_contact_id = rec.ghlContactId;
 
   const { error: upErr } = await sb.from('quotes').update(update).eq('id', quoteId);

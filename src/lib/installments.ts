@@ -204,21 +204,41 @@ export async function markInstallmentPaid(input: {
   const row = data as { quote_id: string; amount_usd: number | string };
   const amount = Number(row.amount_usd);
 
-  const { data: q } = await sb
-    .from('quotes')
-    .select('deposit_amount_usd')
-    .eq('id', row.quote_id)
-    .maybeSingle();
-  const current = Number((q as { deposit_amount_usd: number | string | null } | null)?.deposit_amount_usd ?? 0);
-  const { error: qErr } = await sb
-    .from('quotes')
-    .update({ deposit_amount_usd: r2(current + amount) })
-    .eq('id', row.quote_id);
-  if (qErr) {
-    // The installment is marked paid but the quote total did not move — say so
-    // rather than report success, because the invariant is now broken and
-    // reconcilePlan will show it on the page.
-    return { ok: false, error: `Installment recorded, but the quote total did not update: ${qErr.message}` };
+  // The quote's collected total moves by a READ-then-WRITE, which is a
+  // lost-update race: two installments settled at the same moment would both
+  // read the same starting figure and the second write would erase the first,
+  // leaving the customer's collected total short by a whole payment. So the
+  // write carries the value it read as a compare-and-swap — if anything moved
+  // the total in between, the update matches zero rows and we read again
+  // rather than clobbering it. (Premerge technical lens, PR #1049.)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const { data: q, error: readErr } = await sb
+      .from('quotes')
+      .select('deposit_amount_usd')
+      .eq('id', row.quote_id)
+      .maybeSingle();
+    if (readErr) {
+      return { ok: false, error: `Installment recorded, but the quote total could not be read: ${readErr.message}` };
+    }
+    const current = Number((q as { deposit_amount_usd: number | string | null } | null)?.deposit_amount_usd ?? 0);
+    const { data: moved, error: qErr } = await sb
+      .from('quotes')
+      .update({ deposit_amount_usd: r2(current + amount) })
+      .eq('id', row.quote_id)
+      .eq('deposit_amount_usd', current)
+      .select('id');
+    if (qErr) {
+      return { ok: false, error: `Installment recorded, but the quote total did not update: ${qErr.message}` };
+    }
+    if (moved && moved.length > 0) return { ok: true, amountUsd: amount };
+    // Zero rows: someone else moved the total between the read and the write.
+    // Loop and re-read so this payment is added to THEIR figure, not instead of it.
   }
-  return { ok: true, amountUsd: amount };
+  // Three lost races in a row is not contention, it is something wrong. The
+  // installment is already marked paid, so say plainly that the two are now out
+  // of step — reconcilePlan surfaces it on /admin/installments too.
+  return {
+    ok: false,
+    error: 'Installment recorded, but the quote total could not be updated after 3 attempts — the plan and the quote are now out of step.',
+  };
 }
