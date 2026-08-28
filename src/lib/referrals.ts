@@ -41,6 +41,13 @@ export const REFERRAL_CREDIT_EXPIRY_YEARS = 2;
 /** What the referred friend gets on their first booked install. */
 export const REFERRAL_FRIEND_SPRITZERS = { count: 2, sizeInches: 16 } as const;
 
+/** The friend's cash alternative to the spritzers. Defined in the
+ *  client-safe module (client components state this offer too) and
+ *  re-exported here so server callers get every referral constant from one
+ *  import. See referralSpritzerValue.ts for the reasoning and the $150 vs
+ *  $170 distinction. */
+export { REFERRAL_FRIEND_ALT_CREDIT_USD } from './referralSpritzerValue';
+
 /** The env var backing the GHL contact custom field that carries the
  *  referrer's personal link (so a workflow can merge {{contact.referral_link}}).
  *  Unset ⇒ the stamp is skipped (mirrors quoteLinkFieldId's fail-open contract).

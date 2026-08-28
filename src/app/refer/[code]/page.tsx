@@ -18,6 +18,7 @@ import {
   REFERRAL_CREDIT_USD,
   REFERRAL_CREDIT_EXPIRY_YEARS,
   REFERRAL_FRIEND_SPRITZERS,
+  REFERRAL_FRIEND_ALT_CREDIT_USD,
 } from '@/lib/referrals';
 import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { getSupabaseServiceClient } from '@/lib/supabase';
@@ -128,8 +129,8 @@ export async function generateMetadata({
     ? `${firstName} thinks you'd love this`
     : 'A neighbor sent you this';
   const description =
-    `${formatUsd(SPRITZER_VALUE_USD)} in free lighting on your first install with Yule Love Lights. ` +
-    'Free quote, no obligation.';
+    `${REFERRAL_FRIEND_SPRITZERS.count} free spritzers on your first install with Yule Love Lights, ` +
+    `or ${formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead. Free quote, no obligation.`;
   const base = appBaseUrl();
   const url = `${base}/refer/${encodeURIComponent(code)}`;
   const image = {
@@ -296,11 +297,13 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 For you
               </p>
               <p className="font-display text-[24px] font-semibold text-[#F4ECD8]">
-                {formatUsd(SPRITZER_VALUE_USD)} in free lighting
+                {REFERRAL_FRIEND_SPRITZERS.count} free spritzers, or {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                {REFERRAL_FRIEND_SPRITZERS.count} staked spotlights for your yard ({REFERRAL_FRIEND_SPRITZERS.sizeInches}
-                &quot; spritzers) on your first booked install. No purchase needed to get your free quote.
+                {REFERRAL_FRIEND_SPRITZERS.count} spritzers ({REFERRAL_FRIEND_SPRITZERS.sizeInches}&quot; staked
+                spotlights that light up your yard, worth {formatUsd(SPRITZER_VALUE_USD)}) on your first booked
+                install. Or take {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead, your choice.
+                No purchase needed to get your free quote.
               </p>
             </div>
             <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-6">

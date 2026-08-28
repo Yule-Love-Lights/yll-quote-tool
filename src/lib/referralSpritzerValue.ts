@@ -16,6 +16,21 @@
 
 import { BUSINESS_RULES } from './pricing/pricingEngine';
 
+/** The cash alternative to the free spritzers, for a friend who has no use
+ *  for them: an event, wedding, or bistro customer who is not doing
+ *  Christmas lights still needs a reason to book. The friend picks one or
+ *  the other, never both (Naldo, 2026-08-28).
+ *
+ *  Deliberately NOT the spritzers' retail value. Two 16" spritzers price at
+ *  $170 through spritzerRetailValueUsd below; this is $150. The two numbers
+ *  are independent on purpose, so do not "fix" one to match the other.
+ *
+ *  It lives HERE rather than in referrals.ts because three of the four
+ *  components that state the friend's reward are client components, and
+ *  referrals.ts pulls in Supabase, node:crypto and next/server. Same reason
+ *  this module exists at all (see the header above). */
+export const REFERRAL_FRIEND_ALT_CREDIT_USD = 150;
+
 /** `count` free spritzers at `sizeInches`, priced at the quote builder's own
  *  rate for that size. Returns 0 for a size with no rate on file (fail-open:
  *  a caller showing $0 is a smaller problem than a caller crashing). */
