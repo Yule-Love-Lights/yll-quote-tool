@@ -576,7 +576,10 @@ type FewShotExample = {
   source: 'training' | 'design';
 };
 
-async function buildFewShotMessages(examples: FewShotExample[]) {
+// Exported test-only (mirrors the FewShotExample type export below) — proves
+// aiFailureNotes (a staff-typed "what did the AI get wrong" note) actually
+// reaches the assembled prompt text, not just the few-shot data shape.
+export async function buildFewShotMessages(examples: FewShotExample[]) {
   type Block =
     | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
     | { type: 'text'; text: string };
