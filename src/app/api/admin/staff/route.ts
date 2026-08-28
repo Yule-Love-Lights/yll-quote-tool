@@ -35,7 +35,8 @@ export const runtime = 'nodejs';
  *                            login, rate, Telegram link and active state
  *   POST  /api/admin/staff → add a person, either type
  *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password, type,
- *                            a stale-login clear (row 359)
+ *                            a stale-login clear, or attaching an existing
+ *                            operator login to an existing row (row 359)
  *                            or active
  *   DELETE /api/admin/staff → remove a staff row that has no work behind it
  *
@@ -276,10 +277,12 @@ export async function PATCH(req: NextRequest) {
   const hasPassword = body?.password !== undefined;
   const hasType = typeof body?.isOffice === 'boolean';
   const hasClearLogin = body?.clearLogin === true;
+  const linkAuthUserId = typeof body?.authUserId === 'string' ? body.authUserId.trim() : '';
+  const hasLinkLogin = linkAuthUserId !== '';
   const hasActive = typeof body?.active === 'boolean';
-  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasClearLogin && !hasActive) {
+  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasClearLogin && !hasLinkLogin && !hasActive) {
     return NextResponse.json(
-      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId, password or clearLogin.' },
+      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId, password, clearLogin or authUserId.' },
       { status: 400 },
     );
   }
@@ -338,6 +341,53 @@ export async function PATCH(req: NextRequest) {
         );
       }
       member = await setStaffTelegram(crewMemberId, parsed.telegramUserId);
+    } else if (hasLinkLogin) {
+      // ATTACH AN EXISTING OPERATOR TO AN EXISTING STAFF ROW.
+      //
+      // Without this the row-359 repair was only half a repair: clearing a dead
+      // pointer left a row with no login and NO WAY to give it one, because the
+      // only door that attaches a login is POST, and POST always INSERTS a new
+      // row — so re-adding the same person collided with the table-wide unique
+      // index on lower(trim(display_name)) and 409'd. The office was told to
+      // "set them up with a new login now" and then could not. Caught by the
+      // premerge staff lens.
+      const target = await getStaffMember(crewMemberId);
+      if (!target) {
+        return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
+      }
+      if (target.authUserId) {
+        return NextResponse.json(
+          {
+            error: `${target.displayName} already has a login linked. Clear it first if it no longer works.`,
+          },
+          { status: 409 },
+        );
+      }
+      // Must be a real operator, and never a crew login: listNonCrewOperators
+      // filters on the RAW app_metadata, before roleOf flattens crew to operator.
+      const operators = await listNonCrewOperators(sb);
+      if (!operators.some((o) => o.id === linkAuthUserId)) {
+        return NextResponse.json(
+          { error: 'That is not an operator account. Add them under Staff accounts first.' },
+          { status: 400 },
+        );
+      }
+      const alreadyLinked = await listLinkedAuthUserIds();
+      if (alreadyLinked.has(linkAuthUserId)) {
+        return NextResponse.json(
+          { error: 'That operator is already linked to another staff member.' },
+          { status: 409 },
+        );
+      }
+      // linkStaffLogin is a compare-and-swap on auth_user_id IS NULL, so a
+      // concurrent link loses rather than silently replacing the winner.
+      member = await linkStaffLogin(crewMemberId, linkAuthUserId);
+      if (!member) {
+        return NextResponse.json(
+          { error: `${target.displayName} was given a login by someone else just now. Reload and check.` },
+          { status: 409 },
+        );
+      }
     } else if (hasClearLogin) {
       // ROW 359 REPAIR PATH, for an orphan created before the delete route
       // started clearing the pointer itself.
@@ -367,7 +417,16 @@ export async function PATCH(req: NextRequest) {
           { status: 409 },
         );
       }
-      member = await clearStaffLogin(crewMemberId);
+      member = await clearStaffLogin(crewMemberId, target.authUserId);
+      if (!member) {
+        // Lost the compare-and-swap: the row's login changed between the
+        // check above and this write, so the dead id we verified is no longer
+        // what is there. Refuse rather than clear whatever replaced it.
+        return NextResponse.json(
+          { error: `${target.displayName}'s login changed while you were looking. Reload and check.` },
+          { status: 409 },
+        );
+      }
     } else if (hasType) {
       const toOffice = body!.isOffice as boolean;
       if (toOffice) {

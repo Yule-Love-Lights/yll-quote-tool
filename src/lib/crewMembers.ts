@@ -615,9 +615,30 @@ export async function clearStaffLoginByAuthUserId(authUserId: string): Promise<S
  * The caller MUST have established that the login does not resolve. This
  * function cannot check that itself — it has no view of the auth store — and
  * clearing a LIVE login would lock a working staff member out of the web clock.
+ *
+ * `expectedAuthUserId` makes that check STICK. It is a compare-and-swap: the
+ * write only lands if the row still carries the exact dead id the caller
+ * verified. Without it, a concurrent relink in the window between the check and
+ * the write would be silently wiped — which is precisely the outcome the check
+ * exists to prevent. Returns null when the row moved on, and the caller should
+ * treat that as a lost race rather than a missing row.
  */
-export async function clearStaffLogin(id: string): Promise<StaffMember | null> {
-  return patchStaffRow(id, { auth_user_id: null });
+export async function clearStaffLogin(
+  id: string,
+  expectedAuthUserId: string,
+): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ auth_user_id: null })
+    .eq('id', id.trim())
+    .eq('auth_user_id', expectedAuthUserId)
+    .select(STAFF_SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`clearStaffLogin: ${error.message}`);
+  return data ? toStaffMember(data as StaffRow) : null;
 }
 
 /** Attach a freshly created login to a staff row that has none yet. */

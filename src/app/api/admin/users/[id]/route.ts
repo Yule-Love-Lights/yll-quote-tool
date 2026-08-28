@@ -176,7 +176,23 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     const detached = await clearStaffLoginByAuthUserId(id);
 
     const { error: delErr } = await sb.auth.admin.deleteUser(id);
-    if (delErr) return NextResponse.json({ error: 'Failed to delete account' }, { status: 500 });
+    if (delErr) {
+      // The detach above already landed, and it is a Postgres write while this
+      // is an Auth call, so there is no transaction spanning the two. Saying
+      // only "failed to delete" here would hide that a LIVE staffer's pay row
+      // was just unlinked: they would stop being able to clock in, and nobody
+      // would know to re-link them. Name it, and name who.
+      if (detached) {
+        return NextResponse.json(
+          {
+            error: `The account was not deleted, and ${detached.displayName}'s staff record was unlinked from it. Re-link them under Settings → Accounts → Staff, or try the delete again.`,
+            detachedStaffMember: { id: detached.id, displayName: detached.displayName },
+          },
+          { status: 500 },
+        );
+      }
+      return NextResponse.json({ error: 'Failed to delete account' }, { status: 500 });
+    }
     return NextResponse.json({
       deleted: true,
       // Named so the caller can tell the admin that staff row now needs a new
