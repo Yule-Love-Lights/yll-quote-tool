@@ -53,6 +53,11 @@ describe('getSessionRole', () => {
     expect(await getSessionRole()).toBeNull();
   });
 
+  it('returns null for an advertising login (same shared-store seam as crew)', async () => {
+    userRef.current = { id: 'u5', app_metadata: { role: 'advertising' } };
+    expect(await getSessionRole()).toBeNull();
+  });
+
   it('returns operator for an ordinary operator login', async () => {
     userRef.current = { id: 'u2', app_metadata: {} };
     expect(await getSessionRole()).toBe('operator');

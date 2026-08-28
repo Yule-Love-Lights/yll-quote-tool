@@ -13,7 +13,7 @@
 // as a 500 leaking the library name instead of a clean 404.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isCrewAccount, requireAdmin, roleOf, type OperatorRole } from '@/lib/auth/supabaseServer';
+import { isAdvertisingAccount, isCrewAccount, requireAdmin, roleOf, type OperatorRole } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { listOperatorAccounts, countAdmins, toOperatorAccount } from '@/lib/auth/adminUsers';
 import { canChangeRole, canDeleteUser } from '@/lib/auth/accountGuards';
@@ -86,7 +86,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         { status: 403 },
       );
     }
-
+    // ⚠️ SAME TRAP, SAME REFUSAL, FOR ADVERTISING (advertising role hardening,
+    // 2026-08-27). `roleOf` collapses 'advertising' to 'operator' exactly the
+    // way it collapses 'crew' — so without this check, a PATCH of
+    // { role: 'admin' } against an advertising login would pass canChangeRole
+    // and overwrite the `role: 'advertising'` marker via the spread below,
+    // making it a real admin. No advertising account exists yet, but this
+    // door must refuse one on day one, before the first account does.
+    if (isAdvertisingAccount(target.user.app_metadata)) {
+      return NextResponse.json(
+        { error: 'This is an advertising login. It cannot be managed through this door.' },
+        { status: 403 },
+      );
+    }
     const currentRole = roleOf(target.user.app_metadata);
 
     const updates: { password?: string; app_metadata?: Record<string, unknown> } = {};
@@ -149,7 +161,14 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
         { status: 403 },
       );
     }
-
+    // ⚠️ SAME DOOR, SAME REFUSAL, FOR ADVERTISING — see the PATCH comment above
+    // for why `roleOf` cannot be trusted to spot an advertising login either.
+    if (isAdvertisingAccount(target.user.app_metadata)) {
+      return NextResponse.json(
+        { error: 'This is an advertising login. It cannot be managed through this door.' },
+        { status: 403 },
+      );
+    }
     const targetRole = roleOf(target.user.app_metadata);
     const accounts = await listOperatorAccounts(sb);
     const g = canDeleteUser({

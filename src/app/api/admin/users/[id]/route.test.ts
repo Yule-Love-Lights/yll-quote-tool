@@ -22,6 +22,8 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   // being promoted to admin through this route, so faking it would defeat the
   // test below.
   isCrewAccount: (m: { role?: unknown } | null | undefined) => m?.role === 'crew',
+  // Same reason, for the advertising guard tested below.
+  isAdvertisingAccount: (m: { role?: unknown } | null | undefined) => m?.role === 'advertising',
 }));
 vi.mock('@/lib/crewMembers', () => ({ clearStaffLoginByAuthUserId }));
 vi.mock('@/lib/supabase', () => ({
@@ -154,6 +156,71 @@ describe('PATCH /api/admin/users/[id] — crew logins are refused here', () => {
 
     const res = await PATCH(makeReq({ name: 'New Name' }), {
       params: Promise.resolve({ id: CREW_USER }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(updateUserById).not.toHaveBeenCalled();
+  });
+});
+
+const ADVERTISING_USER = '44444444-4444-4444-4444-444444444444';
+
+describe('DELETE /api/admin/users/[id] — advertising logins are refused here (advertising role hardening)', () => {
+  // Same trap as crew: without this guard the delete SUCCEEDS, because roleOf
+  // collapses 'advertising' to 'operator' and canDeleteUser sees an ordinary
+  // operator. No advertising account exists yet, but this door refuses one
+  // from day one.
+  it('REFUSES to delete an advertising login (403), and never calls deleteUser', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: ADVERTISING_USER, app_metadata: { role: 'advertising' } } },
+      error: null,
+    });
+
+    const res = await DELETE(makeReq(null), params(ADVERTISING_USER));
+
+    expect(res.status).toBe(403);
+    expect(deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('still deletes an ordinary operator, so the guard is narrow', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    deleteUser.mockResolvedValue({ error: null });
+
+    const res = await DELETE(makeReq(null), params(OP2));
+
+    expect(res.status).toBe(200);
+    expect(deleteUser).toHaveBeenCalledWith(OP2);
+  });
+});
+
+describe('PATCH /api/admin/users/[id] — advertising logins are refused here (advertising role hardening)', () => {
+  it('REFUSES to promote an advertising login to admin (403), and updates nothing', async () => {
+    // Before the guard this would return 200 and the account would become a
+    // real admin: roleOf collapses 'advertising' to 'operator', so the role
+    // change looks like an ordinary operator promotion, and the metadata
+    // spread would erase the advertising marker.
+    getUserById.mockResolvedValue({
+      data: { user: { id: ADVERTISING_USER, app_metadata: { role: 'advertising' } } },
+      error: null,
+    });
+
+    const res = await PATCH(makeReq({ role: 'admin' }), { params: Promise.resolve({ id: ADVERTISING_USER }) });
+
+    expect(res.status).toBe(403);
+    expect(updateUserById).not.toHaveBeenCalled();
+  });
+
+  it('refuses any PATCH of an advertising login, not just a role change', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: ADVERTISING_USER, app_metadata: { role: 'advertising' } } },
+      error: null,
+    });
+
+    const res = await PATCH(makeReq({ name: 'New Name' }), {
+      params: Promise.resolve({ id: ADVERTISING_USER }),
     });
 
     expect(res.status).toBe(403);

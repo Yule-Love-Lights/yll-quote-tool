@@ -3,7 +3,7 @@
 // accounts UI needs, plus the pure countAdmins() that feeds the last-admin guard.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { roleOf, nameOf, isCrewAccount, type OperatorRole } from './supabaseServer';
+import { roleOf, nameOf, isCrewAccount, isAdvertisingAccount, type OperatorRole } from './supabaseServer';
 
 export type OperatorAccount = {
   id: string;
@@ -22,7 +22,20 @@ type RawUser = {
   last_sign_in_at?: string | null;
 };
 
-/** Map a Supabase auth user to the public account shape (role derived safely). */
+/**
+ * Map a Supabase auth user to the public account shape (role derived safely).
+ *
+ * ⚠️ `roleOf` flattens EVERY non-admin role to 'operator' — crew already relies
+ * on being excluded upstream (see `listNonCrewOperators` below) rather than
+ * labeled here, and the same is true for advertising: `isAdvertisingAccount`
+ * is not consulted in this function, so the day an advertising login exists,
+ * it will display here as an unlabeled 'operator' in Settings → Accounts, same
+ * as every other display surface built on this shape. Whoever builds the
+ * advertising creation door must add explicit labeling wherever this shape
+ * reaches the UI — `listAllAccountsById`'s `isCrew` field (adding an
+ * `isAdvertising` field the same way) is the precedent to copy, not a rename
+ * of this function.
+ */
 export function toOperatorAccount(u: RawUser): OperatorAccount {
   return {
     id: u.id,
@@ -101,9 +114,19 @@ export async function listAllAccountsById(
   );
 }
 
+/**
+ * ⚠️ RULE FOR THE NEXT SHARED-STORE POPULATION: this filter must exclude every
+ * population that is not a real operator, checked on the RAW app_metadata
+ * before `roleOf`/`toOperatorAccount` flattens it. Crew and advertising are
+ * excluded here for that reason (advertising role hardening, 2026-08-27) —
+ * without this, an advertising login would be offered as an "eligible
+ * operator" in the Staff panel's office-onboarding picker and could be linked
+ * to a crew_members pay row exactly like a real operator. The next population
+ * added to this store needs the same line added here.
+ */
 export async function listNonCrewOperators(sb: SupabaseClient): Promise<OperatorAccount[]> {
   return (await listAllRawUsers(sb))
-    .filter((u) => !isCrewAccount(u.app_metadata))
+    .filter((u) => !isCrewAccount(u.app_metadata) && !isAdvertisingAccount(u.app_metadata))
     .map(toOperatorAccount)
     .sort(byNameThenEmail);
 }
