@@ -12,6 +12,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 import type { CatalogItem } from '@/lib/inventory/catalog';
 import { searchCatalog } from '@/lib/inventory/skuSearch';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 const PAGE_SIZE = 25;
 const effCat = (it: CatalogItem) => it.yll_category ?? it.category;
@@ -136,7 +137,9 @@ export default function OverridesPage() {
         </div>
 
         {loading ? (
-          <p className="text-sm text-gray-500 py-10 text-center">Loading catalog…</p>
+          // Row 410: placeholder rows in the shape of the catalog list, instead
+          // of a bare line the whole tab then jumps past.
+          <SkeletonRows label="Loading catalog…" rows={8} rowClassName="h-9" className="flex flex-col gap-2 py-1" />
         ) : tab === 'categories' ? (
           <CategoriesTab categories={categories} hidden={hidden} onToggle={toggleCategory} />
         ) : (

@@ -4,7 +4,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireAdmin, getUserById, deleteUser, updateUserById, listUsers } = vi.hoisted(() => ({
+const { requireAdmin, getUserById, deleteUser, updateUserById, listUsers, clearStaffLoginByAuthUserId } = vi.hoisted(() => ({
+  clearStaffLoginByAuthUserId: vi.fn(),
   requireAdmin: vi.fn(),
   getUserById: vi.fn(),
   deleteUser: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   // test below.
   isCrewAccount: (m: { role?: unknown } | null | undefined) => m?.role === 'crew',
 }));
+vi.mock('@/lib/crewMembers', () => ({ clearStaffLoginByAuthUserId }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
     auth: { admin: { getUserById, deleteUser, updateUserById, listUsers } },
@@ -37,6 +39,7 @@ const params = (id: string) => ({ params: Promise.resolve({ id }) });
 const makeReq = (body: unknown) => ({ json: async () => body } as unknown as NextRequest);
 
 beforeEach(() => {
+  clearStaffLoginByAuthUserId.mockResolvedValue(null);
   vi.clearAllMocks();
   requireAdmin.mockResolvedValue(adminAuth);
   listUsers.mockResolvedValue({
@@ -265,6 +268,42 @@ describe('malformed :id', () => {
     const res = await DELETE(makeReq(null), params('not-a-uuid'));
     expect(res.status).toBe(404);
     expect(getUserById).not.toHaveBeenCalled();
+    expect(deleteUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE detaches a linked staff row first (ledger row 359)', () => {
+  it('clears the pay row pointer BEFORE deleting the login, and names who was detached', async () => {
+    // crew_members.auth_user_id has no FK to auth.users, so without this the
+    // pointer survives as a dangling id and the person cannot be given a new
+    // login: POST /api/admin/staff refuses because the column is truthy.
+    const order: string[] = [];
+    clearStaffLoginByAuthUserId.mockImplementationOnce(async () => {
+      order.push('detach');
+      return { id: 'crew-office', displayName: 'Kelly', authUserId: null };
+    });
+    deleteUser.mockImplementationOnce(async () => {
+      order.push('delete');
+      return { error: null };
+    });
+
+    const res = await DELETE(makeReq(null), params(OP2));
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['detach', 'delete']);
+    expect(clearStaffLoginByAuthUserId).toHaveBeenCalledWith(OP2);
+    expect((await res.json()).detachedStaffMember).toEqual({ id: 'crew-office', displayName: 'Kelly' });
+  });
+
+  it('reports null when no staff row pointed at that login, which is the common case', async () => {
+    const res = await DELETE(makeReq(null), params(OP2));
+    expect(res.status).toBe(200);
+    expect((await res.json()).detachedStaffMember).toBeNull();
+  });
+
+  it('leaves the login intact if the detach itself fails, rather than deleting into a dangling pointer', async () => {
+    clearStaffLoginByAuthUserId.mockRejectedValueOnce(new Error('db down'));
+    const res = await DELETE(makeReq(null), params(OP2));
+    expect(res.status).toBe(500);
     expect(deleteUser).not.toHaveBeenCalled();
   });
 });

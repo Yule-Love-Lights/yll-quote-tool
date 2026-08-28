@@ -67,6 +67,7 @@ describe('rowToPermanentFewShot', () => {
       final_satellite_lines: lines,
       final_street_runs: [{ side: 'front', points: [[0.1, 0.5], [0.4, 0.5]], label: '' }],
       original_analysis: { jumps: [{ ft: 12, splitter: true, label: 'porch to second story' }] },
+      notes: 'missed the back roofline dormer entirely',
     }))!;
     expect(ex).not.toBeNull();
     expect(ex.satelliteBase64).toBe('SATBASE64');
@@ -74,12 +75,17 @@ describe('rowToPermanentFewShot', () => {
     expect(ex.finalSatelliteLines).toEqual(lines);
     expect(ex.finalStreetRuns).toEqual([{ side: 'front', points: [[0.1, 0.5], [0.4, 0.5]], label: '' }]);
     expect(ex.jumps).toEqual([{ ft: 12, splitter: true, label: 'porch to second story' }]);
+    expect(ex.notes).toBe('missed the back roofline dormer entirely');
   });
 
   it('defaults street runs to [] and jumps to [] when original_analysis has none/is malformed', () => {
     expect(rowToPermanentFewShot(row())!.finalStreetRuns).toEqual([]);
     expect(rowToPermanentFewShot(row())!.jumps).toEqual([]);
     expect(rowToPermanentFewShot(row({ original_analysis: { jumps: 'nope' } }))!.jumps).toEqual([]);
+  });
+
+  it('passes a null notes row through as null (no note typed)', () => {
+    expect(rowToPermanentFewShot(row({ notes: null }))!.notes).toBeNull();
   });
 });
 
@@ -93,6 +99,7 @@ function ex(id: number, hasStreet: boolean): PermanentFewShotExample {
     finalSatelliteLines: EMPTY_LINES,
     finalStreetRuns: [],
     jumps: [],
+    notes: null,
   };
 }
 const ids = (xs: PermanentFewShotExample[]) => xs.map((x) => Number(x.satelliteBase64.split('-')[1]));
@@ -143,6 +150,7 @@ describe('buildPermanentFewShotMessages — ground-truth JSON exactness', () => 
       finalSatelliteLines: lines,
       finalStreetRuns: [{ side: 'front', points: [[0.2, 0.5], [0.6, 0.5]], label: '' }],
       jumps: [{ ft: 12, splitter: true, label: 'porch to second story' }],
+      notes: null,
     };
 
     const messages = await buildPermanentFewShotMessages([example]);
@@ -181,6 +189,7 @@ describe('buildPermanentFewShotMessages — ground-truth JSON exactness', () => 
       finalSatelliteLines: EMPTY_LINES,
       finalStreetRuns: [],
       jumps: [],
+      notes: null,
     };
     const messages = await buildPermanentFewShotMessages([example]);
     const imageBlocks = messages[0].content.filter((b) => b.type === 'image');
@@ -190,6 +199,45 @@ describe('buildPermanentFewShotMessages — ground-truth JSON exactness', () => 
 
   it('empty input → []', async () => {
     expect(await buildPermanentFewShotMessages([])).toEqual([]);
+  });
+
+  it('injects "Known AI pitfall on this house: <note>" into the assistant notes field when a staff note is present', async () => {
+    const example: PermanentFewShotExample = {
+      satelliteBase64: 'sat-bytes',
+      satelliteMediaType: 'image/jpeg',
+      streetBase64: null,
+      streetMediaType: null,
+      satelliteFeetPerPixel: null,
+      finalSatelliteLines: EMPTY_LINES,
+      finalStreetRuns: [],
+      jumps: [],
+      notes: 'missed the back roofline dormer entirely',
+    };
+    const messages = await buildPermanentFewShotMessages([example]);
+    const assistantBlock = messages[1].content[0];
+    if (assistantBlock.type !== 'text') throw new Error('expected a text block');
+    const payload = JSON.parse(assistantBlock.text);
+    expect(payload.notes).toBe('Known AI pitfall on this house: missed the back roofline dormer entirely');
+  });
+
+  it('a null note produces an empty notes field, no "Known AI pitfall" line', async () => {
+    const example: PermanentFewShotExample = {
+      satelliteBase64: 'sat-bytes',
+      satelliteMediaType: 'image/jpeg',
+      streetBase64: null,
+      streetMediaType: null,
+      satelliteFeetPerPixel: null,
+      finalSatelliteLines: EMPTY_LINES,
+      finalStreetRuns: [],
+      jumps: [],
+      notes: null,
+    };
+    const messages = await buildPermanentFewShotMessages([example]);
+    const assistantBlock = messages[1].content[0];
+    if (assistantBlock.type !== 'text') throw new Error('expected a text block');
+    expect(assistantBlock.text).not.toContain('Known AI pitfall');
+    const payload = JSON.parse(assistantBlock.text);
+    expect(payload.notes).toBe('');
   });
 });
 

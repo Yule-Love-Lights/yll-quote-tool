@@ -14,6 +14,8 @@ import {
   contactRelinkConfirmMessage,
   clearContactConfirmMessage,
   initialNceDepositProvenance,
+  shouldClaimNceDepositProvenance,
+  nceTagDepositWasSuppressed,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -1055,5 +1057,142 @@ describe('permanentBistro inputs (#117)', () => {
       const line = result.lineItems.find((l) => l.label.includes('Bistro'));
       expect(line?.id).toBe('B');
     });
+  });
+});
+
+// ─── Row 328: the two ways the NCE rule could move money it did not own ─────
+
+// (b) The rule marked the deposit as ITS OWN on every turn-ON, including when
+// the field already held a 40 a staffer had negotiated and typed. The chip
+// looked like it did nothing (the number did not change), and the next OFF
+// silently wiped that 40 to blank.
+describe('shouldClaimNceDepositProvenance (row 328(b))', () => {
+  it('claims a 40 the rule actually wrote', () => {
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: false, current: 0, resolved: 40 })).toBe(true);
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: false, current: 25, resolved: 40 })).toBe(true);
+  });
+
+  // The defect, as a test: the staffer's own 40 stays the staffer's.
+  it('does NOT claim a 40 that was already in the field when the chip went on', () => {
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: false, current: 40, resolved: 40 })).toBe(false);
+  });
+
+  it('never claims on turn-OFF, whatever the numbers are', () => {
+    for (const [current, resolved] of [[40, 0], [40, 40], [25, 25], [0, 0]]) {
+      expect(shouldClaimNceDepositProvenance({ nextIsNce: false, locked: false, current, resolved })).toBe(false);
+    }
+  });
+
+  it('never claims on a locked quote, where the rule cannot write at all', () => {
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: true, current: 25, resolved: 25 })).toBe(false);
+  });
+
+  // The end-to-end shape of the bug, composed from the two pure rules: type 40
+  // by hand, turn the chip on, turn it off — the 40 must survive.
+  it('composes with resolveNceDepositPercent so a hand-typed 40 survives an on/off cycle', () => {
+    const typed = 40;
+    const onResolved = resolveNceDepositPercent(typed, true, false, false);
+    expect(onResolved).toBe(40); // no visible change, which is what hid this
+    const claimed = shouldClaimNceDepositProvenance({
+      nextIsNce: true, locked: false, current: typed, resolved: onResolved,
+    });
+    expect(claimed).toBe(false);
+    expect(resolveNceDepositPercent(onResolved, false, false, claimed)).toBe(40);
+    // ...and under the OLD unconditional claim it would have gone to blank.
+    expect(resolveNceDepositPercent(onResolved, false, false, true)).toBe(0);
+  });
+});
+
+// Fix round 2 (delta-verify MED): the "did the chip actually move" check now
+// lives INSIDE the rule. It used to sit at the call site in QuoteBuilder, and
+// a mutation probe deleted it there with all 744 tests still green — the
+// regression test did not pin the regression. As a parameter it cannot be
+// dropped without a type error.
+describe('row 328(a) — the notice only fires when the chip really moves', () => {
+  const sentQuoteWithHandSetDeposit = {
+    quoteLeftDraft: true,
+    locked: false,
+    current: 50,
+    resolved: resolveNceDepositPercent(50, true, false, false), // 40
+  };
+
+  it('stays silent on a no-op re-pick of the same tagged contact', () => {
+    expect(nceTagDepositWasSuppressed({ ...sentQuoteWithHandSetDeposit, chipWouldChange: false })).toBe(false);
+  });
+
+  it('fires when the chip genuinely flips on a quote past draft', () => {
+    expect(nceTagDepositWasSuppressed({ ...sentQuoteWithHandSetDeposit, chipWouldChange: true })).toBe(true);
+  });
+});
+
+// (a) The contact-pick tag inheritance runs in an async lookup `.then` and
+// routed straight into the same deposit rule, so re-picking a contact could
+// move the deposit on a quote the customer already has a link to.
+describe('nceTagDepositWasSuppressed (row 328(a))', () => {
+  it('reports a suppressed change once the quote has left draft', () => {
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: true, locked: false, current: 50, resolved: 40 }),
+    ).toBe(true);
+  });
+
+  it('stays quiet on a draft quote, where the inheritance still moves the deposit', () => {
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: false, locked: false, current: 50, resolved: 40 }),
+    ).toBe(false);
+  });
+
+  it('stays quiet when nothing would have moved anyway', () => {
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: true, locked: false, current: 40, resolved: 40 }),
+    ).toBe(false);
+  });
+
+  // An approved/booked quote is already refused by nceDepositLocked, so this
+  // would be a second notice about a thing that was never going to happen.
+  it('stays quiet on a locked quote, which already refuses the change', () => {
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: true, locked: true, current: 50, resolved: 40 }),
+    ).toBe(false);
+  });
+});
+
+// Jason, 2026-08-27: roofline difficulty starts at Easy ($8/ft) and only a
+// staff member's dropdown pick moves it. Pinned in one place per surface so a
+// future edit has to break a named test rather than drift the price quietly.
+describe('roofline difficulty defaults to Easy everywhere a quote can start', () => {
+  it('a brand-new quote form starts both roofline types at easy', () => {
+    expect(initialFormData.santasDifficulty).toBe('easy');
+    expect(initialFormData.gingerbreadDifficulty).toBe('easy');
+    // Not a blanket change: the other two keep their own settled defaults.
+    expect(initialFormData.winterWonderlandDifficulty).toBe('medium');
+    expect(initialFormData.stakeLightingDifficulty).toBe('easy');
+  });
+
+  it('a stored row with no difficulty recorded also reads easy', () => {
+    // Measured before changing this fallback: 187 of 187 holiday quotes in
+    // production store both keys, so no live quote is re-priced by it — it just
+    // stops being a second, disagreeing default.
+    const hydrated = inputsToFormData(null, { santasFootage: 100, gingerbreadFootage: 40 });
+    expect(hydrated.santasDifficulty).toBe('easy');
+    expect(hydrated.gingerbreadDifficulty).toBe('easy');
+  });
+
+  it('a stored difficulty a staff member chose still wins', () => {
+    const hydrated = inputsToFormData(null, {
+      santasDifficulty: 'hard',
+      gingerbreadDifficulty: 'medium',
+    });
+    expect(hydrated.santasDifficulty).toBe('hard');
+    expect(hydrated.gingerbreadDifficulty).toBe('medium');
+  });
+
+  it('prices a default new quote at $8/ft on both roofline types', () => {
+    const inputs = buildQuoteInputs({
+      ...initialFormData,
+      santasFootage: 100,
+      gingerbreadFootage: 50,
+    });
+    expect(inputs.santasDifficulty).toBe('easy');
+    expect(inputs.gingerbreadDifficulty).toBe('easy');
   });
 });

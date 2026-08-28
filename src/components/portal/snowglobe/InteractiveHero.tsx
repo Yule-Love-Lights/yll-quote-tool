@@ -30,6 +30,7 @@ import { PackagesViewTracker } from '../PackagesViewTracker';
 import { track } from '@/lib/analytics/posthog';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
+import { brightnessForPhoto } from '@/lib/design/photoBrightness';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
@@ -111,7 +112,11 @@ export function InteractiveHero({
   const activeScene = useMemo(
     () =>
       design
-        ? { ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, activePhotoId)) }
+        ? {
+            ...design.scene,
+            brightness: brightnessForPhoto(design.scene, activePhotoId),
+            items: design.scene.items.filter((i) => isItemOnPhoto(i, activePhotoId)),
+          }
         : null,
     [design, activePhotoId],
   );
@@ -119,6 +124,7 @@ export function InteractiveHero({
   // browser's broken-image icon. When the daytime <img> or the static
   // next/image errors, fall back to a neutral night-sky poster instead.
   const [photoFailed, setPhotoFailed] = useState(false);
+  const neutralDesignMedia = !!design && (!design.imageVisibility.street || !design.photoUrl);
   const prevId = useRef<PackageId>(packageId);
 
   // Fire a bloom-flash any time the active package changes
@@ -184,7 +190,16 @@ export function InteractiveHero({
         style={mediaAspect ? ({ ['--media-aspect' as string]: mediaAspect } as React.CSSProperties) : undefined}
       >
       {/* Photo layer — the live design when one is linked, else the static render */}
-      {design ? (
+      {neutralDesignMedia ? (
+        <div
+          aria-hidden
+          className="portal-snow-stage-photo absolute inset-0 w-full h-full"
+          style={{
+            background:
+              'radial-gradient(ellipse 90% 70% at 50% 30%, rgba(255,183,68,0.08), transparent 60%), #060B0F',
+          }}
+        />
+      ) : design ? (
         showDaylight && activeUrl && !photoFailed ? (
           // Before: the plain daytime photo (the ACTIVE photo's image, #13).
           // eslint-disable-next-line @next/next/no-img-element
@@ -280,7 +295,7 @@ export function InteractiveHero({
             className="text-[11px] md:text-[12px] font-semibold tracking-[0.20em] uppercase text-[#FFB744] mb-2 md:mb-2.5"
             style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}
           >
-            Your design
+            {neutralDesignMedia ? 'Your quote' : 'Your design'}
           </p>
           <h1
             id="portal-snow-hero-heading"
@@ -379,7 +394,11 @@ export function InteractiveHero({
                   immediately here since the hero is the first screen). */}
               <PackagesViewTracker quoteId={quoteId} />
               <p className="text-[10px] md:text-[11px] font-semibold tracking-[0.22em] uppercase text-[#F4ECD8]/70 mb-2.5">
-                {locked ? 'Your selected package' : 'Tap to re-illuminate'}
+                {locked
+                  ? 'Your selected package'
+                  : neutralDesignMedia
+                    ? 'Choose a package'
+                    : 'Tap to re-illuminate'}
               </p>
               <div
                 role="radiogroup"

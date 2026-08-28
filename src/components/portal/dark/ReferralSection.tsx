@@ -1,13 +1,23 @@
 // Portal v2 DARK — booked-page referral section (ledger #41). Locked product
-// (Naldo, S30): the referrer gets a next-season credit for every friend who
-// books, stackable; the friend gets two free spritzers on their first booked
-// install. Pure presentational component (no Next.js / server imports) so it
-// renders and is unit-testable without the surrounding page shell.
+// (Naldo, S30): the referrer gets a credit for every friend who books,
+// stackable, good toward ANY Yule Love Lights service (consumeCredits in
+// src/lib/referrals.ts carries no service-type filter); the friend gets two
+// free spritzers on their first booked install. Pure presentational
+// component (no Next.js / server imports) so it renders and is
+// unit-testable without the surrounding page shell.
+//
+// naldo/referral-link-preview: the friend's spritzer reward is dollarized
+// (spritzerRetailValueUsd, derived from the quote builder's own per-size
+// rate, never a hardcoded number). "Spritzers" is trade jargon with no
+// meaning to a homeowner on its own. Computed locally from the count/size
+// props already passed in, rather than adding a new prop, so this component
+// stays a drop-in replacement for its existing caller.
 
 import { ReferralLinkCopy } from './ReferralLinkCopy';
 import { ReferralShareButton } from './ReferralShareButton';
 import { QrSvg } from '@/components/QrSvg';
 import { formatUsd } from '@/components/portal/format';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 
 export function ReferralSection({
   referralLink,
@@ -27,6 +37,7 @@ export function ReferralSection({
    *  fail-open, the link + copy + share still work without it). */
   qrSvg?: string | null;
 }) {
+  const spritzerValueUsd = spritzerRetailValueUsd(spritzerCount, spritzerSizeInches);
   return (
     <section aria-labelledby="snow-approved-referral" className="w-full bg-[#060B0F]">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
@@ -40,15 +51,27 @@ export function ReferralSection({
           >
             Refer a neighbor, get{' '}
             <span className="text-[#FFB744]" style={{ textShadow: '0 0 22px rgba(255,183,68,0.35)' }}>
-              {formatUsd(creditUsd)} off
+              {formatUsd(creditUsd)} credit
             </span>{' '}
-            next season.
+            toward any job.
           </h2>
+          {/* Review fix 9: "You get $125 credit... Your friend gets $170 in
+              free lighting" used to sit in one sentence, reading as a
+              direct comparison ("why does my friend get more than me?").
+              Split into two paragraphs, leading with what the referrer
+              gets, and the friend's reward framed as something being
+              GIVEN rather than a competing prize. */}
           <p className="mt-4 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
-            You get {formatUsd(creditUsd)} off your next season for every friend who books an
-            install. It stacks, so there is no limit on how many friends you refer. Your friend
-            gets {spritzerCount} free {spritzerSizeInches}&quot; spritzers on their first booked
-            install.
+            You get {formatUsd(creditUsd)} credit for every friend who books an install, good
+            toward any Yule Love Lights service: holiday, permanent, event and wedding lighting,
+            or bistro. It stacks, so there is no limit on how many friends you refer. When you
+            redeem, your whole balance applies together to one job, so save it for something big
+            enough to use it all.
+          </p>
+          <p className="mt-3 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
+            You are also giving your friend {formatUsd(spritzerValueUsd)} in free lighting on
+            their first booked install, {spritzerCount} staked spotlights for their yard (
+            {spritzerSizeInches}&quot; spritzers).
           </p>
           {referralLink ? (
             <>
@@ -62,6 +85,7 @@ export function ReferralSection({
                     link={referralLink}
                     spritzerCount={spritzerCount}
                     spritzerSizeInches={spritzerSizeInches}
+                    spritzerValueUsd={spritzerValueUsd}
                   />
                 }
               />

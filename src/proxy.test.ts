@@ -24,6 +24,10 @@ vi.mock('@/lib/auth/supabaseServer', async () => {
     // so stubbing it would make them prove nothing.
     isCrewAccount: actual.isCrewAccount,
     CREW_ROLE: actual.CREW_ROLE,
+    // REAL authGateEngaged (ledger #347): it's a pure process.env.AUTH_GATE_ENABLED
+    // read, and every test below manipulates that env var directly to drive it —
+    // stubbing it would make those tests prove nothing.
+    authGateEngaged: actual.authGateEngaged,
   };
 });
 
@@ -53,19 +57,26 @@ afterEach(() => {
 });
 
 describe('proxy — perimeter enforcement (#81 W6-006)', () => {
-  it('dormancy short-circuit: gate disabled -> always next(), never touches Supabase', async () => {
+  it('dormancy short-circuit: gate explicitly opted out (AUTH_GATE_ENABLED=false) -> always next(), never touches Supabase', async () => {
     process.env.AUTH_GATE_ENABLED = 'false';
     const res = await proxy(makeReq('/admin/quotes'));
     expect(res.status).toBe(200); // NextResponse.next() default
     expect(createMiddlewareSupabaseMock).not.toHaveBeenCalled();
   });
 
-  it('gate enabled, dormancy value not exactly "true" -> also passes through (no-op)', async () => {
+  // Ledger #347: the flag flipped meaning. It used to be dormant-by-default
+  // (engaged only when exactly 'true'); now it's ENGAGED by default, and
+  // dormant only on the explicit 'false' opt-out above. Unset must enforce.
+  it('gate flag unset -> ENGAGED BY DEFAULT, not a no-op (ledger #347)', async () => {
     process.env.AUTH_GATE_ENABLED = undefined as unknown as string;
     delete process.env.AUTH_GATE_ENABLED;
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user: null } }) } },
+      res: NextResponse.next(),
+    });
     const res = await proxy(makeReq('/admin/quotes'));
-    expect(res.status).toBe(200);
-    expect(createMiddlewareSupabaseMock).not.toHaveBeenCalled();
+    expect(res.status).toBe(307); // redirected to /login, not passed through
+    expect(createMiddlewareSupabaseMock).toHaveBeenCalled();
   });
 
   it('gate enabled + public path -> next() WITHOUT calling Supabase', async () => {

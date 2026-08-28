@@ -19,6 +19,12 @@ export async function generateMetadata({
   searchParams: Promise<{ embed?: string }>;
 }): Promise<Metadata> {
   const { embed } = await searchParams;
+  // One canonical URL for the whole page, whatever query string got you here.
+  // The standalone page is the rankable one, so ?embed=1 and any campaign or
+  // referral parameters all point back at the bare /estimate instead of indexing
+  // as separate thin duplicates. Same PORTAL_BASE_URL idiom the payment routes
+  // use; the fallback is a literal because a page has no request object.
+  const base = (process.env.PORTAL_BASE_URL || 'https://quote.yulelovelights.com').replace(/\/+$/, '');
   return {
     title: 'Instant Holiday Lighting Estimate | Yule Love Lights',
     description:
@@ -29,6 +35,7 @@ export async function generateMetadata({
     // (which renders pages and can discover iframe src URLs) could rank the bare
     // embedded variant as a thin duplicate of the standalone page.
     robots: embed === '1' ? { index: false, follow: false } : { index: true, follow: true },
+    alternates: { canonical: `${base}/estimate` },
   };
 }
 

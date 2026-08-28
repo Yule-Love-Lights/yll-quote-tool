@@ -580,6 +580,49 @@ describe('getJobDetail', () => {
     });
   });
 
+  // Row 418: the customer-name link on /admin/jobs/[id] routes by this field —
+  // HL contact id first, then the job's own customer_id, then the quote's.
+  it('resolves customerRouteId with the HL contact id winning over both customer_ids', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', customer_id: 'job-cust', status: 'requires_invoicing', line_items: [] } },
+      quotes: { read: { customer_name: 'Alice', highlevel_contact_id: 'hl-1', customer_id: 'quote-cust' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+    expect((await getJobDetail('j1'))?.customerRouteId).toBe('hl-1');
+  });
+
+  it('falls back to the job\'s own customer_id, then the quote\'s, then null (plain-text walk-in)', async () => {
+    const base = { quote_id: 'q1', status: 'requires_invoicing', line_items: [] };
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', customer_id: 'job-cust', ...base } },
+        quotes: { read: { customer_name: 'Alice', highlevel_contact_id: null, customer_id: 'quote-cust' } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.customerRouteId).toBe('job-cust');
+    }
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', customer_id: null, ...base } },
+        quotes: { read: { customer_name: 'Alice', highlevel_contact_id: null, customer_id: 'quote-cust' } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.customerRouteId).toBe('quote-cust');
+    }
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', customer_id: null, ...base } },
+        quotes: { read: { customer_name: 'Walk In', highlevel_contact_id: null, customer_id: null } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.customerRouteId).toBeNull();
+    }
+  });
+
   it('carries the labor numbers in tagged form, flagged when the rates are placeholder', async () => {
     // GET /api/jobs/[id] serializes this object wholesale to consumers outside
     // this repo, where the lint guardrail cannot reach. The tagged plan is what
@@ -694,6 +737,57 @@ describe('getJobDetail', () => {
 
     const detail = await getJobDetail('j1');
     expect(detail?.isNce).toBe(false);
+  });
+
+  // Row 388: the job page previously had NO visibility into either
+  // unreconciled-invoice marker at all — only a one-time inline message right
+  // after submitting an amendment, gone on reload even though the marker
+  // persists on the quote. staleMarkers surfaces both, read-only, pointing at
+  // the invoice detail page where the real actions live.
+  it('surfaces both unreconciled-invoice markers from the linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: {
+        read: {
+          customer_name: 'Grace',
+          approval_snapshot: {
+            paymentBlocked: { at: '2026-08-20T00:00:00.000Z' },
+            invoiceResyncFailed: { invoiceId: 'inv1', attemptedTotal: 2400 },
+          },
+        },
+      },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.staleMarkers).toEqual({ paymentBlocked: true, invoiceResyncFailed: true });
+  });
+
+  it('defaults staleMarkers to false/false when the snapshot has neither marker, or there is no linked quote', async () => {
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+        quotes: { read: { customer_name: 'Henry', approval_snapshot: { amendments: [] } } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.staleMarkers).toEqual({
+        paymentBlocked: false,
+        invoiceResyncFailed: false,
+      });
+    }
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', quote_id: null, status: 'to_schedule' } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.staleMarkers).toEqual({
+        paymentBlocked: false,
+        invoiceResyncFailed: false,
+      });
+    }
   });
 
   // Ledger #83 follow-up (a real live incident): the job page previously had

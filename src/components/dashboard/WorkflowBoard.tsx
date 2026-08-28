@@ -28,6 +28,17 @@ function StatusRowItem({ row }: { row: StatusRow }) {
         {bucket.totalUsd > 0 && (
           <span style={{ color: 'var(--op-text-dim)' }}>{` · ${fmtMoney(bucket.totalUsd)}`}</span>
         )}
+        {/* Row 389: this total may include a frozen/unreconciled invoice —
+            flag it here rather than silently dropping it from the sum. */}
+        {bucket.staleCount > 0 && (
+          <span
+            title={`${bucket.staleCount} of ${bucket.count} unreconciled — this total is provisional`}
+            aria-label={`${bucket.staleCount} unreconciled invoice${bucket.staleCount === 1 ? '' : 's'} in this total`}
+            style={{ color: 'var(--op-warning, #b45309)' }}
+          >
+            {' ⚠'}
+          </span>
+        )}
       </span>
     </>
   );
@@ -119,12 +130,14 @@ function StageColumn({
 }
 
 // Canonical-ish status dot colors. Quotes mirror the lifecycle intent (gold
-// draft → blue sent → green approved → evergreen booked); Jobs use a sensible
-// billing progression. Pulled from the operator/brand palette in globals.css.
+// draft → blue sent → evergreen booked); Jobs use a sensible billing
+// progression. Pulled from the operator/brand palette in globals.css.
+// Row 327: no separate 'approved' dot — an approved-not-booked quote folds
+// into 'sent' on this board now, matching quoteStatus.ts's
+// APPROVED_DISPLAYS_AS convention (ledger row 242: no third stage).
 const QUOTE_DOTS = {
   draft: 'var(--brand-gold)',
   sent: '#378ADD',
-  approved: '#639922',
   booked: 'var(--brand-evergreen)',
 } as const;
 
@@ -146,6 +159,19 @@ const INVOICE_DOTS = {
 const QUOTES_HREF = '/admin/quotes';
 const INVOICES_HREF = '/admin/invoices';
 
+// Row 396 (MED): a bucket's ⚠ (staleCount > 0, rendered inside
+// StatusRowItem above) used to link to the same unfiltered INVOICES_HREF as
+// everything else — a bucket reading "3 unreconciled" gave the owner no way
+// to find WHICH three. /admin/invoices now reads ?stale=1 and filters to
+// just the unreconciled rows (isStaleInvoiceSnapshot, the same check this
+// board's own queries.ts already runs) — route a stale bucket's link there
+// instead of the plain list. Pure, exported for its own unit test (no
+// jsdom/testing-library in this repo — same pattern as
+// admin/jobs/[id]/page.tsx's cancelActionMessage).
+export function invoicesRowHref(bucket: StageBucket): string {
+  return bucket.staleCount > 0 ? `${INVOICES_HREF}?stale=1` : INVOICES_HREF;
+}
+
 /** The Jobber-style pipeline board (ledger #83): Quotes · Jobs · Invoices.
  *  All three columns are live from real data — Invoices wired to the #83 Phase 3
  *  billing flow (its money lens is the outstanding balance still to collect). */
@@ -155,13 +181,15 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   const inv = board.invoices;
 
   // Quotes headline = booked (the deals that converted), mirroring the KPI strip.
+  // Row 327: 'awaitingResponse' includes an approved-not-booked quote too (it
+  // folds into 'sent' — see workflowBoard.ts and quoteStatus.ts's
+  // APPROVED_DISPLAYS_AS), so there is no separate Approved row any more.
   const quoteRows: StatusRow[] = [
     { key: 'draft', label: 'Draft', dot: QUOTE_DOTS.draft, bucket: q.draft, href: QUOTES_HREF },
     { key: 'sent', label: 'Awaiting response', dot: QUOTE_DOTS.sent, bucket: q.awaitingResponse, href: QUOTES_HREF },
-    { key: 'approved', label: 'Approved · awaiting deposit', dot: QUOTE_DOTS.approved, bucket: q.approved, href: QUOTES_HREF },
     { key: 'booked', label: 'Booked · deposit paid', dot: QUOTE_DOTS.booked, bucket: q.booked, href: QUOTES_HREF },
   ];
-  const quotesTotal = q.draft.count + q.awaitingResponse.count + q.approved.count + q.booked.count;
+  const quotesTotal = q.draft.count + q.awaitingResponse.count + q.booked.count;
 
   // "Active" jobs = everything still in flight (before done / cancelled).
   const activeJobsCount =
@@ -182,10 +210,10 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   // Invoices column: the money lens is the OUTSTANDING balance (draft +
   // awaiting_payment) — what's still to collect. Paid/cancelled show counts.
   const invoiceRows: StatusRow[] = [
-    { key: 'draft', label: 'Draft', dot: INVOICE_DOTS.draft, bucket: inv.draft, href: INVOICES_HREF },
-    { key: 'awaiting_payment', label: 'Awaiting payment', dot: INVOICE_DOTS.awaiting_payment, bucket: inv.awaiting_payment, href: INVOICES_HREF },
-    { key: 'paid', label: 'Paid', dot: INVOICE_DOTS.paid, bucket: inv.paid, href: INVOICES_HREF },
-    { key: 'cancelled', label: 'Cancelled', dot: INVOICE_DOTS.cancelled, bucket: inv.cancelled, href: INVOICES_HREF },
+    { key: 'draft', label: 'Draft', dot: INVOICE_DOTS.draft, bucket: inv.draft, href: invoicesRowHref(inv.draft) },
+    { key: 'awaiting_payment', label: 'Awaiting payment', dot: INVOICE_DOTS.awaiting_payment, bucket: inv.awaiting_payment, href: invoicesRowHref(inv.awaiting_payment) },
+    { key: 'paid', label: 'Paid', dot: INVOICE_DOTS.paid, bucket: inv.paid, href: invoicesRowHref(inv.paid) },
+    { key: 'cancelled', label: 'Cancelled', dot: INVOICE_DOTS.cancelled, bucket: inv.cancelled, href: invoicesRowHref(inv.cancelled) },
   ];
   const invoicesTotal = invoiceRows.reduce((sum, r) => sum + r.bucket.count, 0);
   const outstandingCount = inv.draft.count + inv.awaiting_payment.count;

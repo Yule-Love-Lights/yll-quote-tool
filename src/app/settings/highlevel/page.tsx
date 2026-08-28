@@ -9,7 +9,7 @@
 import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { isHighLevelConfigured, listPipelines } from '@/lib/integrations/highlevel';
 import { parsePipelines, guessAssignments, type Pipeline } from '@/lib/integrations/highlevelPipelines';
 import { resolvePipelineStages, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
@@ -51,9 +51,10 @@ const STAGE_LABELS = {
 type StageKey = keyof typeof STAGE_LABELS;
 
 export default async function HighLevelSettingsPage() {
-  // #81 defense-in-depth (dormant until AUTH_GATE_ENABLED), same as the other
-  // operator settings pages.
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // #81 defense-in-depth — engaged by default; dormant only on the explicit
+  // AUTH_GATE_ENABLED=false opt-out (ledger #347), same as the other operator
+  // settings pages.
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/settings/highlevel');
   }
 

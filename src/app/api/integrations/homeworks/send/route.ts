@@ -70,8 +70,8 @@ type ApprovalSnapshotPartial = {
 
 export async function POST(req: NextRequest) {
   // Operator-gate (ledger #81): auth FIRST — the session perimeter covers this
-  // route; this per-route guard is defense in depth, DORMANT until
-  // AUTH_GATE_ENABLED=true.
+  // route; this per-route guard is defense in depth, engaged by default
+  // (ledger #347).
   const denied = await requireOperator();
   if (denied) return denied;
 

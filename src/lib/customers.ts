@@ -1,4 +1,6 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
+import { geofenceAnchorRefusal } from './geofenceAnchor';
+import { verifiedCoordsForAddress } from './propertyGeocode';
 
 // Stable Customer + Property identity (ledger #83, Phase 5).
 //
@@ -705,11 +707,32 @@ export async function findOrCreateCustomer(
 export async function findOrCreateProperty(
   customerId: string,
   address: string | null | undefined,
-  geo?: { lat?: number | null; lng?: number | null },
+  // ROW 403 CONSTRAINT (e), NOW ENFORCED AT THE WRITE. This parameter used to be
+  // a bare {lat, lng} applied newest-wins with no check at all — so the first
+  // production caller to wire a geocode through would have silently overwritten
+  // a rooftop-verified anchor with a town centroid. It now requires the
+  // precision evidence and is gated below; a geo that cannot prove itself is
+  // IGNORED for the coordinate columns, never written.
+  geo?: {
+    lat?: number | null;
+    lng?: number | null;
+    locationType?: string;
+    partialMatch?: boolean;
+    hasStreetAddress?: boolean;
+    county?: string;
+    state?: string;
+  },
 ): Promise<{ id: string } | null> {
   const sb = svc();
   if (!sb) return null;
   const address_key = normalizeAddress(address);
+
+  // A caller-supplied geo counts only when it carries coordinates AND passes the
+  // geofence-anchor gate. Everything else contributes nothing to lat/lng.
+  const verifiedGeo =
+    geo && geo.lat != null && geo.lng != null && geofenceAnchorRefusal(geo) === null
+      ? { lat: geo.lat, lng: geo.lng }
+      : null;
 
   const existing = await sb
     .from('properties')
@@ -736,8 +759,21 @@ export async function findOrCreateProperty(
     // drift between quotes for the same place). Only write on a real change.
     const row = existing.data;
     const nextAddress = norm(address) ?? row.address;
-    const nextLat = geo?.lat ?? row.lat;
-    const nextLng = geo?.lng ?? row.lng;
+    let nextLat = verifiedGeo?.lat ?? row.lat;
+    let nextLng = verifiedGeo?.lng ?? row.lng;
+
+    // Write-site geocoding (Naldo 2026-08-27): a property that still has no
+    // coordinate gets one attempt per touch, through the same gate the backfill
+    // used. Best-effort — a Google outage must never fail a quote save. Bounded
+    // in practice: only rows whose address has never verified reach this, and a
+    // success stops it firing again.
+    if (nextLat == null || nextLng == null) {
+      const attempt = await verifiedCoordsForAddress(nextAddress ?? '');
+      if (attempt.ok) {
+        nextLat = attempt.lat;
+        nextLng = attempt.lng;
+      }
+    }
     // #205 ARCHIVE RESURRECTION RULE: real quote activity landing on an
     // archived property means it's live again — a silently-hidden-but-
     // active property is a worse state than simply unarchiving it. This is
@@ -757,7 +793,13 @@ export async function findOrCreateProperty(
       const { error: updErr } = await sb
         .from('properties')
         .update({ address: nextAddress, lat: nextLat, lng: nextLng, archived_at: null })
-        .eq('id', row.id);
+        .eq('id', row.id)
+        // Guard against the fix-revert race (S68 lens round): if the office
+        // corrected the address after we read this row (updateProperty re-keys
+        // it), this refresh is describing a property that no longer exists under
+        // that key — writing it would silently undo the human's fix with stale
+        // data. The key match makes that write a no-op instead.
+        .eq('address_key', address_key);
       if (updErr) {
         console.error('findOrCreateProperty newest-win update error:', updErr);
       } else if (resurrect) {
@@ -767,14 +809,24 @@ export async function findOrCreateProperty(
     return { id: row.id as string };
   }
 
+  let insertLat = verifiedGeo?.lat ?? null;
+  let insertLng = verifiedGeo?.lng ?? null;
+  if (insertLat == null || insertLng == null) {
+    const attempt = await verifiedCoordsForAddress(norm(address) ?? '');
+    if (attempt.ok) {
+      insertLat = attempt.lat;
+      insertLng = attempt.lng;
+    }
+  }
+
   const ins = await sb
     .from('properties')
     .insert({
       customer_id: customerId,
       address: norm(address),
       address_key,
-      lat: geo?.lat ?? null,
-      lng: geo?.lng ?? null,
+      lat: insertLat,
+      lng: insertLng,
     })
     .select('id')
     .single();
@@ -1043,12 +1095,25 @@ function normalizeNickname(v: string | null | undefined): string | null {
 export async function updateProperty(
   customerId: string,
   propertyId: string,
-  patch: { nickname?: string | null },
+  patch: { nickname?: string | null; address?: string },
 ): Promise<{ data: PropertyRow | null; error: { message: string } | null }> {
   const sb = svc();
   if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
   const update: Record<string, unknown> = {};
   if ('nickname' in patch) update.nickname = normalizeNickname(patch.nickname);
+  // Address correction (the geocode fix-list's whole purpose). An address change
+  // re-keys the row and ALWAYS re-geocodes: the old coordinate described the old
+  // address, so keeping it would anchor proximity to a house the customer no
+  // longer means. Verified result or NULL, nothing in between.
+  if (patch.address !== undefined) {
+    const cleaned = norm(patch.address);
+    if (!cleaned) return { data: null, error: { message: 'Address cannot be empty.' } };
+    update.address = cleaned;
+    update.address_key = normalizeAddress(cleaned);
+    const attempt = await verifiedCoordsForAddress(cleaned);
+    update.lat = attempt.ok ? attempt.lat : null;
+    update.lng = attempt.ok ? attempt.lng : null;
+  }
   const { data, error } = await sb
     .from('properties')
     .update(update)

@@ -264,17 +264,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       console.error('[api/quotes/:id/color-change-request] staff email failed (request still saved):', message);
       // Row 308: a failed send used to leave no trace beyond a Vercel log stream
       // nobody opens (same reasoning as recordSuppressedFollowUp, store.ts).
-      // Logs to dashboard_activity so /inbox/activity surfaces it —
-      // 'color_request_email_failed' is not in listActivity's ingested/escalated
-      // exclusion, so it renders there. Best-effort and deliberately swallowed:
-      // an audit-write failure must never turn this already-swallowed send
-      // failure into anything that blocks the response.
+      // Logs to dashboard_activity so /inbox/activity surfaces it.
+      //
+      // Row 320(e): this used to mint its own top-level action literal
+      // ('color_request_email_failed', not in listActivity's ingested/escalated
+      // exclusion) with a bespoke detail shape ({quoteId, label, error}) —
+      // divergent from every OTHER write-failure in this codebase
+      // (recordActionFailed, store.ts), which uses the generic
+      // `action: 'action_failed', detail: {action, error}` shape ActivityLog's
+      // detail-rendering block (row 311 fix round) actually reads. The old
+      // shape's own `detail.error` was written but NEVER surfaced in the UI —
+      // only the bare friendly label rendered, no error text. Reconciled onto
+      // the generic shape: 'color_request_email' names WHICH action failed
+      // (mirrors 'handled'/'followed'/'completed'/'dismissed'), so the same
+      // rendering block that already shows every OTHER failure's error message
+      // now shows this one too. quoteId/label ride along in `detail` for
+      // anyone querying dashboard_activity directly (ActivityRow's own type
+      // only surfaces action/error to the UI — unchanged). Existing HISTORICAL
+      // rows still carry the old 'color_request_email_failed' literal — that
+      // ACTION_LABEL entry stays in ActivityLog.tsx so they keep rendering.
       try {
         await sb.from('dashboard_activity').insert({
           actor: 'system',
-          action: 'color_request_email_failed',
+          action: 'action_failed',
           inbox_item_id: inboxItemId,
-          detail: { quoteId: id, label, error: message },
+          detail: { action: 'color_request_email', quoteId: id, label, error: message },
         });
       } catch (e) {
         console.warn('[api/quotes/:id/color-change-request] activity write for email failure failed (non-fatal):', e);
