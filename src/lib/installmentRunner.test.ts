@@ -228,6 +228,23 @@ describe('planInstallmentRun — the charge slot', () => {
     expect(d.action).toBe('skip');
     expect(d.reasons).toContain('charged-not-recorded');
   });
+
+  // Adversarial delta-verify on the fix round: the marker shares a column with
+  // real transaction ids, so anything reading it out loud must not call it one.
+  // A staffer who searches Valor for "ambiguous-timeout:..." finds nothing,
+  // concludes the charge never happened, and collects the money twice.
+  it('never describes the timeout marker as a Valor transaction reference', () => {
+    const [d] = planInstallmentRun([plan(dueAt('ambiguous-timeout:2026-09-05T13:00:00.000Z'))], AFTER_SEP_5);
+    expect(d.detail).not.toContain('Valor txn');
+    expect(d.detail).toContain('UNKNOWN');
+    expect(d.detail).toContain('do not assume it failed');
+    expect(d.detail).toContain('2026-09-05T13:00:00.000Z');
+  });
+
+  it('still names a REAL transaction id when there is one', () => {
+    const [d] = planInstallmentRun([plan(dueAt('TXN-9911'))], AFTER_SEP_5);
+    expect(d.detail).toContain('Valor txn TXN-9911');
+  });
 });
 
 describe('invoiceDriftBlockers', () => {

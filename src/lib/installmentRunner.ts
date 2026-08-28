@@ -69,6 +69,26 @@ export function isInstallmentRunnerEnabled(): boolean {
  */
 export const MAX_INSTALLMENT_CHARGE_USD = 2_500;
 
+/**
+ * Written into `installments.valor_txn_id` when a Valor call times out and we
+ * genuinely do not know whether the charge landed.
+ *
+ * It lives in the same column as a real transaction id ON PURPOSE, because
+ * `describeChargeSlot` then classifies it as 'charged' and nothing re-attempts
+ * the payment. The cost of that trick is that anything DISPLAYING the slot must
+ * not present the marker as a transaction reference — a staffer who searches
+ * Valor for "ambiguous-timeout:2026-09-05T..." finds nothing, concludes the
+ * charge never happened, and collects it again by hand. That is the very
+ * double-charge the no-reclaim rule exists to prevent, walking back in through a
+ * label. Hence `isAmbiguousTimeoutMarker`, and every display site using it.
+ * (Adversarial delta-verify on the PR #1051 fix round.)
+ */
+export const AMBIGUOUS_TIMEOUT_PREFIX = 'ambiguous-timeout:';
+
+export function isAmbiguousTimeoutMarker(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.startsWith(AMBIGUOUS_TIMEOUT_PREFIX);
+}
+
 export type SkipReason =
   | 'nothing-due'
   | 'no-card-on-file'
@@ -148,12 +168,15 @@ export function planInstallmentRun(plans: InstallmentPlan[], asOf: Date): RunDec
     // So ANY value in the slot stops the runner and asks for a person.
     const slot = describeChargeSlot(target.valorTxnId);
     if (slot.kind === 'charged') {
-      // paid_at is null (isOverdue guarantees it) but a real Valor txn id is
-      // recorded: the card WAS charged and the recording step failed. Never
-      // charge again — a human reconciles this one.
+      // paid_at is null (isOverdue guarantees it) and the slot is not empty:
+      // either the card WAS charged and the recording step failed, or a Valor
+      // call timed out and the outcome is genuinely unknown. Never charge again
+      // either way — a human reconciles this one.
       reasons.push('charged-not-recorded');
       details.push(
-        `Valor txn ${slot.txnId} is recorded against this payment but it is not marked paid — reconcile by hand, do not re-charge`,
+        isAmbiguousTimeoutMarker(target.valorTxnId)
+          ? `a Valor charge for this payment timed out on ${slot.txnId?.slice(AMBIGUOUS_TIMEOUT_PREFIX.length) ?? 'an unknown date'} and the outcome is UNKNOWN — search Valor by this customer, amount and date before collecting again; do not assume it failed`
+          : `Valor txn ${slot.txnId} is recorded against this payment but it is not marked paid — reconcile by hand, do not re-charge`,
       );
     } else if (slot.kind === 'in-flight') {
       reasons.push('claim-needs-review');
@@ -411,7 +434,7 @@ async function chargeOne(sb: ServiceClient, d: RunDecision): Promise<ChargeOutco
       // morning. Best-effort — if the stamp itself fails the `pending:` claim
       // still stands and the runner still refuses (it never reclaims), so the
       // worst case is a less legible slot, not a retry.
-      const marker = `ambiguous-timeout:${new Date().toISOString()}`;
+      const marker = `${AMBIGUOUS_TIMEOUT_PREFIX}${new Date().toISOString()}`;
       const { error: markErr } = await sb
         .from('installments')
         .update({ valor_txn_id: marker })

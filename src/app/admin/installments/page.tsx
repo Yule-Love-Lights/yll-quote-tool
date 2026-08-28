@@ -10,6 +10,7 @@ import {
   type InstallmentPlan,
 } from '@/lib/installments';
 import { describeChargeSlot } from '@/lib/integrations/valorBalance';
+import { isAmbiguousTimeoutMarker, AMBIGUOUS_TIMEOUT_PREFIX } from '@/lib/installmentRunner';
 
 // Payment plans (Homeworks migration, 2026-08-28). Three customers pay their
 // 2026 job monthly. This page is READ-ONLY: it shows what is owed and when.
@@ -27,11 +28,20 @@ const money = (n: number) =>
 export function chargeSlotLabel(valorTxnId: string | null): string | null {
   const slot = describeChargeSlot(valorTxnId);
   if (slot.kind === 'none') return null;
+  if (isAmbiguousTimeoutMarker(valorTxnId)) return 'Charge outcome unknown';
   return slot.kind === 'charged' ? 'Charged — not recorded' : 'Charge claimed — check Valor';
 }
 
 export function chargeSlotTitle(valorTxnId: string | null): string {
   const slot = describeChargeSlot(valorTxnId);
+  // The ambiguous-timeout marker is NOT a Valor reference, and must never be
+  // shown as one: searching Valor for it finds nothing, which reads as "the
+  // charge never happened" and invites collecting the money a second time.
+  // (Adversarial delta-verify on the PR #1051 fix round.)
+  if (isAmbiguousTimeoutMarker(valorTxnId)) {
+    const when = (valorTxnId ?? '').slice(AMBIGUOUS_TIMEOUT_PREFIX.length);
+    return `A charge for this payment timed out on ${when || 'an unknown date'} and we never saw Valor's answer. It may or may not have gone through. Search Valor by this customer, the amount and that date before collecting it again — do not assume it failed. Nothing will re-charge it automatically.`;
+  }
   if (slot.kind === 'charged') {
     return `Valor reference ${slot.txnId} is on this payment but it is not marked paid. The money may already have been taken — reconcile in Valor. The runner will never re-charge it.`;
   }
