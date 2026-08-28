@@ -79,11 +79,14 @@ permanent lighting company. Two surfaces send events to PostHog: the quote tool 
 repository, live at quote.yulelovelights.com, Next.js on Vercel, master auto-deploys)
 and the marketing site yulelovelights.com (WordPress, no repository access).
 
-Step 1, pull the data. Using the PostHog tools, review the last 24 hours for BOTH
-PostHog projects: exceptions and errors, failed or anomalous events, funnel drop-offs
-across quote, portal, approval, and payment, rage clicks and dead clicks, and any page
-whose traffic or conversion pattern looks broken. If a PostHog call fails, say so in
-the report. Never invent data.
+Step 1, pull the data. Using the PostHog tools, review the last 24 hours. Both
+surfaces report into ONE PostHog project (Yule Love Lights, id 506466); tell them
+apart by the $host property: quote.yulelovelights.com is the quote tool,
+yulelovelights.com is the marketing site. Review both hosts: exceptions and errors,
+failed or anomalous events, funnel drop-offs across quote, portal, approval, and
+payment, rage clicks and dead clicks, and any page whose traffic or conversion
+pattern looks broken. If a PostHog call fails, say so in the report. Never invent
+data.
 
 Step 2, triage every finding into exactly one bucket:
 - QUOTE TOOL BUG: a reproducible defect in this repository's code.
