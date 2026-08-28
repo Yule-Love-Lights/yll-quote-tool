@@ -371,3 +371,168 @@ is how a scheduling tool turns into a trust problem.
   the server log says why.
 - **No retention limit.** These tables grow forever, in line with the
   keep-everything decision. Tracked as ledger row 415.
+
+---
+
+# Phase 3c: the geofences
+
+## What this does
+
+For every job scheduled on a day, it draws a circle around the customer's house
+in Bouncie's system and asks Bouncie to tell us when a van enters or leaves.
+Those events feed the visit timeline. Zones are armed only for days that have
+scheduled jobs, and retired afterwards.
+
+## Apply the migration
+
+`migrations/2026-08-27-job-geozones-vehicle.sql`. One added column and its
+indexes. Apply it after the phase-3b migration.
+
+## Something worth deciding, not just doing
+
+**This sends your customers' home coordinates to Bouncie.** Rooftop-precision
+locations of private homes, stored in a third-party vendor's account so their
+system can watch for your vans.
+
+That is a real change in what leaves the company, separate from the decision to
+track company vehicles, and nobody has recorded a decision about it. It is
+defensible and it is normal for this kind of integration, but it should be a
+choice rather than a side effect. Worth a line in your privacy policy if
+customers are told what happens to their address.
+
+## It is not running yet
+
+Nothing calls `armZonesForDate` on a schedule. It also cannot run at all until
+the phase-3a OAuth variables are set. So no zones exist, no arrivals fire, and
+the visit timeline stays empty. That is expected, not broken.
+
+## The radius, and why it is a guess
+
+`GEOFENCE_RADIUS_METRES = 120` in `src/lib/integrations/bouncieGeozones.ts`.
+
+Too small and a van parked down the street never registers as arriving. Too
+large and driving past on the road counts as a visit. **Nobody has measured
+this.** It is the most consequential number in the feature and it needs tuning
+from real arrivals compared against real jobs. Tracked as ledger row 432.
+
+**The overlap problem, which matters for how you work.** You often do several
+houses in one neighbourhood. At 120 metres those circles overlap, so a van
+parked at one job can sit inside a neighbour's geofence at the same time and
+produce two visits at once. Nothing currently resolves that, and it would make
+"how long did this job take" wrong for both. Decide it before the durations are
+used for anything.
+
+## When arming fails
+
+Every run logs a one-line summary. A run that armed nothing is reported as an
+error, not as silence, which was a real gap: a night where everything failed
+used to look exactly like a night with nothing scheduled.
+
+**Orphaned zones.** A zone can be created on Bouncie and then fail to be recorded
+here, at which point nothing will ever delete it. `findOrphanedZones()` lists
+zones that exist on Bouncie but not in our table. It only reports; deleting is a
+human decision, because another application on the same account could legitimately
+own a zone we do not recognise.
+
+## A job with no coordinate gets no geofence, permanently
+
+About 15 of your ~215 properties were refused during the geocoding pass because
+their address did not resolve to a specific house. Those jobs will never produce
+a timeline.
+
+**That matters for how the data reads.** A job with no geofence looks identical
+to a job the crew never attended. Before anyone compares GPS against the manual
+clock, they need to know which jobs are untrackable, or an address-quality
+problem will look like a crew problem.
+
+---
+
+# DESIGN CHANGE, 2026-08-27: polling replaced geofences
+
+Naldo asked the right question: why would the customers' home coordinates go to
+Bouncie when the quote tool is the one doing the tracking? They should not, and
+now they do not. Everything above about Bouncie geofences, arming, retiring and
+orphaned zones is HISTORY — none of it runs.
+
+**How it works now.** A cron polls Bouncie every 2 minutes for each van's
+position (one API call for the whole fleet) and does the proximity maths inside
+the quote tool, against coordinates that never leave our database. The schedule
+is the watch list: the jobs assigned for the day, plus the depot at 6 Birch
+Road. Nothing about any customer is ever sent to Bouncie.
+
+**What this replaced, and why it is better.**
+- No zones to create, retire, leak, or reconcile in a vendor account.
+- The overlap rule (several houses on one street) is our code: nearest wins
+  today, and the scheduler's day-order becomes the tie-break when that ships.
+- The poll doubles as the OAuth keep-alive, so the grant cannot die of disuse.
+- A van's "no signal" state is explicit: positions carry Bouncie's own
+  timestamp, a stale one counts as no signal, and silence NEVER closes a visit,
+  because a device that fell quiet at a job has not left the job.
+
+**The 15-minute rule.** Naldo, 2026-08-27: a stop under 15 minutes is not a
+real visit. Short stays are recorded and flagged `below_min_dwell` rather than
+deleted, so drive-bys stay visible as the data that tunes the radius.
+
+**Migrations.** Apply `2026-08-28-vehicle-visits-polling.sql`. Do NOT apply the
+two superseded 2026-08-27 geofence migrations; their files say so at the top.
+
+**To switch it on**: the phase-3a OAuth variables, the migration above, and the
+new cron deploys with the code (`/api/ops/vehicle-poll`, every 2 minutes,
+CRON_SECRET-guarded). Until the OAuth variables exist the cron is a dormant
+no-op by design.
+
+---
+
+# The fleet page
+
+`/admin/fleet` (office only). Three things on one screen:
+
+1. **Where each van is now**, with a live link to a map. A stale position says
+   "no signal since <time>, position unknown, not parked" — it never pretends a
+   quiet device is a parked van.
+2. **The crew clock** for the day — the payroll record, read-only here.
+3. **The GPS timeline** — every visit, with duration, and short stays marked
+   "under 15 min, likely a pass-by".
+
+The page carries its own warning, on purpose: the van is not the person. A gap
+between the two clocks is a question to ask, never an answer.
+
+---
+
+# READ THIS FIRST if you are following this document top to bottom
+
+This file grew phase by phase, and the design CHANGED partway through. The
+current truth, in one paragraph: apply the phase-2 migration (2026-08-26), the
+OAuth migration (2026-08-27-bouncie-oauth-tokens), and the POLLING migration
+(2026-08-28-vehicle-visits-polling). Do NOT apply the two 2026-08-27 geofence
+migrations — they are superseded and say so at the top of each file. Everything
+in the phase 3b/3c sections above about geofences, arming and orphaned zones
+describes the dead design and exists only as history.
+
+# One consequence that deserves its own decision
+
+The fleet page shows each van's CURRENT position, around the clock, to any
+logged-in operator. One van goes home with a crew member, which means that
+crew member's house is on that screen every evening and weekend.
+
+Naldo's "keep all data, always open" decision (2026-08-27) covered STORING
+around the clock. Showing the live position at any hour is a further
+consequence, and it was put to him as its own question.
+
+**APPROVED by Naldo, 2026-08-27** ("I approve", given with the switch-on go).
+The live tile shows every vehicle's current position at any hour, including
+the take-home van at the crew member's home. If a narrower rule is ever wanted
+(the live tile blanking outside work hours while history stays), it is a small
+change to the fleet page.
+
+This makes telling the crew, in writing, before the devices go in, matter
+more — not less.
+
+# One outbound data flow to know about, planned but not built
+
+The ETA-text design (scheduling-system-design.md) plans travel-time lookups
+via Google Distance Matrix, which would send customer coordinates to Google at
+message time. The tool already sends customer ADDRESSES to Google for
+geocoding, so this is the same counterparty and a similar exposure — but it is
+a new flow, and it should be acknowledged when that feature is built, the same
+way the Bouncie flow was killed on sight.

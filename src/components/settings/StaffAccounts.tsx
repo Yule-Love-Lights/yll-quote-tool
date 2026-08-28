@@ -61,6 +61,7 @@ export function StaffAccounts() {
   const [rate, setRate] = useState('');
   const [busy, setBusy] = useState(false);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+  const [linkSel, setLinkSel] = useState<Record<string, string>>({});
 
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -214,6 +215,39 @@ export function StaffAccounts() {
       return;
     }
     void patchRow(row, { password: input }, `${row.displayName}'s password was reset. Give it to them directly.`);
+  }
+
+  function linkLogin(row: StaffRow) {
+    // The other half of the row-359 repair. Clearing a dead pointer only helps
+    // if the row can then be given a working login, and POST cannot do it: POST
+    // always INSERTS, so re-adding the same person collides with the unique
+    // display name. This attaches an existing operator to THIS row.
+    const authUserId = linkSel[row.id];
+    if (!authUserId) return;
+    const op = eligible.find((o) => o.id === authUserId);
+    if (!window.confirm(`Give ${row.displayName} the login ${operatorLabel(op ?? { id: '', name: null, email: null })}?`)) {
+      return;
+    }
+    void patchRow(row, { authUserId }, `${row.displayName} can sign in again.`);
+  }
+
+  function clearStaleLogin(row: StaffRow) {
+    // Only offered for a row the server already reported as loginMissing, and
+    // the server re-checks that the login really is gone before clearing. The
+    // point is to make the row linkable again: while a dead id sits in the
+    // column, adding a replacement login is refused as "already has one".
+    if (
+      !window.confirm(
+        `${row.displayName}'s login no longer exists. Clear the link so you can give them a new one? This does not delete anything else.`,
+      )
+    ) {
+      return;
+    }
+    void patchRow(
+      row,
+      { clearLogin: true },
+      `${row.displayName}'s stale login link is cleared. Pick an operator on their row to give them a working login.`,
+    );
   }
 
   function moveType(row: StaffRow) {
@@ -398,7 +432,35 @@ export function StaffAccounts() {
                       link does not shove every other row's buttons out of
                       alignment, which is what made this list look ragged.
                     */}
-                    <div className="mt-1 flex flex-wrap items-center gap-3">
+                    {!s.hasLogin && eligible.length > 0 && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <label className="text-xs text-gray-500" htmlFor={`link-${s.id}`}>
+                        Give them a login:
+                      </label>
+                      <select
+                        id={`link-${s.id}`}
+                        className="border border-gray-300 rounded-md px-2 py-1 text-xs"
+                        value={linkSel[s.id] ?? ''}
+                        onChange={(e) => setLinkSel((m) => ({ ...m, [s.id]: e.target.value }))}
+                      >
+                        <option value="">Choose an operator…</option>
+                        {eligible.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {operatorLabel(o)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={rowBusyId === s.id || !linkSel[s.id]}
+                        onClick={() => linkLogin(s)}
+                        className={action}
+                      >
+                        Link
+                      </button>
+                    </div>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-3">
                       <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
                         {s.active ? 'Active' : 'Inactive'}
                       </span>
@@ -427,6 +489,23 @@ export function StaffAccounts() {
                         className={action}
                       >
                         Reset password
+                      </button>
+                      {/*
+                        Always rendered, hidden when there is nothing stale to
+                        clear — the same convention as Unlink above, so one
+                        orphaned row does not shove every other row's buttons
+                        out of alignment.
+                      */}
+                      <button
+                        type="button"
+                        aria-hidden={!s.loginMissing}
+                        tabIndex={s.loginMissing ? undefined : -1}
+                        style={s.loginMissing ? undefined : { visibility: 'hidden' }}
+                        disabled={rowBusyId === s.id || !s.loginMissing}
+                        onClick={() => clearStaleLogin(s)}
+                        className="text-xs text-red-600 underline disabled:opacity-50"
+                      >
+                        Clear stale login
                       </button>
                       <button type="button" disabled={rowBusyId === s.id} onClick={() => moveType(s)} className={action}>
                         {s.isOffice ? 'Move to field' : 'Move to office'}

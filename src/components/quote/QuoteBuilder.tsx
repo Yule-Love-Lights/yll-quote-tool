@@ -132,6 +132,10 @@ const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const addBtn = 'mt-1 text-sm text-green-700 hover:text-green-900 font-medium border border-green-300 hover:border-green-500 rounded-md px-3 py-1.5 transition-colors';
 const rmBtn = 'text-red-400 hover:text-red-600 font-bold text-xl leading-none mt-0.5';
+// Client-side mirror of trainingExamples.ts's sanitizeNotes cap — the server
+// re-caps regardless, this just stops the box from accepting more than it
+// can keep so staff aren't surprised by a silent truncation.
+const TRAINING_NOTE_MAX_LEN = 2000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1614,6 +1618,12 @@ export default function QuoteBuilder({
   // manual button and the silent auto-capture at Send.
   const [trainStatus, setTrainStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [trainError, setTrainError] = useState<string | null>(null);
+  // Optional "what did the AI get wrong here" note, typed at correction time —
+  // the highest-signal training channel (a human explaining a miss), and the
+  // reason training_examples.notes existed in the schema with zero fill for
+  // 44 rows: there was nowhere to type it. Rides along on whichever capture
+  // fires (manual button or the silent auto-capture at Send).
+  const [trainNotes, setTrainNotes] = useState('');
   // The editor's flushSave (#8 Stage A M6), re-registered on each (re)mount.
   // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
   // hasn't persisted yet.
@@ -1643,11 +1653,12 @@ export default function QuoteBuilder({
       const res = await fetch('/api/training-examples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteId: savedQuoteId, source }),
+        body: JSON.stringify({ quoteId: savedQuoteId, source, notes: trainNotes.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Capture failed (${res.status})`);
       setTrainStatus('saved');
+      setTrainNotes('');
     } catch (err) {
       setTrainStatus('error');
       setTrainError(err instanceof Error ? err.message : 'Capture failed');
@@ -1677,11 +1688,12 @@ export default function QuoteBuilder({
       const res = await fetch('/api/permanent-training-examples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteId: savedQuoteId, source }),
+        body: JSON.stringify({ quoteId: savedQuoteId, source, notes: trainNotes.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Capture failed (${res.status})`);
       setTrainStatus('saved');
+      setTrainNotes('');
     } catch (err) {
       setTrainStatus('error');
       setTrainError(err instanceof Error ? err.message : 'Capture failed');
@@ -4712,12 +4724,38 @@ export default function QuoteBuilder({
     try {
       void quoteBuildTimerRef.current?.link(savedQuoteId);
       const quoteBuildTimerId = quoteBuildTimerRef.current?.currentId();
-      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteBuildTimerId }),
-      });
-      const data = await res.json();
+      const postSend = (confirmUnderBilled: boolean) =>
+        fetch(`/api/quotes/${savedQuoteId}/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(confirmUnderBilled ? { 'x-confirm-underbilled': 'yes' } : {}),
+          },
+          body: JSON.stringify({ quoteBuildTimerId }),
+        });
+      let res = await postSend(false);
+      let data = await res.json();
+      // Ledger row 434: the route refuses a FIRST send that would under-bill a
+      // mini group (more drawn members than the billed string count) until it is
+      // confirmed. Ask once, in the operator's own words, and resend with the
+      // confirm header if they accept. Declining leaves the quote UNSENT so they
+      // can go fix the count.
+      if (res.status === 428 && data.code === 'underbilled-mini-groups') {
+        const proceed = window.confirm(
+          `${data.error}
+
+Send anyway?`,
+        );
+        if (!proceed) {
+          setSendStatus('idle');
+          setSendBlockedMsg(
+            'Send cancelled. Adjust the group String count fields, then Calculate and send again.',
+          );
+          return;
+        }
+        res = await postSend(true);
+        data = await res.json();
+      }
       const failedChannels = Array.isArray(data.failedChannels)
         ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
         : [];
@@ -8674,28 +8712,46 @@ export default function QuoteBuilder({
                 nothing to teach, and the button would otherwise silently
                 write a bistro photo into the holiday library. ── */}
             {(form.serviceType === 'holiday' || form.serviceType === 'event' || form.serviceType === 'permanent') && (
-            <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between gap-3">
-              <p className="text-xs text-gray-500 flex-1">
-                {form.serviceType === 'permanent'
-                  ? 'Sending auto-saves this house as a permanent-lighting training example. You can also save one now without sending (e.g. to teach an unusual roofline mid-flow).'
-                  : 'Sending auto-saves this house as an AI training example. You can also save one now without sending (e.g. to teach an unusual house mid-flow).'}
-                {trainStatus === 'saved' && (
-                  <span className="ml-1 text-green-700 font-medium">✓ Saved as training example.</span>
-                )}
-                {trainStatus === 'error' && (
-                  <span className="ml-1 text-amber-700">Training capture failed: {trainError}</span>
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={() =>
-                  void (form.serviceType === 'permanent' ? capturePermanentExample('manual') : captureExample('manual'))
-                }
-                disabled={trainStatus === 'saving' || !savedQuoteId}
-                className="shrink-0 bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-              >
-                {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
-              </button>
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-gray-500 flex-1">
+                  {form.serviceType === 'permanent'
+                    ? 'Sending auto-saves this house as a permanent-lighting training example. You can also save one now without sending (e.g. to teach an unusual roofline mid-flow).'
+                    : 'Sending auto-saves this house as an AI training example. You can also save one now without sending (e.g. to teach an unusual house mid-flow).'}
+                  {trainStatus === 'saved' && (
+                    <span className="ml-1 text-green-700 font-medium">✓ Saved as training example.</span>
+                  )}
+                  {trainStatus === 'error' && (
+                    <span className="ml-1 text-amber-700">Training capture failed: {trainError}</span>
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void (form.serviceType === 'permanent' ? capturePermanentExample('manual') : captureExample('manual'))
+                  }
+                  disabled={trainStatus === 'saving' || !savedQuoteId}
+                  className="shrink-0 bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
+                </button>
+              </div>
+              {/* Optional note, typed here at correction time — rides along on
+                  both the manual save above and the silent auto-capture at
+                  Send. Fully optional: no required-field marker, nothing
+                  blocks Send or the manual save if it's left blank. */}
+              <label htmlFor="ai-mistake-note" className="block mt-2 text-xs text-gray-500">
+                What did the AI get wrong here? (optional)
+              </label>
+              <textarea
+                id="ai-mistake-note"
+                value={trainNotes}
+                onChange={(e) => setTrainNotes(e.target.value)}
+                maxLength={TRAINING_NOTE_MAX_LEN}
+                rows={2}
+                placeholder={`e.g. "missed the garage wing", "put a wreath on a window with no wreath", "under-counted the bushes"`}
+                className="mt-1 w-full text-xs border border-gray-300 rounded-md px-2 py-1.5 text-gray-700 placeholder:text-gray-400"
+              />
             </div>
             )}
           </div>

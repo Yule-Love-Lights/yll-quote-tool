@@ -580,6 +580,67 @@ export async function deleteStaffMember(id: string): Promise<StaffMember | null>
   return existing;
 }
 
+/**
+ * Detach whatever staff row points at this auth user, BEFORE the auth user is
+ * deleted (ledger row 359).
+ *
+ * `crew_members.auth_user_id` has no foreign key to `auth.users`, so deleting an
+ * operator does not clear the pointer on its own. The row was then stuck: it
+ * still read as "has a login", and `POST /api/admin/staff` refuses to link a
+ * replacement because it only tests the column for truthiness, never whether the
+ * id still resolves. The person was locked out until someone ran SQL by hand.
+ *
+ * Clearing first turns that into an ordinary state: the row shows "No login yet"
+ * and can be linked again through the normal flow. Returns the detached row, or
+ * null when no row pointed at that login (the common case).
+ */
+export async function clearStaffLoginByAuthUserId(authUserId: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ auth_user_id: null })
+    .eq('auth_user_id', authUserId.trim())
+    .select(STAFF_SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`clearStaffLoginByAuthUserId: ${error.message}`);
+  return data ? toStaffMember(data as StaffRow) : null;
+}
+
+/**
+ * Detach a staff row's login by the ROW's id, for repairing an orphan that
+ * already exists (one created before the clear-on-delete above).
+ *
+ * The caller MUST have established that the login does not resolve. This
+ * function cannot check that itself — it has no view of the auth store — and
+ * clearing a LIVE login would lock a working staff member out of the web clock.
+ *
+ * `expectedAuthUserId` makes that check STICK. It is a compare-and-swap: the
+ * write only lands if the row still carries the exact dead id the caller
+ * verified. Without it, a concurrent relink in the window between the check and
+ * the write would be silently wiped — which is precisely the outcome the check
+ * exists to prevent. Returns null when the row moved on, and the caller should
+ * treat that as a lost race rather than a missing row.
+ */
+export async function clearStaffLogin(
+  id: string,
+  expectedAuthUserId: string,
+): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ auth_user_id: null })
+    .eq('id', id.trim())
+    .eq('auth_user_id', expectedAuthUserId)
+    .select(STAFF_SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`clearStaffLogin: ${error.message}`);
+  return data ? toStaffMember(data as StaffRow) : null;
+}
+
 /** Attach a freshly created login to a staff row that has none yet. */
 export async function linkStaffLogin(id: string, authUserId: string): Promise<StaffMember | null> {
   const db = getSupabaseServiceClient();
