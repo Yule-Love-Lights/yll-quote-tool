@@ -2831,6 +2831,19 @@ export default function QuoteBuilder({
     setter(lines => lines.filter((_, i) => i !== lineIdx));
   };
 
+  // Fix round (PR #916, staff lens MED): wholesale-clear every segment for
+  // one satellite roofline type at once, for the case the new segmented
+  // prompt is meant to help with — a badly over-segmented trace is faster to
+  // clear and redraw than to delete one-by-one. Routes through the SAME
+  // getSetter(type) path deleteLine uses above, so it fires identically to a
+  // one-at-a-time delete: the #918 disagreement-note clearing (getSetter's
+  // santas/gingerbread branches) and the thaw/baseline-seed logic every other
+  // line mutation goes through.
+  const clearAllLines = (type: LineType) => {
+    const setter = getSetter(type);
+    setter(() => []);
+  };
+
   const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
     const setter = getSetter(type);
     setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
@@ -7313,6 +7326,12 @@ Send anyway?`,
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-red-500 rounded"></span>
                           <span className="text-sm font-semibold text-gray-800">Front Gutterline — {form.santasFootage}ft</span>
+                          {activeSantasLines.length >= 2 && (
+                            <button type="button" onClick={() => clearAllLines('santas')}
+                              className="ml-auto text-[11px] font-medium text-gray-500 hover:text-red-600 border border-gray-300 hover:border-red-400 rounded px-2 py-0.5">
+                              Clear all
+                            </button>
+                          )}
                         </div>
                         {activeSantasLines.length > 0 ? (
                           <ul className="space-y-1 ml-6">
@@ -7337,6 +7356,12 @@ Send anyway?`,
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-blue-500 rounded"></span>
                           <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {form.gingerbreadFootage}ft</span>
+                          {activeGingerbreadLines.length >= 2 && (
+                            <button type="button" onClick={() => clearAllLines('gingerbread')}
+                              className="ml-auto text-[11px] font-medium text-gray-500 hover:text-red-600 border border-gray-300 hover:border-red-400 rounded px-2 py-0.5">
+                              Clear all
+                            </button>
+                          )}
                         </div>
                         {activeGingerbreadLines.length > 0 ? (
                           <ul className="space-y-1 ml-6">

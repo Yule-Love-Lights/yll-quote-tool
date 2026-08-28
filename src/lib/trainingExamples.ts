@@ -63,6 +63,12 @@ export type TrainingExampleRow = {
   satellite_feet_per_pixel: number | null;
   satellite_lines: DesignSatelliteLines | null;
   original_analysis: Record<string, unknown> | null;
+  // Fix round (PR #916): which ANALYZER_PROMPT_VERSION (src/lib/photoAnalysis.ts)
+  // produced original_analysis. Null for rows captured before this column
+  // existed, or where original_analysis predates the promptVersion field being
+  // stamped onto analyzePhoto's result. See promptVersionOf() below for why
+  // this is copied from original_analysis rather than stamped fresh here.
+  prompt_version: string | null;
   final_scene: DesignScene;
   final_inputs: TrainingExampleInputs;
 };
@@ -87,6 +93,21 @@ function asDifficulty(v: unknown): 'easy' | 'medium' | 'hard' {
 
 function asFootage(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+// Fix round (PR #916, admin lens MED): the prompt version that produced a
+// captured example must be read from the analysis ITSELF (design.seed_analysis,
+// stamped by analyzePhoto at generation time), never from the currently-live
+// ANALYZER_PROMPT_VERSION constant at capture time. A design can be analyzed
+// under one prompt and sent (captured, via 'auto-send') days or weeks later
+// under a different one — stamping the live constant at capture time would
+// silently mislabel that row's original_analysis with the WRONG prompt
+// version, exactly the kind of error this column exists to prevent when
+// comparing before/after a prompt change. null for legacy analyses that
+// predate the promptVersion field.
+function promptVersionOf(seedAnalysis: Record<string, unknown> | null | undefined): string | null {
+  const v = seedAnalysis?.promptVersion;
+  return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
 // notes is stored uncapped and maps straight to aiFailureNotes, which is
@@ -183,6 +204,7 @@ export async function captureTrainingExample(opts: {
     satellite_feet_per_pixel: design.satellite_feet_per_pixel ?? null,
     satellite_lines: design.satellite_lines ?? null,
     original_analysis: design.seed_analysis ?? null,
+    prompt_version: promptVersionOf(design.seed_analysis),
     final_scene: scene,
     final_inputs: finalInputs,
     ...(embedVec ? { embedding: embedVec } : {}),

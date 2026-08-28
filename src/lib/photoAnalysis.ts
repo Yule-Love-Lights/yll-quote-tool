@@ -95,6 +95,13 @@ export type PhotoAnalysisResult = {
   garlandDetections: GarlandDetection[];
   notes: string;
   confidence: 'low' | 'medium' | 'high';
+  // Fix round (PR #916): which ANALYZER_PROMPT_VERSION produced this result —
+  // stamped by analyzePhoto itself at generation time, so it travels with the
+  // result through the analysis-context route into designs.seed_analysis and
+  // on into training_examples.prompt_version at capture time. Optional so
+  // existing test fixtures / hand-built PhotoAnalysisResult literals that
+  // predate this field keep compiling.
+  promptVersion?: string;
 };
 
 // Strip markdown code fences and pull the outer JSON object out of Claude's
@@ -341,6 +348,19 @@ const OUTPUT_JSON_SCHEMA = `You MUST respond with ONLY valid JSON matching this 
 }
 
 Round footage to the nearest 5 feet. Coordinates should be precise — trace right along the visible edge. If a photo is too poor, use confidence "low" and return empty line arrays.`;
+
+// Fix round (PR #916, admin lens MED): bump this string whenever SYSTEM_PROMPT
+// below materially changes (wording that could shift what the model returns —
+// not a comment-only edit). Stamped onto every PhotoAnalysisResult at the
+// point analyzePhoto actually runs the prompt (see the `promptVersion` field
+// on the return value below), NOT at training-example capture time — a design
+// can be analyzed under one prompt version and sent (captured) days or weeks
+// later under a different one, so capture time is the wrong place to read
+// this constant. training_examples.prompt_version is populated by copying the
+// value that was already stamped into original_analysis at analysis time (see
+// src/lib/trainingExamples.ts's captureTrainingExample), so a row is always
+// tagged with the prompt that actually produced it.
+export const ANALYZER_PROMPT_VERSION = 'v2-segmented-2026-08-28';
 
 const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights, a Long Island NY Christmas lighting company. You analyze photos of houses to estimate roofline lighting measurements.
 
@@ -948,6 +968,12 @@ export async function analyzePhoto(
 
   return {
     ...parsed,
+    // Fix round (PR #916): stamp the prompt version that actually produced
+    // this result, always the live constant — never trust anything the model
+    // itself might echo back under this key (it's not part of the requested
+    // JSON schema, so `...parsed` above should never carry it, but override
+    // explicitly rather than rely on that).
+    promptVersion: ANALYZER_PROMPT_VERSION,
     // Audit fix: coerce form-facing scalars (raw JSON is cast, never validated).
     santasFootage: coerceFootage(parsed.santasFootage),
     santasDifficulty: coerceDifficulty(parsed.santasDifficulty),

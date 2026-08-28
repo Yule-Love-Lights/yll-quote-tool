@@ -83,6 +83,7 @@ function bandFor(ft: number): string {
 type PerRow = {
   id: string;
   created_at: string;
+  excluded: boolean;
   staffTotalFootage: number;
   band: string;
   aiSantasSegStreet: number;
@@ -130,9 +131,21 @@ async function main() {
     process.exit(1);
   }
   const rows = (data ?? []) as Row[];
-  console.log(`Fetched ${rows.length} training_examples rows with a first-pass analysis (excluded rows included, flagged below).`);
+  // Fix round (PR #916, admin lens MED): `excluded` is this repo's own
+  // bad-data flag on training_examples (same convention as
+  // scripts/satellite-footage-report.ts, fixed in PR #918/f6b5a2a8) and must
+  // not silently skew the headline stats below. Report the count up front —
+  // the old log line here claimed excluded rows were "flagged below" while
+  // nothing downstream ever filtered or flagged them; this replaces that
+  // false claim with a true one.
+  const excludedCount = rows.filter((r) => r.excluded).length;
+  console.log(
+    `Fetched ${rows.length} training_examples rows with a first-pass analysis; ` +
+      `${excludedCount} are excluded=true (bad-data) and are dropped from every headline stat below ` +
+      `(raw per-row data, including excluded rows each tagged with their own "excluded" field, is still written to the JSON output).`,
+  );
 
-  const perRow: PerRow[] = [];
+  const allRows: PerRow[] = [];
 
   for (const row of rows) {
     const oa = row.original_analysis ?? {};
@@ -166,9 +179,10 @@ async function main() {
     const staffGingerbreadFootage = asNum(row.final_inputs?.gingerbreadFootage);
     const staffTotalFootage = staffSantasFootage + staffGingerbreadFootage;
 
-    perRow.push({
+    allRows.push({
       id: row.id,
       created_at: row.created_at,
+      excluded: row.excluded,
       staffTotalFootage,
       band: bandFor(staffTotalFootage),
       aiSantasSegStreet: aiSantasStreet.length,
@@ -188,6 +202,12 @@ async function main() {
       hasSatelliteGeometry: aiSantasSat.length > 0 || aiGingerbreadSat.length > 0,
     });
   }
+
+  // Drop excluded=true rows from every headline stat below (see the fetch
+  // log above). `allRows` (unfiltered, each row tagged with its own
+  // `excluded` field) is what gets written to the JSON output at the end,
+  // so nothing is lost -- only the aggregate math ignores bad-data rows.
+  const perRow = allRows.filter((r) => !r.excluded);
 
   // ---- Report ----
   const n = perRow.length;
@@ -305,7 +325,26 @@ async function main() {
   );
 
   const fs = await import('fs');
-  fs.writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), n, perRow }, null, 2));
+  fs.writeFileSync(
+    outPath,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        // `n` now means "rows feeding the headline stats above" (excluded=true
+        // rows already dropped), matching every stat printed above. The raw
+        // pre-filter total and the drop count are additive fields so nothing
+        // here is silently redefined without a way to recover the old total.
+        // `perRow` is the FULL row set (including excluded rows, each tagged
+        // with its own `excluded` field) for anyone auditing by hand.
+        n,
+        nRaw: allRows.length,
+        excludedCount,
+        perRow: allRows,
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`\nWrote raw per-row data to ${outPath}`);
 }
 
