@@ -1363,13 +1363,31 @@ create table if not exists public.integration_tokens (
   id                uuid primary key default gen_random_uuid(),
   provider          text  not null,                   -- 'gmail'
   account_email     citext not null,
-  refresh_token_enc text,                             -- encrypted at rest (Vault/pgcrypto)
+  refresh_token_enc text,                             -- AES-256-GCM via src/lib/crypto/secretBox.ts
+  access_token_enc  text,                             -- same box; short-lived but still a live credential
+  access_token_expires_at timestamptz,                -- NULL when the provider does not say
+  scope             text,                             -- what the grant covers, as the provider described it
   watch_history_id  text,
   watch_expiration  timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   constraint integration_tokens_provider_account_key unique (provider, account_email)
 );
+
+-- Rotation happens on every refresh, so "when did this last change" is the first
+-- question during an outage.
+create or replace function integration_tokens_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists integration_tokens_updated_at_trigger on public.integration_tokens;
+create trigger integration_tokens_updated_at_trigger
+  before update on public.integration_tokens
+  for each row execute function integration_tokens_set_updated_at();
 
 alter table public.integration_tokens enable row level security;
 drop policy if exists integration_tokens_service_all on public.integration_tokens;
@@ -2761,3 +2779,76 @@ create index if not exists vehicle_events_transaction_idx
 alter table public.vehicles       enable row level security;
 alter table public.vehicle_crew   enable row level security;
 alter table public.vehicle_events enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- Fleet GPS — the SECOND CLOCK, polling shape (ledger row 403).
+-- Source migration: 2026-08-28-vehicle-visits-polling.sql (read it for the
+-- reasoning; it also names the two superseded geofence migrations that must
+-- never be applied). Customer coordinates never leave this database: the
+-- quote tool polls the vehicle position and does the proximity maths itself.
+--
+-- Crew clock in and out by hand and that stays the payroll record. These
+-- columns and this table are the independent record compared against it, and
+-- there is deliberately NO foreign key from here into shifts or job_segments.
+-- ---------------------------------------------------------------------
+-- ---------------------------------------------------------------------
+-- Last known position per vehicle — what the office map reads.
+--
+-- Written by the poller on every cycle. `last_seen_at` is Bouncie's own
+-- `stats.lastUpdated`, not our poll time, so a stale device shows as stale
+-- rather than as freshly parked (row 403 constraint (c): an absent or silent
+-- device must read as "no signal", never as "not at the job").
+-- ---------------------------------------------------------------------
+alter table public.vehicles add column if not exists last_lat double precision;
+alter table public.vehicles add column if not exists last_lng double precision;
+alter table public.vehicles add column if not exists last_seen_at timestamptz;
+
+-- ---------------------------------------------------------------------
+-- vehicle_visits — one row per arrival, derived by proximity.
+-- ---------------------------------------------------------------------
+create table if not exists public.vehicle_visits (
+  id              uuid primary key default gen_random_uuid(),
+  vehicle_id      uuid not null references public.vehicles(id) on delete cascade,
+
+  -- What the vehicle was near. 'depot' is the 6 Birch Road day-start anchor and
+  -- carries no job; a CHECK keeps the shapes honest so a half-populated row can
+  -- never be resolved wrongly.
+  kind            text not null check (kind in ('job', 'depot')),
+  job_id          uuid references public.jobs(id) on delete set null,
+  constraint vehicle_visits_shape check (
+    (kind = 'depot' and job_id is null) or (kind = 'job')
+  ),
+
+  entered_at      timestamptz not null,
+  exited_at       timestamptz,
+
+  -- Naldo's 15-minute rule, applied at CLOSE time and stored rather than
+  -- filtered: a below-threshold visit is data about drive-bys and quick stops,
+  -- and deleting it would make the radius impossible to tune later.
+  below_min_dwell boolean,
+
+  -- The evidence: where the vehicle actually was at entry, straight from the
+  -- poll. Replaces webhook-event provenance, and doubles as the record for
+  -- tuning the radius (how far from the anchor do real arrivals sit?).
+  entered_lat     double precision,
+  entered_lng     double precision,
+
+  created_at      timestamptz not null default now()
+);
+
+-- "What is open for this vehicle" — the poller's per-cycle lookup. One open
+-- visit per vehicle AT MOST, enforced: the poller closes before it opens, and
+-- this index makes a bug in that ordering loud instead of silent.
+create unique index if not exists vehicle_visits_one_open_per_vehicle
+  on public.vehicle_visits (vehicle_id) where exited_at is null;
+
+-- "Every visit to this job, in order" — doubling back shows as two rows.
+create index if not exists vehicle_visits_job_idx
+  on public.vehicle_visits (job_id, entered_at) where job_id is not null;
+
+-- "What happened that day" — the compare view's read.
+create index if not exists vehicle_visits_entered_idx
+  on public.vehicle_visits (entered_at desc);
+
+alter table public.vehicle_visits enable row level security;

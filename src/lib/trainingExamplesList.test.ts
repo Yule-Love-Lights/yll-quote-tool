@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('./supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
-import { listTrainingExamples } from './trainingExamples';
+import { listTrainingExamples, countEligiblePlacementExamples } from './trainingExamples';
 
 type Row = Record<string, unknown>;
 
@@ -68,5 +68,61 @@ describe('listTrainingExamples (W2-036)', () => {
 
     const out = await listTrainingExamples(200);
     expect(out[0]).not.toHaveProperty('original_analysis');
+  });
+});
+
+// countEligiblePlacementExamples (eval-harness fix round, F2) — must count
+// the SAME population scripts/eval-placement.ts scores
+// (!excluded && has_analysis && street_w && street_h), server-side, so the
+// script can detect when its 200-row fetch cap silently truncated the
+// corpus.
+
+function makeCountFake(rows: Row[]) {
+  function from(table: string) {
+    expect(table).toBe('training_examples');
+    const state: { filters: Array<(r: Row) => boolean>; opts?: { count?: string; head?: boolean } } = { filters: [] };
+    const builder = {
+      select(_cols: string, opts?: { count?: string; head?: boolean }) {
+        state.opts = opts;
+        return builder;
+      },
+      eq(col: string, val: unknown) {
+        state.filters.push((r) => r[col] === val);
+        return builder;
+      },
+      not(col: string, _op: string, val: unknown) {
+        state.filters.push((r) => !(val === null ? r[col] == null : r[col] === val));
+        return builder;
+      },
+      // supabase-js query builders are thenable (real code never calls a
+      // terminal method to trigger the request) — this mimics that.
+      then(resolve: (v: { data: null; error: null; count: number }) => void) {
+        expect(state.opts).toEqual({ count: 'exact', head: true });
+        const count = rows.filter((r) => state.filters.every((f) => f(r))).length;
+        resolve({ data: null, error: null, count });
+      },
+    };
+    return builder;
+  }
+  return { client: { from } };
+}
+
+describe('countEligiblePlacementExamples', () => {
+  it('counts only rows that are non-excluded, have an analysis, and have both photo dimensions', async () => {
+    const fake = makeCountFake([
+      { excluded: false, original_analysis: {}, street_w: 10, street_h: 10 }, // eligible
+      { excluded: true, original_analysis: {}, street_w: 10, street_h: 10 }, // excluded
+      { excluded: false, original_analysis: null, street_w: 10, street_h: 10 }, // no analysis
+      { excluded: false, original_analysis: {}, street_w: null, street_h: 10 }, // missing street_w
+      { excluded: false, original_analysis: {}, street_w: 10, street_h: null }, // missing street_h
+    ]);
+    sbRef.current = fake.client;
+
+    expect(await countEligiblePlacementExamples()).toBe(1);
+  });
+
+  it('returns null when Supabase is not configured, matching listTrainingExamples/getTrainingExample', async () => {
+    sbRef.current = null;
+    expect(await countEligiblePlacementExamples()).toBeNull();
   });
 });

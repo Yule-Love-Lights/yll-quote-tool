@@ -107,18 +107,20 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Storage unavailable', { status: 503 });
   }
 
-  const { error } = await sb.from('vehicle_events').insert({
-    event_type: facts.eventType ?? null,
-    imei: facts.imei ?? null,
-    vin: facts.vin ?? null,
-    transaction_id: facts.transactionId ?? null,
-    occurred_at: facts.occurredAt ?? null,
-    // Constraint (f): tagged at insert so a retention job never has to re-parse
-    // payloads to find out which rows are a crew member's private evenings.
-    occurred_off_hours: isOffHours(facts.occurredAt) ?? null,
-    body_sha256: bodyHash(raw),
-    payload,
-  });
+  const { error } = await sb
+    .from('vehicle_events')
+    .insert({
+      event_type: facts.eventType ?? null,
+      imei: facts.imei ?? null,
+      vin: facts.vin ?? null,
+      transaction_id: facts.transactionId ?? null,
+      occurred_at: facts.occurredAt ?? null,
+      // Constraint (f): tagged at insert so a retention job never has to re-parse
+      // payloads to find out which rows are a crew member's private evenings.
+      occurred_off_hours: isOffHours(facts.occurredAt) ?? null,
+      body_sha256: bodyHash(raw),
+      payload,
+    });
 
   if (error) {
     // 23505 = unique violation on body_sha256: a byte-identical redelivery, which
@@ -131,5 +133,10 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Storage failed', { status: 503 });
   }
 
+  // Visits are NOT derived here any more. The geofence design was replaced by
+  // polling on 2026-08-27 (Naldo: customer coordinates stay inside the tool),
+  // so no application geozone will ever exist on Bouncie and no geozone event
+  // will ever arrive. The receiver goes back to what phase 2 shipped: capture
+  // everything, decide nothing. Proximity lives in vehicleProximity.ts.
   return NextResponse.json({ ok: true, stored: true });
 }

@@ -27,7 +27,7 @@
 > corroborates and suggests only.
 > (4) F4: the clock gate softens to a non-sensitive pre-clock-in summary, exact
 > details unlock at accepted clock-in, with an audited owner override.
-> The integration authority is now `docs/context/OPERATIONS_HUB_CONTRACT.md`
+> The integration authority WAS `docs/context/OPERATIONS_HUB_CONTRACT.md`, deleted 2026-08-27 when Naldo scrapped the Operations Hub (ledger row 433). There is no separate Hub to integrate with: see `docs/context/project_operations_hub_inside_cool_tool.md`, which rules that it folds INTO this app. Treat the paragraphs below that describe writing or mirroring that contract as historical
 > (v1.0.0-draft, canonical in this repo, mirrored in the hub repo); its Flow B
 > state machine supersedes this doc's A8 draft API table. Hub-side behavior
 > authority is the hub repo's `docs/operations-hub/OPERATIONS-HUB-SPEC.md`.
@@ -177,7 +177,7 @@ eligibility, and coaching. They never touch a paycheck line.
     Prevents two assistants racing the same first migration.
   - The contract doc is the handshake: endpoints, auth, and shapes are written
     there BEFORE either side builds. Home:
-    `docs/context/OPERATIONS_HUB_CONTRACT.md` (canonical) with a pointer copy in
+    `docs/context/OPERATIONS_HUB_CONTRACT.md` (DELETED 2026-08-27, row 433 - historical) with a pointer copy in
     `yll-call-copilot/docs/`.
 - **GHL:** stays the CRM for leads and comms. Untouched.
 
@@ -503,7 +503,7 @@ do not treat either as gating Phase 2 or Phase 3 work.**
    labor percentages. One sitting, both outputs. **Put a date on it**; Phase 1
    gates on it and Phase 1 gates the Sept 21 target.
 3. Get Codex's hub plan doc into the repo, then write
-   `docs/context/OPERATIONS_HUB_CONTRACT.md` from both plans and mirror a pointer
+   `docs/context/OPERATIONS_HUB_CONTRACT.md` (DELETED 2026-08-27, row 433 - historical) from both plans and mirror a pointer
    into `yll-call-copilot/docs/`.
 4. Ledger row for the initiative and per-phase rows when building starts.
 5. Phase 1 build brief once seed rates exist (Naldo's go).

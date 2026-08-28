@@ -182,6 +182,54 @@ export async function searchContacts(query: string, limit = 20): Promise<CrmCont
   return (json.contacts ?? []).map(c => toCrmContact(c));
 }
 
+// ─── Contacts: full paginated listing (referral sweep) ────────────────────
+// Unlike searchContacts above (a bounded, text-query autocomplete), this
+// pages through EVERY contact in the location, used by the referral sweep
+// (src/lib/referralSweep.ts) to eventually reach all of them. POST
+// /contacts/search with searchAfter cursor paging; shape confirmed live in
+// this repo already (scripts/winback-recon.ts, S31): a batch shorter than
+// the requested pageLimit means "last page", and the last returned row
+// carries its OWN `searchAfter` array, which is the cursor for the next
+// call. Sorted by dateAdded ascending on purpose: a brand-new contact lands
+// at the END of the list, so a cursor that only ever moves forward
+// eventually reaches it (see referralSweep.ts's cursor-persistence comment
+// for how a wrap-around keeps that true run after run).
+//
+// Returns RAW HighLevelContact objects (not the redacted CrmContact shape):
+// the sweep needs tags + customFields, which toCrmContact strips.
+export type ContactSearchPage = {
+  contacts: HighLevelContact[];
+  /** Cursor for the next page; undefined means this was the last page. */
+  nextSearchAfter?: unknown[];
+};
+
+export async function searchContactsPage(input: {
+  pageLimit?: number;
+  searchAfter?: unknown[];
+}): Promise<ContactSearchPage> {
+  const { locationId } = requireConfig();
+  const pageLimit = Math.min(Math.max(input.pageLimit ?? 100, 1), 100);
+  const body: Record<string, unknown> = {
+    locationId,
+    pageLimit,
+    filters: [],
+    sort: [{ field: 'dateAdded', direction: 'asc' }],
+    ...(input.searchAfter ? { searchAfter: input.searchAfter } : {}),
+  };
+  const json = await ghlFetch<{ contacts?: (HighLevelContact & { searchAfter?: unknown[] })[] }>(
+    '/contacts/search',
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+  const contacts = json.contacts ?? [];
+  const last = contacts[contacts.length - 1];
+  return {
+    contacts,
+    // A short page (fewer rows than asked for) is GHL's own "no more" signal:
+    // don't hand back a cursor even if the last row happens to carry one.
+    nextSearchAfter: contacts.length >= pageLimit ? last?.searchAfter : undefined,
+  };
+}
+
 // ─── Contact fetch ────────────────────────────────────────────────────────
 // When the quote tool starts from a HighLevel workflow or email link with
 // a specific contactId in the URL, we hydrate the full record here.
@@ -271,6 +319,33 @@ export async function findOpportunityForContact(
   // desc order which matches "most recent activity" semantics.
   const open = list.find(o => o.status === 'open');
   return open ?? null;
+}
+
+// Unlike findOpportunityForContact above (which filters to status==='open',
+// right for the resurrect-vs-create quote flow), this returns EVERY
+// opportunity for the contact in the given pipeline regardless of status.
+// Needed by the referral sweep's suppression check (src/lib/referralSweep.ts):
+// a card sitting in a "Declined"/"Do Not Call" STAGE must be caught even if
+// its separate `status` field was never flipped away from 'open'. Per
+// UpdateOpportunityFields above, this app's own updateOpportunityStage NEVER
+// sets status at all, only pipelineStageId, so a stage-based suppression
+// check cannot safely filter on status the way findOpportunityForContact
+// does. Also used by the sweep's "ever booked" check across every known
+// pipeline (see ghlPipelineMap.ts's allPipelineStages).
+export async function findAllOpportunitiesForContact(
+  contactId: string,
+  pipelineId: string,
+): Promise<HighLevelOpportunity[]> {
+  const { locationId } = requireConfig();
+  const params = new URLSearchParams({
+    location_id: locationId,
+    pipeline_id: pipelineId,
+    contact_id: contactId,
+  });
+  const json = await ghlFetch<{ opportunities?: HighLevelOpportunity[] }>(
+    `/opportunities/search?${params}`,
+  );
+  return json.opportunities ?? [];
 }
 
 // ─── Opportunity create ───────────────────────────────────────────────────

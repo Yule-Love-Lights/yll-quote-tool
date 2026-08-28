@@ -360,7 +360,22 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
         </>
       )}
 
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-4 text-sm text-red-600">
+          {error}
+          {/* The coordinate refusal names the geocoding page; make that a real
+              link rather than a destination the staffer has to type (S68 staff
+              lens: an unlinked page is this repo's inert-feature class). */}
+          {error.includes('geocoding page') && (
+            <>
+              {' '}
+              <a href="/admin/geocoding" className="underline font-medium">
+                Open the geocoding page
+              </a>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }

@@ -106,10 +106,13 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? 'Action failed');
       await load();
-      return true;
+      // Return the BODY, not just a boolean: DELETE reports whether a staff pay
+      // row was unlinked as a side effect, and the caller has to be able to say
+      // so. Returning true threw that away.
+      return data as Record<string, unknown>;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Action failed');
-      return false;
+      return null;
     } finally {
       setBusyId(null);
     }
@@ -150,7 +153,19 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
 
   const remove = (u: Account) => {
     if (!window.confirm(`Remove ${who(u)}? They will no longer be able to sign in.`)) return;
-    act(u.id, 'DELETE');
+    act(u.id, 'DELETE').then((result) => {
+      if (!result) return;
+      // The API detaches any staff pay row pointing at this login before
+      // deleting it (ledger row 359). Say so HERE: otherwise the admin only
+      // discovers that person needs a new login the next time they happen to
+      // open the Staff panel.
+      const detached = result.detachedStaffMember as { displayName?: string } | null | undefined;
+      setNotice(
+        detached?.displayName
+          ? `Removed ${who(u)}. ${detached.displayName}'s staff record was unlinked from it and now needs a new login, under Staff below.`
+          : `Removed ${who(u)}.`,
+      );
+    });
   };
 
   return (

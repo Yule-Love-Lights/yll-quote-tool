@@ -33,6 +33,10 @@ const SIDE_COLORS: Record<'front' | 'left' | 'right' | 'back', string> = {
   right: RIGHT,
   back: BACK,
 };
+// Client-side mirror of permanent/trainingExamples.ts's sanitizeNotes cap
+// (the server re-caps regardless) so the box doesn't accept more than it can
+// keep.
+const NOTES_MAX_LEN = 2000;
 
 function sideCounts(lines: PermanentTrainingExampleListItem['final_satellite_lines']) {
   return {
@@ -317,6 +321,9 @@ function PermanentExampleDetail({
   const [linesDraft, setLinesDraft] = useState<Record<Side, LineDraft[]>>({ front: [], left: [], right: [], back: [] });
   const [runsDraft, setRunsDraft] = useState<RunDraft[]>([]);
   const [inputsDraft, setInputsDraft] = useState<PermanentTrainingExampleInputs | null>(inputs);
+  // What did the AI get wrong here — editable from this review page too, so a
+  // note captured (or skipped) at correction time isn't write-once.
+  const [draftNotes, setDraftNotes] = useState(example.notes ?? '');
 
   const startEdit = () => {
     setLinesDraft({
@@ -327,6 +334,7 @@ function PermanentExampleDetail({
     });
     setRunsDraft(streetRuns.map(runToDraft));
     setInputsDraft(inputs);
+    setDraftNotes(example.notes ?? '');
     setSaveErr(null);
     setEditing(true);
   };
@@ -392,6 +400,7 @@ function PermanentExampleDetail({
     try {
       const body: Record<string, unknown> = { finalSatelliteLines: builtLines, finalStreetRuns: builtRuns };
       if (inputsDraft) body.finalInputs = inputsDraft;
+      body.notes = draftNotes.trim() || null;
       const res = await fetch(`/api/permanent-training-examples/${example.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -467,6 +476,17 @@ function PermanentExampleDetail({
                 )}
               </div>
             )}
+            <div>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-gray-700">What did the AI get wrong here?</div>
+                <button onClick={startEdit} className="text-blue-600 hover:underline">✎ Edit</button>
+              </div>
+              {example.notes ? (
+                <div className="italic">&ldquo;{example.notes}&rdquo;</div>
+              ) : (
+                <div className="text-gray-400">No note yet.</div>
+              )}
+            </div>
           </>
         ) : (
           <div className="space-y-3 border border-blue-200 bg-blue-50 rounded p-2">
@@ -621,6 +641,18 @@ function PermanentExampleDetail({
                 </div>
               </div>
             )}
+
+            <div>
+              <div className="font-semibold text-gray-700">What did the AI get wrong here? (optional)</div>
+              <textarea
+                value={draftNotes}
+                onChange={(e) => setDraftNotes(e.target.value)}
+                maxLength={NOTES_MAX_LEN}
+                rows={2}
+                placeholder={`e.g. "missed the back-right corner run"`}
+                className="mt-1 w-full border border-gray-300 rounded px-1.5 py-0.5 bg-white placeholder:text-gray-400"
+              />
+            </div>
 
             {saveErr && <p className="text-red-600">{saveErr}</p>}
             <div className="flex gap-2 pt-1">

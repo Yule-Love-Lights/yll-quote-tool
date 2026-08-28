@@ -9,7 +9,17 @@
 //     send never overwrites another pipeline's drip-automation field.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from './ghlPipelineMap';
+import {
+  resolvePipelineStages,
+  quoteLinkFieldId,
+  quoteLinkFieldEnvVar,
+  allPipelineStages,
+  checkNeighborsSuppression,
+  NEIGHBORS_PIPELINE_ID,
+  NEIGHBORS_DECLINED_STAGE_ID,
+  NEIGHBORS_DO_NOT_CALL_STAGE_NAME,
+} from './ghlPipelineMap';
+import type { Pipeline } from './highlevelPipelines';
 
 const ENV_KEYS = [
   'HIGHLEVEL_PIPELINE_ID',
@@ -321,5 +331,101 @@ describe('quoteLinkFieldEnvVar', () => {
   it('legacy_rebook (#156): legacyRebook=true names the NEIGHBOR var regardless of service_type', () => {
     expect(quoteLinkFieldEnvVar('holiday', { legacyRebook: true })).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR');
     expect(quoteLinkFieldEnvVar('permanent', { legacyRebook: true })).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR');
+  });
+});
+
+describe('allPipelineStages (referral sweep)', () => {
+  it('returns all four service-type pipelines plus Neighbors: five total', () => {
+    const all = allPipelineStages();
+    expect(all).toHaveLength(5);
+    const pipelineIds = all.map((p) => p.pipelineId);
+    expect(pipelineIds).toContain(NEIGHBORS_PIPELINE_ID);
+    // Each service-type pipeline resolved WITHOUT env overrides (holiday
+    // included): the four hardcoded map ids, not the legacy env vars.
+    expect(pipelineIds).toContain('sC6JEcxlGnNDasanlXDN'); // Christmas Lights
+    expect(pipelineIds).toContain('YfCi5jy8Alc3oD5AfXmV'); // Event Lighting
+    expect(pipelineIds).toContain('OqpjVflTdgmjmUQmbcSF'); // Permanent Lighting
+    expect(pipelineIds).toContain('GTFURwOGzGLBl2zsdl0N'); // Landscape (bistro)
+  });
+
+  it('every entry carries a depositPaid and installed stage id (the referral sweep\'s only two signals)', () => {
+    for (const stages of allPipelineStages()) {
+      expect(stages.depositPaid).toBeTruthy();
+      expect(stages.installed).toBeTruthy();
+    }
+  });
+});
+
+describe('checkNeighborsSuppression: fail-loud suppression check (referral sweep)', () => {
+  // "Declined for 2026" is a verified hardcoded id (NEIGHBORS_DECLINED_STAGE_ID);
+  // "Do Not Call" has none, so its fixture stage is named NEIGHBORS_DO_NOT_CALL_STAGE_NAME
+  // and gets its OWN id, distinct from the hardcoded one: resolution must find it by
+  // name, not by coincidentally reusing NEIGHBORS_DECLINED_STAGE_ID.
+  const DNC_LIVE_ID = 'live-do-not-call-stage-id';
+
+  const liveNeighborsFixture = (
+    stages: { id: string; name: string }[],
+    pipelineId: string = NEIGHBORS_PIPELINE_ID,
+  ): Pipeline[] => [{ id: pipelineId, name: 'Yule Love Lights Neighbors', stages }];
+
+  const bothPresentStages = [
+    { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+    { id: DNC_LIVE_ID, name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME },
+  ];
+
+  it('resolves both stages when present live: no missing hardcoded ids, Do Not Call id found by name', () => {
+    const live = liveNeighborsFixture([...bothPresentStages, { id: 'x', name: 'some-other-stage' }]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.missingHardcodedIds).toEqual([]);
+    expect(result.doNotCallStageId).toBe(DNC_LIVE_ID);
+  });
+
+  it('matches the Do Not Call stage name case-insensitively and with whitespace trimmed', () => {
+    const live = liveNeighborsFixture([
+      { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+      { id: DNC_LIVE_ID, name: '  Do Not Call  ' }, // re-cased + padded, as a live edit might leave it
+    ]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.doNotCallStageId).toBe(DNC_LIVE_ID);
+  });
+
+  it('resolves NOTHING (null) when no stage in the Neighbors pipeline matches the Do Not Call name, and names what it found', () => {
+    const live = liveNeighborsFixture([
+      { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+      { id: 'some-id', name: 'Some Unrelated Stage' },
+    ]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.doNotCallStageId).toBeNull();
+    expect(result.liveNeighborsStageNames).toEqual(['Declined for 2026', 'Some Unrelated Stage']);
+  });
+
+  it('never matches a same-named "Do Not Call" stage sitting in a DIFFERENT pipeline', () => {
+    const live: Pipeline[] = [
+      { id: NEIGHBORS_PIPELINE_ID, name: 'Yule Love Lights Neighbors', stages: [{ id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' }] },
+      { id: 'some-other-pipeline-id', name: 'Some Other Pipeline', stages: [{ id: 'imposter-id', name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME }] },
+    ];
+    const result = checkNeighborsSuppression(live);
+    expect(result.doNotCallStageId).toBeNull();
+  });
+
+  it('reports NEIGHBORS_DECLINED_STAGE_ID as missing when it is renamed/removed from the live pipeline, even while Do Not Call still resolves', () => {
+    const live = liveNeighborsFixture([{ id: DNC_LIVE_ID, name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME }]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.missingHardcodedIds).toEqual([NEIGHBORS_DECLINED_STAGE_ID]);
+    expect(result.doNotCallStageId).toBe(DNC_LIVE_ID);
+  });
+
+  it('reports the hardcoded id missing AND doNotCallStageId null when the Neighbors pipeline itself is not found live', () => {
+    const live: Pipeline[] = [{ id: 'some-other-pipeline', name: 'Unrelated', stages: [{ id: 'x', name: 'x' }] }];
+    const result = checkNeighborsSuppression(live);
+    expect(result.missingHardcodedIds).toEqual([NEIGHBORS_DECLINED_STAGE_ID]);
+    expect(result.doNotCallStageId).toBeNull();
+    expect(result.liveNeighborsStageNames).toEqual([]);
+  });
+
+  it('handles an empty live pipelines list the same way (everything missing/unresolved)', () => {
+    const result = checkNeighborsSuppression([]);
+    expect(result.missingHardcodedIds).toEqual([NEIGHBORS_DECLINED_STAGE_ID]);
+    expect(result.doNotCallStageId).toBeNull();
   });
 });

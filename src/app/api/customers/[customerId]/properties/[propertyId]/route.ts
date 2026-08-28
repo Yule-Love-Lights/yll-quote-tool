@@ -39,6 +39,11 @@ function toJson(row: PropertyRow) {
     address: row.address,
     nickname: row.nickname ?? null,
     archivedAt: row.archived_at ?? null,
+    // The geocode fix-list needs these to tell a correction that VERIFIED apart
+    // from one that saved but is still refused — a save that "worked" while the
+    // job stays unschedulable must not look fixed.
+    lat: row.lat ?? null,
+    lng: row.lng ?? null,
   };
 }
 
@@ -65,7 +70,7 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { nickname, archived } = (body as { nickname?: unknown; archived?: unknown } | null) ?? {};
+  const { nickname, archived, address } = (body as { nickname?: unknown; archived?: unknown; address?: unknown } | null) ?? {};
   if (nickname !== undefined && nickname !== null && typeof nickname !== 'string') {
     return NextResponse.json(
       { error: 'nickname must be a string or null if provided', code: 'invalid-body' },
@@ -78,14 +83,41 @@ export async function POST(
       { status: 400 },
     );
   }
-  if (nickname === undefined && archived === undefined) {
+  if (address !== undefined && (typeof address !== 'string' || !address.trim())) {
     return NextResponse.json(
-      { error: 'At least one of nickname/archived must be provided', code: 'invalid-body' },
+      { error: 'address must be a non-empty string if provided', code: 'invalid-body' },
+      { status: 400 },
+    );
+  }
+  if (nickname === undefined && archived === undefined && address === undefined) {
+    return NextResponse.json(
+      { error: 'At least one of nickname/archived/address must be provided', code: 'invalid-body' },
       { status: 400 },
     );
   }
 
   let row: PropertyRow | null = null;
+
+  if (address !== undefined) {
+    // The geocode fix-list's save path: correct the address, re-geocode through
+    // the anchor gate. The response includes lat/lng, so the caller can tell a
+    // fix that VERIFIED apart from one that is still refused.
+    const { data, error } = await updateProperty(customerId, propertyId, { address: address as string });
+    if (error) {
+      // A 23505 here is the address_key collision: the corrected address already
+      // exists as another property of the same customer. Surface it usefully.
+      if (/duplicate key|23505/.test(error.message)) {
+        return NextResponse.json(
+          { error: 'This customer already has a property with that address.', code: 'duplicate-address' },
+          { status: 409 },
+        );
+      }
+      console.error('[api/customers/:customerId/properties/:propertyId] address update failed:', error);
+      return NextResponse.json({ error: 'Failed to update this property' }, { status: 500 });
+    }
+    if (!data) return NextResponse.json({ error: 'Property not found' }, { status: 404 });
+    row = data;
+  }
 
   if (nickname !== undefined) {
     const { data, error } = await updateProperty(customerId, propertyId, { nickname });

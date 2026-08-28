@@ -349,6 +349,27 @@ function makeReqWithBody(body: Record<string, unknown>, retryDelivery = false): 
 }
 const params = Promise.resolve({ id: ID });
 
+// Ledger row 434: the send route now loads the design to check whether a mini
+// group bills fewer strings than it has drawn members.
+const { getDesignByQuoteMock } = vi.hoisted(() => ({ getDesignByQuoteMock: vi.fn() }));
+vi.mock('@/lib/designs', () => ({ getDesignByQuote: getDesignByQuoteMock }));
+
+function sceneWithGroup(billed: number, memberCount: number) {
+  const memberIds = Array.from({ length: memberCount }, (_, i) => `m${i}`);
+  return {
+    scene: {
+      yardsticks: [],
+      items: [
+        { id: 'g1', kind: 'miniGroup', yardstickId: null, memberIds, surface: 'railing', stringCount: billed },
+        ...memberIds.map((id) => ({
+          id, kind: 'strand', yardstickId: null, bulbType: 'mini', spacingIn: 6,
+          drawingStyle: 'strand', colorPattern: ['warm-white'], points: [0, 0, 1, 1], groupId: 'g1',
+        })),
+      ],
+    },
+  };
+}
+
 const FRESH_QUOTE = {
   id: ID,
   highlevel_opportunity_id: 'opp_1',
@@ -370,6 +391,61 @@ beforeEach(() => {
   process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
   resetEventDateFieldCacheForTests();
   getOperatorMock.mockResolvedValue({ email: 'operator@example.com' });
+  getDesignByQuoteMock.mockResolvedValue(null);
+});
+
+// Ledger row 434, Naldo's call. A mini group is priced from the count staff TYPE
+// on it, never from how many members are drawn (row 334 proved summing
+// over-bills). Row 872 let staff add members without that count changing. This
+// is the net for a missed editor warning: refuse a first send that would
+// under-bill until it is confirmed. NOT a customer-accuracy check, the drawn
+// design is a reference.
+describe('POST /api/quotes/[id]/send — under-billed mini groups (row 434)', () => {
+  beforeEach(() => {
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+  });
+
+  it('refuses a first send with 428 when a group bills fewer strings than are drawn', async () => {
+    getDesignByQuoteMock.mockResolvedValue(sceneWithGroup(1, 3));
+    const res = await POST(makeReqWithBody({}), { params });
+    expect(res.status).toBe(428);
+    const json = await res.json();
+    expect(json.code).toBe('underbilled-mini-groups');
+    expect(json.groups).toEqual([{ groupId: 'g1', surface: 'railing', billed: 1, drawn: 3 }]);
+    expect(json.error).toContain('reference');
+  });
+
+  it('sends when the confirm header is present', async () => {
+    getDesignByQuoteMock.mockResolvedValue(sceneWithGroup(1, 3));
+    const req = makeReqWithBody({});
+    (req as unknown as { headers: { get: (k: string) => string | null } }).headers = {
+      get: (k: string) => (k === 'x-confirm-underbilled' ? 'yes' : null),
+    };
+    const res = await POST(req, { params });
+    expect(res.status).not.toBe(428);
+  });
+
+  it('does not fire when billed and drawn agree', async () => {
+    getDesignByQuoteMock.mockResolvedValue(sceneWithGroup(3, 3));
+    const res = await POST(makeReqWithBody({}), { params });
+    expect(res.status).not.toBe(428);
+  });
+
+  // Billing MORE than is drawn is a normal staff judgement, not money at risk.
+  it('does not fire when a group bills MORE than is drawn', async () => {
+    getDesignByQuoteMock.mockResolvedValue(sceneWithGroup(8, 2));
+    const res = await POST(makeReqWithBody({}), { params });
+    expect(res.status).not.toBe(428);
+  });
+
+  // Courtesy check on staff's own billing: it must never block a send the
+  // operator asked for just because the design could not be loaded.
+  it('sends anyway when the design lookup throws', async () => {
+    getDesignByQuoteMock.mockRejectedValue(new Error('supabase down'));
+    const res = await POST(makeReqWithBody({}), { params });
+    expect(res.status).not.toBe(428);
+  });
 });
 
 describe('POST /api/quotes/[id]/send — quote build timing', () => {

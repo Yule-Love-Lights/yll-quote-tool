@@ -8,15 +8,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { insert, getSupabaseServiceClient } = vi.hoisted(() => {
-  const insert = vi.fn(async (_row: Record<string, unknown>) => ({
-    error: null as { code?: string; message: string } | null,
-  }));
+const { insert, state, getSupabaseServiceClient } = vi.hoisted(() => {
+  const state: { error: { code?: string; message: string } | null } = { error: null };
+  // The route now reads the inserted id back (`.insert(...).select('id')`) so the
+  // visit timeline can reference the raw event it came from.
+  const insert = vi.fn(async (_row: Record<string, unknown>) => ({ error: state.error }));
   return {
     insert,
+    state,
     getSupabaseServiceClient: vi.fn(() => ({ from: () => ({ insert }) })),
   };
 });
+
 
 /** The row handed to `insert` on the nth call. */
 function insertedRow(n = 0): Record<string, unknown> {
@@ -55,7 +58,7 @@ beforeEach(() => {
   prevSecret = process.env.BOUNCIE_WEBHOOK_SECRET;
   process.env.BOUNCIE_WEBHOOK_SECRET = SECRET;
   insert.mockClear();
-  insert.mockResolvedValue({ error: null });
+  state.error = null;
   getSupabaseServiceClient.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -220,14 +223,14 @@ describe('status codes, which drive Bouncie retries and auto-deactivation', () =
     // Bouncie documents duplicates as normal: overlapping real-time and periodic
     // streams, plus buffered dumps after a device regains signal. A non-2xx here
     // would make it retry a body that can never succeed.
-    insert.mockResolvedValueOnce({ error: { code: '23505', message: 'duplicate key' } });
+    state.error = { code: '23505', message: 'duplicate key' };
     const res = await POST(makeReq(tripStart, { authorization: SECRET }));
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ stored: false, reason: 'duplicate' });
   });
 
   it('503s on a real storage failure, so the event IS retried', async () => {
-    insert.mockResolvedValueOnce({ error: { code: '08006', message: 'connection failure' } });
+    state.error = { code: '08006', message: 'connection failure' };
     const res = await POST(makeReq(tripStart, { authorization: SECRET }));
     expect(res.status).toBe(503);
   });
