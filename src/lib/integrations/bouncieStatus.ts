@@ -24,9 +24,16 @@ export type BouncieStatus = {
     updatedAt: string | null;
     /** When the current access token expires. Past + no recent update = the grant is likely dead. */
     accessTokenExpiresAt: string | null;
-    /** Computed here, not in a component: tokens refresh all day while the
-     * poller runs, so an expiry more than a day stale means the grant died. */
+    /** Computed here, not in a component. Tokens refresh every ~2 minutes
+     * while the poller runs, so the honest rule is simply: an EXPIRED access
+     * token means the refreshes stopped and the grant is dead. An earlier
+     * draft gave this a 24-hour grace window, which meant a dead grant showed
+     * "Connected" for up to a day — the exact lie this page exists to prevent
+     * (S68 technical lens). */
     healthy: boolean;
+    /** More than one stored grant is an ambiguous state the auth layer refuses
+     * to guess about; the page should say so rather than silently pick one. */
+    multipleGrants: boolean;
   };
   vehicles: {
     label: string;
@@ -41,7 +48,7 @@ export async function loadBouncieStatus(now: Date = new Date()): Promise<Bouncie
   const out: BouncieStatus = {
     oauthConfigured: isBouncieOAuthConfigured(),
     webhookConfigured: isBouncieWebhookConfigured(),
-    grant: { present: false, accountEmail: null, updatedAt: null, accessTokenExpiresAt: null, healthy: false },
+    grant: { present: false, accountEmail: null, updatedAt: null, accessTokenExpiresAt: null, healthy: false, multipleGrants: false },
     vehicles: [],
     errors: [],
   };
@@ -57,7 +64,7 @@ export async function loadBouncieStatus(now: Date = new Date()): Promise<Bouncie
     .select('account_email, updated_at, access_token_expires_at')
     .eq('provider', 'bouncie')
     .order('updated_at', { ascending: false })
-    .limit(1)
+    .limit(2)
     .returns<{ account_email: string; updated_at: string | null; access_token_expires_at: string | null }[]>();
   if (grantRes.error) out.errors.push(`reading the grant: ${grantRes.error.message}`);
   const grant = grantRes.data?.[0];
@@ -69,7 +76,8 @@ export async function loadBouncieStatus(now: Date = new Date()): Promise<Bouncie
       accessTokenExpiresAt: grant.access_token_expires_at,
       healthy:
         grant.access_token_expires_at != null &&
-        Date.parse(grant.access_token_expires_at) > now.getTime() - 24 * 3600 * 1000,
+        Date.parse(grant.access_token_expires_at) > now.getTime(),
+      multipleGrants: (grantRes.data?.length ?? 0) > 1,
     };
   }
 

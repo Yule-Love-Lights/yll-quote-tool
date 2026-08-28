@@ -104,6 +104,13 @@ export default async function BouncieSettingsPage({
                 </span>{' '}
                 as <span className="font-medium text-gray-900">{status.grant.accountEmail}</span>
               </p>
+              {status.grant.multipleGrants && (
+                <p className="text-amber-700">
+                  More than one Bouncie connection is stored, which the system refuses to guess
+                  between. Reconnect below to make the right one current, and mention it so the
+                  extra row gets cleaned up.
+                </p>
+              )}
               <p>Token last refreshed: {fmt(status.grant.updatedAt)}</p>
               <p>Access token valid until: {fmt(status.grant.accessTokenExpiresAt)}</p>
               {!status.grant.healthy && (
@@ -122,6 +129,27 @@ export default async function BouncieSettingsPage({
               </p>
             </div>
           )}
+        </section>
+
+        <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-6">
+          <h2 className="text-sm font-semibold text-gray-900 mb-3">Webhook (event receiver)</h2>
+          <p className="text-sm text-gray-600">
+            {status.webhookConfigured ? (
+              <span>
+                <span className="font-medium" style={{ color: 'var(--brand-evergreen-3)' }}>
+                  Configured.
+                </span>{' '}
+                Bouncie can push events to this system (trip starts and ends, device
+                connect/disconnect, battery).
+              </span>
+            ) : (
+              <span>
+                <span className="font-medium text-gray-900">Not configured.</span> Set{' '}
+                <code className="text-xs">BOUNCIE_WEBHOOK_SECRET</code> in Vercel and register the
+                webhook on the Bouncie portal with the same value.
+              </span>
+            )}
+          </p>
         </section>
 
         <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-6">

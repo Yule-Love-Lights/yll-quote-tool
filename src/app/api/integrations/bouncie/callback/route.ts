@@ -86,6 +86,13 @@ export async function GET(req: NextRequest) {
     // hiding inside "failed". Diagnosed live on 2026-08-27, three 401s in a
     // row before the logs named it.
     if (/returned 401/.test(message)) return back('bad_credentials');
+    // Bouncie answered with a server error, or did not answer at all. Neither
+    // is anything the operator can fix; both are "wait and try again". The
+    // staff lens replayed exactly this: a non-401 failure used to fall through
+    // to "read the server log", which is not an instruction a non-developer
+    // can act on.
+    if (/returned 5\d\d/.test(message)) return back('bouncie_down');
+    if (err instanceof TypeError || /fetch failed|network/i.test(message)) return back('bouncie_unreachable');
     return back('failed');
   }
 }
