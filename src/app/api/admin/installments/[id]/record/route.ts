@@ -104,22 +104,28 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     );
   }
 
-  // A non-empty charge slot means a charge may already have gone through and
-  // nobody knows the outcome. Refuse ONCE, say what is in the slot, and let the
-  // operator confirm — this is the only exit from that state, so it must exist,
-  // but it must never be a single unthinking click.
+  // EVERY unconfirmed blocker is collected and returned TOGETHER, and each is
+  // acknowledged by its own flag.
+  //
+  // The first cut refused on the first blocker it hit and let the client send
+  // both acknowledgements from one click. On a payment carrying BOTH problems
+  // that meant the operator was shown only the charge-slot question, and their
+  // answer to it silently also answered a question about a wrong invoice figure
+  // they had never seen — the exact silent walk-in this route's header says must
+  // not happen. Worse, the comment sitting beside it claimed the server "checks
+  // them in sequence", which described an intent rather than the code, and is
+  // how it survived review. Caught by the adversarial delta-verify on the fix
+  // round; no test combined the two states, so nothing failed.
+  const blockers: { code: string; message: string }[] = [];
+
   const slot = describeChargeSlot(inst.valor_txn_id);
   if (slot.kind !== 'none' && input.confirmChargeSlot !== true) {
-    return NextResponse.json(
-      {
-        error:
-          'A charge attempt is recorded against this payment and its outcome is unknown. Check Valor for this customer, ' +
-          'amount and date first. If the money did arrive, confirm to record it; if it did not, clear the attempt instead.',
-        code: 'charge-slot-unresolved',
-        slot,
-      },
-      { status: 409 },
-    );
+    blockers.push({
+      code: 'charge-slot-unresolved',
+      message:
+        'A charge attempt is recorded against this payment and its outcome is unknown. Check Valor for this customer, ' +
+        'amount and date first. If the money did arrive, confirm to record it; if it did not, clear the attempt instead.',
+    });
   }
 
   // The invoice this payment will leave behind. Same predicate the runner uses,
@@ -137,26 +143,33 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       status: string;
       balance: number | string | null;
     }[];
-    const blocked = invoiceDriftBlockers(rows);
-    if (blocked.has(inst.quote_id)) {
+    if (invoiceDriftBlockers(rows).has(inst.quote_id)) {
       const inv = rows.find((r) => r.quote_id === inst.quote_id && r.status !== 'paid' && r.status !== 'cancelled');
       const amount = Number(inst.amount_usd);
       const stale = Number(inv?.balance ?? 0);
-      return NextResponse.json(
-        {
-          error:
-            `Recording this will raise what the customer has paid, but invoice #${inv?.invoice_number ?? '?'} will still ` +
-            `say $${stale.toFixed(2)} is owed instead of $${(stale - amount).toFixed(2)} — its balance is a stored figure ` +
-            `and nothing updates it yet (ledger row 450). The invoice list and the dashboard will be wrong by ` +
-            `$${amount.toFixed(2)} until someone fixes it by hand. Record the payment anyway?`,
-          code: 'invoice-would-drift',
-          invoiceNumber: inv?.invoice_number ?? null,
-          staleBalanceUsd: stale,
-          amountUsd: amount,
-        },
-        { status: 409 },
-      );
+      blockers.push({
+        code: 'invoice-would-drift',
+        message:
+          `Recording this will raise what the customer has paid, but invoice #${inv?.invoice_number ?? '?'} will still ` +
+          `say $${stale.toFixed(2)} is owed instead of $${(stale - amount).toFixed(2)} — its balance is a stored figure ` +
+          `and nothing updates it yet (ledger row 450). The invoice list and the dashboard will be wrong by ` +
+          `$${amount.toFixed(2)} until someone fixes it by hand. Record the payment anyway?`,
+      });
     }
+  }
+
+  if (blockers.length > 0) {
+    return NextResponse.json(
+      {
+        // `error` and `code` stay single-valued for any caller reading them, and
+        // `blockers` is the whole truth: a client must show EVERY message and
+        // send back only the flags for the ones it showed.
+        error: blockers.map((b) => b.message).join('\n\n'),
+        code: blockers[0]!.code,
+        blockers,
+      },
+      { status: 409 },
+    );
   }
 
   const operator = await getOperator();

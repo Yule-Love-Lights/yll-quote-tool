@@ -230,11 +230,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         if (outcome.reason === 'locked') {
           return NextResponse.json(
             {
-              error:
-                'This satellite trace is locked — the customer already approved the roofline it shows, so it ' +
-                'cannot be redrawn here. Re-calculating without changing the lines still works. To change the ' +
-                'trace itself: decline this quote, revive it, edit, and re-send. (A booked order is changed ' +
-                'through the amend flow.)',
+              // Row 444: a migrated order gets the remedy that exists. The
+              // generic wording below sends staff to decline/revive/re-send,
+              // which cannot clear the migration stamp.
+              error: outcome.migrated
+                ? sceneLockedMessage(true)
+                : 'This satellite trace is locked — the customer already approved the roofline it shows, so it ' +
+                  'cannot be redrawn here. Re-calculating without changing the lines still works. To change the ' +
+                  'trace itself: decline this quote, revive it, edit, and re-send. (A booked order is changed ' +
+                  'through the amend flow.)',
               code: SCENE_LOCKED_CODE,
             },
             { status: 409 },

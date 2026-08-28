@@ -974,7 +974,11 @@ export type UpdateSatelliteLinesOutcome =
   // from what is stored, i.e. this is a redraw or a deletion of the trace the
   // customer signed off on — which the portal renders. An identical re-write
   // (the ordinary re-Calculate) is NOT refused; see satelliteLinesEqual.
-  | { ok: false; reason: 'locked' }
+  // Row 444 carries `migrated` out here for the same reason its scene-write
+  // sibling does: the generic remedy ("decline, revive, re-send") is futile for
+  // a home.works order, and the delta-verify on the fix round caught that only
+  // one of the two consumers had been updated.
+  | { ok: false; reason: 'locked'; migrated?: boolean }
   | { ok: false; reason: 'unverified' }
   | { ok: false; reason: 'error' };
 
@@ -1003,7 +1007,7 @@ export async function updateDesignSatelliteLines(
       return { ok: false, reason: 'unverified' };
     }
     if (!satelliteLinesEqual(current?.satellite_lines ?? null, lines)) {
-      return { ok: false, reason: 'locked' };
+      return { ok: false, reason: 'locked', migrated: lock.migrated };
     }
     // Identical — fall through and let the no-op write land, so the caller's
     // ordinary success path is completely unchanged.

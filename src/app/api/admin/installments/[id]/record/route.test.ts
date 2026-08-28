@@ -206,3 +206,51 @@ describe('a linked invoice that will not move', () => {
     expect((await POST(req(), ctx)).status).toBe(200);
   });
 });
+
+
+describe('when BOTH problems apply at once', () => {
+  // The delta-verify's HIGH on the fix round: the first cut refused on the first
+  // blocker it hit, and the UI answered BOTH questions from that one click — so
+  // an operator confirming "I checked Valor" silently also confirmed a wrong
+  // invoice figure they had never been shown. No test combined the two states,
+  // which is exactly why it survived. These are that test.
+  const both = () => db(unpaid({ valor_txn_id: 'TXN-9911' }), [openInvoice()]);
+
+  it('returns EVERY blocker in one refusal, not just the first', async () => {
+    getSupabaseServiceClient.mockReturnValue(both());
+    const res = await POST(req(), ctx);
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { blockers?: { code: string; message: string }[]; error?: string };
+    expect(body.blockers?.map((b) => b.code).sort()).toEqual(['charge-slot-unresolved', 'invoice-would-drift']);
+    // The combined `error` carries both, so a caller that only reads that field
+    // still shows the operator everything.
+    expect(body.error).toContain('Check Valor');
+    expect(body.error).toContain('#1010');
+    expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+
+  it('still refuses when only ONE of the two is acknowledged', async () => {
+    getSupabaseServiceClient.mockReturnValue(both());
+    const res = await POST(req({ confirmChargeSlot: true }), ctx);
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { blockers?: { code: string }[] };
+    expect(body.blockers?.map((b) => b.code)).toEqual(['invoice-would-drift']);
+    expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+
+  it('still refuses when only the OTHER one is acknowledged', async () => {
+    getSupabaseServiceClient.mockReturnValue(both());
+    const res = await POST(req({ confirmInvoiceDrift: true }), ctx);
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { blockers?: { code: string }[] };
+    expect(body.blockers?.map((b) => b.code)).toEqual(['charge-slot-unresolved']);
+    expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+
+  it('records only once BOTH are acknowledged', async () => {
+    getSupabaseServiceClient.mockReturnValue(both());
+    const res = await POST(req({ confirmChargeSlot: true, confirmInvoiceDrift: true }), ctx);
+    expect(res.status).toBe(200);
+    expect(markInstallmentPaid).toHaveBeenCalled();
+  });
+});

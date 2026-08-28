@@ -72,7 +72,7 @@ export default function InstallmentsPage() {
   // charge slot forces before we will write it down.
   const [recording, setRecording] = useState<string | null>(null);
   const [confirmSlot, setConfirmSlot] = useState<
-    { id: string; message: string; who: string; code: string } | null
+    { id: string; who: string; blockers: { code: string; message: string }[] } | null
   >(null);
   const now = new Date();
 
@@ -101,15 +101,21 @@ export default function InstallmentsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: 'manual', ...opts }),
       });
-      const json = (await res.json()) as { error?: string; code?: string };
+      const json = (await res.json()) as {
+        error?: string;
+        code?: string;
+        blockers?: { code: string; message: string }[];
+      };
       if (!res.ok) {
-        // Two refusals have a next step rather than being errors: a charge
+        // Some refusals have a next step rather than being errors: a charge
         // attempt whose outcome nobody knows, and a linked invoice whose stored
-        // balance will not move with the payment. Both ask before writing.
-        // Premerge staff lens MED: the confirm has to say WHICH payment — it
+        // balance will not move with the payment. The server returns EVERY one
+        // that applies, and this shows all of them — the delta-verify caught an
+        // earlier cut that displayed one question and answered both.
+        // Premerge staff lens MED: it also has to say WHICH payment, since it
         // renders once, above a list of every plan.
-        if (json.code === 'charge-slot-unresolved' || json.code === 'invoice-would-drift') {
-          setConfirmSlot({ id: installmentId, message: json.error ?? '', who, code: json.code });
+        if (json.blockers?.length) {
+          setConfirmSlot({ id: installmentId, who, blockers: json.blockers });
           return;
         }
         setError(json.error ?? 'Could not record that payment');
@@ -207,27 +213,32 @@ export default function InstallmentsPage() {
             style={{ borderColor: '#b45309', color: 'var(--op-text)' }}
           >
             <p className="mb-1 font-semibold">{confirmSlot.who}</p>
-            <p className="mb-2">{confirmSlot.message}</p>
+            {confirmSlot.blockers.map((b) => (
+              <p key={b.code} className="mb-2">
+                {b.message}
+              </p>
+            ))}
             <div className="flex gap-3">
               <button
                 type="button"
                 onClick={() =>
                   void recordPayment(confirmSlot.id, confirmSlot.who, {
-                    // Carry BOTH acknowledgements once one has been given: the
-                    // server checks them in sequence, and re-asking the same
-                    // question after the operator has answered it is how a
-                    // careful confirm turns into a click-through.
-                    confirmChargeSlot: true,
-                    confirmInvoiceDrift: true,
+                    // ONLY the acknowledgements for the questions actually on
+                    // screen. Sending both from one click is what the delta-
+                    // verify caught: an operator answering "I checked Valor"
+                    // was also silently answering a question about a wrong
+                    // invoice figure they had never been shown.
+                    confirmChargeSlot: confirmSlot.blockers.some((b) => b.code === 'charge-slot-unresolved'),
+                    confirmInvoiceDrift: confirmSlot.blockers.some((b) => b.code === 'invoice-would-drift'),
                   })
                 }
                 disabled={recording === confirmSlot.id}
                 className="text-xs font-semibold underline disabled:opacity-50"
                 style={{ color: '#b45309' }}
               >
-                {confirmSlot.code === 'invoice-would-drift'
-                  ? 'Record it anyway'
-                  : 'I checked Valor — the money arrived, record it'}
+                {confirmSlot.blockers.some((b) => b.code === 'charge-slot-unresolved')
+                  ? 'I checked Valor — record this payment'
+                  : 'Record it anyway'}
               </button>
               <button
                 type="button"
