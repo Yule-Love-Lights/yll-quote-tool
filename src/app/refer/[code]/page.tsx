@@ -75,11 +75,18 @@ function firstNameOf(name: string | null): string {
   const first = name.trim().split(/\s+/)[0];
   if (!first) return 'A neighbor';
   // Names arrive from GoHighLevel however the customer or a staffer typed
-  // them, and lowercase is common ("david"). This is the first word of a link
-  // preview a stranger sees, so lift the first letter only — never lowercase
-  // the rest, which would wreck McDonald, DeSantis, or an all-caps surname.
+  // them. This is the first word of a link preview a stranger sees, so it is
+  // worth normalising the two common bad shapes and nothing else.
+  //   "david"    -> "David"  (60% of the 52 code-holders in prod today)
+  //   "DAVID"    -> "David"  (caps-lock form fill; reads as shouting in a text)
+  //   "McKenzie" -> unchanged (mixed case is neither all-upper nor all-lower)
+  //   "(631)"    -> unchanged (no letters, so the all-caps test cannot fire)
+  // Never blanket-lowercase the tail: that would wreck McDonald and DeSantis.
   // Live dev check 2026-08-28 rendered "david thinks you'd love this".
-  return first.charAt(0).toUpperCase() + first.slice(1);
+  const isAllCaps =
+    first.length > 1 && first === first.toUpperCase() && first !== first.toLowerCase();
+  const base = isAllCaps ? first.toLowerCase() : first;
+  return base.charAt(0).toUpperCase() + base.slice(1);
 }
 
 // ─── Link preview (Open Graph) ──────────────────────────────────────────────
@@ -110,6 +117,10 @@ export async function generateMetadata({
   const { code } = await params;
   // A bad code must still return usable metadata: the page's own notFound()
   // owns that case, and a throw here would break the whole response.
+  // Narrower than it looks: getReferralByCode catches and logs its own
+  // PostgREST errors and returns null, so a database outage never reaches
+  // this catch. It guards a synchronous throw (a missing Supabase config,
+  // a client-construction fault), which is the only way one gets here.
   const referrer = await getReferralByCode(code).catch(() => null);
   const firstName = referrer ? firstNameOf(referrer.name) : null;
 
@@ -301,8 +312,8 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
                 Good toward any Yule Love Lights service: holiday, permanent, event and wedding
-                lighting, or bistro. Their credit is applied once you book, and it stays good
-                for {REFERRAL_CREDIT_EXPIRY_YEARS} years.
+                lighting, or bistro. Tell us {firstName} sent you when you book and we credit
+                their account, good for {REFERRAL_CREDIT_EXPIRY_YEARS} years.
               </p>
             </div>
           </div>

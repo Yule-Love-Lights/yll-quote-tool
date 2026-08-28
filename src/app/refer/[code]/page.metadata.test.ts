@@ -57,9 +57,13 @@ describe('refer/[code] link preview', () => {
     expect(images[0].width).toBe(1200);
     expect(images[0].height).toBe(630);
     expect(images[0].alt).toBeTruthy();
-    // Next's resolved Twitter metadata is a discriminated union; `card` only
-    // exists on the narrowed variants, so name the shape we assert on.
-    expect((meta.twitter as { card?: string } | null)?.card).toBe('summary_large_image');
+    // Next's resolved Twitter metadata is a discriminated union; `card` and
+    // `images` only exist on the narrowed variants, so name the shape.
+    const tw = meta.twitter as { card?: string; images?: string[] } | null;
+    expect(tw?.card).toBe('summary_large_image');
+    // The test NAME promises both surfaces carry the card image, so assert it
+    // on both rather than checking og and taking twitter on trust.
+    expect(tw?.images?.[0]).toBe(images[0].url);
   });
 
   it('points canonical + og:url at this referral code', async () => {
@@ -67,6 +71,27 @@ describe('refer/[code] link preview', () => {
     const meta = await generateMetadata({ params: params('AB12CD34') });
     expect(meta.alternates?.canonical).toMatch(/\/refer\/AB12CD34$/);
     expect(meta.openGraph?.url).toMatch(/\/refer\/AB12CD34$/);
+  });
+
+  it('capitalizes a lowercase first name, the live bug this fix exists for', async () => {
+    // Production rendered "david thinks you'd love this" before this fix, and
+    // 31 of the 52 customers holding a code today have a lowercase first name.
+    getReferralByCode.mockResolvedValue({ name: 'david', customerId: 'c1', photoOptout: false });
+    const meta = await generateMetadata({ params: params('AB12CD34') });
+    expect(meta.title).toBe("David thinks you'd love this");
+  });
+
+  it('calms an ALL-CAPS name without wrecking an intentionally mixed-case one', async () => {
+    getReferralByCode.mockResolvedValue({ name: 'DAVID SMITH', customerId: 'c1', photoOptout: false });
+    await expect(generateMetadata({ params: params('AB12CD34') })).resolves.toMatchObject({
+      title: "David thinks you'd love this",
+    });
+    // McKenzie is neither all-upper nor all-lower, so it must pass through
+    // untouched: blanket-lowercasing the tail would wreck it.
+    getReferralByCode.mockResolvedValue({ name: 'McKenzie Todd', customerId: 'c1', photoOptout: false });
+    await expect(generateMetadata({ params: params('AB12CD34') })).resolves.toMatchObject({
+      title: "McKenzie thinks you'd love this",
+    });
   });
 
   it('is kept out of search: the URL embeds a personal code', async () => {

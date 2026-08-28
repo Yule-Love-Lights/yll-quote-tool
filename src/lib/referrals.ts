@@ -20,6 +20,7 @@
 // exists for that lead and gets booked.
 
 import { after } from 'next/server';
+import { cache } from 'react';
 import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
 import { upsertContactCustomField, isHighLevelConfigured, sendSms, sendEmail } from './integrations/highlevel';
@@ -255,8 +256,17 @@ export async function stampReferralLinkOnContact(hlContactId: string | null, cod
 }
 
 /** Resolve a /refer/<code> landing page to its referrer. Null on a bad/unknown
- *  code or when Supabase isn't configured. */
-export async function getReferralByCode(
+ *  code or when Supabase isn't configured.
+ *
+ *  cache()-wrapped because the refer page calls this TWICE per request —
+ *  once in generateMetadata for the link-preview card, once in the page
+ *  component itself. Next's automatic request memoization covers `fetch()`
+ *  calls only, not arbitrary async functions, so without this every page
+ *  view costs two Supabase round trips on a public, unrate-limited route.
+ *  Same reason and same idiom as getOperator (src/lib/auth/supabaseServer.ts).
+ *  cache() is a pass-through no-op outside an RSC render, so the API-route
+ *  caller and the unit tests are unaffected. */
+export const getReferralByCode = cache(async function getReferralByCode(
   code: string,
 ): Promise<{ customerId: string; name: string | null; photoOptout: boolean } | null> {
   const sb = svc();
@@ -273,7 +283,7 @@ export async function getReferralByCode(
   return data
     ? { customerId: data.id, name: data.name, photoOptout: data.referral_photo_optout ?? false }
     : null;
-}
+});
 
 // ─── Create ─────────────────────────────────────────────────────────────────
 
