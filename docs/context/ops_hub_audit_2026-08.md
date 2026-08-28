@@ -161,8 +161,10 @@ first real use, not an extension of a proven system.
   on with zero policies, partial-unique open-row guards, CHECK constraints
   tying required fields to state, `is_test` from day one, `updated_at` trigger
   in the same migration, FULL-SCHEMA.sql updated in the same PR.
-- Epic #217 as the calls vehicle: it is already designed with binding
-  acceptance criteria; do not redesign it from scratch.
+- Epic #217's commitment-extraction design and its binding money/audit
+  acceptance criteria, inside the wider calls merge (workstream D). Its
+  display half (Telegram digest surfaces) is superseded by the task-list
+  ruling; do not treat #217 alone as the calls plan.
 
 ## 4. What must not be copied from old Ops Hub work
 
@@ -284,7 +286,9 @@ queue (only if it feeds the Inbox). Cut: everything live-call (Twilio,
 softphone, media bridge, phone login), call console, screen pop, contact
 search, the rest of the second mile. Fresh tables in the Quote Tool database,
 no data migration. The Quote Tool's cron infrastructure owns the timers the
-copilot always left off. Epic #217's commitment extraction survives inside
+copilot always left off; owning them means the schedule lives in this repo,
+and actually turning each timer on remains a separate explicit decision per
+the plan doc's do-not-enable list. Epic #217's commitment extraction survives inside
 this scope, but its display design (Telegram digest surfaces) is superseded
 by the task-list ruling; its binding money/audit criteria still apply. The
 HighLevel transcript endpoint may replace Deepgram, unproven until the probe
@@ -338,8 +342,9 @@ Workstream B: `/advertising` (worker home, capture, my placements, earnings),
 admin review pages (map/list, placement detail, bulk accept), and
 `/api/advertising/**` (capture upload, my-placements, earnings; admin
 accept/reject/correct). Workstream C: `/crew` (My Day) and `/api/crew/**`
-(today, time status, later arrive/depart/complete). Workstream D: per #217
-(bot/digest surfaces first, a small review UI later). Every new page and route
+(today, time status, later arrive/depart/complete). Workstream D: the merged coaching
+and tasks surfaces (task list, feedback cards, call review, scoreboard,
+practice); the exact route/page set is the merge-plan session's deliverable. Every new page and route
 lands in the proxy/operatorGate allowlists in the same PR and is verified
 logged out, per the standing pitfall.
 

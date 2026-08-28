@@ -94,7 +94,7 @@ The preferred first direction is to keep office work inside the existing Cool To
 
 Resolved 2026-08-27: that condition is met. The Quote Tool has no task container (the follow-up strip is one quote-send reminder), and extracted call commitments need somewhere to live. Naldo ruled that the call copilot's Office Tasks feature moves across as the single task list, fed by manual entry, call commitments, and the follow-up strip. See the Call Copilot teardown and `ops_hub_audit_2026-08.md`. The spec below governs the ported version.
 
-If a durable Office Tasks model is added later, it should start manual-only and include:
+The ported Office Tasks model (the copilot's, moved across per the resolution above) should start manual-only and include:
 
 - 24-hour default due time.
 - Statuses: open, blocked, completed, dismissed.
@@ -331,7 +331,7 @@ Do not:
 
 4. Define Office work.
    - Keep customer and follow-up work inside existing Office areas, especially Inbox.
-   - Only add a separate Office Tasks model if necessary.
+   - Port the copilot's Office Tasks as the single task list (resolved 2026-08-27; see the Office / Operator Workflow section above).
 
 5. Design Advertising.
    - Write the product/privacy/pay spec before schema work.
@@ -360,10 +360,10 @@ Do not:
 
 ## Open Questions
 
-- Should Inbox become the full Operations Work Queue, or are there manual task types that require a separate Office Tasks model?
+- ANSWERED 2026-08-27: Inbox stays the message queue; the copilot's Office Tasks ports across as the single task list (see the resolution in the Office / Operator Workflow section).
 - What door hanger pay rule should exist later, if any?
-- Which HighLevel call data still matters enough to rebuild?
-- Does automatic call recording and transcript ingestion need durable background workers?
+- ANSWERED 2026-08-27: the teardown's keep-list defines which call features matter (grading pipeline, tasks, practice, scoreboard, personal-details scan); see `ops_hub_audit_2026-08.md` workstream D.
+- Does automatic call recording and transcript ingestion need durable background workers? (Still open; the merge-plan session decides after the HighLevel transcript probe.)
 
 ## Workstream Prompts
 
