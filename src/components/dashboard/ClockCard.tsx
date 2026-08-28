@@ -56,8 +56,44 @@ type Load =
   | { status: 'signedout' }
   | { status: 'unlinked' }
   | { status: 'inactive' }
+  | { status: 'is_advertising' }
   | { status: 'error' }
   | { status: 'ready'; state: ClockState };
+
+/**
+ * Maps a 403's `reason` body field (from getOfficeClockCaller/officeDenialResponse,
+ * src/lib/auth/officeClock.ts) to the card's blocked-state status. Pure, so the
+ * classification is testable without a DOM (same reasoning as actionsFor above).
+ *
+ * ⚠️ advertising role hardening fix round: 'is_advertising' MUST be its own named
+ * branch here, not fall through to the 'unlinked' default. Before this, EVERY
+ * reason other than 'inactive' (including 'is_advertising', and the pre-existing
+ * 'is_crew') collapsed into 'unlinked', which renders "ask an admin to set it up" —
+ * a claim that will never be true for an advertising account, since there is no
+ * admin action that turns one into a linkable staffer. 'is_crew' is left on the
+ * default for now (out of scope for this fix; in practice a crew session never
+ * reaches this route in the first place, since the perimeter confines it to the
+ * crew API before getOfficeClockCaller ever runs) — narrowing that one is a
+ * separate, deliberate follow-up, not a silent side effect of this change.
+ */
+export function statusFor403(reason: string | undefined): 'unlinked' | 'inactive' | 'is_advertising' {
+  if (reason === 'inactive') return 'inactive';
+  if (reason === 'is_advertising') return 'is_advertising';
+  return 'unlinked';
+}
+
+/**
+ * The copy for the 'is_advertising' blocked state. Pure and separately testable
+ * (same reasoning as statusFor403 above) so a future edit can't silently make
+ * this honest-but-plain message drift back into an "ask an admin" claim that
+ * doesn't apply to this population.
+ */
+export function advertisingBlockedCopy(): { headline: string; title: string } {
+  return {
+    headline: 'Time clock — not available',
+    title: 'Advertising accounts do not use the staff clock.',
+  };
+}
 
 /** The compact pill the header shows in every state. */
 function Pill({ children }: { children: React.ReactNode }) {
@@ -90,12 +126,13 @@ export function ClockCard() {
         if (cancelled) return;
         if (res.status === 401) return setLoad({ status: 'signedout' });
         if (res.status === 403) {
-          // Two 403s look the same by status. The body's reason tells apart a
-          // login that was never linked from one that was deactivated, which read
-          // very differently to the person staring at the header.
+          // Two (now three) 403s look the same by status. The body's reason
+          // tells apart a login that was never linked, one that was
+          // deactivated, and one that has no clock surface at all — see
+          // statusFor403's doc comment for why each needs its own branch.
           const body = (await res.json().catch(() => ({}))) as { reason?: string };
           if (cancelled) return;
-          return setLoad({ status: body.reason === 'inactive' ? 'inactive' : 'unlinked' });
+          return setLoad({ status: statusFor403(body.reason) });
         }
         if (!res.ok) return setLoad({ status: 'error' });
         const state = (await res.json()) as ClockState;
@@ -127,7 +164,7 @@ export function ClockCard() {
         // messaging instead of leaving stale live-looking buttons that keep
         // failing with a generic error.
         if (res.status === 403) {
-          setLoad({ status: body?.reason === 'inactive' ? 'inactive' : 'unlinked' });
+          setLoad({ status: statusFor403(body?.reason) });
           return;
         }
         setError(body?.error ?? 'Something went wrong. Try again.');
@@ -174,6 +211,21 @@ export function ClockCard() {
         >
           refresh
         </button>
+      </Pill>
+    );
+  }
+
+  if (load.status === 'is_advertising') {
+    // No refresh button here, unlike unlinked/inactive: those are transient
+    // misconfigurations an admin can fix (link the login, reactivate the
+    // record), so retrying makes sense. An advertising login never becomes a
+    // staffer — this is a structural, permanent state, not a "fix me" one.
+    const copy = advertisingBlockedCopy();
+    return (
+      <Pill>
+        <span className="text-sm" style={dim} title={copy.title}>
+          {copy.headline}
+        </span>
       </Pill>
     );
   }

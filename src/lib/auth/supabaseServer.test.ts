@@ -26,6 +26,10 @@ import {
   requireAdmin,
   withAuthFetchTimeout,
   authGateEngaged,
+  isCrewAccount,
+  isAdvertisingAccount,
+  CREW_ROLE,
+  ADVERTISING_ROLE,
 } from './supabaseServer';
 
 beforeEach(() => {
@@ -110,6 +114,56 @@ describe('getOperator', () => {
     delete process.env.SUPABASE_URL;
     userRef.current = { id: 'u1', app_metadata: { role: 'admin' } };
     expect(await getOperator()).toBeNull();
+  });
+
+  // Advertising role hardening: mirrors the crew exclusion above. Naldo's
+  // 2026-08-27 ruling put advertising in the same auth store as operator/crew,
+  // with its own marker. Without this exclusion, `roleOf` would classify
+  // 'advertising' as 'operator' and hand it the operator surface (customers,
+  // quotes, everything).
+  it('returns null for an advertising login, even though roleOf would call it operator', async () => {
+    userRef.current = { id: 'adv-1', email: 'ads@x.com', app_metadata: { role: ADVERTISING_ROLE } };
+    expect(await getOperator()).toBeNull();
+  });
+});
+
+// ─── isAdvertisingAccount — the advertising population seam ─────────────────
+// Mirrors isCrewAccount exactly (row: advertising role hardening, 2026-08-27
+// ruling). Advertising is a SEPARATE population in the same shared auth store,
+// carved out by its own marker rather than a third OperatorRole value.
+describe('isAdvertisingAccount', () => {
+  it('recognizes the literal advertising marker', () => {
+    expect(isAdvertisingAccount({ role: ADVERTISING_ROLE })).toBe(true);
+    expect(isAdvertisingAccount({ role: 'advertising' })).toBe(true);
+  });
+
+  it('rejects everything else, including crew and admin', () => {
+    for (const meta of [
+      { role: 'operator' },
+      { role: 'admin' },
+      { role: CREW_ROLE },
+      {},
+      null,
+      undefined,
+      { role: 'Advertising' }, // case-sensitive
+      { role: 'ADVERTISING' },
+      { role: true },
+      { role: { nested: 'advertising' } }, // can't spoof via an object
+      'advertising', // app_metadata isn't a bare string
+    ]) {
+      expect(isAdvertisingAccount(meta)).toBe(false);
+    }
+  });
+
+  it('roleOf still collapses advertising metadata to operator — that is exactly why getOperator must check isAdvertisingAccount rather than trust roleOf', () => {
+    expect(roleOf({ role: ADVERTISING_ROLE })).toBe('operator');
+    expect(roleOf({ role: ADVERTISING_ROLE })).not.toBe('admin');
+    expect(isAdvertisingAccount({ role: ADVERTISING_ROLE })).toBe(true);
+  });
+
+  it('advertising and crew are mutually exclusive markers', () => {
+    expect(isCrewAccount({ role: ADVERTISING_ROLE })).toBe(false);
+    expect(isAdvertisingAccount({ role: CREW_ROLE })).toBe(false);
   });
 });
 
