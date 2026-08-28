@@ -16,7 +16,7 @@ The scrapped separate-Hub direction left artifacts on master. Naldo had them str
 
 - `docs/context/OPERATIONS_HUB_CONTRACT.md` (v1.6.0-draft) and its OpenAPI schema folder. Deleted.
 - The AGENTS.md "Operations Hub contract" ownership row. Deleted.
-- The three machine routes `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`, plus `src/lib/shiftBreaks.ts`. Deleted. Git history holds them if a Crew My Day build wants a starting point.
+- The three machine routes `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`. Deleted. Git history holds them if a Crew My Day build wants a starting point. (`src/lib/shiftBreaks.ts` was NOT deleted; #1027 only reworded a comment in it. The whole internal crew/time data layer is alive.)
 
 One copy survives outside this repo: the contract's byte-identical mirror in the `yll-call-copilot` repo (`docs/operations-hub/INTEGRATION-CONTRACT.md`). It is now stale and historical. Old chats, branches, and that mirror may still present the contract as live; treat all of it as history, not current truth.
 
@@ -408,7 +408,7 @@ Work inside Yule-Love-Lights/yll-quote-tool, also called the Cool Tool. Crew and
 
 Audit the current crew/install job actions, Telegram workflows, assignments, shifts, breaks, job segments, and remaining /api/ops routes.
 
-The old /api/ops/v1 job routes (arrive, depart, complete) and src/lib/shiftBreaks.ts were deleted with the scrapped separate Operations Hub (PR #1027); git history holds them if useful. job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
+The old /api/ops/v1 job routes (arrive, depart, complete) were deleted with the scrapped separate Operations Hub (PR #1027); git history holds them if useful. The internal crew/time data layer (shifts.ts, shiftBreaks.ts, jobSegments.ts, crewAuth.ts) was NOT deleted and is live. job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
 
 Plan an optional app-based My Day view for crew/installers. Telegram will likely remain the main workflow, but the app should exist as an option and as a foundation for future workers.
 
@@ -479,7 +479,7 @@ The Cool Tool remains the source of truth for:
 Past Operations Hub chats, branches, migrations, and docs are context only. Do not treat them as current truth until the current repo proves it.
 
 SCRAPPED HUB LEFTOVERS
-The separate-Hub direction was scrapped and its leftovers were removed from this repo in PR #1027 (ledger row 433, closed): the OPERATIONS_HUB_CONTRACT.md contract doc and its schema folder, the AGENTS.md "Operations Hub contract" ownership row, the three /api/ops/v1/jobs/[id] machine routes, and src/lib/shiftBreaks.ts. Git history holds the deleted routes if a Crew My Day build wants a starting point. A stale byte-identical mirror of the contract still exists in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md). Old chats, branches, and that mirror may still present the contract as live. Treat all of it as history, not current truth.
+The separate-Hub direction was scrapped and its leftovers were removed from this repo in PR #1027 (ledger row 433, closed): the OPERATIONS_HUB_CONTRACT.md contract doc and its schema folder, the AGENTS.md "Operations Hub contract" ownership row, and the three /api/ops/v1/jobs/[id] machine routes. The internal crew/time data layer (shifts, breaks, job segments, crew auth) was NOT deleted and is live. Git history holds the deleted routes if a Crew My Day build wants a starting point. A stale byte-identical mirror of the contract still exists in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md). Old chats, branches, and that mirror may still present the contract as live. Treat all of it as history, not current truth.
 
 FIRST TASK
 This first session is audit and planning only.
