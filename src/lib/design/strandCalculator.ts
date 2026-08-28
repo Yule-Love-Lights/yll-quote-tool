@@ -311,10 +311,19 @@ export function calculateFootage(input: StrandCalculatorInput): number | null {
       return squareColumnGarlandFootage(input);
     case 'spruceWrap':
       return spruceWrapFootage(input);
-    default:
-      // Defensive only — TS exhaustiveness covers every real call site, but
-      // this guards a malformed runtime value (e.g. JSON from outside the
-      // type system) from falling through to an implicit `undefined`.
+    default: {
+      // `_exhaustive: never` makes this a COMPILE-TIME check: if a 6th
+      // model is ever added to `StrandCalculatorInput` without a case
+      // above, `input` here is no longer narrowed to `never` and `tsc`
+      // fails right on this line. That is separate from the runtime
+      // behavior below it — a malformed value from outside the type system
+      // (e.g. unvalidated JSON, or a test's `as unknown as` cast) still
+      // reaches this branch at runtime despite the type check, and still
+      // returns `null` rather than falling through to an implicit
+      // `undefined`.
+      const _exhaustive: never = input;
+      void _exhaustive;
       return null;
+    }
   }
 }
