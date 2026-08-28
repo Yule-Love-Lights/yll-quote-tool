@@ -488,8 +488,8 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseClient: () => null,
 }));
 
+import { etMidnightAfter } from '@/lib/opsMidnightClose';
 import {
-  ANCHORED_ITEM_RESOLVABLE_STATUS,
   closeFollowUp,
   closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
@@ -500,7 +500,6 @@ import {
   excludeLegacyRebookItems,
   findOrphanedFollowUpItems,
   findViewOnlyFollowUpItems,
-  getItemStatus,
   getGmailWritebackRetryTarget,
   getReopenCounts,
   isColorRequestExternalId,
@@ -513,11 +512,9 @@ import {
   listOpenItems,
   listEscalatableItems,
   listPendingColorRequests,
-  markFollowUpDone,
   markItemCompleted,
   markItemFollowed,
   markItemHandledLocal,
-  shouldResolveAnchoredItem,
   needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
@@ -1738,6 +1735,10 @@ describe('listInWorks — parallel fetch (#185)', () => {
         data: [{ id: QUOTE_UUID, approval_snapshot: { pendingColorRequest: { label: "Staff's pick" } } }],
         error: null,
       },
+      // PR #1005: the awaiting bucket now feeds the due-follow-up lookup too,
+      // so this router must answer for follow_ups even with an empty handled
+      // bucket — it short-circuited on an empty id list before.
+      follow_ups: { data: [], error: null },
     });
     sbRef.current = {
       from: (table: string) => {
@@ -1780,6 +1781,10 @@ describe('listInWorks — parallel fetch (#185)', () => {
     let inboxCallIndex = 0;
     const router = makeTableRouter({
       quotes: { data: [{ id: QUOTE_UUID, approval_snapshot: {} }], error: null },
+      // PR #1005: the awaiting bucket now feeds the due-follow-up lookup too,
+      // so this router must answer for follow_ups even with an empty handled
+      // bucket — it short-circuited on an empty id list before.
+      follow_ups: { data: [], error: null },
     });
     sbRef.current = {
       from: (table: string) => {
@@ -1819,6 +1824,10 @@ describe('listInWorks — parallel fetch (#185)', () => {
     let inboxCallIndex = 0;
     const router = makeTableRouter({
       quotes: { data: null, error: { message: 'connection reset' } },
+      // PR #1005: the awaiting bucket now feeds the due-follow-up lookup too,
+      // so this router must answer for follow_ups even with an empty handled
+      // bucket — it short-circuited on an empty id list before.
+      follow_ups: { data: [], error: null },
     });
     sbRef.current = {
       from: (table: string) => {
@@ -2229,6 +2238,108 @@ describe('listInWorks — parallel fetch (#185)', () => {
   });
 });
 
+// ─── listInWorks — the awaiting bucket's "Follow-up due" pill (PR #1005) ────
+//
+// PR #1005 deleted the "Follow-ups due today" strip from the top of /inbox
+// because every one of its rows was already rendered further down the same
+// page. 31 of the 33 live nags were anchored to items in the AWAITING bucket
+// (measured against prod 2026-08-27), so the strip's one non-duplicated
+// signal — WHICH rows have a follow-up actually due — moves onto those rows
+// as a pill rather than being dropped.
+
+describe('listInWorks — awaiting rows carry the follow-up-due pill (PR #1005)', () => {
+  const awaitingRow = {
+    id: 'i-aw',
+    source: 'quotetool',
+    channel: 'app',
+    preview: 'quote sent',
+    followed_up_at: '2026-07-20T10:00:00Z',
+    handled_at: null,
+    status: 'handled',
+    external_id: 'q-1',
+    dashboard_contacts: { display_name: 'Awaiting Amy' },
+  };
+  const NOW = new Date('2026-08-27T15:00:00Z');
+
+  /** Routes the two inbox_items reads by call order and captures the
+   *  follow_ups builder's own filter calls, which the due-bound test below
+   *  asserts on directly. */
+  function makeSb(opts: { followUpRows: { inbox_item_id: string }[]; quoteRows?: unknown[] }) {
+    let inboxCallIndex = 0;
+    const followUps = makeBuilder({ data: opts.followUpRows, error: null });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [awaitingRow] : [], error: null }).builder;
+        }
+        if (table === 'follow_ups') return followUps.builder;
+        if (table === 'quotes') return makeBuilder({ data: opts.quoteRows ?? [], error: null }).builder;
+        throw new Error(`unexpected table in test: ${table}`);
+      },
+    };
+    return followUps;
+  }
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('flags an awaiting row whose item has a due follow-up', async () => {
+    makeSb({ followUpRows: [{ inbox_item_id: 'i-aw' }] });
+
+    const result = await listInWorks(200, NOW);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting[0].needsLookReason).toBe('Follow-up due');
+  });
+
+  it('leaves an awaiting row unflagged when nothing is due for it', async () => {
+    makeSb({ followUpRows: [] });
+
+    const result = await listInWorks(200, NOW);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting[0].needsLookReason).toBeNull();
+  });
+
+  // The scoping decision, pinned: an awaiting row gets ONLY rule (c). Rule (a)
+  // ("Quote unanswered") would be true of nearly every row in this bucket by
+  // construction — following up on a sent, unapproved quote is what the bucket
+  // IS — so surfacing it here would flag ~everything and mean nothing. This
+  // row's quote is deliberately 'sent' (rule (a)'s trigger) with no due
+  // follow-up: the pill must stay null.
+  it('never applies the quote-unanswered rule to an awaiting row', async () => {
+    makeSb({
+      followUpRows: [],
+      quoteRows: [{ id: 'q-1', status: 'sent', quote_sent_at: '2026-08-01T00:00:00Z', customer_approved_at: null, deposit_paid_at: null, viewed_at: null }],
+    });
+
+    const result = await listInWorks(200, NOW);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting[0].needsLookReason).toBeNull();
+  });
+
+  // A nag is created PENDING the moment a quote is sent, due three days later,
+  // so "pending" alone would light this pill on a quote sent an hour ago. The
+  // bound is the same ET start-of-tomorrow listDueFollowUps uses.
+  it('asks the DB only for follow-ups already due, not merely pending', async () => {
+    const followUps = makeSb({ followUpRows: [{ inbox_item_id: 'i-aw' }] });
+
+    await listInWorks(200, NOW);
+
+    const ltCall = followUps.calls.find((c) => c.method === 'lt');
+    expect(ltCall).toBeDefined();
+    expect(ltCall!.args[0]).toBe('due_at');
+    expect(ltCall!.args[1]).toBe(etMidnightAfter(NOW).toISOString());
+    expect(followUps.calls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'pending')).toBe(true);
+  });
+});
 // ─── listOpenItems — truncation signal (WT-41) ───────────────────────────────
 //
 // Above the page cap, listOpenItems returns only the oldest `limit` items (by
@@ -2999,8 +3110,8 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
   /** Minimal stateful fake for the follow_ups table: supports the
    *  select().eq().eq().eq().limit() idempotency check, the plain insert()
-   *  ensureFollowUp issues, the update().eq('id', ...) markFollowUpDone
-   *  issues, and an update().eq(...).eq(...).select().maybeSingle()-shaped
+   *  ensureFollowUp issues, the update().eq(...) chains the close paths
+   *  issue, and an update().eq(...).eq(...).select().maybeSingle()-shaped
    *  close chain — enough to exercise the real create → done → recreate
    *  lifecycle AND #252's closeFollowUpsForResolvedItem/sweepResolvedItemFollowUps.
    *
@@ -3012,7 +3123,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
    *  update, not the affected rows, and the update itself never applied); (b)
    *  there was no `.maybeSingle()` at all, so a chain ending in it would call
    *  a nonexistent method. Neither defect was ever hit by the tests below at
-   *  the time (markFollowUpDone's row-323 CAS now DOES chain
+   *  the time (closeFollowUp's own status CAS DOES chain
    *  `.update().eq().eq().select()`, and the fake models it; ensureFollowUp
    *  still never calls `.maybeSingle()`), so fixing this changed
    *  neither test's outcome — the bug was latent, not currently masking a
@@ -3073,7 +3184,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
           const matched = rows.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
           for (const r of matched) Object.assign(r, updateFields);
           // Only a chain that actually asked for rows back (.select()) gets them;
-          // a bare update().eq(...) (e.g. markFollowUpDone) still resolves data: null.
+          // a bare update().eq(...) with no .select() still resolves data: null.
           return { data: selectRequested ? matched.map((r) => ({ ...r })) : null, error: null };
         } else if (mode === 'upsert') {
           const cols = (upsertConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
@@ -3144,9 +3255,12 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     ]);
     sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
 
-    // Operator (or an auto-close) marks the existing follow-up done...
-    const done = await markFollowUpDone('fu-1', 'operator-1');
-    expect(done.ok).toBe(true);
+    // PR #1005: the operator-facing Done button, and the store helper behind
+    // it, are gone with the "Follow-ups due today" strip; the surviving way a
+    // nag reaches 'done' is the system auto-close, which is what this setup
+    // now uses. The re-arm behaviour under test is unchanged.
+    const closed = await closeFollowUp('item-1', 'quote_sent_no_reply');
+    expect(closed).toBe(1);
     expect(fake.rows[0].status).toBe('done');
 
     // ...weeks later, a second "quote sent, no reply" cycle fires for the SAME
@@ -3161,103 +3275,6 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows[0].status).toBe('pending');
     expect(fake.rows[0].inbox_item_id).toBe('item-1');
     expect(fake.rows[0].reason).toBe('quote_sent_no_reply');
-  });
-
-  // #252 slice E revival: markFollowUpDone now hands back the follow-up's
-  // anchored inbox_item_id so a caller (the /api/dashboard/followup route)
-  // can decide whether to also resolve that item — see route.test.ts's
-  // coupling tests.
-  it('returns the anchored inbox_item_id on success', async () => {
-    const fake = makeFollowUpsFake([
-      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
-    ]);
-    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
-
-    const done = await markFollowUpDone('fu-1', 'operator-1');
-    expect(done.ok).toBe(true);
-    if (!done.ok) return;
-    expect(done.inboxItemId).toBe('item-1');
-    expect(fake.rows[0].status).toBe('done');
-  });
-
-  it("returns a null inboxItemId for a manual follow-up with no anchor (today's behavior preserved)", async () => {
-    const fake = makeFollowUpsFake([
-      { id: 'fu-1', inbox_item_id: null as unknown as string, reason: 'manual', status: 'pending' },
-    ]);
-    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
-
-    const done = await markFollowUpDone('fu-1', 'operator-1');
-    expect(done.ok).toBe(true);
-    if (!done.ok) return;
-    expect(done.inboxItemId).toBeNull();
-  });
-
-  // #252 salvage: markFollowUpDone's operatorId widened to `string | null` for
-  // parity with markItemHandledLocal/dismissItem/markItemCompleted. The activity
-  // row must still name an actor when no operator resolved — dashboard_activity
-  // .actor is free text whose migration comment allows 'system'.
-  it('records the activity actor as system when markFollowUpDone gets a null operator', async () => {
-    const fake = makeFollowUpsFake([
-      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
-    ]);
-    const activityInserts: Record<string, unknown>[] = [];
-    sbRef.current = {
-      from: (table: string) => {
-        if (table === 'follow_ups') return fake.table();
-        if (table === 'dashboard_activity') {
-          return {
-            insert: (row: Record<string, unknown>) => {
-              activityInserts.push(row);
-              return Promise.resolve({ data: null, error: null });
-            },
-          };
-        }
-        return genericTable();
-      },
-    };
-
-    const done = await markFollowUpDone('fu-1', null);
-
-    expect(done.ok).toBe(true);
-    expect(fake.rows[0].status).toBe('done');
-    expect(activityInserts).toHaveLength(1);
-    expect(activityInserts[0]).toMatchObject({ actor: 'system', action: 'handled' });
-  });
-
-  // #323: two tabs / two operators racing to click Done on the same follow-up
-  // must not both log an activity row. The row is already 'done' (a prior
-  // caller won the race) — markFollowUpDone's .eq('status','pending') CAS
-  // matches zero rows, and that's an honest no-op: still ok:true (the row IS
-  // in the caller's desired end state), but zero dashboard_activity inserts.
-  // #252 slice E revival: the SAME CAS also protects the anchor-resolution
-  // coupling — a lost race returns inboxItemId: null, so the losing caller's
-  // route never attempts to resolve the anchored item a second time either.
-  it('is a no-op (ok:true, inboxItemId: null, no activity insert) when the follow-up is already done — lost race', async () => {
-    const fake = makeFollowUpsFake([
-      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
-    ]);
-    const activityInserts: Record<string, unknown>[] = [];
-    sbRef.current = {
-      from: (table: string) => {
-        if (table === 'follow_ups') return fake.table();
-        if (table === 'dashboard_activity') {
-          return {
-            insert: (row: Record<string, unknown>) => {
-              activityInserts.push(row);
-              return Promise.resolve({ data: null, error: null });
-            },
-          };
-        }
-        return genericTable();
-      },
-    };
-
-    const done = await markFollowUpDone('fu-1', 'operator-1');
-
-    expect(done.ok).toBe(true);
-    if (done.ok) expect(done.inboxItemId).toBeNull();
-    expect(fake.rows[0].status).toBe('done'); // unchanged, not re-touched
-    expect(activityInserts).toHaveLength(0);
   });
 
   // #252 follow-up-autoclose: closeFollowUpsForResolvedItem + its backlog
@@ -3478,8 +3495,8 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     // used to assert the OPPOSITE — 'created' / flipped to 'pending' — on the
     // theory that a merely-'handled' item is still a "still-open conversation"
     // that must keep getting nagged. That read of 'handled' was wrong: per
-    // "HANDLED MEANS DONE" (the same principle row 252's
-    // shouldResolveAnchoredItem already applies the other direction), an
+    // "HANDLED MEANS DONE" (the same principle row 252 applied in the other
+    // direction, in a coupling PR #1005 has since deleted), an
     // operator explicitly marking the follow-up Done on a 'handled' item is a
     // real assertion the task is dealt with, and re-arming it on the very next
     // tick just undid their click. A genuinely new customer message reopens
@@ -3944,73 +3961,6 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(orderCall!.args[0]).toBe('id');
       expect(orderCall!.args[1]).toEqual({ ascending: true });
     });
-  });
-});
-
-// ─── #252 slice E — anchored-item resolution gate ───────────────────────────
-//
-// "Clicking Done on a follow-up currently does NOT touch the inbox item, so
-// the strip clears while the conversation stays open elsewhere" (ledger row
-// 252). shouldResolveAnchoredItem is the single decision point the
-// /api/dashboard/followup route consults before reusing the Handled route's
-// machinery (markItemHandledLocal + runHandledWriteback + recordWriteback) —
-// see route.test.ts for the full wiring. Tested as a pure function here so
-// every input combination (including a 'dismissed' follow-up, which has no
-// live UI caller today but IS a real value under follow_ups' own
-// `status in ('pending','done','dismissed')` CHECK constraint) is covered
-// directly, without needing a live dismiss code path to exist.
-describe('shouldResolveAnchoredItem (#252 slice E)', () => {
-  it('true: a done follow-up anchored to a still-unresponded item', () => {
-    expect(shouldResolveAnchoredItem('done', 'unresponded')).toBe(true);
-  });
-
-  it('false: an already-handled item is left untouched (no double-stamp)', () => {
-    expect(shouldResolveAnchoredItem('done', 'handled')).toBe(false);
-  });
-
-  it('false: an already-completed item is left untouched', () => {
-    expect(shouldResolveAnchoredItem('done', 'completed')).toBe(false);
-  });
-
-  it('false: an already-dismissed item is left untouched', () => {
-    expect(shouldResolveAnchoredItem('done', 'dismissed')).toBe(false);
-  });
-
-  it('false: no anchored item (null status — e.g. item not found)', () => {
-    expect(shouldResolveAnchoredItem('done', null)).toBe(false);
-  });
-
-  it('false: a DISMISSED follow-up never resolves the item, regardless of item status', () => {
-    expect(shouldResolveAnchoredItem('dismissed', 'unresponded')).toBe(false);
-    expect(shouldResolveAnchoredItem('dismissed', 'handled')).toBe(false);
-  });
-
-  it('false: a PENDING follow-up (not yet acted on) never resolves the item', () => {
-    expect(shouldResolveAnchoredItem('pending', 'unresponded')).toBe(false);
-  });
-});
-
-describe('getItemStatus (#252 slice E)', () => {
-  /** Minimal single-table stub: select('status').eq('id', itemId).maybeSingle(). */
-  function makeInboxItemsFake(row: { id: string; status: string } | null) {
-    return {
-      select: () => ({
-        eq: (_col: string, val: string) => ({
-          maybeSingle: async () => ({ data: row && row.id === val ? { status: row.status } : null, error: null }),
-        }),
-      }),
-    };
-  }
-
-  it("returns the item's current status", async () => {
-    // getItemStatus only ever queries inbox_items — no generic-table fallback needed.
-    sbRef.current = { from: () => makeInboxItemsFake({ id: 'item-1', status: 'unresponded' }) };
-    expect(await getItemStatus('item-1')).toBe('unresponded');
-  });
-
-  it('returns null when the item does not exist', async () => {
-    sbRef.current = { from: () => makeInboxItemsFake(null) };
-    expect(await getItemStatus('missing-item')).toBeNull();
   });
 });
 
@@ -6281,6 +6231,10 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    // PR #1005: markItemFollowed now closes the item's due nag on success, so
+    // this harness has to answer for follow_ups too - a real consequence of
+    // the new behaviour, not a fixture convenience.
+    const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder({ data: [{ id: 'fu-1' }], error: null });
     let inboxCallCount = 0;
     const from = (table: string) => {
       if (table === 'inbox_items') {
@@ -6288,10 +6242,67 @@ describe('markItemFollowed — status guard (row 306)', () => {
         return inboxCallCount === 1 ? priorBuilder : updateBuilder;
       }
       if (table === 'dashboard_activity') return activityBuilder;
+      if (table === 'follow_ups') return followUpBuilder;
       throw new Error(`unexpected table: ${table}`);
     };
-    return { from, updateCalls, activityCalls };
+    return { from, updateCalls, activityCalls, followUpCalls };
   }
+
+  // PR #1005 (premerge STAFF lens, HIGH). The deleted follow-up strip's Done
+  // button was the only staff-initiated way to retire a quote_sent_no_reply
+  // nag; without a replacement the "Follow-up due" pill that inherited its
+  // signal would stay lit until the deal itself ended. "I followed up" is the
+  // answer to "you should follow up", so this action now closes it.
+  it('closes the due follow-up when a HANDLED item is stamped Followed', async () => {
+    const { from, followUpCalls } = makeSbForWithPrior(
+      { data: { status: 'handled', followed_up_at: null }, error: null },
+      { data: { id: ITEM_ID }, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(followUpCalls.some((c) => c.method === 'update' && (c.args[0] as { status?: string }).status === 'done')).toBe(true);
+    expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'inbox_item_id' && c.args[1] === ITEM_ID)).toBe(true);
+    expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'reason' && c.args[1] === 'quote_sent_no_reply')).toBe(true);
+    // Scoped to a nag that is still pending - never re-touching a closed one.
+    expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'pending')).toBe(true);
+  });
+
+  // Fix-round delta-verify (MED). An 'unresponded' item is outside
+  // ensureFollowUp's skip set, so closing its nag would re-arm it on the next
+  // reconcile tick carrying its ORIGINAL, already-elapsed due date - the pill
+  // blinking off and straight back on, under a button that says "snoozed
+  // until they reply". This path is reachable from the main Open leads queue,
+  // whose Followed button is unconditional.
+  it('does NOT close the nag for an UNRESPONDED item, where the snooze could not hold', async () => {
+    const { from, followUpCalls } = makeSbForWithPrior(
+      { data: { status: 'unresponded', followed_up_at: null }, error: null },
+      { data: { id: ITEM_ID }, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(followUpCalls).toHaveLength(0);
+  });
+
+  it('leaves the follow-up alone when the Followed stamp was refused', async () => {
+    // The guarded UPDATE matched zero rows (already completed/dismissed, or
+    // already followed) - nothing was stamped, so nothing may be retired.
+    const { from, followUpCalls } = makeSbForWithPrior(
+      { data: { status: 'handled', followed_up_at: null }, error: null },
+      { data: null, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    expect(followUpCalls).toHaveLength(0);
+  });
 
   it('blocks stamping followed_up_at on a row the guard excluded (already completed or dismissed) — the row-311 harm path', async () => {
     // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
@@ -6399,6 +6410,10 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
     const { builder: rereadBuilder } = makeBuilder(rereadResult ?? priorResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    // PR #1005: a successful Followed stamp now also closes the item's due nag,
+    // so this harness answers for follow_ups and captures the calls - the
+    // gate is on the PRIOR status, which only this harness can set.
+    const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder({ data: [{ id: 'fu-1' }], error: null });
     let inboxCallCount = 0;
     const from = (table: string) => {
       if (table === 'inbox_items') {
@@ -6408,9 +6423,10 @@ describe('markItemFollowed — status guard (row 306)', () => {
         return rereadBuilder;
       }
       if (table === 'dashboard_activity') return activityBuilder;
+      if (table === 'follow_ups') return followUpBuilder;
       throw new Error(`unexpected table: ${table}`);
     };
-    return { from, updateCalls, activityCalls };
+    return { from, updateCalls, activityCalls, followUpCalls };
   }
 
   it('allowRestamp:true (the reply-route caller) skips the followed_up_at guard entirely', async () => {
@@ -7185,13 +7201,6 @@ describe('markItemHandledLocal — expectedStatus positive CAS (row 366)', () =>
     const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('Item not found or already handled');
-  });
-
-  it('the constant the followup gate reads is the same one it passes as the CAS — they cannot drift', () => {
-    expect(ANCHORED_ITEM_RESOLVABLE_STATUS).toBe('unresponded');
-    expect(shouldResolveAnchoredItem('done', ANCHORED_ITEM_RESOLVABLE_STATUS)).toBe(true);
-    expect(shouldResolveAnchoredItem('done', 'completed')).toBe(false);
-    expect(shouldResolveAnchoredItem('done', 'dismissed')).toBe(false);
   });
 
   // Row 320(c): the reply route's legal pre-statuses are a SET, not a single

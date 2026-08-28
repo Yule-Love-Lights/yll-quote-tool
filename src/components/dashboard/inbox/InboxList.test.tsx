@@ -657,20 +657,24 @@ describe('colorRequestConfirmMessage (row 321 — pure)', () => {
   });
 });
 
-// Row 309: closeFollowUpsForResolvedItem (store.ts) is only called from
-// dismissItem and markItemCompleted — 'Handled'/'Followed' never retire a
-// pending follow-up, so act()'s router.refresh() (which re-renders the whole
-// InboxPage server component, not just the follow-up strip) is gated on this
-// predicate rather than firing after every successful action.
-describe('retiresFollowUp (row 309 — which actions can retire a due follow-up)', () => {
+// Row 309: act()'s router.refresh() re-renders the whole InboxPage server
+// component, so it is gated on the actions that actually move a follow-up
+// rather than firing after every successful action.
+// PR #1005: 'Followed' JOINED that set — markItemFollowed now closes the item's
+// quote_sent_no_reply nag itself, and the awaiting bucket's "N follow-ups due"
+// count is server-rendered, so it needs the refresh to stay honest.
+describe('retiresFollowUp (rows 309/430 — which actions can retire a due follow-up)', () => {
   it('is true for dismiss and completed — the two terminal transitions', () => {
     expect(retiresFollowUp('/api/dashboard/dismiss')).toBe(true);
     expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
   });
 
-  it('is false for handled and followed — neither is a terminal transition', () => {
+  it('is true for followed — PR #1005 made it close the nag', () => {
+    expect(retiresFollowUp('/api/dashboard/followed')).toBe(true);
+  });
+
+  it('is false for handled — it retires nothing', () => {
     expect(retiresFollowUp('/api/dashboard/handled')).toBe(false);
-    expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
   });
 });
 
