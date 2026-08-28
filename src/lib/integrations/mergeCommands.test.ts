@@ -62,14 +62,27 @@ describe('isIncompleteMergeRequest', () => {
     expect(isIncompleteMergeRequest('status')).toBe(false);
     expect(isIncompleteMergeRequest('we should merge that one')).toBe(false);
     expect(isIncompleteMergeRequest('emerge')).toBe(false);
+    // "merged" is a different word; the word boundary excludes it, and always did.
+    expect(isIncompleteMergeRequest('merged it already')).toBe(false);
   });
 
   it('is false for ordinary sentences that merely OPEN with the word', () => {
     // The reason this matcher anchors the whole string instead of matching a
     // prefix: these are things people say to each other, not merge requests,
-    // and answering them turns a coaching reply into chatter.
+    // and answering them turns a coaching reply into chatter. Each of these
+    // DID match before the pattern was narrowed.
     expect(isIncompleteMergeRequest('merge conflict again on that branch')).toBe(false);
     expect(isIncompleteMergeRequest('merge that when you get a chance')).toBe(false);
-    expect(isIncompleteMergeRequest('merged it already')).toBe(false);
+    expect(isIncompleteMergeRequest('merge the posthog one')).toBe(false);
+  });
+
+  it('is true for a real number carrying a courtesy word, so it is coached not dropped', () => {
+    // The strict parser refuses these on purpose, but the sender plainly meant
+    // it, so silence would be the worst of the three possible answers.
+    expect(isIncompleteMergeRequest('merge 1043 please')).toBe(true);
+    expect(isIncompleteMergeRequest('merge #1043 now')).toBe(true);
+    expect(isIncompleteMergeRequest('merge pr 1043 thanks')).toBe(true);
+    // The digits requirement is what stops this branch re-admitting prose.
+    expect(isIncompleteMergeRequest('merge conflict again')).toBe(false);
   });
 });

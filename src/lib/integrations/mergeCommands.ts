@@ -38,6 +38,14 @@ const MERGE_RE = /^merge(?: pr)? #?(\d{1,6})$/;
 // answer them, which is how a coaching reply turns into chatter.
 const MERGE_SHAPED_RE = /^merge(?: pr)?(?: \S{1,12})?$/;
 
+// The other shape worth coaching: a real number with a courtesy word after it,
+// like "merge 1043 please". The strict parser refuses it on purpose (one
+// request names exactly one pull request), but staying silent would be the
+// worst answer of the three - the sender plainly meant it. Kept separate from
+// the pattern above, and requiring DIGITS, so it cannot re-admit the ordinary
+// sentences that rule was narrowed to exclude.
+const MERGE_NUMBER_TRAILING_RE = /^merge(?: pr)? #?\d{1,6} \S{1,12}$/;
+
 /**
  * Parse a merge request. Returns null for anything else, so ordinary bot
  * traffic (including the word "merge" used mid-sentence) is untouched.
@@ -60,5 +68,5 @@ export function parseMergeCommand(text: string): MergeCommand | null {
 export function isIncompleteMergeRequest(text: string): boolean {
   const n = norm(text);
   if (parseMergeCommand(n)) return false;
-  return MERGE_SHAPED_RE.test(n);
+  return MERGE_SHAPED_RE.test(n) || MERGE_NUMBER_TRAILING_RE.test(n);
 }

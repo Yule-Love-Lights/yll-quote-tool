@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Merge-by-text: lets the owner approve a reviewed pull request from Telegram.
  *
  * WHAT THIS DOES AND DOES NOT DO. This module does NOT merge anything. It
@@ -124,6 +124,26 @@ export async function handleMergeRequest(
     // announcing that a merge channel exists.
     if (!addressed) return { handled: false };
     return { handled: true, reply: approver ? NOT_ALLOWED : NOT_CONFIGURED };
+  }
+
+  // The approver, with a real pull request number. One gate left, and it is the
+  // one the first fix round missed: a merge is an ACTION, so in a group the bot
+  // must actually have been spoken to. "merge 1043" said to a person in a crew
+  // group is someone asking a colleague to merge it, not a command to the bot,
+  // and firing on it would both deploy unbidden and announce the deploy to the
+  // room. Private chats are always addressed, so the normal path is untouched;
+  // in a group, an @mention or a leading slash is the deliberate act required.
+  if (!addressed) {
+    await logBotAction({
+      chatId,
+      userId: telegramUserId,
+      role: null,
+      tool: 'merge_request',
+      args: { prNumber: command.prNumber },
+      outcome: 'denied',
+      detail: 'not addressed to the bot in a group',
+    });
+    return { handled: false };
   }
 
   if (!fireConfig()) {

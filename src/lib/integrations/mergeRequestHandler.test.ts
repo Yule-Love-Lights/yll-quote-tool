@@ -129,6 +129,29 @@ describe('handleMergeRequest — what it refuses', () => {
     const out = await handleMergeRequest(APPROVER, 'merge', { addressed: false });
     expect(out).toEqual({ handled: false });
   });
+
+  it('does NOT fire a merge when the approver names a PR in a group without addressing the bot', async () => {
+    configured();
+    // "merge 1043" said in a crew group is the approver asking a person to do
+    // it, not a command to the bot. Firing here would deploy unbidden AND
+    // announce the deploy to the room. An @mention or a leading slash is the
+    // deliberate act; a private chat counts as addressed, so the normal path is
+    // unaffected.
+    const out = await handleMergeRequest(APPROVER, 'merge 1043', {
+      chatId: 'group-1',
+      addressed: false,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Still audited, so "I texted merge and nothing happened" has an answer.
+    expect(logBotAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: 'merge_request',
+        outcome: 'denied',
+        detail: 'not addressed to the bot in a group',
+      }),
+    );
+  });
 });
 
 describe('handleMergeRequest — when the hand-off fails', () => {
