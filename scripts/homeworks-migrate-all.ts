@@ -227,6 +227,17 @@ async function migrate(rec: Rec) {
     inputs,
     result,
     total: h.total,
+    // created_at is set to the HISTORICAL date, not left at the migration run
+    // time. Every date-DIFF metric in the tool subtracts created_at — the
+    // homepage's Quote turnaround (metrics.ts) and /insights' Time to close
+    // (insights.ts:93) both do — so back-dating quote_sent_at and
+    // customer_approved_at while leaving created_at at "now" makes those
+    // figures NEGATIVE. Measured before the fix: -63.35 days across the
+    // migrated set, dragging the tool-wide turnaround from +4.52 to -12.66.
+    // The first run was corrected by SQL after the fact; this is the same
+    // correction in the script, so a future batch cannot reintroduce it.
+    // (Premerge admin lens + close integration lens, PR #1049.)
+    created_at: stamp,
     service_type: rec.serviceType,
     quote_sent_at: stamp,
     customer_approved_at: stamp,
