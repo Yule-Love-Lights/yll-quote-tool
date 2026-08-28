@@ -16,7 +16,7 @@ The scrapped separate-Hub direction left artifacts on master. Naldo had them str
 
 - `docs/context/OPERATIONS_HUB_CONTRACT.md` (v1.6.0-draft) and its OpenAPI schema folder. Deleted.
 - The AGENTS.md "Operations Hub contract" ownership row. Deleted.
-- The three machine routes `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`, plus `src/lib/shiftBreaks.ts`. Deleted. Git history holds them if a Crew My Day build wants a starting point.
+- The three machine routes `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`. Deleted. Git history holds them if a Crew My Day build wants a starting point. (`src/lib/shiftBreaks.ts` was NOT deleted; #1027 only reworded a comment in it. The whole internal crew/time data layer is alive.)
 
 One copy survives outside this repo: the contract's byte-identical mirror in the `yll-call-copilot` repo (`docs/operations-hub/INTEGRATION-CONTRACT.md`). It is now stale and historical. Old chats, branches, and that mirror may still present the contract as live; treat all of it as history, not current truth.
 
@@ -92,7 +92,9 @@ Expected office work:
 
 The preferred first direction is to keep office work inside the existing Cool Tool areas, especially Inbox for customer and follow-up work. A separate Office Tasks system should only be added if Inbox and follow-ups cannot cover manual internal tasks cleanly.
 
-If a durable Office Tasks model is added later, it should start manual-only and include:
+Resolved 2026-08-27: that condition is met. The Quote Tool has no task container (the follow-up strip is one quote-send reminder), and extracted call commitments need somewhere to live. Naldo ruled that the call copilot's Office Tasks feature moves across as the single task list, fed by manual entry, call commitments, and the follow-up strip. See the Call Copilot teardown and `ops_hub_audit_2026-08.md`. The spec below governs the ported version.
+
+The ported Office Tasks model (the copilot's, moved across per the resolution above) should start manual-only and include:
 
 - 24-hour default due time.
 - Statuses: open, blocked, completed, dismissed.
@@ -263,6 +265,8 @@ Sign inventory can live inside the existing Inventory section, using the same ba
 
 Call, HighLevel, transcript, grading, and coaching features are desired future areas, but they need a separate audit before implementation.
 
+That audit happened 2026-08-27: the Call Copilot teardown (Naldo's keep-or-cut calls on all ~50 copilot features) plus `ops_hub_audit_2026-08.md`. Ruling: the copilot's keep-list (grading pipeline, Office Tasks, practice, scoreboard, personal-details scan) merges into the Cool Tool with fresh tables and no data migration; the live-call side and Twilio are dropped; the copilot repo and both leftover Supabase projects retire after the merge; and a read-only HighLevel transcript probe runs before the merge plan is written.
+
 Known direction:
 
 - Email/password login stays.
@@ -327,7 +331,7 @@ Do not:
 
 4. Define Office work.
    - Keep customer and follow-up work inside existing Office areas, especially Inbox.
-   - Only add a separate Office Tasks model if necessary.
+   - Port the copilot's Office Tasks as the single task list (resolved 2026-08-27; see the Office / Operator Workflow section above).
 
 5. Design Advertising.
    - Write the product/privacy/pay spec before schema work.
@@ -356,10 +360,10 @@ Do not:
 
 ## Open Questions
 
-- Should Inbox become the full Operations Work Queue, or are there manual task types that require a separate Office Tasks model?
+- ANSWERED 2026-08-27: Inbox stays the message queue; the copilot's Office Tasks ports across as the single task list (see the resolution in the Office / Operator Workflow section).
 - What door hanger pay rule should exist later, if any?
-- Which HighLevel call data still matters enough to rebuild?
-- Does automatic call recording and transcript ingestion need durable background workers?
+- ANSWERED 2026-08-27: the teardown's keep-list defines which call features matter (grading pipeline, tasks, practice, scoreboard, personal-details scan); see `ops_hub_audit_2026-08.md` workstream D.
+- Does automatic call recording and transcript ingestion need durable background workers? (Still open; the merge-plan session decides after the HighLevel transcript probe.)
 
 ## Workstream Prompts
 
@@ -408,7 +412,7 @@ Work inside Yule-Love-Lights/yll-quote-tool, also called the Cool Tool. Crew and
 
 Audit the current crew/install job actions, Telegram workflows, assignments, shifts, breaks, job segments, and remaining /api/ops routes.
 
-The old /api/ops/v1 job routes (arrive, depart, complete) and src/lib/shiftBreaks.ts were deleted with the scrapped separate Operations Hub (PR #1027); git history holds them if useful. job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
+The old /api/ops/v1 job routes (arrive, depart, complete) were deleted with the scrapped separate Operations Hub (PR #1027); git history holds them if useful. The internal crew/time data layer (shifts.ts, shiftBreaks.ts, jobSegments.ts, crewAuth.ts) was NOT deleted and is live. job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
 
 Plan an optional app-based My Day view for crew/installers. Telegram will likely remain the main workflow, but the app should exist as an option and as a foundation for future workers.
 
@@ -479,7 +483,7 @@ The Cool Tool remains the source of truth for:
 Past Operations Hub chats, branches, migrations, and docs are context only. Do not treat them as current truth until the current repo proves it.
 
 SCRAPPED HUB LEFTOVERS
-The separate-Hub direction was scrapped and its leftovers were removed from this repo in PR #1027 (ledger row 433, closed): the OPERATIONS_HUB_CONTRACT.md contract doc and its schema folder, the AGENTS.md "Operations Hub contract" ownership row, the three /api/ops/v1/jobs/[id] machine routes, and src/lib/shiftBreaks.ts. Git history holds the deleted routes if a Crew My Day build wants a starting point. A stale byte-identical mirror of the contract still exists in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md). Old chats, branches, and that mirror may still present the contract as live. Treat all of it as history, not current truth.
+The separate-Hub direction was scrapped and its leftovers were removed from this repo in PR #1027 (ledger row 433, closed): the OPERATIONS_HUB_CONTRACT.md contract doc and its schema folder, the AGENTS.md "Operations Hub contract" ownership row, and the three /api/ops/v1/jobs/[id] machine routes. The internal crew/time data layer (shifts, breaks, job segments, crew auth) was NOT deleted and is live. Git history holds the deleted routes if a Crew My Day build wants a starting point. A stale byte-identical mirror of the contract still exists in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md). Old chats, branches, and that mirror may still present the contract as live. Treat all of it as history, not current truth.
 
 FIRST TASK
 This first session is audit and planning only.
