@@ -52,6 +52,7 @@ import { ReferralShareButton } from '@/components/portal/dark/ReferralShareButto
 import { QrSvg } from '@/components/QrSvg';
 import { formatUsd } from '@/components/portal/format';
 import { referralQrSvg } from '@/lib/referralQr';
+import { REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 import { PhoneFrame } from './PhoneFrame';
 
 const inputClass =
@@ -205,9 +206,10 @@ export function ReferralLinkReady({
       </p>
 
       <p className="mt-6 text-[15px] text-[#E0D7C1] leading-[1.6]">
-        Your friend gets {formatUsd(spritzerValueUsd)} in free lighting on their first install:{' '}
-        {spritzerCount} staked spotlights for their yard ({spritzerSizeInches}&quot; spritzers). You
-        are giving them something, not asking for a favor.
+        Your friend gets {spritzerCount} free {spritzerSizeInches}&quot; spritzers on their first
+        install, worth {formatUsd(spritzerValueUsd)}, or {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)}{' '}
+        off instead, their choice. You are giving them something, not
+        asking for a favor.
       </p>
 
       <p className="mt-6 text-[13px] md:text-[14px] font-semibold text-[#E0D7C1]">
