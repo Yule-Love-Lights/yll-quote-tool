@@ -62,51 +62,10 @@ export default async function FleetPage({
           >
             Yule Love Lights
           </p>
-          <h1 className="text-xl font-semibold text-gray-900">Fleet — {date}</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Fleet</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Where the vans are, and the day&apos;s two clocks side by side.
+            Where the vans are right now, and the day&apos;s two clocks below.
           </p>
-          <form method="get" className="mt-3 flex items-center gap-2 text-sm">
-            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
-              ← previous
-            </a>
-            <input
-              type="date"
-              name="date"
-              defaultValue={date}
-              className="rounded border border-gray-300 px-2 py-1"
-            />
-            <button type="submit" className="rounded border border-gray-300 px-3 py-1 text-gray-700">
-              Go
-            </button>
-            {!isToday && (
-              <>
-                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
-                  next →
-                </a>
-                <a href="/admin/fleet" className="underline text-gray-600">
-                  today
-                </a>
-              </>
-            )}
-          </form>
-          {daysWithData.length > 0 && (
-            <p className="text-sm text-gray-500 mt-2">
-              Days with data:{' '}
-              {daysWithData.map((d, i) => (
-                <span key={d}>
-                  {i > 0 && ' · '}
-                  {d === date ? (
-                    <span className="font-medium text-gray-900">{d}</span>
-                  ) : (
-                    <a href={`/admin/fleet?date=${d}`} className="underline">
-                      {d}
-                    </a>
-                  )}
-                </span>
-              ))}
-            </p>
-          )}
         </div>
 
         {day.errors.length > 0 && (
@@ -136,7 +95,7 @@ export default async function FleetPage({
               <li key={v.id} className="rounded-lg border border-gray-200 p-3 flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-900">
                   {v.label}
-                  {isToday && v.signal === 'live' && v.openVisit && (
+                  {isToday && v.openVisit && (
                     <span className="font-normal text-gray-600">
                       {' '}
                       · At{' '}
@@ -145,7 +104,8 @@ export default async function FleetPage({
                         : v.openVisit.jobNumber != null
                           ? `Job #${v.openVisit.jobNumber}`
                           : 'a job'}{' '}
-                      · <MinutesSince sinceIso={v.openVisit.enteredAt} />
+                      since {fmtTime(v.openVisit.enteredAt)} ·{' '}
+                      <MinutesSince sinceIso={v.openVisit.enteredAt} />
                     </span>
                   )}
                 </span>
@@ -162,7 +122,9 @@ export default async function FleetPage({
                 )}
                 {v.signal === 'stale' && (
                   <span className="text-sm text-amber-700">
-                    No signal since {fmtTime(v.lastSeenAt)} — position unknown, not parked
+                    {isToday && v.openVisit
+                      ? `Tracker asleep since ${fmtTime(v.lastSeenAt)} (normal when parked)`
+                      : `No signal since ${fmtTime(v.lastSeenAt)} — position unknown, not parked`}
                   </span>
                 )}
                 {v.signal === 'never' && (
@@ -174,10 +136,53 @@ export default async function FleetPage({
         </section>
 
         <section className="mt-10 pt-6 border-t border-gray-200">
-          <h2 className="text-base font-semibold text-gray-900 mb-1">The day&apos;s two clocks</h2>
-          <p className="text-sm text-gray-500 mb-4">
-            The crew&apos;s own clock (payroll) beside what the GPS saw, for the day shown above.
+          <h2 className="text-base font-semibold text-gray-900 mb-1">
+            The day&apos;s two clocks — {date}
+          </h2>
+          <p className="text-sm text-gray-500 mb-3">
+            The crew&apos;s own clock (payroll) beside what the GPS saw, for the chosen day.
           </p>
+          <form method="get" className="mb-2 flex items-center gap-2 text-sm">
+            <a href={`/admin/fleet?date=${addDays(date, -1)}`} className="underline text-gray-600">
+              ← previous
+            </a>
+            <input
+              type="date"
+              name="date"
+              defaultValue={date}
+              className="rounded border border-gray-300 px-2 py-1"
+            />
+            <button type="submit" className="rounded border border-gray-300 px-3 py-1 text-gray-700">
+              Go
+            </button>
+            {!isToday && (
+              <>
+                <a href={`/admin/fleet?date=${addDays(date, 1)}`} className="underline text-gray-600">
+                  next →
+                </a>
+                <a href="/admin/fleet" className="underline text-gray-600">
+                  today
+                </a>
+              </>
+            )}
+          </form>
+          {daysWithData.length > 0 && (
+            <p className="text-sm text-gray-500 mb-4">
+              Days with data:{' '}
+              {daysWithData.map((d, i) => (
+                <span key={d}>
+                  {i > 0 && ' · '}
+                  {d === date ? (
+                    <span className="font-medium text-gray-900">{d}</span>
+                  ) : (
+                    <a href={`/admin/fleet?date=${d}`} className="underline">
+                      {d}
+                    </a>
+                  )}
+                </span>
+              ))}
+            </p>
+          )}
 
           <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
             <strong className="text-gray-800">The van is not the person.</strong> Crew can be
@@ -237,8 +242,14 @@ export default async function FleetPage({
                         ? fmtTime(v.exitedAt)
                         : v.vehicleSignal === 'live'
                           ? 'still there'
-                          : `last seen ${fmtTime(v.vehicleLastSeenAt)} — no signal, may have left`}
+                          : `still there (tracker asleep since ${fmtTime(v.vehicleLastSeenAt)})`}
                       {v.minutes != null && ` · ${v.minutes} min`}
+                      {v.exitedAt === null && isToday && (
+                        <>
+                          {' · '}
+                          <MinutesSince sinceIso={v.enteredAt} /> so far
+                        </>
+                      )}
                     </p>
                   </li>
                 ))}
