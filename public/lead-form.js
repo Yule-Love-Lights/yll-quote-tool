@@ -811,6 +811,37 @@
       consentF.errorEl.textContent = '';
     });
 
+    // Per-field completion events, so the funnel shows WHERE visitors stop
+    // between "started" and "submitted". One event max per field per render,
+    // fired when the visitor leaves a field with something in it. Field NAME
+    // only — never the typed value.
+    var fieldTracked = {};
+    function trackFieldDone(field, filled) {
+      if (fieldTracked[field] || !filled) return;
+      fieldTracked[field] = true;
+      track('yll_lead_form_field_completed', { variant: config.variant, field: field });
+    }
+    [
+      ['name', nameF],
+      ['email', emailF],
+      ['phone', phoneF],
+      ['address', addressF],
+      ['notes', notesF],
+    ].forEach(function (pair) {
+      if (!pair[1]) return;
+      pair[1].input.addEventListener('blur', function () {
+        trackFieldDone(pair[0], pair[1].input.value.trim() !== '');
+      });
+    });
+    if (serviceGroup) {
+      serviceGroup.el.addEventListener('yll-lf-service-change', function () {
+        trackFieldDone('service', true);
+      });
+    }
+    consentF.checkbox.addEventListener('change', function () {
+      trackFieldDone('consent', consentF.checkbox.checked);
+    });
+
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       if (submitting) return; // guard against a double/rapid-repeat submit
