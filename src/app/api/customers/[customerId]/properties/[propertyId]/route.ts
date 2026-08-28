@@ -28,7 +28,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { updateProperty, archiveProperty, unarchiveProperty, type PropertyRow } from '@/lib/customers';
-import { propertyHasJobs } from '@/lib/scheduling';
+import { propertyArchiveBlock } from '@/lib/scheduling';
 
 export const runtime = 'nodejs';
 
@@ -135,15 +135,34 @@ export async function POST(
     // property leaves the geocode fix-list, which is the only path to ever
     // giving it coordinates, so the job could never be scheduled and nothing
     // would say why. Refuse with a plain reason instead (2026-08-28; job
-    // #1045 is the live example). Unarchiving needs no guard.
-    if (archived && (await propertyHasJobs(propertyId))) {
-      return NextResponse.json(
-        {
-          error: 'This property has a job attached. Fix its address instead of archiving it.',
-          code: 'has-jobs',
-        },
-        { status: 409 },
-      );
+    // #1045 is the live example). The check verifies OWNERSHIP first and
+    // answers a mismatched pair with the same opaque 404 as every other write
+    // here — a 409 for a foreign property id would leak whether it has jobs.
+    // Unarchiving needs no guard.
+    if (archived) {
+      const block = await propertyArchiveBlock(customerId, propertyId);
+      if (block === 'not-found') {
+        return NextResponse.json({ error: 'Property not found' }, { status: 404 });
+      }
+      if (block === 'has-jobs') {
+        return NextResponse.json(
+          {
+            error: 'This property has a job attached. Fix its address instead of archiving it.',
+            code: 'has-jobs',
+          },
+          { status: 409 },
+        );
+      }
+      if (block === 'has-live-quote') {
+        return NextResponse.json(
+          {
+            error:
+              'This property has a live quote attached (sent, viewed, approved, or booked). Fix its address instead of archiving it.',
+            code: 'has-live-quote',
+          },
+          { status: 409 },
+        );
+      }
     }
     const { data, error } = archived
       ? await archiveProperty(customerId, propertyId)

@@ -62,7 +62,11 @@ export function GeocodeFixRow({ propertyId, customerId, customerName, nickname, 
   // this property, so a real job's address cannot be hidden by mistake.
   async function archive() {
     if (state.kind === 'saving' || state.kind === 'archiving') return;
-    if (!window.confirm(`Remove "${customerName}" from this list? Nothing is deleted; the address is archived.`)) {
+    if (
+      !window.confirm(
+        `Remove "${customerName}" from this list? Nothing is deleted; the address is archived, and you can undo it from the customer's profile, Properties tab.`,
+      )
+    ) {
       return;
     }
     setState({ kind: 'archiving' });
@@ -86,7 +90,8 @@ export function GeocodeFixRow({ propertyId, customerId, customerName, nickname, 
   if (state.kind === 'archived') {
     return (
       <li className="rounded-lg border border-gray-200 p-4 text-sm text-gray-400">
-        {customerName} — archived. It will not appear here again.
+        {customerName} — archived. Undo from the customer&apos;s profile, Properties tab, if
+        needed.
       </li>
     );
   }

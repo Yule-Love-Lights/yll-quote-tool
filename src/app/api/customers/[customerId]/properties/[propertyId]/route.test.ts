@@ -20,12 +20,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, updatePropertyMock, archivePropertyMock, unarchivePropertyMock, propertyHasJobsMock } = vi.hoisted(() => ({
+const { requireOperatorMock, updatePropertyMock, archivePropertyMock, unarchivePropertyMock, propertyArchiveBlockMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   updatePropertyMock: vi.fn(),
   archivePropertyMock: vi.fn(),
   unarchivePropertyMock: vi.fn(),
-  propertyHasJobsMock: vi.fn(async () => false),
+  propertyArchiveBlockMock: vi.fn(
+    async (): Promise<'not-found' | 'has-jobs' | 'has-live-quote' | 'clear'> => 'clear',
+  ),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
@@ -43,7 +45,7 @@ vi.mock('@/lib/customers', () => ({
 }));
 
 vi.mock('@/lib/scheduling', () => ({
-  propertyHasJobs: propertyHasJobsMock,
+  propertyArchiveBlock: propertyArchiveBlockMock,
 }));
 
 import { POST } from './route';
@@ -84,15 +86,17 @@ beforeEach(() => {
   updatePropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
   archivePropertyMock.mockResolvedValue({ data: { ...SOME_ROW, archived_at: '2026-01-02T00:00:00Z' }, error: null });
   unarchivePropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
-  propertyHasJobsMock.mockResolvedValue(false);
+  propertyArchiveBlockMock.mockResolvedValue('clear');
 });
 
 // The geocode fix-list's Archive button guard (2026-08-28): a property a job
 // references must refuse to archive, or the job's address disappears from the
-// only surface that can ever give it coordinates.
-describe('archive is refused while a job references the property', () => {
+// only surface that can ever give it coordinates. Ownership is checked INSIDE
+// the guard so a mismatched customer/property pair stays an opaque 404 — a 409
+// there would leak whether a foreign property id has jobs.
+describe('archive guard', () => {
   it('returns 409 has-jobs and never archives', async () => {
-    propertyHasJobsMock.mockResolvedValue(true);
+    propertyArchiveBlockMock.mockResolvedValue('has-jobs');
     const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
     expect(res.status).toBe(409);
     const body = (await res.json()) as { code?: string };
@@ -100,8 +104,24 @@ describe('archive is refused while a job references the property', () => {
     expect(archivePropertyMock).not.toHaveBeenCalled();
   });
 
+  it('returns 409 has-live-quote and never archives', async () => {
+    propertyArchiveBlockMock.mockResolvedValue('has-live-quote');
+    const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('has-live-quote');
+    expect(archivePropertyMock).not.toHaveBeenCalled();
+  });
+
+  it('answers a mismatched customer/property pair with an opaque 404, not a 409', async () => {
+    propertyArchiveBlockMock.mockResolvedValue('not-found');
+    const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(404);
+    expect(archivePropertyMock).not.toHaveBeenCalled();
+  });
+
   it('does not guard UNarchiving', async () => {
-    propertyHasJobsMock.mockResolvedValue(true);
+    propertyArchiveBlockMock.mockResolvedValue('has-jobs');
     const res = await POST(makeReq({ archived: false }), makeParams(CUSTOMER_ID, PROPERTY_ID));
     expect(res.status).toBe(200);
     expect(unarchivePropertyMock).toHaveBeenCalled();
