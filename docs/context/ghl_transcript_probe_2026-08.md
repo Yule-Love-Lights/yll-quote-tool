@@ -37,12 +37,12 @@ against the stored Deepgram diarization of the same call:
 | Measure | GHL channel 1 | Deepgram speaker A | GHL channel 2 | Deepgram speaker B |
 |---|---|---|---|---|
 | Words | 247 | 235 | 783 | 798 |
-| Speaking seconds | 54.1 | 55 | 223.2 | 215 |
+| Speaking seconds | 54.2 | 55 | 223.2 | 215 |
 
 Channel 1 is the customer, channel 2 is the rep (this was an outbound call and
 the rep did most of the talking). The derived metrics the grading pipeline
 needs all compute cleanly from sentence-level start/end times (seconds):
-talk ratio 80.5 percent rep, dead air 8.9 seconds, cross-channel overlap 0
+talk ratio 80.5 percent rep, dead air 8.8 seconds, cross-channel overlap 0
 seconds on this call (interruptions are computable the same way when overlap
 exists, because the channels are recorded separately).
 
@@ -65,10 +65,15 @@ content to every newer version tried. Nothing needs to change version.
 - **Office network quirk, not a product issue.** This machine's router/ISP DNS
   poisons `services.leadconnectorhq.com` to a filter address
   (`167.206.37.145`, an Optimum range) while resolving every other HighLevel
-  host correctly. The probe worked by pinning the real Cloudflare address.
-  Production (Vercel) is unaffected; local development on this network needs a
-  public DNS resolver (1.1.1.1 or 8.8.8.8) or a hosts entry for that one
-  host. Worth fixing on the office network at some point; not a blocker.
+  host correctly. An earlier same-day attempt misdiagnosed this as a
+  Claude-sandbox egress block; the live comparison settled it: the router DNS
+  answer refuses port 443, public resolvers (1.1.1.1) return the real
+  Cloudflare addresses (`104.18.34.38`, `172.64.153.218`), and TCP 443 to the
+  real address succeeds from this same machine. The working fix was pinning
+  the real address per request (`curl --resolve`). Production (Vercel) is
+  unaffected; local development on this network needs a public DNS resolver
+  or a hosts entry for that one host. Worth fixing on the office network at
+  some point; not a blocker.
 
 ## Verdict
 
