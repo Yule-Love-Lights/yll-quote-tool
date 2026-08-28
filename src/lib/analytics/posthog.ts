@@ -47,6 +47,16 @@ export function initPostHog(): boolean {
       },
     });
     initialized = true;
+    // Staff devices carry the yll_staff_device cookie (set by MarkStaffDevice on
+    // every operator page). Register it as a super property so PostHog's
+    // internal-user filter can exclude office traffic from customer metrics.
+    try {
+      if (typeof document !== 'undefined' && /(?:^|;\s*)yll_staff_device=/.test(document.cookie)) {
+        posthog.register({ staff_device: true });
+      }
+    } catch {
+      // best-effort — a failed cookie read or register must never break init
+    }
     return true;
   } catch {
     return false; // fail open — a blocked/broken script must never break the app

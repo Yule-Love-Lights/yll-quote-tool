@@ -5,9 +5,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const init = vi.fn();
 const capture = vi.fn();
 const isFeatureEnabled = vi.fn();
+const register = vi.fn();
 
 vi.mock('posthog-js', () => ({
-  default: { init, capture, isFeatureEnabled },
+  default: { init, capture, isFeatureEnabled, register },
 }));
 
 const ORIGINAL_ENV = process.env;
@@ -20,6 +21,7 @@ beforeEach(() => {
   init.mockReset();
   capture.mockReset();
   isFeatureEnabled.mockReset();
+  register.mockReset();
   process.env = { ...ORIGINAL_ENV };
   delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
   delete process.env.NEXT_PUBLIC_POSTHOG_HOST;
@@ -78,6 +80,35 @@ describe('initPostHog — fails open when unconfigured', () => {
     initPostHog();
     initPostHog();
     expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers staff_device when the yll_staff_device cookie is present', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('document', { cookie: 'foo=bar; yll_staff_device=1' });
+    const { initPostHog } = await import('./posthog');
+    expect(initPostHog()).toBe(true);
+    expect(register).toHaveBeenCalledWith({ staff_device: true });
+  });
+
+  it('does not register staff_device without the cookie', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('document', { cookie: 'foo=bar' });
+    const { initPostHog } = await import('./posthog');
+    expect(initPostHog()).toBe(true);
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it('init still succeeds when register throws (fail open)', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('document', { cookie: 'yll_staff_device=1' });
+    register.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    const { initPostHog } = await import('./posthog');
+    expect(initPostHog()).toBe(true);
   });
 
   it('fails open when posthog.init itself throws', async () => {
