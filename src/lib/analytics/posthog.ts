@@ -53,6 +53,22 @@ export function initPostHog(): boolean {
   }
 }
 
+/**
+ * Tag this browser's events as a staff device (super property, persisted by
+ * posthog-js). Called from MarkStaffDevice, which only ever mounts on operator
+ * pages — the yll_staff_device cookie itself is httpOnly, so client code can
+ * never read it and must rely on being ON an operator page instead. Lets
+ * PostHog's internal-user filter exclude office traffic from customer metrics.
+ */
+export function registerStaffDevice(): void {
+  if (!initialized && !initPostHog()) return;
+  try {
+    posthog.register({ staff_device: true });
+  } catch {
+    // best-effort — analytics must never disrupt the app
+  }
+}
+
 /** Safe event capture. Never throws; no-ops when PostHog can't initialize. */
 export function track(event: string, properties?: Record<string, unknown>): void {
   // Lazy init: React flushes CHILD effects before parent effects, so a deep

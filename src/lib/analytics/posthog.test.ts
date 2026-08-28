@@ -5,9 +5,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const init = vi.fn();
 const capture = vi.fn();
 const isFeatureEnabled = vi.fn();
+const register = vi.fn();
 
 vi.mock('posthog-js', () => ({
-  default: { init, capture, isFeatureEnabled },
+  default: { init, capture, isFeatureEnabled, register },
 }));
 
 const ORIGINAL_ENV = process.env;
@@ -20,6 +21,7 @@ beforeEach(() => {
   init.mockReset();
   capture.mockReset();
   isFeatureEnabled.mockReset();
+  register.mockReset();
   process.env = { ...ORIGINAL_ENV };
   delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
   delete process.env.NEXT_PUBLIC_POSTHOG_HOST;
@@ -126,6 +128,33 @@ describe('track — safe no-op wrapper', () => {
     const { initPostHog, track } = await import('./posthog');
     initPostHog();
     expect(() => track('quote_sent')).not.toThrow();
+  });
+});
+
+describe('registerStaffDevice — staff-device super property', () => {
+  it('registers staff_device once PostHog can initialize', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    const { registerStaffDevice } = await import('./posthog');
+    registerStaffDevice();
+    expect(register).toHaveBeenCalledWith({ staff_device: true });
+  });
+
+  it('no-ops (no register call) when PostHog cannot initialize', async () => {
+    // No NEXT_PUBLIC_POSTHOG_KEY set.
+    const { registerStaffDevice } = await import('./posthog');
+    registerStaffDevice();
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it('never throws even if posthog.register throws', async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = 'phc_test_key';
+    vi.stubGlobal('window', {});
+    register.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    const { registerStaffDevice } = await import('./posthog');
+    expect(() => registerStaffDevice()).not.toThrow();
   });
 });
 

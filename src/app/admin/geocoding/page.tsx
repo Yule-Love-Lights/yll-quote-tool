@@ -20,24 +20,29 @@ type UnverifiedProperty = {
   customer_id: string;
   address: string | null;
   nickname: string | null;
-  customers: { display_name: string | null } | null;
+  customers: { name: string | null } | null;
 };
 
-async function listUnverifiedProperties(): Promise<UnverifiedProperty[]> {
+// null means the list could NOT be loaded — the page must say so, never show
+// the all-clear. Until 2026-08-28 a failure here returned [] and the page told
+// staff "nothing needs fixing" while 25 unschedulable properties existed (the
+// select asked for customers.display_name, a column that does not exist; the
+// real column is `name`, and PostgREST answered 400 to every request).
+async function listUnverifiedProperties(): Promise<UnverifiedProperty[] | null> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return [];
+  if (!sb) return null;
   // customers is a real FK relation, so the nested select works here (unlike
   // jobs->properties, which has no FK — measured the hard way in S68).
   const { data, error } = await sb
     .from('properties')
-    .select('id, customer_id, address, nickname, customers(display_name)')
+    .select('id, customer_id, address, nickname, customers(name)')
     .is('lat', null)
     .is('archived_at', null)
     .order('created_at', { ascending: true })
     .returns<UnverifiedProperty[]>();
   if (error) {
     console.error('[admin/geocoding] list failed:', error.message);
-    return [];
+    return null;
   }
   return data ?? [];
 }
@@ -62,7 +67,12 @@ export default async function GeocodingPage() {
           </p>
         </div>
 
-        {rows.length === 0 ? (
+        {rows === null ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-700">
+            The list could not be loaded, so it may not be empty. Reload the page; if this
+            keeps happening, tell whoever maintains the tool.
+          </div>
+        ) : rows.length === 0 ? (
           <div className="rounded-lg border border-gray-200 p-6 text-sm text-gray-600">
             Every property has verified coordinates. Nothing needs fixing.
           </div>
@@ -73,7 +83,7 @@ export default async function GeocodingPage() {
                 key={row.id}
                 propertyId={row.id}
                 customerId={row.customer_id}
-                customerName={row.customers?.display_name ?? '(no name)'}
+                customerName={row.customers?.name ?? '(no name)'}
                 nickname={row.nickname}
                 address={row.address ?? ''}
               />
