@@ -47,6 +47,10 @@
     {
       "path": "/api/ops/vehicle-poll",
       "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/referrals/sweep",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
