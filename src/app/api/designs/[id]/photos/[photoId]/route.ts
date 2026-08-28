@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTitle, isValidDesignId } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { refuseIfFrozen } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -37,6 +38,14 @@ async function checkParams(params: Params['params']): Promise<{ id: string; phot
   return { id, photoId };
 }
 
+// Row 427: the local copy of this helper moved to sceneFreeze.ts so every
+// design write route shares ONE refusal. The pre-flight placement still
+// matters here and is why the original was written: deleting a photo is three
+// writes (storage object, extra_photos, scene prune) and only the last goes
+// through the guarded scene writer, so a refusal found at step three would
+// leave the photo already gone. A decline must change nothing at all. Rename
+// shares it because photo titles are customer-visible on the portal.
+
 export async function PATCH(req: NextRequest, { params }: Params) {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -50,6 +59,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
   const title = typeof body.title === 'string' ? body.title : null;
+
+  const frozen = await refuseIfFrozen(checked.id);
+  if (frozen) return frozen;
 
   const ok = checked.photoId.toLowerCase() === 'base'
     ? await updateDesignPhotoTitle(checked.id, title)
@@ -67,10 +79,27 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'The base photo cannot be deleted' }, { status: 400 });
   }
 
+  const frozen = await refuseIfFrozen(checked.id);
+  if (frozen) return frozen;
+
   const result = await removeDesignExtraPhoto(checked.id, checked.photoId);
   if (!result.ok) return NextResponse.json({ error: 'Photo not found' }, { status: 404 });
   // #741 defect 3: report any mini group this delete's server-side prune just
   // orphaned, so the caller can warn staff (mirrors #255's seed-analysis
   // route, which already reports the same shape for its own prune).
-  return NextResponse.json({ ok: true, prunedMiniGroups: result.prunedMiniGroups });
+  // Row 371: hand back the version this delete's own scene prune wrote, so a
+  // still-mounted editor (an INACTIVE tab was deleted, so it never remounts)
+  // can adopt it instead of failing its next save's CAS. Null when the prune
+  // wrote nothing.
+  // Row 367: `sceneNotPruned` means the photo IS gone but its scene items could
+  // not be removed — either the quote was approved mid-request ('locked') or
+  // the freeze state could not be read ('unverified'). A 200 is honest, the
+  // delete really happened, but the client must TELL staff or the surviving
+  // items keep billing invisibly.
+  return NextResponse.json({
+    ok: true,
+    prunedMiniGroups: result.prunedMiniGroups,
+    version: result.version,
+    ...(result.sceneNotPruned ? { sceneNotPruned: result.sceneNotPruned } : {}),
+  });
 }

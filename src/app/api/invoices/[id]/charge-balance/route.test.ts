@@ -38,7 +38,16 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock, appendRetiredTxn: appendRetiredTxnMock }));
+// Row 341: partially mocked (not replaced outright) — the route now
+// transitively imports quoteAmendInvoiceSync.ts (the reconciliation guard),
+// which imports the REAL computeInvoiceTotals from this same module. Only
+// getInvoice/appendRetiredTxn are the DB-backed calls this route makes
+// directly and need mocking; everything else (computeInvoiceTotals, types)
+// stays real.
+vi.mock('@/lib/invoices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/invoices')>();
+  return { ...actual, getInvoice: getInvoiceMock, appendRetiredTxn: appendRetiredTxnMock };
+});
 vi.mock('@/lib/jobs', () => ({ getJob: getJobMock, setJobStatus: setJobStatusMock }));
 vi.mock('@/lib/integrations/valorBalance', () => ({
   chargeBalanceOnFile: chargeMock,
@@ -86,15 +95,51 @@ type InvoiceUpdateResult = { data?: unknown; error?: unknown };
 // order/count, records every call (for asserting the idempotency claim/release
 // CAS shape), and resolves to a QUEUED result per call (default: a successful
 // 1-row update) so existing tests that never touch the queue keep working.
-function makeSb(quote: Record<string, unknown> | null, invoiceResponses: InvoiceUpdateResult[] = []) {
+function makeSb(
+  quote: Record<string, unknown> | null,
+  invoiceResponses: InvoiceUpdateResult[] = [],
+  // Row 404 fix round: models a CONCURRENT write landing between the route's
+  // initial quote read and the trailing marker clear. When set, the clear's own
+  // re-read sees this instead, and the quotes CAS only matches THIS snapshot —
+  // exactly how the real row behaves.
+  driftedQuote?: Record<string, unknown> | null,
+) {
   const invoiceCalls: InvoiceUpdateCall[] = [];
   let invoiceCallIdx = 0;
 
+  // Row 404: the route now also CLEARS the stale-invoice markers on the quote
+  // after a charge whose staleness check ran and passed, so the quotes table
+  // needs a read-then-CAS-update shape too, and the calls have to be
+  // observable. `maybeSingle` (the clear's read) and `update` are additive —
+  // no pre-existing test touches either, which is why this cannot disturb the
+  // rest of the suite.
+  const quoteUpdates: Array<{ patch: Record<string, unknown>; eqs: Array<[string, unknown]> }> = [];
   const quotesChain: Record<string, unknown> = {};
   Object.assign(quotesChain, {
     select: () => quotesChain,
     eq: () => quotesChain,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
+    maybeSingle: async () => ({ data: driftedQuote ?? quote, error: null }),
+    update: (patch: Record<string, unknown>) => {
+      const call = { patch, eqs: [] as Array<[string, unknown]> };
+      quoteUpdates.push(call);
+      const chain: Record<string, unknown> = {};
+      Object.assign(chain, {
+        eq: (col: string, val: unknown) => {
+          call.eqs.push([col, val]);
+          return chain;
+        },
+        select: () => {
+          // Model the CAS: the update claims a row only when its
+          // approval_snapshot predicate equals the row's CURRENT value.
+          const current = JSON.stringify((driftedQuote ?? quote)?.approval_snapshot);
+          const cas = call.eqs.find(([col]) => col === 'approval_snapshot');
+          const matched = cas === undefined || cas[1] === current;
+          return Promise.resolve({ data: matched ? [{ id: QID }] : [], error: null });
+        },
+      });
+      return chain;
+    },
   });
 
   function makeInvoiceChain(patch: Record<string, unknown>) {
@@ -127,6 +172,7 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
   const b = {
     from: (table: string) => (table === 'quotes' ? quotesChain : invoicesTable),
     _invoiceCalls: invoiceCalls,
+    _quoteUpdates: quoteUpdates,
   };
   return b;
 }
@@ -135,6 +181,12 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
 // release/final-record), used to assert the idempotency CAS shape.
 function invoiceCallsOf(sb: unknown): InvoiceUpdateCall[] {
   return (sb as { _invoiceCalls: InvoiceUpdateCall[] })._invoiceCalls;
+}
+
+// Row 404: the quotes-table updates the route made (today only the
+// stale-marker clear).
+function quoteUpdatesOf(sb: unknown): Array<{ patch: Record<string, unknown>; eqs: Array<[string, unknown]> }> {
+  return (sb as { _quoteUpdates: Array<{ patch: Record<string, unknown>; eqs: Array<[string, unknown]> }> })._quoteUpdates;
 }
 
 const INVOICE = {
@@ -399,6 +451,135 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     const res = await POST(req({ overridePreference: true }), ctx());
     expect(res.status).toBe(200);
     expect(chargeMock).toHaveBeenCalled();
+  });
+});
+
+// ─── Row 341: reconciliation guard against a STALE (never resynced) invoice ─
+// A quote whose `result`/deposit compute to an EXPECTED balance of $1,400
+// (computeInvoiceResyncTotals({total:2400}, 1000, 2400, false) — the exact
+// fixture quoteAmendInvoiceSync.test.ts pins for the same formula), on a
+// quote with no amendments (resolveAgreedTotal falls through to
+// result.total = 2400). INVOICE's default balance ($2,500) disagrees with
+// that expectation — simulating an amend/amend-decline whose invoice resync
+// lost its CAS race twice and left the row stale.
+const QUOTE_WITH_AGREED_TOTAL = {
+  ...QUOTE,
+  result: { total: 2400 },
+  deposit_amount_usd: 1000,
+};
+describe('POST /api/invoices/[id]/charge-balance — reconciliation guard against a stale invoice (row 341)', () => {
+  it('409s (invoice-stale) and releases the claim, without charging, when the invoice balance disagrees with the agreed total', async () => {
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('invoice-stale');
+    expect(chargeMock).not.toHaveBeenCalled();
+    // Claim, then release (CAS on the exact sentinel) — no settle/txn-record call.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].patch).toMatchObject({ valor_balance_txn_id: null });
+  });
+
+  it('charges anyway with the explicit overrideStale, even though the invoice disagrees with the agreed total', async () => {
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL, SETTLE_OK);
+    const res = await POST(req({ overrideStale: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('does NOT block when the invoice balance matches the recomputed agreed-total figure', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 }); // matches the $1,400 expectation
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL, SETTLE_OK);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 1400 }));
+  });
+
+  it('skips the guard entirely (no result on the quote) — the pre-existing default fixture behavior is unaffected', async () => {
+    // QUOTE (no `result`) — every other test file in this suite uses this
+    // fixture and none of them set `result`, so the guard failing OPEN here
+    // is what kept the whole existing suite green after this fix round.
+    sbRef.current = makeSb(QUOTE, SETTLE_OK);
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+});
+
+// ─── Row 341 fix round 3: the guard's own priorBalanceCollectedUsd wiring ───
+// The four tests above exercise `if (quote.result && !overrideStale)` (the
+// BRANCH), but every `getInvoiceMock` fixture they use omits `total`/
+// `deposit_applied`, so `priorBalanceCollectedUsd(freshInvoice)` always
+// evaluates to 0 in all of them — identical to the pre-fix-round-3 formula.
+// A regression that dropped the 5th argument entirely would still pass all
+// four (confirmed by negative control below). These three give the specific
+// argument executable coverage, using the SAME $500-deposit/$500-settled
+// worked example `quoteAmendInvoiceSync.test.ts` pins for the resync side —
+// deposit $500, $500 already collected beyond it (so $1,000 genuinely in
+// hand), agreed total raised to $1,400 → real balance owed $400, not the
+// deposit-only $900.
+const QUOTE_WITH_SETTLED_BALANCE = {
+  ...QUOTE,
+  result: { total: 1400 },
+  deposit_amount_usd: 500,
+};
+describe('POST /api/invoices/[id]/charge-balance — reconciliation guard nets out a settled balance payment (row 341 fix round 3)', () => {
+  it('does NOT false-409 a correctly-resynced invoice with a settled balance beyond the deposit — the case this fix round exists to protect', async () => {
+    // Already resynced to the CORRECT (fixed-formula) figure: total 1400,
+    // balance 400 (1000 already collected — 500 deposit + 500 settled —
+    // netted against the 1400 total), deposit_applied still just 500 (never
+    // mutated). Pre-fix, `expected` would have computed 900 (deposit-only)
+    // here and false-409'd this legitimately-collectable invoice.
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, total: 1400, balance: 400, deposit_applied: 500 });
+    // mockResolvedValue (persistent), not Once — a prior test's unconsumed
+    // Once value (e.g. if an earlier test in this describe block never
+    // reaches chargeMock) would otherwise leak into this one via the shared
+    // FIFO once-queue vi.clearAllMocks() does not drain.
+    chargeMock.mockResolvedValue({ ok: true, chargedUsd: 400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_SETTLED_BALANCE, SETTLE_OK);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 400 }));
+  });
+
+  it('409s (invoice-stale) on a genuinely stale invoice even when money was already collected beyond the deposit — the settled balance does not mask real staleness', async () => {
+    // NEVER resynced to the new 1400 agreed total: still sitting at the OLD
+    // total (1000), with 300 collected beyond the deposit (500 deposit +
+    // partial 300 → balance 200 remaining on the OLD total). The correctly-
+    // netted expected balance on the NEW total is 600 (1400 − 500 deposit −
+    // 300 already-collected), which disagrees with the invoice's actual 200
+    // — genuine staleness, not the settled-balance case above.
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, total: 1000, balance: 200, deposit_applied: 500 });
+    sbRef.current = makeSb(QUOTE_WITH_SETTLED_BALANCE);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('invoice-stale');
+    expect(chargeMock).not.toHaveBeenCalled();
+    // Pins the CORRECTED expected figure (600) in the response, not the
+    // pre-fix deposit-only one (900) — proves the guard's own diagnosis uses
+    // the fixed formula, not just that it happens to disagree.
+    expect(json.error).toContain('expected $600');
+  });
+
+  it('charges anyway with the explicit overrideStale, even on the genuinely-stale settled-balance invoice above', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, total: 1000, balance: 200, deposit_applied: 500 });
+    // mockResolvedValue (persistent) — same reasoning as the test above.
+    chargeMock.mockResolvedValue({ ok: true, chargedUsd: 200, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_SETTLED_BALANCE, SETTLE_OK);
+    const res = await POST(req({ overrideStale: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 200 })); // the stale figure ON FILE — overrideStale means "charge it anyway"
   });
 });
 
@@ -846,5 +1027,139 @@ describe('POST /api/invoices/[id]/charge-balance — #173 stale-balance race', (
     expect(json.reason).toBe('already-charged');
     expect(chargeMock).not.toHaveBeenCalled();
     expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+});
+
+// ─── Row 404: clearing the stale-invoice markers after a passing charge ─────
+// The markers (`paymentBlocked`, `invoiceResyncFailed`) drive the workflow
+// board's amber caution. Before this, they were cleared ONLY by
+// resyncInvoiceToAgreedTotal, reachable only from /amend and /amend-decline —
+// and /amend hard-rejects with a 409 'no-change' when there is no real price
+// delta. So an invoice carrying a marker that needed no further re-price had
+// NO in-app path to clear it and the warning could only accumulate.
+//
+// The gate is deliberately the staleness CHECK PASSING, not merely a
+// successful charge. See the route's own comment for why an `overrideStale`
+// charge must NOT clear.
+const QUOTE_MARKED = {
+  ...QUOTE_WITH_AGREED_TOTAL,
+  approval_snapshot: {
+    amendments: [] as unknown[],
+    invoiceResyncFailed: { at: '2026-01-01T00:00:00.000Z' },
+    paymentBlocked: { at: '2026-01-02T00:00:00.000Z' },
+  },
+};
+
+describe('POST /api/invoices/[id]/charge-balance — stale-marker clear (row 404)', () => {
+  it('clears BOTH markers after a charge whose staleness check ran and PASSED', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 }); // matches the agreed total
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+
+    const updates = quoteUpdatesOf(sbRef.current);
+    expect(updates).toHaveLength(1);
+    const next = updates[0].patch.approval_snapshot as Record<string, unknown>;
+    expect(next).not.toHaveProperty('invoiceResyncFailed');
+    expect(next).not.toHaveProperty('paymentBlocked');
+    // Every OTHER approval_snapshot field rides through untouched — the clear
+    // is scoped to exactly the two marker keys, never a blind overwrite.
+    expect(next).toHaveProperty('amendments');
+    // ...and it is a compare-and-swap on the exact prior snapshot, so it can
+    // never clobber a concurrent write.
+    expect(updates[0].eqs.map(([col]) => col)).toContain('approval_snapshot');
+  });
+
+  it('does NOT clear when the operator used overrideStale — the discrepancy is still real', async () => {
+    // The invoice ($2,500) genuinely disagrees with the agreed total ($1,400).
+    // overrideStale charges the amount ON FILE anyway, so the marker is the
+    // only surviving record that this order was billed off a stale figure.
+    // Clearing here would erase a money signal rather than resolve one.
+    getInvoiceMock.mockResolvedValue({ ...INVOICE });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK);
+
+    const res = await POST(req({ overrideStale: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+    expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('does NOT clear when the check was SKIPPED because the quote has no result', async () => {
+    // Skipping proves nothing about whether the invoice matches the agreed
+    // total — there is no agreed total to compare against — so a charge here
+    // must leave the markers exactly as it found them.
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: QUOTE_MARKED.approval_snapshot }, SETTLE_OK);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+    expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('makes no quotes write at all when the quote carries no markers to clear', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 });
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL, SETTLE_OK); // approval_snapshot has amendments only
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
+  });
+});
+
+// ─── Row 404 fix round: the clear is CORRELATED to what the check saw ───────
+// Premerge MED, found independently by the technical and admin lenses: the
+// gate is computed from data read at request START, but the clear fires at
+// request END after a card round-trip. A concurrent writer that flags a NEW
+// marker in that window must not have it erased — the charge only ever proved
+// something about the state it actually observed.
+describe('POST /api/invoices/[id]/charge-balance — the clear cannot erase a concurrent marker (row 404 fix round)', () => {
+  it('CASes on the snapshot the staleness check ran against, not on a fresh read', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 });
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+
+    const updates = quoteUpdatesOf(sbRef.current);
+    expect(updates).toHaveLength(1);
+    // The CAS value must be the snapshot READ AT REQUEST START. If a concurrent
+    // write landed during the charge, this predicate misses and the clear
+    // drops, leaving the newer marker alone.
+    const casEq = updates[0].eqs.find(([col]) => col === 'approval_snapshot');
+    expect(casEq).toBeDefined();
+    expect(casEq![1]).toBe(JSON.stringify(QUOTE_MARKED.approval_snapshot));
+  });
+
+  it('LEAVES a marker that a concurrent writer set during the card round-trip', async () => {
+    // The real scenario the two lenses constructed: an /amend raises the total,
+    // loses its invoice-sync race twice, and flags invoiceResyncFailed WHILE
+    // this charge is at Valor. An uncorrelated clear would re-read, see that
+    // brand-new marker, and erase it — silencing the board about a live
+    // problem this charge never verified anything about.
+    const CONCURRENTLY_FLAGGED = {
+      ...QUOTE_MARKED,
+      approval_snapshot: {
+        ...QUOTE_MARKED.approval_snapshot,
+        invoiceResyncFailed: { at: '2026-06-06T00:00:00.000Z', note: 'set by a concurrent amend' },
+      },
+    };
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 });
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK, CONCURRENTLY_FLAGGED);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200); // the charge still succeeds — this is best-effort
+
+    // The clear was ATTEMPTED, but CASed on the pre-charge snapshot, so against
+    // the concurrently-updated row it claims zero rows and drops.
+    const updates = quoteUpdatesOf(sbRef.current);
+    expect(updates).toHaveLength(1);
+    const casEq = updates[0].eqs.find(([col]) => col === 'approval_snapshot');
+    expect(casEq![1]).toBe(JSON.stringify(QUOTE_MARKED.approval_snapshot));
+    expect(casEq![1]).not.toBe(JSON.stringify(CONCURRENTLY_FLAGGED.approval_snapshot));
   });
 });

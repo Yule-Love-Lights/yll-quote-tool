@@ -13,7 +13,16 @@ const {
   sbRef: { current: null as unknown },
   getJobByQuoteMock: vi.fn(async (): Promise<unknown> => null),
   getInvoiceByJobMock: vi.fn(async (): Promise<unknown> => null),
-  resyncInvoiceToAgreedTotalMock: vi.fn(async () => ({ invoicedBalance: null, invoicedTotal: null })),
+  // Row 341: `resynced: true` is the realistic default (a resync that ran
+  // and landed) — every EXISTING test in this file that reaches the resync
+  // call relies on the route treating it as a clean success; the explicit
+  // resynced:false tests below override this per-call.
+  resyncInvoiceToAgreedTotalMock: vi.fn(async () => ({
+    invoicedBalance: null,
+    invoicedTotal: null,
+    previousInvoicedTotal: null,
+    resynced: true,
+  })),
   sendEmailMock: vi.fn(async () => ({})),
   isHighLevelConfiguredMock: vi.fn(() => false),
 }));
@@ -460,6 +469,61 @@ describe('POST /api/quotes/[id]/amend-decline — invoice re-sync (FIX2)', () =>
     const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
     expect(res.status).toBe(200);
     expect(getJobByQuoteMock).not.toHaveBeenCalled();
+    expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
+  });
+
+  // Row 341 (staff-lens HIGH, this fix round): the route used to discard
+  // resyncInvoiceToAgreedTotal's return value entirely and report `ok:true`
+  // unconditionally, even when the invoice was left at the REFUSED total.
+  it('surfaces invoiceResyncFailed:true when the resync reports resynced:false, without failing the decline itself', async () => {
+    const snapshot = { customerSelection: { currentTotalUsd: 2000 }, amendments: [amendment] };
+    const { client } = makeSb({ ...bookedQuote(snapshot), result: RESULT, deposit_amount_usd: 1000 });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValueOnce({ id: 'inv-1', status: 'awaiting_payment', tax_overridden: false });
+    resyncInvoiceToAgreedTotalMock.mockResolvedValueOnce({
+      invoicedBalance: null,
+      invoicedTotal: null,
+      previousInvoicedTotal: null,
+      resynced: false,
+    });
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    const json = await res.json();
+
+    // The decline is still recorded — a resync failure never undoes it.
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.invoiceResyncFailed).toBe(true);
+  });
+
+  it('leaves invoiceResyncFailed:false when the resync succeeds', async () => {
+    const snapshot = { customerSelection: { currentTotalUsd: 2000 }, amendments: [amendment] };
+    const { client } = makeSb({ ...bookedQuote(snapshot), result: RESULT, deposit_amount_usd: 1000 });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValueOnce({ id: 'inv-1', status: 'awaiting_payment', tax_overridden: false });
+    // Default mock resolves resynced:true — no override needed.
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.invoiceResyncFailed).toBe(false);
+  });
+
+  it('leaves invoiceResyncFailed:false when there was no invoice to sync at all', async () => {
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [amendment] }),
+      result: RESULT,
+      deposit_amount_usd: 1000,
+    });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce(null);
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.invoiceResyncFailed).toBe(false);
     expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
   });
 });

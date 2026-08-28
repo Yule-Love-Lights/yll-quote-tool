@@ -116,6 +116,12 @@ export type DueFollowUp = {
    *  itself doesn't need these; they ride along for that one consumer. */
   contactPhone: string | null;
   contactEmail: string | null;
+  /** Row 390: non-null only when this nudge is a RE-CHASE (row 385's re-arm
+   *  after 7 quiet days on a handled item) — the silence-start anchor
+   *  (`follow_ups.re_chase_since`), so the strip can label it and show how
+   *  long the customer has been quiet. Null for an ordinary first-time
+   *  "quote sent, no reply" nudge. */
+  reChaseSince: string | null;
 };
 
 /** Row 321: one quote with a live `approval_snapshot.pendingColorRequest`, for

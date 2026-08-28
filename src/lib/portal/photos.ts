@@ -42,6 +42,7 @@ export type PortalGalleryPhoto = {
 };
 
 export function portalPhotos(design: PortalDesign): PortalGalleryPhoto[] {
+  if (!design.imageVisibility.street) return [];
   // Crew field photos (the text-ops bot's install capture) are INTERNAL: a
   // ladder, a half-finished install, or a crew member's face must never appear
   // in the homeowner's gallery. This list renders EVERY entry it returns,

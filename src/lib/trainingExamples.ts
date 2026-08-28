@@ -398,6 +398,32 @@ export async function listTrainingExamples(limit = 200): Promise<TrainingExample
   }) as TrainingExampleListItem);
 }
 
+// Uncapped count of rows eligible for the placement eval, so
+// scripts/eval-placement.ts can tell whether listTrainingExamples' fetch
+// limit silently truncated the corpus. Mirrors the SAME eligibility that
+// script's own `!r.excluded && r.has_analysis && r.street_w && r.street_h`
+// filter applies, done server-side with a head:true count query (no rows
+// transferred) instead of a second full fetch. (street_w/street_h use
+// `.not(is,null)` rather than the script's truthy check, so a literal 0 --
+// not a real photo dimension -- would count here and not there; harmless in
+// practice and noted rather than hidden.)
+export async function countEligiblePlacementExamples(): Promise<number | null> {
+  const sb = getSb();
+  if (!sb) return null;
+  const { count, error } = await sb
+    .from('training_examples')
+    .select('id', { count: 'exact', head: true })
+    .eq('excluded', false)
+    .not('original_analysis', 'is', null)
+    .not('street_w', 'is', null)
+    .not('street_h', 'is', null);
+  if (error) {
+    console.error('countEligiblePlacementExamples error:', error);
+    return null;
+  }
+  return count;
+}
+
 export async function getTrainingExample(id: string): Promise<TrainingExampleRow | null> {
   const sb = getSb();
   if (!sb) return null;

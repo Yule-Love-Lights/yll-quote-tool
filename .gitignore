@@ -70,3 +70,6 @@ video-transcripts/
 
 # per-worktree session marker written by scripts/session-open.sh, local only
 .session-id
+
+# backfill script output — real customer addresses (PII), local only
+scripts/backfill-output/

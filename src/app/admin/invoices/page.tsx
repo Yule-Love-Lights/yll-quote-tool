@@ -1,13 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge, INVOICE_STATUS_LABELS } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
 import type { InvoiceAdminCard } from '@/lib/invoices';
 import { INVOICE_STATUSES, type InvoiceStatus } from '@/lib/invoiceStatus';
+import { isStaleInvoiceSnapshot } from '@/lib/quoteAmendInvoiceSync';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { InvoicesListSkeleton } from './InvoicesListSkeleton';
 
@@ -15,7 +18,16 @@ import { InvoicesListSkeleton } from './InvoicesListSkeleton';
 // a job is marked complete (full total, deposit applied → balance). Test invoices
 // (#93) are VISIBLE here, badged.
 
-export default function InvoicesAdminPage() {
+function InvoicesAdminPageContent() {
+  // Row 396 (MED): the dashboard workflow board's ⚠ badge (isStaleInvoiceSnapshot,
+  // row 389) used to link here unfiltered — a bucket reading "3 unreconciled"
+  // gave the owner no way to find WHICH three. WorkflowBoard.tsx now appends
+  // ?stale=1 to its href when a bucket has a stale count; this page reads it
+  // and filters to just those rows (isStaleInvoiceSnapshot, same derivation
+  // the board itself uses — see quoteApprovalSnapshot's own comment in
+  // invoices.ts for why the check isn't precomputed server-side).
+  const searchParams = useSearchParams();
+  const staleOnly = searchParams.get('stale') === '1';
   const [items, setItems] = useState<InvoiceAdminCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +65,7 @@ export default function InvoicesAdminPage() {
   const term = search.trim().toLowerCase();
   const visible = items.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
+    if (staleOnly && !isStaleInvoiceSnapshot(inv.quoteApprovalSnapshot)) return false;
     if (!term) return true;
     return [inv.customerName, inv.customerAddress, inv.invoiceNumber != null ? `#${inv.invoiceNumber}` : null]
       .some((v) => v != null && String(v).toLowerCase().includes(term));
@@ -88,6 +101,17 @@ export default function InvoicesAdminPage() {
         {!loading && items.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">
             <p className="text-gray-500">No invoices yet — one appears here when a job is marked complete.</p>
+          </div>
+        )}
+
+        {staleOnly && (
+          <div className="mb-3 flex items-center gap-2 text-xs">
+            <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 font-medium text-amber-800">
+              ⚠ Unreconciled only
+            </span>
+            <Link href="/admin/invoices" className="text-gray-500 hover:underline">
+              Clear filter
+            </Link>
           </div>
         )}
 
@@ -134,6 +158,8 @@ export default function InvoicesAdminPage() {
                 <tr>
                   <th className="text-left px-3 py-2">Created</th>
                   <th className="text-left px-3 py-2">Invoice</th>
+                  {/* Row 419: service line, consistent across the admin lists. */}
+                  <th className="text-left px-3 py-2">Service</th>
                   <th className="text-left px-3 py-2">Customer</th>
                   <th className="text-right px-3 py-2">Total</th>
                   <th className="text-right px-3 py-2">Balance</th>
@@ -150,6 +176,11 @@ export default function InvoicesAdminPage() {
                       <Link href={`/admin/invoices/${inv.id}`} className="text-blue-600 hover:underline">
                         {inv.invoiceNumber != null ? `#${inv.invoiceNumber}` : inv.id.slice(0, 8)}
                       </Link>
+                    </td>
+                    {/* Row 419: em dash when the invoice has no linked quote —
+                        nothing else carries the service line. */}
+                    <td className="px-3 py-2">
+                      {inv.serviceType != null ? <ServiceTypeBadge serviceType={inv.serviceType} /> : <span className="text-gray-400">—</span>}
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">
@@ -182,7 +213,26 @@ export default function InvoicesAdminPage() {
                     <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{money(inv.total)}</td>
                     <td className="px-3 py-2 text-right whitespace-nowrap font-medium text-gray-900">{money(inv.balance)}</td>
                     <td className="px-3 py-2">
-                      <InvoiceStatusBadge status={inv.status} />
+                      <div className="flex items-center gap-1.5">
+                        <InvoiceStatusBadge status={inv.status} />
+                        {isStaleInvoiceSnapshot(inv.quoteApprovalSnapshot) && (
+                          // Staff-lens finding (row 396 delta-verify): the old copy said
+                          // "See the amend panel on the linked order" — a promised remedy
+                          // that doesn't always exist. /amend 409s "no-change" when there's
+                          // no real price delta, so an invoiceResyncFailed marker with
+                          // nothing left to re-price can't be cleared there at all.
+                          // Row 414 built that clearing path: the detail page's
+                          // Mark reconciled override. Say what the ⚠ MEANS and
+                          // where the remedy lives.
+                          <span
+                            title="Unreconciled — this invoice may not match the agreed total. Verify against the linked order before collecting the balance. Once verified, clear it with Mark reconciled on the invoice detail page (row 414)."
+                            aria-label="Unreconciled invoice"
+                            className="text-amber-600"
+                          >
+                            ⚠
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">
                       <Link href={`/admin/invoices/${inv.id}`} className="text-gray-700 hover:bg-gray-100 text-xs px-2 py-1 rounded mr-1">
@@ -200,5 +250,15 @@ export default function InvoicesAdminPage() {
         )}
       </div>
     </OperatorShell>
+  );
+}
+
+// useSearchParams() (staleOnly, above) requires a Suspense boundary around
+// its consumer — same pattern as src/app/login/page.tsx's LoginForm.
+export default function InvoicesAdminPage() {
+  return (
+    <Suspense fallback={null}>
+      <InvoicesAdminPageContent />
+    </Suspense>
   );
 }

@@ -24,7 +24,7 @@
 // floor — the minimum is a customer-side approval gate, not a silent bump; see
 // minimumOrderSubtotal).
 
-import { BUSINESS_RULES, effectiveDepositRate } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, liveDepositRate } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 // #110 W1-064: shared plain round-to-cents (was copy-pasted here / approve route).
 // Aliased to `round2` so call sites are byte-identical.
@@ -114,10 +114,10 @@ export function chargesFromResult(result: QuoteResult, depositPercent?: number):
       amount: noHolidayFees ? 0 : BUSINESS_RULES.premiumTakedownFee,
       defaultOn: (typeof result.takedownAmount === 'number' ? result.takedownAmount : 0) > 0,
     },
-    depositRate:
-      typeof depositPercent === 'number'
-        ? effectiveDepositRate(depositPercent)
-        : (result.depositRate ?? BUSINESS_RULES.depositPercentage),
+    // Row 409: this precedence is now liveDepositRate's, so the admin list's
+    // deposit chip reads the same rule this charge path prices with instead of
+    // carrying its own copy of it.
+    depositRate: liveDepositRate(depositPercent, result.depositRate),
   };
 }
 

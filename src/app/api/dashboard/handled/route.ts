@@ -35,7 +35,15 @@ export async function POST(req: NextRequest) {
   // 1. Stamp local first — instant + authoritative, even if GHL is down.
   // handled_by is a uuid FK (auth.users) — NULL, never the string 'system',
   // on the narrow path where the auth gate is dormant and no operator resolved.
-  const local = await markItemHandledLocal(itemId, operator?.id ?? null, now);
+  //
+  // Row 320(c): this button only ever renders on a listOpenItems row (bucket
+  // 'needs_reply', status==='unresponded' — see InboxList.tsx / store.ts's
+  // applyBucketFilter). A stale click racing a concurrent Mark-completed/
+  // Dismiss on the same item must be refused, not resurrect the terminal row
+  // — expectedStatus carries that positive expectation into the write's own
+  // CAS instead of the negative `.neq('status','handled')` default, which
+  // would have let it through.
+  const local = await markItemHandledLocal(itemId, operator?.id ?? null, now, { expectedStatus: 'unresponded' });
   if (!local.ok) return NextResponse.json({ error: local.error }, { status: 409 });
 
   // 2. Best-effort source write-back: GHL mark-read + handled-by tag + ensure the

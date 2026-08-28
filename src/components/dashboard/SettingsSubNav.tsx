@@ -19,6 +19,9 @@ const ITEMS = [
   { label: 'Hotkeys', href: '/settings/hotkeys', key: 'hotkeys' as const },
   // HighLevel CRM setup helper — pipeline + stage IDs for the env vars.
   { label: 'HighLevel', href: '/settings/highlevel', key: 'highlevel' as const },
+  // Fleet GPS — connection health, devices, and where the data shows up
+  // (Naldo 2026-08-27: every integration gets its own section).
+  { label: 'Bouncie', href: '/settings/bouncie', key: 'bouncie' as const },
 ];
 
 export function SettingsSubNav({
@@ -33,7 +36,8 @@ export function SettingsSubNav({
     | 'telegram'
     | 'quotes'
     | 'hotkeys'
-    | 'highlevel';
+    | 'highlevel'
+    | 'bouncie';
 }) {
   return (
     <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>

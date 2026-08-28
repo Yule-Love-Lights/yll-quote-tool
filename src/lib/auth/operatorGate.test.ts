@@ -48,6 +48,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest)
       '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest)
       '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping)
+      '/api/referrals/sweep', // Vercel Cron (CRON_SECRET-guarded, naldo/referral-link-sweep)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
@@ -85,10 +86,12 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/settings',
       '/api/designs',
       '/api/designs/abc',
+      '/api/quote-build-sessions',
       '/api/training',
       '/api/integrations/highlevel/contacts', // CRITICAL #2
       '/api/integrations/highlevel/attach',
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/send', // operator action
+      '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/staff-notes', // internal notes
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/video', // operator-managed
       '/api/inbox', // #58 operator-only open-items feed
       '/api/dashboard/handled', // #58 operator action

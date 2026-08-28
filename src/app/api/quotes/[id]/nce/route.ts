@@ -54,6 +54,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 import { canCarryNceOrYllNeighborTag, type ServiceType } from '@/lib/serviceType';
+import { NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
 
@@ -196,8 +197,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       typeof inputs.depositPercent === 'number' ? inputs.depositPercent : undefined;
     let depositWrite: Record<string, unknown> | null = null;
     if (isNce && (currentDepositPercent === undefined || currentDepositPercent === 0)) {
-      depositWrite = { ...inputs, depositPercent: 40 };
-    } else if (!isNce && currentDepositPercent === 40) {
+      depositWrite = { ...inputs, depositPercent: NCE_DEPOSIT_PERCENT };
+    } else if (!isNce && currentDepositPercent === NCE_DEPOSIT_PERCENT) {
       // #226: write an explicit 0, never delete the key — a deleted key
       // reads back as `undefined`, which chargesFromResult treats as "no
       // live value to offer" and falls through to a possibly-stale

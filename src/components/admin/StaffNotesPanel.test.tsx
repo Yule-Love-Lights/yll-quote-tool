@@ -1,0 +1,291 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  StaffNotesList,
+  buildStaffNoteSubmission,
+  canSubmitStaffNote,
+  loadStaffNotes,
+  mergeStaffNote,
+  oldestStaffNoteCursor,
+  redactStaffNote,
+  staffNotesPageQuery,
+  mergeStaffNotes,
+  postStaffNote,
+} from './StaffNotesPanel';
+
+const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
+const REQUEST_ID = '33333333-3333-4333-8333-333333333333';
+const NOTE = {
+  id: '44444444-4444-4444-8444-444444444444',
+  quoteId: QUOTE_ID,
+  body: 'Gate code is in the lockbox.',
+  createdBy: '22222222-2222-4222-8222-222222222222',
+  createdByLabel: 'Naldo',
+  createdAt: '2026-08-21T14:00:00.000Z',
+  // Row 372: an ordinary, never-withdrawn note.
+  redactedAt: null,
+  redactedByLabel: null,
+  redactedReason: null,
+};
+
+describe('StaffNotesList — the older-notes control (row 373)', () => {
+  it('offers a way to READ the older notes, not just a note that they exist', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} hasMore onLoadMore={() => {}} />,
+    );
+    expect(html).toContain('Show older notes');
+  });
+
+  it('renders no control when the page holds every note', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).not.toContain('Show older notes');
+  });
+
+  // Staff lens MED: a failed older-page fetch used to render its message down
+  // inside the "Add an internal note" form, reading like a failed SAVE, in the
+  // loader's generic wording ("Could not load notes" — as if there were none).
+  it('shows an older-page failure beside the button, and says the notes are still there', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList
+        notes={[NOTE]}
+        loading={false}
+        hasMore
+        olderError="Could not load the older notes. They are still there — try again."
+        onLoadMore={() => {}}
+      />,
+    );
+    expect(html).toContain('still there');
+    expect(html).toContain('role="alert"');
+    // The button survives the failure — those notes have not gone anywhere.
+    expect(html).toContain('Show older notes');
+  });
+
+  it('disables the control while an older page is in flight', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} hasMore loadingMore onLoadMore={() => {}} />,
+    );
+    expect(html).toContain('disabled');
+    expect(html).toContain('Loading…');
+  });
+});
+
+// ─── Row 372: a withdrawn note ──────────────────────────────────────────────
+// staff_notes is append-only down to the grants, so a note written in error —
+// or one naming someone who should not be named — could only be removed by
+// deleting the whole quote. A withdrawal keeps the row and the attribution and
+// replaces the text.
+describe('StaffNotesList — withdrawn notes (row 372)', () => {
+  const WITHDRAWN = {
+    ...NOTE,
+    body: '[Note withdrawn]',
+    redactedAt: '2026-08-25T10:00:00.000Z',
+    redactedByLabel: 'Jason',
+    redactedReason: 'Wrong customer',
+  };
+
+  it('keeps a withdrawn note in the timeline, marked, with both attributions', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[WITHDRAWN]} loading={false} />);
+    expect(html).toContain('[Note withdrawn]');
+    expect(html).toContain('Naldo'); // who wrote it — the record of that stays
+    expect(html).toContain('withdrawn');
+    expect(html).toContain('Jason'); // who withdrew it
+    expect(html).toContain('Wrong customer');
+  });
+
+  it('offers the control on an ordinary note and never on an already-withdrawn one', () => {
+    const live = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} onRedact={() => {}} />,
+    );
+    expect(live).toContain('Withdraw');
+
+    const done = renderToStaticMarkup(
+      <StaffNotesList notes={[WITHDRAWN]} loading={false} onRedact={() => {}} />,
+    );
+    // "withdrawn" appears in the attribution line; the BUTTON must not.
+    expect(done).not.toContain('>Withdraw<');
+  });
+
+  it('renders no control at all for a caller that does not pass one', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).not.toContain('>Withdraw<');
+  });
+
+  it('disables only the note being withdrawn, not its neighbours', () => {
+    const other = { ...NOTE, id: 'other-id', body: 'Second note' };
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE, other]} loading={false} onRedact={() => {}} redactingId={NOTE.id} />,
+    );
+    expect(html).toContain('Withdrawing…');
+    expect(html).toContain('>Withdraw<'); // the other one is still offered
+  });
+});
+
+describe('StaffNotesList — a withdrawal outcome sits with its note (row 372)', () => {
+  it('renders the message against the note it concerns, not elsewhere', () => {
+    const other = { ...NOTE, id: 'other-id', body: 'Second note' };
+    const html = renderToStaticMarkup(
+      <StaffNotesList
+        notes={[NOTE, other]}
+        loading={false}
+        onRedact={() => {}}
+        redactNotice={{ id: NOTE.id, message: 'Could not withdraw the note' }}
+      />,
+    );
+    expect(html).toContain('Could not withdraw the note');
+    expect(html).toContain('role="alert"');
+    // Exactly once — against one note, not repeated under every note.
+    expect(html.split('Could not withdraw the note').length - 1).toBe(1);
+  });
+
+  it('renders nothing extra when there is no outcome to report', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} onRedact={() => {}} />);
+    expect(html).not.toContain('role="alert"');
+  });
+});
+
+describe('staff-note withdrawal transport (row 372)', () => {
+  it('PATCHes the note id and reason to the quote-scoped route', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ note: { ...NOTE, body: '[Note withdrawn]' } }), { status: 200 }),
+    );
+
+    const result = await redactStaffNote(QUOTE_ID, NOTE.id, 'Wrong customer', fetcher);
+    expect(result.alreadyRedacted).toBe(false);
+
+    expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noteId: NOTE.id, reason: 'Wrong customer' }),
+    });
+  });
+
+  it('reports an already-withdrawn note so the second staffer learns their reason was not kept', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ note: { ...NOTE, redactedByLabel: 'Jason' }, alreadyRedacted: true }),
+          { status: 200 },
+        ),
+    );
+    const result = await redactStaffNote(QUOTE_ID, NOTE.id, 'my reason', fetcher);
+    expect(result.alreadyRedacted).toBe(true);
+    expect(result.note.redactedByLabel).toBe('Jason');
+  });
+
+  it('throws the server message rather than pretending the note was withdrawn', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'Note not found on this quote' }), { status: 404 }),
+    );
+    await expect(redactStaffNote(QUOTE_ID, NOTE.id, '', fetcher)).rejects.toThrow('Note not found on this quote');
+  });
+});
+
+describe('staff-note transport', () => {
+  it('loads only the quote-scoped internal route', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ notes: [NOTE], hasMore: false }), { status: 200 }),
+    );
+
+    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual({ notes: [NOTE], hasMore: false });
+    expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, { cache: 'no-store' });
+  });
+
+  // ── Row 373: paging transport ─────────────────────────────────────────────
+  it('sends the page cursor as both halves, url-encoded', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ notes: [], hasMore: false }), { status: 200 }),
+    );
+
+    await loadStaffNotes(QUOTE_ID, fetcher, { createdAt: NOTE.createdAt, id: NOTE.id });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/quotes/${QUOTE_ID}/staff-notes?beforeCreatedAt=${encodeURIComponent(NOTE.createdAt)}&beforeId=${NOTE.id}`,
+      { cache: 'no-store' },
+    );
+  });
+
+  // An old server (or a garbled body) that omits the flag must leave the
+  // "Show older notes" button AVAILABLE. An extra click costs nothing; a
+  // wrongly-hidden button hides notes, which is the whole point of this row.
+  it('assumes there may be more when the response omits hasMore', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ notes: [NOTE] }), { status: 200 }));
+    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual({ notes: [NOTE], hasMore: true });
+  });
+
+  it('builds the next-page cursor from the OLDEST loaded note, and nothing from an empty list', () => {
+    const older = { ...NOTE, id: 'older-id', createdAt: '2026-08-20T09:00:00.000Z' };
+    expect(oldestStaffNoteCursor([NOTE, older])).toEqual({ createdAt: older.createdAt, id: older.id });
+    expect(oldestStaffNoteCursor([])).toBeNull();
+    expect(staffNotesPageQuery(null)).toBe('');
+  });
+
+  it('posts the exact body and idempotency key', async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(JSON.stringify({ note: NOTE, duplicate: false }), { status: 201 }),
+    );
+
+    await expect(postStaffNote(QUOTE_ID, NOTE.body, REQUEST_ID, fetcher)).resolves.toEqual(NOTE);
+    expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: NOTE.body, clientRequestId: REQUEST_ID }),
+    });
+  });
+});
+
+describe('staff-note retry state', () => {
+  it('reuses the request id for the same failed draft and replaces it after an edit', () => {
+    const ids = [REQUEST_ID, '55555555-5555-4555-8555-555555555555'];
+    const makeId = vi.fn(() => ids.shift()!);
+    const first = buildStaffNoteSubmission(null, 'First note', makeId);
+    const retry = buildStaffNoteSubmission(first, 'First note', makeId);
+    const edited = buildStaffNoteSubmission(first, 'Edited note', makeId);
+
+    expect(retry).toEqual(first);
+    expect(edited.clientRequestId).not.toBe(first.clientRequestId);
+    expect(makeId).toHaveBeenCalledTimes(2);
+  });
+
+  it('deduplicates the returned note and keeps newest-first ordering', () => {
+    const older = { ...NOTE, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', createdAt: '2026-08-20T14:00:00.000Z' };
+    expect(mergeStaffNote([older, NOTE], NOTE)).toEqual([NOTE, older]);
+  });
+
+  it('merges a late initial load without erasing a note returned by an early submit', () => {
+    const loadedEarlier = {
+      ...NOTE,
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      createdAt: '2026-08-20T14:00:00.000Z',
+    };
+    expect(mergeStaffNotes([NOTE], [loadedEarlier])).toEqual([NOTE, loadedEarlier]);
+  });
+
+  it('does not allow a submission during the initial load or another save', () => {
+    expect(canSubmitStaffNote('Ready', true, false)).toBe(false);
+    expect(canSubmitStaffNote('Ready', false, true)).toBe(false);
+    expect(canSubmitStaffNote('Ready', false, false)).toBe(true);
+    expect(canSubmitStaffNote('   ', false, false)).toBe(false);
+  });
+});
+
+describe('staff-note UI', () => {
+  it('labels notes as staff-only and renders author, time, and text', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).toContain('Gate code is in the lockbox.');
+    expect(html).toContain('Naldo');
+    expect(html).toContain('Staff only');
+  });
+
+  it('is wired to the same quote timeline on quote, job, and invoice pages', () => {
+    const root = process.cwd();
+    const quotePage = readFileSync(resolve(root, 'src/app/admin/quotes/[id]/page.tsx'), 'utf8');
+    const jobPage = readFileSync(resolve(root, 'src/app/admin/jobs/[id]/page.tsx'), 'utf8');
+    const invoicePage = readFileSync(resolve(root, 'src/app/admin/invoices/[id]/page.tsx'), 'utf8');
+
+    expect(quotePage).toContain('<StaffNotesPanel key={id} quoteId={id} />');
+    expect(jobPage).toContain('<StaffNotesPanel key={data.job.quote_id} quoteId={data.job.quote_id} />');
+    expect(invoicePage).toContain('<StaffNotesPanel key={inv.quote_id} quoteId={inv.quote_id} />');
+  });
+});

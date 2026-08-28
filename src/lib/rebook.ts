@@ -3,6 +3,7 @@ import { cloneDesignToNewQuote } from './designs';
 import { allocateNumber } from './displayId';
 import { getCustomer, unarchiveProperty } from './customers';
 import { asServiceType, canCarryNceOrYllNeighborTag, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -88,8 +89,8 @@ function stripRatesSnapshots(result: RebookSource['result']): RebookSource['resu
 }
 
 // #41 adversarial-review HIGH fix: a rebooked quote must RE-EARN and
-// RE-APPLY its own referral credit next season, never inherit the source
-// quote's. Without this, cloning an approved quote that had a referral
+// RE-APPLY its own referral credit on its own next booking, never inherit
+// the source quote's. Without this, cloning an approved quote that had a referral
 // credit applied would carry the `discount` + `referralCredit` provenance
 // straight onto the new DRAFT — which still shows "credit applied" even
 // though this new quote's credited rows/consumedRowIds belong to the OLD
@@ -151,9 +152,9 @@ function applyNceDepositDefault(inputs: unknown, isNce: boolean, resetOnOff: boo
   const current = (inputs as { depositPercent?: unknown }).depositPercent;
   if (isNce) {
     if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
-    return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
+    return { ...(inputs as Record<string, unknown>), depositPercent: NCE_DEPOSIT_PERCENT };
   }
-  if (resetOnOff && current === 40) {
+  if (resetOnOff && current === NCE_DEPOSIT_PERCENT) {
     return { ...(inputs as Record<string, unknown>), depositPercent: 0 };
   }
   return inputs;

@@ -90,6 +90,28 @@ export class OperatorAlreadyLinkedError extends Error {
   }
 }
 
+/**
+ * Thrown when a staff row cannot be deleted because real work points at it.
+ *
+ * `shifts`, `shift_breaks`, `job_segments` and `job_assignments` all reference
+ * `crew_members` with NO ACTION, so Postgres refuses the delete itself (23503).
+ * That refusal is the actual safety property here: it means a person with any
+ * recorded time or job history CANNOT be deleted out from under their own
+ * payroll, however the delete is attempted.
+ */
+export class StaffHasRecordsError extends Error {
+  constructor(displayName: string) {
+    super(
+      `${displayName} has recorded time or job history, so they cannot be removed. Deactivate them instead, which keeps their records and stops them clocking in.`,
+    );
+    this.name = 'StaffHasRecordsError';
+  }
+}
+
+function isForeignKeyViolation(error: { code?: string } | null): boolean {
+  return error?.code === '23503';
+}
+
 /** Thrown when an office-staff display name collides with an existing row. */
 export class OfficeDisplayNameTakenError extends Error {
   constructor(displayName: string) {
@@ -275,25 +297,28 @@ export async function updateCrewMember(
 // getOfficeClockCaller resolves a punch through. These three functions are the
 // app-side replacement for creating that row by hand in SQL (ledger #354). They
 // are deliberately separate from the general insert/update above so the
-// office-only columns (is_office, auth_user_id) are written ONLY through this
-// door, never widened into the field-crew upsert path.
+// identity columns (is_office, auth_user_id) are written ONLY through this
+// door, never widened into the generic upsert path above.
 
-export type OfficeStaffMember = {
+export type StaffMember = {
   id: string;
   displayName: string;
   active: boolean;
   authUserId: string | null;
   baseRateCents: number;
   telegramUserId: string | null;
+  /** true = office staff (operator login), false = field crew (crew login). */
+  isOffice: boolean;
 };
 
-type OfficeRow = {
+type StaffRow = {
   id: string;
   display_name: string;
   active: boolean;
   auth_user_id: string | null;
   base_rate_cents: number;
   telegram_user_id: string | null;
+  is_office: boolean;
 };
 
 // base_rate_cents is selected back (not just written) so the office can SEE the
@@ -301,13 +326,18 @@ type OfficeRow = {
 // edited in-app rather than by hand SQL.
 //
 // telegram_user_id is here because EVERY staff member texts the bot, not only
-// field crew (Naldo's ruling, 2026-08-24). The office panel is the door for
-// office staff; `/api/admin/crew-accounts` remains the field-crew door. The
-// webhook lookup (`getCrewMemberByTelegramUserId`) never filtered on is_office,
-// so the runtime already supported this; only the admin doors did not.
-const OFFICE_SELECT = 'id, display_name, active, auth_user_id, base_rate_cents, telegram_user_id';
+// field crew (Naldo's ruling, 2026-08-24). The webhook lookup
+// (`getCrewMemberByTelegramUserId`) never filtered on is_office, so the runtime
+// always supported this; only the admin doors did not.
+//
+// is_office is carried as DATA, not as a filter: one Settings panel manages
+// every staff member and shows the type as a label, so the same four actions
+// (rate, Telegram, password, active) work identically for office and field
+// (Naldo's ruling, 2026-08-24: "everything needs to be exactly the same").
+const STAFF_SELECT =
+  'id, display_name, active, auth_user_id, base_rate_cents, telegram_user_id, is_office';
 
-function toOfficeStaffMember(row: OfficeRow): OfficeStaffMember {
+function toStaffMember(row: StaffRow): StaffMember {
   return {
     id: row.id,
     displayName: row.display_name,
@@ -315,23 +345,23 @@ function toOfficeStaffMember(row: OfficeRow): OfficeStaffMember {
     authUserId: row.auth_user_id,
     baseRateCents: row.base_rate_cents,
     telegramUserId: row.telegram_user_id,
+    isOffice: row.is_office,
   };
 }
 
-/** Every office-staff pay row (is_office = true), for the onboarding panel. */
-export async function listOfficeStaff(): Promise<OfficeStaffMember[]> {
+/** Every staff pay row, office and field alike, for the one Staff panel. */
+export async function listAllStaff(): Promise<StaffMember[]> {
   const db = getSupabaseServiceClient();
   if (!db) return [];
   const { data, error } = await db
     .from('crew_members')
-    .select(OFFICE_SELECT)
-    .eq('is_office', true)
+    .select(STAFF_SELECT)
     .order('display_name', { ascending: true });
   if (error) {
-    console.error('listOfficeStaff error:', error);
+    console.error('listAllStaff error:', error);
     return [];
   }
-  return (data ?? []).map((row) => toOfficeStaffMember(row as OfficeRow));
+  return (data ?? []).map((row) => toStaffMember(row as StaffRow));
 }
 
 /**
@@ -358,31 +388,63 @@ export async function listLinkedAuthUserIds(): Promise<Set<string>> {
 }
 
 /**
- * Link an existing operator login to a new office-staff pay row. Office staff are
- * hourly and never in the P4P pool. No auth user is created here — the operator
- * already has one; this only writes the pay identity that ties their session to
- * the time clock.
+ * Link an existing operator login to a new OFFICE staff pay row. Office staff
+ * are hourly and never in the P4P pool. No auth user is created here: the
+ * operator already has one, and this only writes the pay identity that ties
+ * their session to the time clock.
  */
 export async function linkOfficeStaff(input: {
   authUserId: string;
   displayName: string;
   baseRateCents: number;
-}): Promise<OfficeStaffMember> {
+}): Promise<StaffMember> {
+  return insertStaffRow({
+    displayName: input.displayName,
+    baseRateCents: input.baseRateCents,
+    isOffice: true,
+    authUserId: input.authUserId,
+  });
+}
+
+/**
+ * Create a FIELD crew pay row. Its login is created and linked separately by the
+ * route (a crew auth user), so a row can legitimately exist with no login yet:
+ * that is what "No login yet" means in the Staff panel, and it is also the state
+ * every hand-seeded crew row was already in.
+ */
+export async function createFieldCrewMember(input: {
+  displayName: string;
+  baseRateCents: number;
+}): Promise<StaffMember> {
+  return insertStaffRow({
+    displayName: input.displayName,
+    baseRateCents: input.baseRateCents,
+    isOffice: false,
+    authUserId: null,
+  });
+}
+
+async function insertStaffRow(input: {
+  displayName: string;
+  baseRateCents: number;
+  isOffice: boolean;
+  authUserId: string | null;
+}): Promise<StaffMember> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     display_name: input.displayName.trim(),
     base_rate_cents: input.baseRateCents,
     in_p4p_pool: false,
     pay_mode: 'hourly' as CrewPayMode,
     language: 'en',
     active: true,
-    is_office: true,
+    is_office: input.isOffice,
     auth_user_id: input.authUserId,
   };
 
-  const { data, error } = await db.from('crew_members').insert(payload).select(OFFICE_SELECT).maybeSingle();
+  const { data, error } = await db.from('crew_members').insert(payload).select(STAFF_SELECT).maybeSingle();
   if (error) {
     // auth_user_id collision is checked FIRST: a lost race to link the same
     // operator is the specific conflict the office needs named, and its message
@@ -391,24 +453,27 @@ export async function linkOfficeStaff(input: {
       throw new OperatorAlreadyLinkedError();
     }
     if (isDisplayNameUniqueViolation(error as { code?: string; message?: string })) {
-      throw new OfficeDisplayNameTakenError(payload.display_name);
+      throw new OfficeDisplayNameTakenError(String(payload.display_name));
     }
-    throw new Error(`linkOfficeStaff: ${error.message}`);
+    throw new Error(`insertStaffRow: ${error.message}`);
   }
-  if (!data) throw new Error('linkOfficeStaff: no row returned');
-  return toOfficeStaffMember(data as OfficeRow);
+  if (!data) throw new Error('insertStaffRow: no row returned');
+  return toStaffMember(data as StaffRow);
 }
 
 /**
- * Update one OFFICE staff row. The `is_office = true` filter is part of the
- * write, not a separate read-then-check: a field-crew id simply matches no row
- * and returns null, so nothing here can ever touch a field crew member (who are
- * managed on the crew panel, not here). Returns null when no office row matched.
+ * Update one staff row by id, office or field alike.
+ *
+ * There is no is_office filter here BY DESIGN: one panel manages every staff
+ * member, so the same four edits (rate, Telegram, password, active) apply to
+ * both populations. The earlier office-only filter existed to keep two separate
+ * doors from writing each other's rows; with one door that split is gone.
+ * Returns null when no row matched the id.
  */
-async function patchOfficeStaffRow(
+async function patchStaffRow(
   id: string,
   payload: Record<string, unknown>,
-): Promise<OfficeStaffMember | null> {
+): Promise<StaffMember | null> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
@@ -416,8 +481,7 @@ async function patchOfficeStaffRow(
     .from('crew_members')
     .update(payload)
     .eq('id', id.trim())
-    .eq('is_office', true)
-    .select(OFFICE_SELECT)
+    .select(STAFF_SELECT)
     .maybeSingle();
   if (error) {
     // Sibling-guard parity with updateCrewMember: a partial-unique collision on
@@ -427,35 +491,176 @@ async function patchOfficeStaffRow(
     if (isTelegramUserIdUniqueViolation(error as { code?: string; message?: string })) {
       throw new TelegramUserIdTakenError(String(payload.telegram_user_id));
     }
-    throw new Error(`patchOfficeStaffRow: ${error.message}`);
+    throw new Error(`patchStaffRow: ${error.message}`);
   }
-  return data ? toOfficeStaffMember(data as OfficeRow) : null;
+  return data ? toStaffMember(data as StaffRow) : null;
 }
 
-/** Activate or deactivate an office staff member. */
-export async function setOfficeStaffActive(id: string, active: boolean): Promise<OfficeStaffMember | null> {
-  return patchOfficeStaffRow(id, { active });
+/** Activate or deactivate any staff member. */
+export async function setStaffActive(id: string, active: boolean): Promise<StaffMember | null> {
+  return patchStaffRow(id, { active });
 }
 
 /**
- * Link (or unlink) an office staff member's Telegram account.
+ * Link (or unlink) any staff member's Telegram account. Pass null to unlink.
  *
- * Pass null to unlink. Every staff member texts the bot, office included, and
- * the webhook resolves a punch through this column, so this is a PAY-IDENTITY
+ * The webhook resolves a punch through this column, so this is a PAY-IDENTITY
  * write: whoever holds the linked Telegram account can clock in as this person.
  * Admin-only at the route, and never accepted from the staff member themselves.
  */
-export async function setOfficeStaffTelegram(
+export async function setStaffTelegram(
   id: string,
   telegramUserId: string | null,
-): Promise<OfficeStaffMember | null> {
-  return patchOfficeStaffRow(id, { telegram_user_id: telegramUserId });
+): Promise<StaffMember | null> {
+  return patchStaffRow(id, { telegram_user_id: telegramUserId });
+}
+
+/** Correct or raise any staff member's hourly rate, in integer cents. */
+export async function setStaffRate(id: string, baseRateCents: number): Promise<StaffMember | null> {
+  return patchStaffRow(id, { base_rate_cents: baseRateCents });
 }
 
 /**
- * Correct or raise an office staff member's hourly rate (integer cents), in-app,
- * so a typo or a routine raise no longer needs hand SQL.
+ * Move a staff member between office and field.
+ *
+ * This exists for RECOVERY, not because office staff go out on jobs (Naldo,
+ * 2026-08-24: they never will). Without it a type set wrongly at setup could not
+ * be corrected in the app at all — the row cannot simply be re-added, because
+ * the display name is unique and the operator no longer appears in the picker
+ * once linked, so the only fix was a hand-written UPDATE.
+ *
+ * The flag's only functional reader is `listActiveFieldCrew`, so this changes
+ * exactly one thing: whether they are offered when assigning crew to a job.
  */
-export async function setOfficeStaffRate(id: string, baseRateCents: number): Promise<OfficeStaffMember | null> {
-  return patchOfficeStaffRow(id, { base_rate_cents: baseRateCents });
+export async function setStaffType(id: string, isOffice: boolean): Promise<StaffMember | null> {
+  return patchStaffRow(id, { is_office: isOffice });
+}
+
+/**
+ * Look one staff row up by id, whichever population it is in.
+ * Returns null when nothing matches.
+ */
+export async function getStaffMember(id: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('crew_members')
+    .select(STAFF_SELECT)
+    .eq('id', id.trim())
+    .maybeSingle();
+  if (error || !data) return null;
+  return toStaffMember(data as StaffRow);
+}
+
+/**
+ * Delete a staff row outright, for a mistake that has no history behind it.
+ *
+ * This is deliberately NOT the normal way to retire someone: deactivating keeps
+ * their pay records, and anyone with recorded time is refused here by the
+ * database's own foreign keys (see StaffHasRecordsError). Removal exists for the
+ * duplicate or mis-typed row created minutes ago, which otherwise sits in the
+ * list forever holding a unique display name.
+ *
+ * Returns the row that was deleted, or null if the id matched nothing.
+ */
+export async function deleteStaffMember(id: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const existing = await getStaffMember(id);
+  if (!existing) return null;
+
+  const { error } = await db.from('crew_members').delete().eq('id', id.trim());
+  if (error) {
+    if (isForeignKeyViolation(error as { code?: string })) {
+      throw new StaffHasRecordsError(existing.displayName);
+    }
+    throw new Error(`deleteStaffMember: ${error.message}`);
+  }
+  return existing;
+}
+
+/**
+ * Detach whatever staff row points at this auth user, BEFORE the auth user is
+ * deleted (ledger row 359).
+ *
+ * `crew_members.auth_user_id` has no foreign key to `auth.users`, so deleting an
+ * operator does not clear the pointer on its own. The row was then stuck: it
+ * still read as "has a login", and `POST /api/admin/staff` refuses to link a
+ * replacement because it only tests the column for truthiness, never whether the
+ * id still resolves. The person was locked out until someone ran SQL by hand.
+ *
+ * Clearing first turns that into an ordinary state: the row shows "No login yet"
+ * and can be linked again through the normal flow. Returns the detached row, or
+ * null when no row pointed at that login (the common case).
+ */
+export async function clearStaffLoginByAuthUserId(authUserId: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ auth_user_id: null })
+    .eq('auth_user_id', authUserId.trim())
+    .select(STAFF_SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`clearStaffLoginByAuthUserId: ${error.message}`);
+  return data ? toStaffMember(data as StaffRow) : null;
+}
+
+/**
+ * Detach a staff row's login by the ROW's id, for repairing an orphan that
+ * already exists (one created before the clear-on-delete above).
+ *
+ * The caller MUST have established that the login does not resolve. This
+ * function cannot check that itself — it has no view of the auth store — and
+ * clearing a LIVE login would lock a working staff member out of the web clock.
+ *
+ * `expectedAuthUserId` makes that check STICK. It is a compare-and-swap: the
+ * write only lands if the row still carries the exact dead id the caller
+ * verified. Without it, a concurrent relink in the window between the check and
+ * the write would be silently wiped — which is precisely the outcome the check
+ * exists to prevent. Returns null when the row moved on, and the caller should
+ * treat that as a lost race rather than a missing row.
+ */
+export async function clearStaffLogin(
+  id: string,
+  expectedAuthUserId: string,
+): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ auth_user_id: null })
+    .eq('id', id.trim())
+    .eq('auth_user_id', expectedAuthUserId)
+    .select(STAFF_SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`clearStaffLogin: ${error.message}`);
+  return data ? toStaffMember(data as StaffRow) : null;
+}
+
+/** Attach a freshly created login to a staff row that has none yet. */
+export async function linkStaffLogin(id: string, authUserId: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  // `.is('auth_user_id', null)` makes this a compare-and-swap: if a concurrent
+  // admin linked a login first, this matches no row and returns null rather than
+  // silently replacing their link and orphaning that auth user.
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ auth_user_id: authUserId })
+    .eq('id', id.trim())
+    .is('auth_user_id', null)
+    .select(STAFF_SELECT)
+    .maybeSingle();
+  if (error) {
+    if (isAuthUserIdUniqueViolation(error as { code?: string; message?: string })) {
+      throw new OperatorAlreadyLinkedError();
+    }
+    throw new Error(`linkStaffLogin: ${error.message}`);
+  }
+  return data ? toStaffMember(data as StaffRow) : null;
 }

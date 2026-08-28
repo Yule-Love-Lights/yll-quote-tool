@@ -66,7 +66,13 @@ import { rateLimitResponse, checkRateLimitByKey, checkRateLimit, releaseRateLimi
 import { searchContacts, sendEmail, upsertContactCustomField, getContact } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import { findOrCreateCustomer } from '@/lib/customers';
-import { ensureReferralCode, hasReferralCode } from '@/lib/referrals';
+import {
+  ensureReferralCode,
+  hasReferralCode,
+  REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
+  REFERRAL_FRIEND_SPRITZERS,
+} from '@/lib/referrals';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { REFERRAL_LINK_EMAIL_SUBJECT, referralLinkEmailHtml } from '@/lib/integrations/quoteMessages';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
@@ -474,7 +480,14 @@ async function sendAndStamp(match: CrmContact, referralUrl: string, isFirstEnrol
       await sendEmail({
         contactId: match.id,
         subject: REFERRAL_LINK_EMAIL_SUBJECT,
-        html: referralLinkEmailHtml({ firstName: match.firstName ?? null, referralUrl }),
+        html: referralLinkEmailHtml({
+          firstName: match.firstName ?? null,
+          referralUrl,
+          creditUsd: REFERRAL_CREDIT_USD,
+          creditExpiryYears: REFERRAL_CREDIT_EXPIRY_YEARS,
+          spritzerCount: REFERRAL_FRIEND_SPRITZERS.count,
+          spritzerSizeInches: REFERRAL_FRIEND_SPRITZERS.sizeInches,
+        }),
       });
     } catch (err) {
       releaseRateLimitByKey(match.id, { bucket: 'referral-request-link-email-cooldown' });

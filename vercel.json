@@ -43,6 +43,14 @@
     {
       "path": "/api/ops/midnight-close",
       "schedule": "15 5 * * *"
+    },
+    {
+      "path": "/api/ops/vehicle-poll",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/referrals/sweep",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

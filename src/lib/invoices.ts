@@ -29,6 +29,8 @@ import { canTransition, type InvoiceStatus } from './invoiceStatus';
 // `round2` so the call sites are byte-identical.
 import { roundMoneyGuarded as round2 } from './money';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from './agreedTotal';
+import { DEFAULT_SERVICE_TYPE } from './serviceType';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 
 export type InvoiceRow = {
   id: string;
@@ -401,6 +403,21 @@ export type InvoiceAdminCard = {
   // mirroring JobAdminCard's precedence.
   highlevelContactId: string | null;
   customerId: string | null;
+  // Row 396 (LOW): the linked quote's raw approval_snapshot, so
+  // /admin/invoices can derive isStaleInvoiceSnapshot(...) the same way
+  // the dashboard board already does (queries.ts) — until now this list/
+  // detail data path never learned `stale` at all, so the same invoice read
+  // differently on the two surfaces. Deliberately the raw snapshot, not a
+  // pre-computed boolean: isStaleInvoiceSnapshot lives in
+  // quoteAmendInvoiceSync.ts, and importing it here would create a circular
+  // module dependency (that file already imports FROM this one). null when
+  // the invoice has no linked quote or the quote has no snapshot yet.
+  quoteApprovalSnapshot: Record<string, unknown> | null;
+  // Row 419: the linked quote's service line for the list's Service chip.
+  // A quote with a NULL service_type reads as the default (holiday, the DB
+  // backfill rule); null here means NO linked quote at all, rendered as an
+  // em dash rather than guessing — mirrors JobAdminCard.serviceType.
+  serviceType: string | null;
 };
 
 /**
@@ -418,12 +435,21 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
   const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null }
+    {
+      name: string | null;
+      address: string | null;
+      isTest: boolean;
+      isNce: boolean;
+      highlevelContactId: string | null;
+      customerId: string | null;
+      approvalSnapshot: Record<string, unknown> | null;
+      serviceType: string | null;
+    }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id, approval_snapshot, service_type')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
@@ -433,6 +459,8 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       is_nce: boolean | null;
       highlevel_contact_id: string | null;
       customer_id: string | null;
+      approval_snapshot: Record<string, unknown> | null;
+      service_type: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
@@ -441,6 +469,8 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
         isNce: !!q.is_nce,
         highlevelContactId: q.highlevel_contact_id ?? null,
         customerId: q.customer_id ?? null,
+        approvalSnapshot: q.approval_snapshot ?? null,
+        serviceType: q.service_type ?? null,
       });
     }
   }
@@ -464,24 +494,110 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       paidAt: inv.paid_at,
       highlevelContactId: c?.highlevelContactId ?? null,
       customerId: inv.customer_id ?? c?.customerId ?? null,
+      quoteApprovalSnapshot: c?.approvalSnapshot ?? null,
+      // Quote present + NULL column = the default (backfill rule); no quote =
+      // genuinely unknown, stays null.
+      serviceType: c ? (c.serviceType ?? DEFAULT_SERVICE_TYPE) : null,
     };
   });
+}
+
+/**
+ * Row 419 fix (premerge staff lens MED): service_type for an arbitrary set of
+ * quote ids. The customer profile's Invoices table resolves its Service chip
+ * through the page's quote list, which is filtered from the newest-500
+ * SYSTEM-WIDE dashboard query — a returning customer's invoice can link a
+ * quote older than that cutoff, and without this lookup it would render the
+ * "no linked quote" em dash for an order that has a real service line. Values
+ * are the RAW column (null allowed — the badge itself applies the holiday
+ * default); a quote id absent from the result genuinely doesn't resolve.
+ * Best-effort: an error returns the partial/empty map, never throws.
+ */
+export async function serviceTypesForQuotes(quoteIds: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const db = sb();
+  if (!db || !quoteIds.length) return out;
+  const { data, error } = await db
+    .from('quotes')
+    .select('id, service_type')
+    .in('id', quoteIds);
+  if (error) {
+    console.error('serviceTypesForQuotes: query error:', error);
+    return out;
+  }
+  for (const q of (data ?? []) as { id: string; service_type: string | null }[]) {
+    out.set(q.id, q.service_type ?? null);
+  }
+  return out;
 }
 
 // The full billing detail for one invoice (/admin/invoices/[id]): the invoice, the
 // linked quote's customer identity + is_test/is_nce, and the linked job's number/status.
 export type InvoiceDetail = {
   invoice: InvoiceRow;
+  /**
+   * Row 362: the light colour/pattern the customer APPROVED, as an
+   * operator-facing label. null when the linked quote has no approved
+   * selection, or there is no linked quote.
+   *
+   * On the invoice because this is where staff verify an order before taking
+   * money for it, and the colour was previously visible only on the quote
+   * page — one click away, which is exactly how it got confused.
+   */
+  lightColorLabel: string | null;
   customerName: string | null;
   customerEmail: string | null;
   customerPhone: string | null;
   customerAddress: string | null;
+  // Row 418 sweep: the id that routes to /customers/[id] (same rule as
+  // src/lib/dashboard/customers.ts customerRouteId — highlevel_contact_id,
+  // else customer_id, preferring the invoice's OWN customer_id over the
+  // linked quote's, mirroring listInvoicesForBilling). null for an
+  // identity-less walk-in, whose name stays plain text.
+  customerRouteId: string | null;
   isTest: boolean;
   // #199: the linked quote's NCE tag — gates the charge-button/send-balance-
   // link UI and the "Mark paid — NCE" affordance on the invoice detail page.
   isNce: boolean;
   jobNumber: number | null;
   jobStatus: string | null;
+  /**
+   * Row 414: the linked quote's stale-invoice markers, surfaced HERE because
+   * the invoice detail page is where a staffer verifies an order before (or
+   * after) taking money for it — and it is where the mark-reconciled override
+   * lives. Both null when absent (and when there is no linked quote).
+   *
+   * The PAYLOADS ride through, not booleans — the #973 admin lens's HIGH: the
+   * override panel must put the FLAGGED figures next to the invoice's current
+   * ones, or "verify before clearing" is a glance at prose. Numbers are
+   * sanitized here (finite or null) so a malformed marker degrades to the
+   * generic wording instead of rendering NaN.
+   */
+  staleMarkers: {
+    paymentBlocked: { storedBalance: number | null; expectedBalance: number | null; at: string | null } | null;
+    invoiceResyncFailed: { attemptedTotal: number | null; attemptedBalance: number | null; at: string | null } | null;
+  };
+  /**
+   * Row 414 (#973 staff lens): the most recent mark-reconciled override for
+   * THIS invoice, rendered on the page so the trail is owner-visible — the
+   * same precedent the sibling valor_txn_log audit follows (#640 review LOW:
+   * an audit trail must be visible on the invoice, not write-only forensics).
+   * null when no override was ever recorded for this invoice.
+   *
+   * Row 990 fix round (admin lens HIGH): also the most recent /resync audit
+   * entry for this invoice — the SAME markerOverrides list, just a different
+   * `action`. `action` is null for a pre-existing entry that predates this
+   * field (mark-reconciled entries always write 'mark-reconciled'; a legacy
+   * entry from before that field existed would read null too). fromTotal/
+   * toTotal are ONLY present on a 'resync' entry; null for every other action.
+   */
+  lastMarkerOverride: {
+    by: string | null;
+    at: string | null;
+    action: string | null;
+    fromTotal: number | null;
+    toTotal: number | null;
+  } | null;
   // #177 fix 4: the linked quote's stamped deposit_amount_usd — the deposit
   // actually INTENDED to be collected at this quote's own deposit percent.
   // Fed into reconcileInvoice so 'short-deposit' compares against the real
@@ -510,10 +626,15 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let isTest = false;
   let isNce = false;
   let intendedDepositUsd: number | null = null;
+  let lightColorLabel: string | null = null;
+  let quoteHlContactId: string | null = null;
+  let quoteCustomerId: string | null = null;
+  let staleMarkers: InvoiceDetail['staleMarkers'] = { paymentBlocked: null, invoiceResyncFailed: null };
+  let lastMarkerOverride: InvoiceDetail['lastMarkerOverride'] = null;
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd, approval_snapshot, service_type, highlevel_contact_id, customer_id')
       .eq('id', invoice.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -523,6 +644,10 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
         is_test: boolean | null;
         is_nce: boolean | null;
         deposit_amount_usd: number | null;
+        approval_snapshot: unknown;
+        service_type: string | null;
+        highlevel_contact_id: string | null;
+        customer_id: string | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -532,6 +657,50 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       isTest = !!data.is_test;
       isNce = !!data.is_nce;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
+      quoteHlContactId = data.highlevel_contact_id ?? null;
+      quoteCustomerId = data.customer_id ?? null;
+      // Row 362: derived from the same quote row this join already fetches.
+      lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
+      const snap = data.approval_snapshot as {
+        paymentBlocked?: { storedBalance?: unknown; expectedBalance?: unknown; at?: unknown };
+        invoiceResyncFailed?: { attemptedTotal?: unknown; attemptedBalance?: unknown; at?: unknown };
+        markerOverrides?: unknown;
+      } | null;
+      // Row 414: same truthiness isStaleInvoiceSnapshot uses, but the payload
+      // figures ride through so the panel shows the flagged numbers.
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+      const str = (v: unknown) => (typeof v === 'string' ? v : null);
+      staleMarkers = {
+        paymentBlocked: snap?.paymentBlocked
+          ? {
+              storedBalance: num(snap.paymentBlocked.storedBalance),
+              expectedBalance: num(snap.paymentBlocked.expectedBalance),
+              at: str(snap.paymentBlocked.at),
+            }
+          : null,
+        invoiceResyncFailed: snap?.invoiceResyncFailed
+          ? {
+              attemptedTotal: num(snap.invoiceResyncFailed.attemptedTotal),
+              attemptedBalance: num(snap.invoiceResyncFailed.attemptedBalance),
+              at: str(snap.invoiceResyncFailed.at),
+            }
+          : null,
+      };
+      // Newest override recorded for THIS invoice (the quote may carry
+      // overrides for other invoices across a rebook).
+      if (Array.isArray(snap?.markerOverrides)) {
+        for (const entry of snap.markerOverrides as Array<Record<string, unknown>>) {
+          if (entry && entry.invoiceId === id) {
+            lastMarkerOverride = {
+              by: typeof entry.by === 'string' ? entry.by : null,
+              at: typeof entry.at === 'string' ? entry.at : null,
+              action: typeof entry.action === 'string' ? entry.action : null,
+              fromTotal: num(entry.fromTotal),
+              toTotal: num(entry.toTotal),
+            };
+          }
+        }
+      }
     }
   }
 
@@ -551,15 +720,22 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
 
   return {
     invoice,
+    lightColorLabel,
     customerName,
     customerEmail,
     customerPhone,
     customerAddress,
+    // Row 418 sweep: HL contact id first (preserves the CRM-linked URL), then
+    // the invoice's own customer_id, then the linked quote's — the same
+    // precedence listInvoicesForBilling's pair resolves to at the link site.
+    customerRouteId: quoteHlContactId ?? invoice.customer_id ?? quoteCustomerId,
     isTest,
     isNce,
     jobNumber,
     jobStatus,
     intendedDepositUsd,
+    staleMarkers,
+    lastMarkerOverride,
   };
 }
 

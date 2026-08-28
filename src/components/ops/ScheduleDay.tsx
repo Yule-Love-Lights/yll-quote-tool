@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 
 /**
  * Dispatch / day view (P4P Phase 3).
@@ -12,6 +13,41 @@ import { useCallback, useEffect, useState } from 'react';
  * separate slice. The capacity numbers shown here are the same ones the calendar
  * will use, so the derivation only has to be right once.
  */
+
+/**
+ * Row 364: what the one-line status note above the sections should say, given
+ * the three inputs that decide it. Pure and exported so the whole state machine
+ * is unit-testable without a DOM (this repo has no jsdom).
+ *
+ * `stale` — loadedDate is set and is NOT the day in the picker — means the
+ * content below belongs to a DIFFERENT day than the one selected. That must be
+ * said on BOTH the in-flight path and the failed path; gating it on `loading`
+ * alone (the bug this row fixes) made the warning vanish exactly when a failed
+ * refetch left the previous day's crew and capacity numbers on screen under a
+ * newly-picked date.
+ */
+export type ScheduleStatusNote = { text: string; tone: 'busy' | 'error' } | null;
+
+/** The sections below are showing a day OTHER than the one in the picker.
+ *  Shared by the warning text and by the write guard in mutate(): everything
+ *  this view writes is stamped with the PICKER's date, so while this is true a
+ *  click would assign crew to a day the operator is not looking at. */
+export function isStaleDay(date: string, loadedDate: string | null): boolean {
+  return loadedDate !== null && loadedDate !== date;
+}
+
+export function scheduleStatusNote(
+  loading: boolean,
+  date: string,
+  loadedDate: string | null,
+): ScheduleStatusNote {
+  if (isStaleDay(date, loadedDate)) {
+    return loading
+      ? { text: `Loading ${date}… (showing ${loadedDate} below)`, tone: 'busy' }
+      : { text: `Could not load ${date} — showing ${loadedDate} below.`, tone: 'error' };
+  }
+  return loading ? { text: 'Refreshing…', tone: 'busy' } : null;
+}
 
 type ScheduledJob = {
   jobId: string;
@@ -30,7 +66,14 @@ type DayCapacity = {
 };
 type CrewMember = { id: string; displayName: string; active: boolean };
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Row 335: the ET business day, not the UTC calendar day. The UTC form
+// (`toISOString().slice(0, 10)`) opened this page on TOMORROW every evening
+// from ~8pm ET (~7pm during EST) — tomorrow's jobs, crew and capacity with no
+// cue. Same clock the midnight auto-close uses (etDayKey is DST-correct via
+// Intl); pure, so client-safe to import here. Exported with an injectable
+// `now` so the evening case is unit-testable (this repo has no jsdom).
+export const defaultScheduleDay = (now: Date = new Date()) => etDayKey(now);
+const today = () => defaultScheduleDay();
 const hours = (n: number) => `${Math.round(n * 10) / 10}h`;
 
 export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
@@ -50,6 +93,9 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
   // say explicitly which day is on screen so stale content is never mistaken
   // for the newly-picked day's data.
   const [loadedDate, setLoadedDate] = useState<string | null>(null);
+
+  const stale = isStaleDay(date, loadedDate);
+  const statusNote = scheduleStatusNote(loading, date, loadedDate);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -93,6 +139,15 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
   }, [date, token]);
 
   async function mutate(method: 'POST' | 'DELETE', jobId: string, crewMemberId: string) {
+    // Row 364 fix round (staff lens HIGH): the jobs rendered below belong to
+    // loadedDate, but every write here is stamped with the PICKER's `date`. On
+    // a failed date-change refetch the two disagree, so a click would assign
+    // crew to a day nobody is looking at. The controls are disabled in that
+    // state; this is the guard behind them.
+    if (stale) {
+      setError(`Still showing ${loadedDate}. Load ${date} before assigning crew.`);
+      return;
+    }
     try {
       const res = await fetch('/api/ops/schedule', {
         method,
@@ -121,7 +176,24 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
           id="schedule-date"
           type="date"
           value={date}
-          onChange={(e) => setDate(e.target.value)}
+          onChange={(e) => {
+            // Row 364 fix round: `loading` was ONLY ever set by refresh() (the
+            // assign/unassign path), never by a date change — so the whole
+            // date-change fetch ran with loading=false. That left #897's
+            // "Loading {date}… (showing {loadedDate} below)" label unreachable
+            // on the one path it was written for, and made the failed-refetch
+            // wording above fire on every ordinary date change. Mark the view
+            // busy here, where the state change actually originates.
+            // Delta-verify on this fix round: guard the no-op. A native date
+            // input can fire change with the value it already has (retype, spin
+            // back); setDate would then be a no-op, the fetch effect's deps
+            // ([date, token]) would never change, and nothing would ever flip
+            // `loading` back — a permanently stuck "Refreshing…".
+            const next = e.target.value;
+            if (next === date) return;
+            setLoading(true);
+            setDate(next);
+          }}
           className="border border-gray-300 rounded-md px-3 py-1.5 text-sm"
         />
       </div>
@@ -158,11 +230,13 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
               refetch, not a mutate() refresh), it names both days explicitly
               so the still-visible content is never mistaken for the
               newly-picked day's data. */}
-          {loading && (
-            <p role="status" aria-busy="true" className="mb-4 text-xs text-gray-500">
-              {loadedDate && loadedDate !== date
-                ? `Loading ${date}… (showing ${loadedDate} below)`
-                : 'Refreshing…'}
+          {statusNote && (
+            <p
+              role="status"
+              aria-busy={statusNote.tone === 'busy'}
+              className={`mb-4 text-xs ${statusNote.tone === 'error' ? 'text-amber-800' : 'text-gray-500'}`}
+            >
+              {statusNote.text}
             </p>
           )}
           <section className="mb-6">
@@ -214,15 +288,18 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
                           key={id}
                           type="button"
                           onClick={() => mutate('DELETE', j.jobId, id)}
-                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
-                          title="Remove from this job"
+                          disabled={stale}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                          title={stale ? `Showing ${loadedDate}, not ${date}` : 'Remove from this job'}
                         >
                           {nameOf(id)} ×
                         </button>
                       ))}
                       <select
-                        className="text-xs border border-gray-300 rounded px-2 py-1"
+                        className="text-xs border border-gray-300 rounded px-2 py-1 disabled:opacity-50"
                         value=""
+                        disabled={stale}
+                        title={stale ? `Showing ${loadedDate}, not ${date}` : undefined}
                         onChange={(e) => {
                           if (e.target.value) mutate('POST', j.jobId, e.target.value);
                         }}
@@ -258,8 +335,10 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
                       <span className="ml-2 text-xs text-gray-400">{j.status}</span>
                     </span>
                     <select
-                      className="text-xs border border-gray-300 rounded px-2 py-1"
+                      className="text-xs border border-gray-300 rounded px-2 py-1 disabled:opacity-50"
                       value=""
+                      disabled={stale}
+                      title={stale ? `Showing ${loadedDate}, not ${date}` : undefined}
                       onChange={(e) => {
                         if (e.target.value) mutate('POST', j.jobId, e.target.value);
                       }}
@@ -281,7 +360,22 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
         </>
       )}
 
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-4 text-sm text-red-600">
+          {error}
+          {/* The coordinate refusal names the geocoding page; make that a real
+              link rather than a destination the staffer has to type (S68 staff
+              lens: an unlinked page is this repo's inert-feature class). */}
+          {error.includes('geocoding page') && (
+            <>
+              {' '}
+              <a href="/admin/geocoding" className="underline font-medium">
+                Open the geocoding page
+              </a>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }

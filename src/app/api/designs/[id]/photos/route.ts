@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { addDesignExtraPhoto, signDesignPhoto, isValidDesignId, getDesign } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { refuseIfFrozen } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -26,6 +27,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isValidDesignId(id)) {
     return NextResponse.json({ error: 'Invalid design id' }, { status: 400 });
   }
+
+  // Row 427: an extra photo is quoted and shown like any other — adding one
+  // to a signed-off design is a change to what the customer agreed to.
+  const frozen = await refuseIfFrozen(id);
+  if (frozen) return frozen;
 
   let body: Record<string, unknown>;
   try {

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { isDueToday, dueFollowUps, quoteSentNoReplyFollowUp, FOLLOWUP_REASONS, DEFAULT_FOLLOW_UP_DAYS } from './followups';
+import {
+  mayReChaseHandled, reChaseAnchor,
+  RECHASE_QUIET_DAYS, isDueToday, dueFollowUps, quoteSentNoReplyFollowUp, FOLLOWUP_REASONS, DEFAULT_FOLLOW_UP_DAYS } from './followups';
 
 describe('isDueToday — evaluated in America/New_York', () => {
   it('is true for a follow-up due later the same ET day', () => {
@@ -65,5 +67,72 @@ describe('quoteSentNoReplyFollowUp — system-created follow-up', () => {
     const fu = quoteSentNoReplyFollowUp({ contactId: 'c1', inboxItemId: 'i1', sentAt, afterDays: configuredDays });
     expect(fu.dueAt.getTime()).toBe(sentAt.getTime() + configuredDays * DAY);
     expect(fu.dueAt.getTime()).not.toBe(sentAt.getTime() + DEFAULT_FOLLOW_UP_DAYS * DAY);
+  });
+});
+// Row 385 — the handled-but-quiet re-chase window. PURE, so `now` is injected.
+describe('mayReChaseHandled', () => {
+  const at = (isoDaysAgo: number) => new Date(Date.now() - isoDaysAgo * 86_400_000);
+  const now = new Date();
+
+  it('re-chases once the nag has sat untouched for the quiet window', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: at(8), handledAt: at(9), now })).toBe(true);
+  });
+
+  it('stays quiet while the window is still running', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: at(1), handledAt: at(9), now })).toBe(false);
+  });
+
+  // The anchor choice IS the design: the nag's own last-touched time, not
+  // handled_at. handled_at never moves, so anchoring on it would undo every Done
+  // click on the next reconcile tick — the bug row 287(b) fixed. This pins that a
+  // RECENT nudge beats an ANCIENT handled_at.
+  it('lets a recent nudge beat a much older handled_at', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: at(0), handledAt: at(365), now })).toBe(false);
+  });
+
+  it('falls back to handled_at only when there is no nudge to anchor on', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: null, handledAt: at(8), now })).toBe(true);
+    expect(mayReChaseHandled({ lastNudgeAt: null, handledAt: at(2), now })).toBe(false);
+  });
+
+  it('stays quiet when there is no anchor at all (no basis to measure silence)', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: null, handledAt: null, now })).toBe(false);
+  });
+
+  it('stays quiet on an unparseable anchor rather than re-chasing blindly', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: new Date('nonsense'), handledAt: null, now })).toBe(false);
+  });
+
+  it('fires exactly ON the boundary, not a day late', () => {
+    const exactly = new Date(now.getTime() - RECHASE_QUIET_DAYS * 86_400_000);
+    expect(mayReChaseHandled({ lastNudgeAt: exactly, handledAt: null, now })).toBe(true);
+  });
+
+  it('honours an explicit quietDays override', () => {
+    expect(mayReChaseHandled({ lastNudgeAt: at(3), handledAt: null, now, quietDays: 2 })).toBe(true);
+    expect(mayReChaseHandled({ lastNudgeAt: at(3), handledAt: null, now, quietDays: 30 })).toBe(false);
+  });
+});
+
+// Row 390: reChaseAnchor is mayReChaseHandled's own anchor computation,
+// pulled out so ensureFollowUp (store.ts) can persist the EXACT same value it
+// used to decide re-chase eligibility (follow_ups.re_chase_since) instead of
+// a second, potentially-drifting derivation. Every case here mirrors one of
+// mayReChaseHandled's own anchor-choice tests above, on the same inputs.
+describe('reChaseAnchor', () => {
+  const at = (isoDaysAgo: number) => new Date(Date.now() - isoDaysAgo * 86_400_000);
+
+  it('prefers the nudge time over handled_at when both are present', () => {
+    const lastNudgeAt = at(8);
+    expect(reChaseAnchor({ lastNudgeAt, handledAt: at(365) })).toBe(lastNudgeAt);
+  });
+
+  it('falls back to handled_at when there is no nudge to anchor on', () => {
+    const handledAt = at(9);
+    expect(reChaseAnchor({ lastNudgeAt: null, handledAt })).toBe(handledAt);
+  });
+
+  it('returns null when neither anchor exists', () => {
+    expect(reChaseAnchor({ lastNudgeAt: null, handledAt: null })).toBeNull();
   });
 });

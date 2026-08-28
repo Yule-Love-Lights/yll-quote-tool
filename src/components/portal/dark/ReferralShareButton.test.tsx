@@ -12,32 +12,45 @@ import { ReferralShareButton, buildReferralShareMessage } from './ReferralShareB
 const LINK = 'https://quote.yulelovelights.com/refer/ABCD1234';
 
 describe('buildReferralShareMessage', () => {
-  it('states the friend\'s real offer (spritzers), not the referrer\'s $125 credit', () => {
-    const msg = buildReferralShareMessage(LINK, 2, 16);
-    expect(msg).toContain('2 free 16" spritzers');
+  it('states the friend\'s real offer in dollars (never the referrer\'s $125 credit) and still names the physical item', () => {
+    const msg = buildReferralShareMessage(LINK, 2, 16, 170);
+    expect(msg).toContain('$170 in free lighting');
+    expect(msg).toContain('2 staked spotlights for your yard (16" spritzers)');
     expect(msg).toContain('first booked install');
     expect(msg).not.toContain('$125');
   });
 
   it('embeds the exact referral link at the end of the message', () => {
-    const msg = buildReferralShareMessage(LINK, 2, 16);
+    const msg = buildReferralShareMessage(LINK, 2, 16, 170);
     expect(msg.endsWith(LINK)).toBe(true);
   });
 
-  it('reflects a different spritzer count/size if the constants ever change', () => {
-    const msg = buildReferralShareMessage(LINK, 3, 20);
-    expect(msg).toContain('3 free 20" spritzers');
+  it('reflects a different spritzer count/size/value if the constants ever change, never a hardcoded 170', () => {
+    const msg = buildReferralShareMessage(LINK, 3, 20, 255);
+    expect(msg).toContain('$255 in free lighting');
+    expect(msg).toContain('3 staked spotlights for your yard (20" spritzers)');
   });
 
   it('never uses an em dash (voice rules)', () => {
-    expect(buildReferralShareMessage(LINK, 2, 16)).not.toContain('—');
+    expect(buildReferralShareMessage(LINK, 2, 16, 170)).not.toContain('—');
+  });
+
+  // Review fix 8: this is the exact text a customer SENDS, the single
+  // most-read sentence in the whole program (it's what lands in a
+  // neighbor's phone). Every sibling copy block on the page was rewritten
+  // to any-service framing; this one said "the holiday lights I'm getting"
+  // and got missed.
+  it('never says "holiday lights" -- service-neutral, like every other copy block on this page', () => {
+    const msg = buildReferralShareMessage(LINK, 2, 16, 170);
+    expect(msg.toLowerCase()).not.toContain('holiday lights');
+    expect(msg).toContain('Yule Love Lights');
   });
 });
 
 describe('ReferralShareButton', () => {
   it('renders a Share control with an sms: fallback carrying the composed message', () => {
     const html = renderToStaticMarkup(
-      <ReferralShareButton link={LINK} spritzerCount={2} spritzerSizeInches={16} />,
+      <ReferralShareButton link={LINK} spritzerCount={2} spritzerSizeInches={16} spritzerValueUsd={170} />,
     );
     expect(html).toContain('Share');
     expect(html).toContain('sms:?&amp;body=');
