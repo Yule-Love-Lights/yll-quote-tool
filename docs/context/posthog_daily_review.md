@@ -37,10 +37,12 @@
   `src/lib/integrations/**`, `src/app/layout.tsx`, `globals.css`, `package.json` and
   the lockfile, tsconfig/eslint/next config, `AGENTS.md`, `.claude/**`, and
   `.github/workflows/**`. The routine never edits these.
-- A fix that touches Jason's owned area (portal, quote builder, pricing, design
-  editor, training, settings, inbox) must say so in the PR body ("touches Jason's
-  area") and the daily report lists it under "needs Jason's look". Ownership stays
-  with the area owner; the routine only proposes.
+- A fix that touches Jason's owned area (portal, quote builder, design editor,
+  training, settings, inbox) must say so in the PR body ("touches Jason's area")
+  and the daily report lists it under "needs Jason's look". Ownership stays with
+  the area owner; the routine only proposes. Pricing is deliberately absent from
+  this list: it sits in the absolute report-only exclusion above and is never
+  fixable with a flag.
 - The website (WordPress) side is report-only. No WordPress or Elementor writes.
 - PostHog is read-only for the routine. No insight, dashboard, or flag mutations.
 - Hard cap: 3 bug-fix PRs per run. Anything beyond that is reported, not fixed.
@@ -93,7 +95,10 @@ Step 2, triage every finding into exactly one bucket:
 
 Step 3, fix quote tool bugs. First count your own still-open pull requests from
 previous runs of this routine. If 5 or more are open, fix nothing today: report
-everything instead and flag the backlog in the Telegram summary. Otherwise, for each
+everything instead and flag the backlog in the Telegram summary. While counting,
+note any of those PRs open 7 days or more and list them in the report under
+"Bugs needing a human" as stale, with the recommendation to merge, close, or hand
+them to a working session. Otherwise, for each
 QUOTE TOOL BUG, up to a hard cap of 3 per run: reproduce the failure from the code,
 write a failing test first when the shape allows it, fix it, and run the gates
 (npx tsc --noEmit, npm run lint, npm test). Only proceed when all three are green.
@@ -110,9 +115,10 @@ src/lib/designs.ts, any supabase* file, src/lib/sceneTypes.ts,
 src/lib/integrations/, src/app/layout.tsx, globals.css, package.json, the lockfile,
 tsconfig or eslint or next config, AGENTS.md, anything under .claude/, or anything
 under .github/workflows/. Report those as needs-human with the evidence. If a fix
-touches the portal, quote builder, pricing engine, design editor, training, settings,
-or inbox (Jason's owned area), add "touches Jason's area" to the PR body and list it
-under "needs Jason's look" in the report.
+touches the portal, quote builder, design editor, training, settings, or inbox
+(Jason's owned area), add "touches Jason's area" to the PR body and list it under
+"needs Jason's look" in the report. Pricing is not in that list because it is
+already excluded from fixing outright above.
 
 Step 4, write the report. Create a GitHub issue in this repository titled
 "PostHog daily report YYYY-MM-DD" with sections: Bugs fixed (PR links), Bugs needing
