@@ -2,20 +2,28 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
 // Only the two IO seams are replaced; isOverdue / reconcilePlan stay REAL, so
 // the pure-planner suites below still exercise the shipped policy.
-const { listInstallmentPlans, markInstallmentPaid, getSupabaseServiceClient } = vi.hoisted(() => ({
+const { listInstallmentPlans, markInstallmentPaid, getSupabaseServiceClient, chargeBalanceOnFile } = vi.hoisted(() => ({
   listInstallmentPlans: vi.fn(),
   markInstallmentPaid: vi.fn(),
   getSupabaseServiceClient: vi.fn(),
+  chargeBalanceOnFile: vi.fn(),
 }));
 vi.mock('@/lib/installments', async () => {
   const actual = await vi.importActual<typeof import('./installments')>('./installments');
   return { ...actual, listInstallmentPlans, markInstallmentPaid };
 });
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient }));
+// describeChargeSlot / CHARGE_SLOT_STALE_MS stay REAL (pure); only the network
+// call is replaced.
+vi.mock('@/lib/integrations/valorBalance', async () => {
+  const actual = await vi.importActual<typeof import('./integrations/valorBalance')>('./integrations/valorBalance');
+  return { ...actual, chargeBalanceOnFile };
+});
 import {
   planInstallmentRun,
   invoiceDriftBlockers,
   runSummaryMessage,
+  blockedDecisions,
   runInstallments,
   isInstallmentRunnerEnabled,
   MAX_INSTALLMENT_CHARGE_USD,
@@ -58,6 +66,7 @@ const plan = (installments: Installment[], over: Partial<InstallmentPlan> = {}):
     quoteStatus: 'booked',
     isNce: false,
     amendmentBlocksSettlement: false,
+    autoChargeConsentAt: '2026-08-01T00:00:00.000Z',
     ...over,
   };
 };
@@ -123,6 +132,21 @@ describe('planInstallmentRun — the ET business day (row 449)', () => {
 describe('planInstallmentRun — the blockers', () => {
   const due = () => [inst({ seq: 4, dueDate: '2026-09-05' })];
 
+  it('refuses when the customer never agreed to automatic charges', () => {
+    const [d] = planInstallmentRun([plan(due(), { autoChargeConsentAt: null })], AFTER_SEP_5);
+    expect(d.action).toBe('skip');
+    expect(d.reasons).toContain('no-auto-charge-consent');
+    expect(d.detail).toContain('a vaulted card is not consent');
+  });
+
+  it('a card on file is NOT consent on its own', () => {
+    const [d] = planInstallmentRun(
+      [plan(due(), { hasCardOnFile: true, autoChargeConsentAt: null })],
+      AFTER_SEP_5,
+    );
+    expect(d.action).toBe('skip');
+  });
+
   it('refuses without a card on file', () => {
     const [d] = planInstallmentRun([plan(due(), { hasCardOnFile: false })], AFTER_SEP_5);
     expect(d.action).toBe('skip');
@@ -182,14 +206,27 @@ describe('planInstallmentRun — the charge slot', () => {
   it('stands off a claim that is still fresh', () => {
     const fresh = new Date(Date.now() - 60_000).toISOString();
     const [d] = planInstallmentRun([plan(dueAt(`pending:${fresh}`))], AFTER_SEP_5);
-    expect(d.reasons).toContain('already-charging');
+    expect(d.action).toBe('skip');
+    expect(d.reasons).toContain('claim-needs-review');
   });
 
-  it('reclaims a claim left behind by a crashed run', () => {
-    const stale = new Date(Date.now() - 60 * 60_000).toISOString();
-    const [d] = planInstallmentRun([plan(dueAt(`pending:${stale}`))], AFTER_SEP_5);
-    expect(d.action).toBe('charge');
-    expect(d.reasons).toEqual([]);
+  // The premerge customer lens killed the stale-reclaim path: a leftover claim
+  // cannot distinguish "died before calling Valor" from "timed out after the
+  // charge landed", so on a daily cadence reclaiming it would re-charge a
+  // payment that may already have been taken. An earlier test here was named
+  // "reclaims a claim left behind by a crashed run" and asserted exactly that
+  // double-charge. It does not reclaim, at any age.
+  it('still refuses a claim old enough that the invoice route would reclaim it', () => {
+    const ancient = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
+    const [d] = planInstallmentRun([plan(dueAt(`pending:${ancient}`))], AFTER_SEP_5);
+    expect(d.action).toBe('skip');
+    expect(d.reasons).toContain('claim-needs-review');
+  });
+
+  it('refuses an ambiguous-timeout marker as an already-charged payment', () => {
+    const [d] = planInstallmentRun([plan(dueAt('ambiguous-timeout:2026-09-05T13:00:00.000Z'))], AFTER_SEP_5);
+    expect(d.action).toBe('skip');
+    expect(d.reasons).toContain('charged-not-recorded');
   });
 });
 
@@ -336,5 +373,221 @@ describe('runInstallments — the invoice-drift gate is actually wired', () => {
     const res = await runInstallments({ asOf: AFTER_SEP_5, dryRun: false });
     expect(res.ok).toBe(false);
     expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+});
+
+
+// -----------------------------------------------------------------------------
+// The money-moving path. Everything above DECIDES; `chargeOne` is the only code
+// that touches a card, and the premerge technical lens found it had no coverage
+// at all - the highest-risk function in the change, untested. These drive it
+// through `runInstallments({ dryRun: false })` with only the Valor call mocked.
+
+describe('runInstallments - charging for real', () => {
+  const CONSENTED = () =>
+    plan([inst({ seq: 4, dueDate: '2026-09-05' })], { autoChargeConsentAt: '2026-08-01T00:00:00.000Z' });
+
+  /** Records every write, so claim-BEFORE-charge ordering is assertable. */
+  type Write = { table: string; patch: Record<string, unknown>; filters: [string, unknown][] };
+
+  function makeDb(opts: { claimWins?: boolean; vaultToken?: string | null } = {}) {
+    const writes: Write[] = [];
+    const claimWins = opts.claimWins !== false;
+    const from = (table: string) => ({
+      select: () => {
+        const q = {
+          in: async () => ({ data: [], error: null }),
+          eq: () => q,
+          maybeSingle: async () => ({
+            data:
+              table === 'quotes'
+                ? {
+                    valor_vault_token: opts.vaultToken === undefined ? 'tok_live' : opts.vaultToken,
+                    customer_name: 'Jane Laguerre',
+                    customer_email: 'jane@example.com',
+                  }
+                : null,
+            error: null,
+          }),
+        };
+        return q;
+      },
+      update: (patch: Record<string, unknown>) => {
+        const filters: [string, unknown][] = [];
+        const w: Write = { table, patch, filters };
+        const isClaim =
+          typeof patch.valor_txn_id === 'string' && String(patch.valor_txn_id).startsWith('pending:');
+        const q = {
+          eq: (col: string, val: unknown) => {
+            filters.push([col, val]);
+            return q;
+          },
+          is: (col: string, val: unknown) => {
+            filters.push([col, val]);
+            return q;
+          },
+          select: async () => {
+            writes.push(w);
+            return { data: isClaim && !claimWins ? [] : [{ id: 'i-4' }], error: null };
+          },
+          // The ambiguous-timeout marker is awaited directly, with no .select().
+          then: (resolve: (v: { data: null; error: null }) => void) => {
+            writes.push(w);
+            resolve({ data: null, error: null });
+          },
+        };
+        return q;
+      },
+    });
+    return { db: { from }, writes };
+  }
+
+  const approved = (chargedUsd: number | null, txnId = 'TXN-1') => ({
+    ok: true as const,
+    chargedUsd,
+    txnId,
+    approvalCode: 'A1',
+    receiptUrl: null,
+    raw: {},
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listInstallmentPlans.mockResolvedValue({ ok: true, plans: [CONSENTED()] });
+    markInstallmentPaid.mockResolvedValue({ ok: true, amountUsd: 453.13 });
+  });
+
+  const run = () => runInstallments({ asOf: AFTER_SEP_5, dryRun: false });
+
+  it('claims the slot BEFORE calling Valor, and records only after an approval', async () => {
+    const { db, writes } = makeDb();
+    getSupabaseServiceClient.mockReturnValue(db);
+    chargeBalanceOnFile.mockImplementation(async () => {
+      expect(writes.some((w) => String(w.patch.valor_txn_id ?? '').startsWith('pending:'))).toBe(true);
+      return approved(453.13);
+    });
+
+    const res = await run();
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.outcomes[0]!.status).toBe('charged');
+    expect(markInstallmentPaid).toHaveBeenCalledWith(
+      expect.objectContaining({ installmentId: 'i-4', source: 'valor', valorTxnId: 'TXN-1' }),
+    );
+  });
+
+  it('claims with a compare-and-swap on BOTH paid_at and an empty slot', async () => {
+    const { db, writes } = makeDb();
+    getSupabaseServiceClient.mockReturnValue(db);
+    chargeBalanceOnFile.mockResolvedValue(approved(453.13));
+    await run();
+    const claim = writes.find((w) => String(w.patch.valor_txn_id ?? '').startsWith('pending:'))!;
+    expect(claim.filters).toEqual(
+      expect.arrayContaining([
+        ['id', 'i-4'],
+        ['paid_at', null],
+        ['valor_txn_id', null],
+      ]),
+    );
+  });
+
+  it('charges nothing when it loses the claim race', async () => {
+    const { db } = makeDb({ claimWins: false });
+    getSupabaseServiceClient.mockReturnValue(db);
+    const res = await run();
+    expect(chargeBalanceOnFile).not.toHaveBeenCalled();
+    expect(res.ok && res.outcomes[0]!.status).toBe('failed');
+  });
+
+  it('releases the claim on a decline, so a later run can try again', async () => {
+    const { db, writes } = makeDb();
+    getSupabaseServiceClient.mockReturnValue(db);
+    chargeBalanceOnFile.mockResolvedValue({ ok: false, reason: 'declined', message: 'DECLINED' });
+    const res = await run();
+    expect(res.ok && res.outcomes[0]!.status).toBe('declined');
+    expect(writes.some((w) => w.patch.valor_txn_id === null)).toBe(true);
+    expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+
+  it('on an ambiguous timeout it stamps a marker nothing reclaims, and does NOT release', async () => {
+    const { db, writes } = makeDb();
+    getSupabaseServiceClient.mockReturnValue(db);
+    chargeBalanceOnFile.mockResolvedValue({
+      ok: false,
+      reason: 'error',
+      message: 'Valor balance charge timed out - check Valor before retrying',
+    });
+    const res = await run();
+    expect(res.ok && res.outcomes[0]!.status).toBe('charged-not-recorded');
+    expect(writes.some((w) => w.patch.valor_txn_id === null)).toBe(false);
+    expect(
+      writes.some((w) => String(w.patch.valor_txn_id ?? '').startsWith('ambiguous-timeout:')),
+    ).toBe(true);
+    expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+
+  it('refuses to record a capture that does not match the payment, in EITHER direction', async () => {
+    for (const chargedUsd of [400, 500, null]) {
+      vi.clearAllMocks();
+      listInstallmentPlans.mockResolvedValue({ ok: true, plans: [CONSENTED()] });
+      const { db } = makeDb();
+      getSupabaseServiceClient.mockReturnValue(db);
+      chargeBalanceOnFile.mockResolvedValue(approved(chargedUsd));
+      const res = await run();
+      expect(res.ok && res.outcomes[0]!.status, String(chargedUsd)).toBe('charged-not-recorded');
+      expect(markInstallmentPaid).not.toHaveBeenCalled();
+    }
+  });
+
+  it('says the card WAS charged when recording fails', async () => {
+    const { db } = makeDb();
+    getSupabaseServiceClient.mockReturnValue(db);
+    chargeBalanceOnFile.mockResolvedValue(approved(453.13, 'TXN-9'));
+    markInstallmentPaid.mockResolvedValue({ ok: false, error: 'Already recorded as paid' });
+    const res = await run();
+    expect(res.ok && res.outcomes[0]!.status).toBe('charged-not-recorded');
+    expect(res.ok && res.outcomes[0]!.message).toContain('WAS charged');
+  });
+
+  it('never charges when the vault token vanished between planning and charging', async () => {
+    const { db } = makeDb({ vaultToken: null });
+    getSupabaseServiceClient.mockReturnValue(db);
+    const res = await run();
+    expect(chargeBalanceOnFile).not.toHaveBeenCalled();
+    expect(res.ok && res.outcomes[0]!.status).toBe('failed');
+  });
+});
+
+describe('blockedDecisions and the alert it feeds', () => {
+  const decide = (over: Partial<InstallmentPlan>) =>
+    planInstallmentRun([plan([inst({ seq: 4, dueDate: '2026-09-05' })], over)], AFTER_SEP_5);
+
+  it('a quiet day is not a blocked payment', () => {
+    const decisions = planInstallmentRun([plan([inst({ seq: 4, dueDate: '2026-12-05' })])], AFTER_SEP_5);
+    expect(blockedDecisions(decisions)).toEqual([]);
+    expect(
+      runSummaryMessage({ ok: true, dryRun: false, today: '2026-09-06', decisions, outcomes: [] }),
+    ).toBeNull();
+  });
+
+  it('a payment we could not collect DOES reach the alert, with the amount and the reason', () => {
+    const decisions = decide({ hasCardOnFile: false });
+    expect(blockedDecisions(decisions)).toHaveLength(1);
+    const msg = runSummaryMessage({ ok: true, dryRun: false, today: '2026-09-06', decisions, outcomes: [] })!;
+    expect(msg).toContain('NOT COLLECTED');
+    expect(msg).toContain('453.13');
+    expect(msg).toContain('no-card-on-file');
+    expect(msg).toContain('Jane Laguerre');
+  });
+
+  it('reports a missing consent as an uncollected payment too', () => {
+    const msg = runSummaryMessage({
+      ok: true,
+      dryRun: false,
+      today: '2026-09-06',
+      decisions: decide({ autoChargeConsentAt: null }),
+      outcomes: [],
+    })!;
+    expect(msg).toContain('no-auto-charge-consent');
   });
 });

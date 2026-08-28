@@ -13,8 +13,18 @@
 // WHAT MAKES A RUN LIVE. `runInstallments` charges only when `dryRun` is false,
 // and this route refuses to pass false unless `INSTALLMENT_RUNNER_ENABLED` is
 // on. Underneath, `chargeBalanceOnFile` refuses again unless
-// `VALOR_AUTO_CHARGE_ENABLED` is on. So a dry run is the default in every
-// direction: an operator must ASK for a live run, and both flags must be set.
+// `VALOR_AUTO_CHARGE_ENABLED` is on. And per customer, the planner refuses
+// unless `quotes.installment_auto_charge_consent_at` is set, which it is for
+// nobody. So a dry run is the default in every direction: an operator must ASK
+// for a live run, both flags must be set, and a person must have recorded that
+// this particular customer agreed to it.
+//
+// DO NOT ARM THIS UNTIL LEDGER ROW 446 SHIPS. When a charge lands but recording
+// it fails — an ambiguous Valor timeout, a lost CAS race — the payment needs to
+// be recorded by hand, and `markInstallmentPaid` still has no caller anywhere in
+// the app (/admin/installments is read-only). Until that exists, the recovery
+// for a stuck payment is a developer editing the database. Premerge staff lens,
+// PR #1051.
 //
 // AUTH. A cron request carries `Authorization: Bearer <CRON_SECRET>` and no
 // operator session; an operator request carries a session and no Authorization
@@ -33,10 +43,20 @@ import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-async function handle(req: NextRequest, requestedDryRun: boolean) {
+async function handle(req: NextRequest, operatorRequestedDryRun: boolean) {
   const authorization = req.headers.get('authorization');
-  const denied = authorization ? cronDenial(authorization) : await requireOperator();
+  const viaCron = !!authorization;
+  const denied = viaCron ? cronDenial(authorization) : await requireOperator();
   if (denied) return denied;
+
+  // "Live by default" belongs to the CRON leg alone. An earlier draft let GET
+  // request a live run unconditionally, so once the flags were on, any operator
+  // who simply opened this URL in a browser — a bookmark, a stray link, or
+  // testing the route during rollout — would have charged real cards with no
+  // explicit gesture. That also contradicted this file's own stated model, which
+  // says an operator run must ask for `dryRun: false`. Premerge technical lens,
+  // PR #1051. A valid CRON_SECRET means "charge"; a valid session does not.
+  const requestedDryRun = viaCron ? false : operatorRequestedDryRun;
 
   const runnerArmed = isInstallmentRunnerEnabled();
   const dryRun = requestedDryRun || !runnerArmed;
@@ -72,9 +92,14 @@ async function handle(req: NextRequest, requestedDryRun: boolean) {
   });
 }
 
-/** The cron leg. Always asks for a live run; the flags decide whether it is one. */
+/**
+ * The cron leg — with a Bearer CRON_SECRET this asks for a live run and the
+ * flags decide whether it is one. Reached WITHOUT that header it falls to an
+ * operator session, and then it is a dry run: opening a URL is not a decision to
+ * charge somebody's card.
+ */
 export async function GET(req: NextRequest) {
-  return handle(req, false);
+  return handle(req, true);
 }
 
 /** The operator leg. Dry by default — a live run must ask for it explicitly. */

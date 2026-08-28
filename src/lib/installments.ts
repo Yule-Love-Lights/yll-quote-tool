@@ -70,6 +70,11 @@ export type InstallmentPlan = {
    *  consent — the same `blocksSettlement` gate the charge-balance route uses,
    *  so an amend-up can never be collected without a re-approval. */
   amendmentBlocksSettlement: boolean;
+  /** When the customer agreed their saved card may be charged automatically for
+   *  the scheduled payments. NULL means they never did, and the runner refuses.
+   *  See migrations/2026-08-28-installment-auto-charge-consent.sql for why this
+   *  is not implied by having a card on file. */
+  autoChargeConsentAt: string | null;
 };
 
 /** The next DATED payment owed — a due-on-completion one is deliberately never
@@ -159,7 +164,7 @@ export async function listInstallmentPlans(): Promise<
 
   const { data: quotes, error: qErr } = await sb
     .from('quotes')
-    .select('id, quote_number, customer_name, customer_email, total, deposit_amount_usd, valor_vault_token, status, is_nce, approval_snapshot')
+    .select('id, quote_number, customer_name, customer_email, total, deposit_amount_usd, valor_vault_token, status, is_nce, approval_snapshot, installment_auto_charge_consent_at')
     .in('id', [...byQuote.keys()]);
   if (qErr) return { ok: false, error: qErr.message };
 
@@ -170,6 +175,7 @@ export async function listInstallmentPlans(): Promise<
     deposit_amount_usd: number | string | null; valor_vault_token: string | null;
     status: string | null; is_nce: boolean | null;
     approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
+    installment_auto_charge_consent_at: string | null;
   }[]) {
     const installments = byQuote.get(q.id) ?? [];
     const quoteTotal = Number(q.total ?? 0);
@@ -192,6 +198,7 @@ export async function listInstallmentPlans(): Promise<
       quoteStatus: q.status,
       isNce: !!q.is_nce,
       amendmentBlocksSettlement: blocksSettlement(latestConsentAmendment(q.approval_snapshot?.amendments)),
+      autoChargeConsentAt: q.installment_auto_charge_consent_at,
     });
   }
   plans.sort((a, b) => (b.quoteNumber ?? 0) - (a.quoteNumber ?? 0));

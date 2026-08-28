@@ -31,6 +31,7 @@ const plan = (installments: Installment[], over: Partial<InstallmentPlan> = {}):
   quoteStatus: 'booked',
   isNce: false,
   amendmentBlocksSettlement: false,
+  autoChargeConsentAt: null,
   ...over,
 });
 

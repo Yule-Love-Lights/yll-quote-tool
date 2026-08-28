@@ -105,6 +105,18 @@ describe('the dry-run gates', () => {
     await GET(req({ secret: SECRET }));
     expect(runInstallments).toHaveBeenCalledWith({ dryRun: false });
   });
+
+  // Premerge technical lens HIGH: an earlier draft had GET request a live run
+  // unconditionally, so with the flags on, an operator who merely opened this
+  // URL in a browser charged real cards. A valid CRON_SECRET means "charge"; a
+  // valid operator session does not.
+  it('an OPERATOR GET is a dry run even with the flag armed', async () => {
+    process.env.INSTALLMENT_RUNNER_ENABLED = 'true';
+    const res = await GET(req()); // no Authorization header -> requireOperator
+    expect(requireOperator).toHaveBeenCalled();
+    expect(runInstallments).toHaveBeenCalledWith({ dryRun: true });
+    expect((await res.json()).runnerArmed).toBe(true);
+  });
 });
 
 describe('reporting', () => {
