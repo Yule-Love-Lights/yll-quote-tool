@@ -14,9 +14,12 @@ import {
 /**
  * Break tracking on the shift clock ledger.
  *
- * Breaks are UNPAID (`OPERATIONS_HUB_CONTRACT.md` section 8: advertising paid
- * seconds are the union of paid-day intervals "excluding unpaid breaks"), so
- * paid time for a shift is the clock envelope minus break time. That number
+ * Breaks are UNPAID: paid time for a shift is the clock envelope minus break
+ * time. That rule used to cite OPERATIONS_HUB_CONTRACT.md section 8, which was
+ * deleted with the scrapped Operations Hub (row 433). The rule itself did not
+ * change, so it is stated here directly rather than pointing at a file that no
+ * longer exists. Paid seconds are the union of paid-day intervals excluding
+ * unpaid breaks. That number
  * feeds P4P payout math, which is why the arithmetic here lives in pure
  * functions with their own tests and stays in integer milliseconds until the
  * final conversion.

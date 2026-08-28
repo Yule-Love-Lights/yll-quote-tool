@@ -43,7 +43,11 @@ export function ReferralLinkCopy({
       <button
         type="button"
         onClick={handleCopy}
-        className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-[#FFB744] text-[#1A1206] font-semibold text-[14px] cursor-pointer transition-colors duration-200 hover:bg-[#FFC565] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
+        // Review fix 2: Copy is the secondary action now (outline, quiet).
+        // The whole point of this feature is giving people something to
+        // SHARE, so ReferralShareButton (rendered in `after`) now carries
+        // the loud filled-gold treatment this button used to have.
+        className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-transparent text-[#FFB744] border border-[#FFB744]/45 font-semibold text-[14px] cursor-pointer transition-colors duration-200 hover:bg-[#FFB744]/10 hover:text-[#FFD07A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
       >
         {copied ? <Check className="w-4 h-4" aria-hidden /> : <Copy className="w-4 h-4" aria-hidden />}
         {copied ? 'Copied' : 'Copy link'}

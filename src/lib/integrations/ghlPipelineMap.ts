@@ -16,6 +16,7 @@
 // visible in the Settings → HighLevel setup page.
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import type { Pipeline } from './highlevelPipelines';
 
 export type PipelineStages = {
   pipelineId: string;
@@ -114,6 +115,113 @@ const NEIGHBORS_STAGES: PipelineStages = {
   // separate stage — there isn't one.
   abandoned: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2026
 };
+
+// ─── Referral sweep suppression (naldo/referral-link-sweep) ───────────────
+// Two stages in the Neighbors pipeline mean DO NOT TOUCH for the referral
+// sweep (src/lib/referralSweep.ts): a contact with an opportunity sitting in
+// either one must never get a referral code minted, a link stamped, or a
+// tag applied. "Declined for 2026" reuses NEIGHBORS_STAGES.declined above
+// (same id, same stage): it isn't a new stage, just a new REASON to name it
+// here. "Do Not Call" is a separate stage in the same pipeline that has no
+// other purpose in this app yet.
+//
+// ASYMMETRIC ON PURPOSE: each stage is resolved by the STRONGEST signal
+// available for it, not the same mechanism for both.
+//   - "Declined for 2026" has a verified hardcoded id
+//     (NEIGHBORS_DECLINED_STAGE_ID below, discovered live 2026-07-16 and
+//     already relied on by resolvePipelineStages above). A hardcoded,
+//     already-confirmed id is strictly safer than a name lookup, so it stays
+//     one.
+//   - "Do Not Call" has no verified id. It could not be discovered live this
+//     session: this build sandbox has no outbound network access to
+//     services.leadconnectorhq.com (a read-only GET /opportunities/pipelines
+//     call failed with ConnectTimeoutError, confirmed 2026-08-25), so the
+//     live listing every other id in this file was captured from was
+//     unreachable here. Production can reach GHL fine. Rather than ship a
+//     placeholder id that can never match anything, NEIGHBORS_DO_NOT_CALL_
+//     STAGE_NAME below is resolved BY NAME at runtime, every run, from the
+//     same live pipeline listing the fail-loud check already fetches. See
+//     checkNeighborsSuppression() below and referralSweep.ts's
+//     runReferralSweep. The match is scoped to the Neighbors pipeline ONLY
+//     (a same-named stage in a different pipeline never counts) and is
+//     case-insensitive + whitespace-trimmed, so a harmless re-casing later
+//     (e.g. someone typing "Do Not Call") can't silently disable
+//     suppression. Each run logs the id it resolved
+//     (ReferralSweepSummary.resolvedDoNotCallStageId) specifically so a
+//     human can read it once and hardcode it here later, promoting it to
+//     the same verified-id footing "Declined for 2026" already has.
+export const NEIGHBORS_DO_NOT_CALL_STAGE_NAME = 'DO NOT CALL';
+
+/** The Neighbors pipeline id, exported under its own name for callers (the
+ *  referral sweep) that need it without pulling in the rest of the map. */
+export const NEIGHBORS_PIPELINE_ID = NEIGHBORS_STAGES.pipelineId;
+
+/** "Declined for 2026"'s verified hardcoded id. See the asymmetry note above
+ *  for why this one is a hardcoded id while "Do Not Call" is a name lookup. */
+export const NEIGHBORS_DECLINED_STAGE_ID = NEIGHBORS_STAGES.declined;
+
+/**
+ * Every known pipeline's stage map: the four service-type pipelines plus
+ * the Neighbors pipeline, for a caller that needs to check ALL of a
+ * contact's cards for a status, not just one service_type's. The referral
+ * sweep uses this to look for a "booked-or-later" opportunity anywhere,
+ * since a GHL contact's history isn't scoped to a single service_type the
+ * way a quote row is. Order is not meaningful to any consumer.
+ */
+export function allPipelineStages(): PipelineStages[] {
+  return [...Object.values(PIPELINE_MAP), NEIGHBORS_STAGES];
+}
+
+const normalizeStageName = (name: string): string => name.trim().toLowerCase();
+
+/** Result of checkNeighborsSuppression: everything the referral sweep's
+ *  fail-loud pre-flight check needs, from ONE live pipeline listing. */
+export type NeighborsSuppressionCheck = {
+  /** Configured hardcoded ids (today: just NEIGHBORS_DECLINED_STAGE_ID) that
+   *  are NOT present live. Empty means every hardcoded id still resolves to
+   *  a real stage. */
+  missingHardcodedIds: string[];
+  /** "Do Not Call"'s live id, resolved by NAME within the Neighbors
+   *  pipeline ONLY (a same-named stage in a different pipeline never
+   *  counts), matched case-insensitively with whitespace trimmed. Null when
+   *  nothing matched: either the Neighbors pipeline itself wasn't found
+   *  live, or none of its stages match NEIGHBORS_DO_NOT_CALL_STAGE_NAME. */
+  doNotCallStageId: string | null;
+  /** Every stage name found live in the Neighbors pipeline, so a fail-loud
+   *  error can say what it actually found, not just what it expected to
+   *  find. Empty when the pipeline itself isn't in the live listing. */
+  liveNeighborsStageNames: string[];
+};
+
+/**
+ * Verify the Neighbors pipeline's suppression stages against a LIVE
+ * pipelines listing: the same shape highlevelPipelines.ts's parsePipelines()
+ * returns from GET /opportunities/pipelines. Checks each suppression stage
+ * by its own strongest signal (see the asymmetry note above):
+ * NEIGHBORS_DECLINED_STAGE_ID by id, "Do Not Call" by name, scoped to the
+ * Neighbors pipeline only.
+ *
+ * Pure, no network, no env, so it's cheap to unit test. The referral sweep
+ * calls this against a freshly-fetched live listing before touching any
+ * contact: a renamed/deleted hardcoded stage, or no live match for the
+ * "Do Not Call" name, must surface as a loud error, never as silently
+ * suppressing nobody. That is the entire point of this function existing.
+ */
+export function checkNeighborsSuppression(livePipelines: Pipeline[]): NeighborsSuppressionCheck {
+  const neighbors = livePipelines.find((p) => p.id === NEIGHBORS_PIPELINE_ID);
+  const stages = neighbors?.stages ?? [];
+  const liveStageIds = new Set(stages.map((s) => s.id));
+  const missingHardcodedIds = [NEIGHBORS_DECLINED_STAGE_ID].filter((id) => !liveStageIds.has(id));
+
+  const target = normalizeStageName(NEIGHBORS_DO_NOT_CALL_STAGE_NAME);
+  const match = stages.find((s) => normalizeStageName(s.name) === target);
+
+  return {
+    missingHardcodedIds,
+    doNotCallStageId: match?.id ?? null,
+    liveNeighborsStageNames: stages.map((s) => s.name),
+  };
+}
 
 /**
  * Resolve the pipeline + stage ids to use for a quote's service_type.

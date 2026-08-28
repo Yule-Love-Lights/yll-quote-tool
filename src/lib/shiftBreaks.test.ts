@@ -271,7 +271,7 @@ import {
 } from './shiftBreaks';
 
 // ---------------------------------------------------------------------------
-// The money math. Breaks are UNPAID per OPERATIONS_HUB_CONTRACT.md section 8,
+// The money math. Breaks are UNPAID (the rule is stated in shiftBreaks.ts;
 // so paid time is the shift envelope minus break time. These are pure
 // functions with no database in the way.
 // ---------------------------------------------------------------------------
