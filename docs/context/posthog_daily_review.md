@@ -26,10 +26,15 @@
 
 - The routine may open PRs. It never merges anything. Standing repo rule: a human
   merges every PR, and each PR still needs its premerge lens review first.
-- **Who runs that review:** routine PRs get merged only from a Claude Code session
-  that has run the `/premerge` lens review on them first. Never merge a routine PR
-  from the GitHub UI directly, even with green checks. Green checks prove the gates,
-  not the review. Every routine PR body repeats this instruction.
+- **Who runs that review, and the only two ways a routine PR may land.** Never
+  merge a routine PR from the GitHub UI directly, even with green checks: green
+  checks prove the gates, not the review. Exactly two paths are allowed, and both
+  require a review to have happened first:
+  1. From a Claude Code session that has run the `/premerge` lens review on it.
+  2. By texting `merge <number>` to the bot, which routes to the merge routine
+     described in "Merge by text" below. That routine refuses unless a
+     `lens-review-bot` comment on the PR carries a PASS verdict.
+  Every routine PR body repeats this instruction.
 - Quote-tool bugs in money math, pricing, payments, or auth are report-only for the
   routine. Those fixes go through a normal reviewed session.
 - **SHARED-ownership paths are report-only too** (per the AGENTS.md ownership table):
@@ -62,6 +67,57 @@
   routine's detail page; open it and stop it there. Worst case if one finishes
   anyway is bounded: no merges, no prod writes, PostHog read-only, capped output.
 - Runs bill Naldo's subscription usage like any other session (daily run cap applies).
+
+## The other two robots
+
+Set up 2026-08-28 alongside the daily review. Both are cloud routines on the same
+account and the same "Default" environment.
+
+**PR lens review** (`trig_013mbkDVY6GdGSbpvDMvnwZE`). Fires on a GitHub webhook
+whenever a pull request opens on a `claude/` branch. It classifies the diff into
+the AGENTS.md review tier, reviews it, and posts ONE comment containing the marker
+`lens-review-bot`, a findings list, and a PASS or BLOCK verdict. It reviews only:
+it cannot merge, approve, close, or push. It skips a PR that already carries its
+marker, so it never double-posts. Its first live run found a real defect in the
+staff-device work (a cookie read that could never fire, because the cookie is
+httpOnly) that green tests had hidden.
+
+**PR merge on request** (`trig_015kPuXZQCcjAZTYKLQNiPF8`). API-triggered only, by
+the quote tool's Telegram bot. See below.
+
+## Merge by text
+
+Naldo texts `merge 1043` to the Yule Love Lights bot and, if every check passes,
+that pull request lands and he gets a note back. The point is to remove the last
+manual step from the morning loop without removing the human from it.
+
+How the authority is bounded, in order:
+
+1. **The bot** (`src/lib/integrations/mergeRequestHandler.ts`) matches the command
+   deterministically, never through the LLM, and only acts when the Telegram
+   SENDER id equals `MERGE_APPROVER_TELEGRAM_USER_ID`. Not a chat allowlist, not
+   an admin bot role: one person. Every attempt is written to `bot_audit_log`,
+   refusals included. The quote tool holds no GitHub credential and merges
+   nothing itself.
+2. **The merge routine** re-derives everything from GitHub and merges only when
+   the PR is open and not a draft, its head branch starts with `claude/`, a
+   `lens-review-bot` comment says PASS, CI is green on the PR's CURRENT head SHA,
+   and master is an ancestor of the head. It pins that SHA on the merge, so a head
+   that moved mid-check makes GitHub refuse. Any failure means no merge and a
+   Telegram note naming the failed check.
+
+So a leaked fire token cannot merge unreviewed code, and a text cannot skip the
+review: the reviewer's PASS comment is a precondition, and the reviewer is a
+separate routine that cannot merge.
+
+Configuration (all three in Vercel; absent means the feature answers "not set up
+yet" and does nothing): `MERGE_APPROVER_TELEGRAM_USER_ID`,
+`MERGE_ROUTINE_FIRE_URL`, `MERGE_ROUTINE_FIRE_TOKEN`.
+
+To revoke merge-by-text instantly, in rough order of speed: regenerate or revoke
+the routine's API token on its routine page, or clear
+`MERGE_APPROVER_TELEGRAM_USER_ID` in Vercel, or toggle the routine off. Any one of
+the three is sufficient.
 
 ## Fallback runners (if routines fail us)
 
