@@ -519,3 +519,148 @@ describe('analyzePhoto #149 retry-once on unusable JSON', () => {
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// SHADOW MODE (deterministic-satellite-footage): analyzePhoto() computes
+// satellite footage from the model's OWN drawn lines, additively, alongside
+// (never replacing) the model's self-reported satelliteSantasFootage /
+// satelliteGingerbreadFootage — the exact fields self-serve pricing reads
+// (src/lib/selfServe/estimateRange.ts's effectiveRooflineFootage).
+describe('analyzePhoto — shadow-mode computed satellite footage (deterministic-satellite-footage)', () => {
+  let createMock: ReturnType<typeof vi.fn>;
+  let analyzePhoto: typeof import('./photoAnalysis').analyzePhoto;
+
+  const setResponse = (analysisJson: Record<string, unknown>) => {
+    createMock.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify(analysisJson) }],
+      stop_reason: 'end_turn',
+    });
+  };
+
+  const baseAnalysis = {
+    santasFootage: 40,
+    santasDifficulty: 'medium',
+    santasLines: [],
+    gingerbreadFootage: 20,
+    gingerbreadDifficulty: 'medium',
+    gingerbreadLines: [],
+    miniLightDetections: [],
+    wreathDetections: [],
+    spritzerDetections: [],
+    garlandDetections: [],
+    notes: 'ok',
+    confidence: 'high',
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    createMock = vi.fn();
+    vi.doMock('./claude', () => ({
+      getClaudeClient: () => ({ messages: { create: createMock } }),
+    }));
+    const mod = await import('./photoAnalysis');
+    analyzePhoto = mod.analyzePhoto;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.doUnmock('./claude');
+    vi.resetModules();
+  });
+
+  it('computes computedSatelliteSantasFootage/computedSatelliteGingerbreadFootage from the real satellite image dimensions (a real 642x470 PNG, mirroring the live 12 Orient Ave shape) WITHOUT changing the model-stated fields', async () => {
+    const satPng = await sharp({
+      create: { width: 642, height: 470, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).png().toBuffer();
+    const satBase64 = satPng.toString('base64');
+
+    // A pure-vertical satellite santas segment: (0.5,0.2)->(0.5,0.8) on 642x470
+    // at feetPerPixel=0.3. dy = 0.6*470=282px -> 282*0.3=84.6ft (Math.round=85).
+    // The MODEL states a wildly different 40ft — well past the 25% threshold.
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [{ points: [[0.5, 0.2], [0.5, 0.8]], label: 'sat front' }],
+      satelliteSantasFootage: 40,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'satellite',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg', [], {
+      satellite: { base64: satBase64, mediaType: 'image/png', feetPerPixel: 0.3 },
+    });
+
+    // The EXISTING fields — the ones self-serve pricing / the seeded scene
+    // actually read — are completely unchanged: byte-for-byte the model's own
+    // stated numbers, lines, and source pick.
+    expect(result.satelliteSantasFootage).toBe(40);
+    expect(result.satelliteGingerbreadFootage).toBe(0);
+    expect(result.preferredSource).toBe('satellite');
+    expect(result.satelliteSantasLines).toEqual([{ points: [[0.5, 0.2], [0.5, 0.8]], label: 'sat front' }]);
+
+    // The NEW shadow fields are additive and correctly derived.
+    expect(result.computedSatelliteSantasFootage).toBe(85); // Math.round(84.6)
+    expect(result.computedSatelliteGingerbreadFootage).toBe(0); // no lines drawn, but dims+scale known -> a real computable 0, not null
+    expect(result.satelliteSantasFootageDisagrees).toBe(true); // |85-40|/40 = 1.125 > 0.25
+    expect(result.satelliteGingerbreadFootageDisagrees).toBe(false); // 0 vs 0 (nothing drawn, nothing stated)
+  });
+
+  it('leaves computed fields null and disagreement false when no satellite image was supplied', async () => {
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [],
+      satelliteSantasFootage: 0,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'street',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg'); // no satellite option at all
+
+    expect(result.computedSatelliteSantasFootage).toBeNull();
+    expect(result.computedSatelliteGingerbreadFootage).toBeNull();
+    expect(result.satelliteSantasFootageDisagrees).toBe(false);
+    expect(result.satelliteGingerbreadFootageDisagrees).toBe(false);
+  });
+
+  it('leaves computed fields null (never throws) when the satellite base64 is corrupt/undecodable', async () => {
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [{ points: [[0, 0], [1, 0]], label: 'sat' }],
+      satelliteSantasFootage: 50,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'satellite',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg', [], {
+      satellite: { base64: 'not-a-real-png', mediaType: 'image/png', feetPerPixel: 0.3 },
+    });
+
+    expect(result.computedSatelliteSantasFootage).toBeNull();
+    expect(result.satelliteSantasFootageDisagrees).toBe(false);
+    // Stated field is STILL untouched — the decode failure never propagates.
+    expect(result.satelliteSantasFootage).toBe(50);
+  });
+
+  it('leaves computed fields null when the satellite image has no known feetPerPixel scale (the 642x470/null-scale live training row)', async () => {
+    const satPng = await sharp({
+      create: { width: 642, height: 470, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).png().toBuffer();
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [{ points: [[0, 0], [1, 0]], label: 'sat' }],
+      satelliteSantasFootage: 50,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'satellite',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg', [], {
+      satellite: { base64: satPng.toString('base64'), mediaType: 'image/png' }, // no feetPerPixel
+    });
+
+    expect(result.computedSatelliteSantasFootage).toBeNull();
+    expect(result.satelliteSantasFootageDisagrees).toBe(false);
+  });
+});

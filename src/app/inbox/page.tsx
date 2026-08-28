@@ -14,7 +14,6 @@ import {
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
 import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
-import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 import { GmailWritebackFailuresBanner } from '@/components/dashboard/inbox/GmailWritebackFailuresBanner';
 import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
 import { PendingColorRequestsSection } from '@/components/dashboard/inbox/PendingColorRequestsSection';
@@ -47,7 +46,7 @@ export default async function InboxPage() {
       timed('listDueFollowUps', () => listDueFollowUps(now)),
       timed('listItemsForMetrics', () => listItemsForMetrics()),
       timed('getOperator', () => getOperator()),
-      timed('listInWorks', () => listInWorks()),
+      timed('listInWorks', () => listInWorks(200, now)),
       timed('getFollowUpDays', () => getFollowUpDays()),
       timed('getReopenCounts', () => getReopenCounts(now)),
       timed('getOperatorLabels', () => getOperatorLabels()),
@@ -55,9 +54,14 @@ export default async function InboxPage() {
       timed('listGmailWritebackFailures', () => listGmailWritebackFailures()),
     ]),
   );
-  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
+  const [openR, dueR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
   const openRes = openR.value;
-  const followRes = followR.value;
+  // PR #1005: read ONLY for the exact due count shown beside "Awaiting their
+  // reply". The uncapped `totalDue` is the same number the morning digest
+  // prints, and it is deliberately the count rather than the rows: the pills
+  // themselves come from listInWorks' own capped fetch, so this line stays
+  // true even if that cap ever hides a row.
+  const dueRes = dueR.value;
   const metricsRes = metricsR.value;
   const operator = operatorR.value;
   const inWorksRes = inWorksR.value;
@@ -132,10 +136,6 @@ export default async function InboxPage() {
           <PendingColorRequestsSection items={colorRequestsRes.items} nowMs={now.getTime()} />
         )}
 
-        {followRes.ok && followRes.items.length > 0 && (
-          <FollowUpStrip initialItems={followRes.items} totalDue={followRes.totalDue} />
-        )}
-
         {/* WT-41: above the 100-item page cap, the oldest items are what's shown
             (by design — they're the longest-waiting) but the newest customer
             messages are excluded from the list below until the queue drains.
@@ -171,6 +171,7 @@ export default async function InboxPage() {
             followUpDays={days}
             nowMs={now.getTime()}
             evidenceIncomplete={inWorksRes.evidenceIncomplete}
+            followUpsDue={dueRes.ok ? dueRes.totalDue : null}
           />
         )}
 

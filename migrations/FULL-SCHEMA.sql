@@ -627,6 +627,12 @@ create extension if not exists vector;
 alter table training_examples
   add column if not exists embedding vector(1024);
 
+-- Fix round (PR #916): which ANALYZER_PROMPT_VERSION (src/lib/photoAnalysis.ts)
+-- produced original_analysis — see migrations/2026-08-28-training-examples-
+-- prompt-version.sql for the full rationale. Null = pre-versioning row.
+alter table training_examples
+  add column if not exists prompt_version text;
+
 create or replace function match_training_examples(
   query_embedding vector(1024),
   match_count int
@@ -636,6 +642,33 @@ language sql
 stable
 as $$
   select *
+  from training_examples
+  where excluded = false
+    and embedding is not null
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+
+-- Lightweight sibling of match_training_examples (2026-08-24 migration) --
+-- returns only id/final_scene/street_w/street_h, no base64 image columns.
+-- Used to RANK a wide similarity candidate pool cheaply (mini-light
+-- retrieval bias, fewShot.ts) without paying full-row bytes for candidates
+-- discarded immediately after ranking. Never a substitute for
+-- match_training_examples -- callers hydrate only their final selected ids.
+create or replace function match_training_examples_lite(
+  query_embedding vector(1024),
+  match_count int
+)
+returns table (
+  id uuid,
+  final_scene jsonb,
+  street_w int,
+  street_h int
+)
+language sql
+stable
+as $$
+  select id, final_scene, street_w, street_h
   from training_examples
   where excluded = false
     and embedding is not null
