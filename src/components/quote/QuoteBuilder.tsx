@@ -62,6 +62,7 @@ import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
+import { polylineLengthAspectUnits as polylineLength } from '@/lib/design/polylineFootage';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import {
   reconcilePermanentSideField,
@@ -406,23 +407,14 @@ type LineSegment = { points: [number, number][]; label: string; feature?: 'gutte
 // Satellite image is always 640x640 at zoom=20 from Static Maps.
 const SAT_PX = 640;
 
-// Compute polyline length in "aspect-corrected" normalized units.
-// dx stays as-is (image width = 1), dy is scaled by (height/width) so
-// diagonal distances reflect real pixel distances on the image.
-function polylineLength(lines: LineSegment[], aspect: number): number {
-  const yScale = 1 / aspect; // height in width-units
-  let total = 0;
-  for (const line of lines) {
-    for (let i = 1; i < line.points.length; i++) {
-      const [x1, y1] = line.points[i - 1];
-      const [x2, y2] = line.points[i];
-      const dx = x2 - x1;
-      const dy = (y2 - y1) * yScale;
-      total += Math.sqrt(dx * dx + dy * dy);
-    }
-  }
-  return total;
-}
+// polylineLength moved to src/lib/design/polylineFootage.ts
+// (polylineLengthAspectUnits, imported below as polylineLength) — 2026-08-24
+// consolidation: this was one of THREE hand-written copies of the same
+// "sum each segment's scaled Pythagorean distance" loop across the repo.
+// Verified byte-for-byte parity (raw value + both rounding conventions this
+// file uses) with the old local formula across every training_examples row
+// with a valid satellite scale before this swap (see the PR body). Behavior
+// here is UNCHANGED — same signature, same formula, same call sites.
 
 // #255: mini-group surface labels for the pruned-group warning — matches the
 // wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
@@ -443,6 +435,20 @@ const MINI_SURFACE_LABELS: Record<Surface, string> = {
 };
 function miniSurfaceLabel(surface: string | null): string {
   return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+
+// SHADOW MODE (deterministic-satellite-footage): copy for a roofline whose
+// model-stated satellite footage disagrees >25% with what its own drawn
+// lines measure. The live-corpus measurement (scripts/satellite-footage-report.ts)
+// shows the model's STATED number is currently the more accurate of the two
+// — the drawn-line computation is noisy — so this reads as a "double-check
+// the lines" flag, never as "trust the computed number instead."
+function formatSatelliteDisagreement(label: string, statedFt: number | string, computedFt: number): string {
+  return (
+    `Heads up: the AI's ${label} footage (${statedFt}ft) does not match its own drawn satellite lines ` +
+    `(about ${computedFt}ft). Its stated number is usually the more reliable of the two. Worth a quick ` +
+    `look at the drawn lines before sending.`
+  );
 }
 
 // Row 269 fix round FIX 2 (two-lens MED — dishonest null-case copy): renders
@@ -1474,6 +1480,17 @@ export default function QuoteBuilder({
   // Degraded-but-recoverable notice (e.g. the analyzer is down): the photos load
   // and staff design manually. Distinct from analysisError (hard/blocking).
   const [analysisWarning, setAnalysisWarning] = useState<string | null>(null);
+  // SHADOW MODE (deterministic-satellite-footage): per-roofline flag text when
+  // the model's stated satellite footage disagrees >25% with what its own
+  // drawn lines measure. Kept separate from analysisWarning (whose banner
+  // header reads "Auto-design unavailable" — wrong for this case) so it gets
+  // its own amber note. Cleared per-roofline the moment the operator redraws
+  // that roofline's satellite lines (see getSetter) so it never describes
+  // lines that have already been fixed.
+  const [satelliteFootageDisagreement, setSatelliteFootageDisagreement] = useState<{
+    santas: string | null;
+    gingerbread: string | null;
+  }>({ santas: null, gingerbread: null });
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
 
@@ -2304,6 +2321,9 @@ export default function QuoteBuilder({
         seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteSantasLines(updater);
+        // SHADOW MODE: the operator just redrew these lines — the note
+        // describing the old ones is stale the moment this fires.
+        setSatelliteFootageDisagreement((prev) => (prev.santas == null ? prev : { ...prev, santas: null }));
       };
     }
     if (type === 'gingerbread') {
@@ -2311,6 +2331,8 @@ export default function QuoteBuilder({
         seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteGingerbreadLines(updater);
+        // SHADOW MODE: same as above, for the gingerbread/ridge roofline.
+        setSatelliteFootageDisagreement((prev) => (prev.gingerbread == null ? prev : { ...prev, gingerbread: null }));
       };
     }
     if (type === 'stake') {
@@ -2981,6 +3003,8 @@ export default function QuoteBuilder({
         setSatellitePreview(dataUrl);
         setSatelliteSantasLines([]);
         setSatelliteGingerbreadLines([]);
+        // SHADOW MODE: the old lines this note described are gone.
+        setSatelliteFootageDisagreement({ santas: null, gingerbread: null });
         setSatelliteC9Lines([]);
         setSatelliteStakeLines([]);
         setSatelliteBistroLines([]);
@@ -3218,6 +3242,16 @@ export default function QuoteBuilder({
       gingerbreadLines?: LineSegment[];
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
+      satelliteSantasFootage?: number;
+      satelliteGingerbreadFootage?: number;
+      // SHADOW MODE (deterministic-satellite-footage): informational only —
+      // never fed back into form/pricing state, just surfaced in the notes
+      // banner below so staff can see when the model's stated satellite
+      // footage disagrees with what its own drawn lines measure.
+      satelliteSantasFootageDisagrees?: boolean;
+      satelliteGingerbreadFootageDisagrees?: boolean;
+      computedSatelliteSantasFootage?: number | null;
+      computedSatelliteGingerbreadFootage?: number | null;
       preferredSource?: 'street' | 'satellite';
       miniLightDetections?: { type: 'tree' | 'bush' | 'column' | 'railing'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
       wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
@@ -3367,6 +3401,22 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
+    // SHADOW MODE (deterministic-satellite-footage): flag text, per roofline,
+    // when the model's stated satellite footage disagrees >25% with what its
+    // own drawn lines measure — never changes any form/pricing field. Routed
+    // through satelliteFootageDisagreement (the amber double-check banner
+    // below), not analysisNotes, and cleared per-roofline in getSetter when
+    // the operator redraws that roofline's lines.
+    setSatelliteFootageDisagreement({
+      santas:
+        r.satelliteSantasFootageDisagrees && r.computedSatelliteSantasFootage != null
+          ? formatSatelliteDisagreement("Santa's", r.satelliteSantasFootage ?? '?', r.computedSatelliteSantasFootage)
+          : null,
+      gingerbread:
+        r.satelliteGingerbreadFootageDisagrees && r.computedSatelliteGingerbreadFootage != null
+          ? formatSatelliteDisagreement('Gingerbread', r.satelliteGingerbreadFootage ?? '?', r.computedSatelliteGingerbreadFootage)
+          : null,
+    });
     // Row 209: tell the operator when a field's footage was deliberately
     // NOT taken from this analysis, so a number that looks unchanged after
     // "Re-analyze" reads as intentional rather than as a stale UI.
@@ -3437,6 +3487,8 @@ export default function QuoteBuilder({
       if (!ok) return false;
       setSatelliteSantasLines([]);
       setSatelliteGingerbreadLines([]);
+      // SHADOW MODE: the old lines this note described are gone.
+      setSatelliteFootageDisagreement({ santas: null, gingerbread: null });
       setSatelliteC9Lines([]);
       setSatelliteStakeLines([]);
       setSatelliteBistroLines([]);
@@ -6534,6 +6586,18 @@ Send anyway?`,
                     )}
                   </strong>
                   {analysisNotes}
+                </div>
+              )}
+              {(satelliteFootageDisagreement.santas || satelliteFootageDisagreement.gingerbread) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+                  <strong className="block mb-1">Double-check the drawn satellite lines</strong>
+                  {[satelliteFootageDisagreement.santas, satelliteFootageDisagreement.gingerbread]
+                    .filter((note): note is string => note != null)
+                    .map((note, i) => (
+                      <p key={i} className={i > 0 ? 'mt-1' : undefined}>
+                        {note}
+                      </p>
+                    ))}
                 </div>
               )}
               {analysisWarning && (

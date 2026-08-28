@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { getClaudeClient } from './claude';
 import type { StoredReferenceAsset } from './referenceAssets';
+import { footageFromLines, satelliteFootageDisagrees } from './design/polylineFootage';
 
 // Fail-safe (analyzer outage): when the Claude analysis fails, the analyze
 // routes still return the Street View + satellite imagery so staff can design
@@ -73,6 +74,20 @@ export type PhotoAnalysisResult = {
   satelliteSantasFootage: number;
   satelliteGingerbreadLines: LineSegment[];
   satelliteGingerbreadFootage: number;
+  // SHADOW MODE (deterministic-satellite-footage): footage recomputed in pure
+  // TypeScript from the model's OWN satelliteSantasLines/satelliteGingerbreadLines
+  // (src/lib/design/polylineFootage.ts), alongside — never replacing — the
+  // model's self-reported satelliteSantasFootage/satelliteGingerbreadFootage
+  // above. null when it couldn't be computed (no satellite image dimensions or
+  // no feet-per-pixel scale — see polylineFootage.ts's degenerate-input table).
+  // Nothing that reaches pricing reads these two fields today.
+  computedSatelliteSantasFootage: number | null;
+  computedSatelliteGingerbreadFootage: number | null;
+  // True when the computed footage above disagrees with the model's own
+  // stated footage by more than SATELLITE_FOOTAGE_DISAGREEMENT_THRESHOLD_PCT
+  // (polylineFootage.ts). Always false when the computed value is null.
+  satelliteSantasFootageDisagrees: boolean;
+  satelliteGingerbreadFootageDisagrees: boolean;
   preferredSource: 'street' | 'satellite';
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
@@ -898,6 +913,38 @@ export async function analyzePhoto(
   }
   const parsed = parsedRaw as PhotoAnalysisResult;
 
+  const finalSantasLines = normalizeLines(parsed.satelliteSantasLines);
+  const finalGingerbreadLines = normalizeLines(parsed.satelliteGingerbreadLines);
+  const finalSatelliteSantasFootage = coerceFootage(parsed.satelliteSantasFootage);
+  const finalSatelliteGingerbreadFootage = coerceFootage(parsed.satelliteGingerbreadFootage);
+
+  // SHADOW MODE (deterministic-satellite-footage): recompute satellite footage
+  // from the model's OWN drawn lines, in pure TypeScript, purely for
+  // visibility — never consumed by pricing. Needs the REAL pixel dimensions
+  // of the exact satellite image bytes the model was shown (satellite.base64
+  // above), not an assumed "640x640" (a live training row measures 642x470).
+  // Best-effort: any decode failure (corrupt bytes, no satellite supplied)
+  // just leaves both computed fields null — this must never throw and break
+  // a live analyze call.
+  let satelliteImgWidthPx: number | null = null;
+  let satelliteImgHeightPx: number | null = null;
+  if (satellite) {
+    try {
+      const meta = await sharp(Buffer.from(satellite.base64, 'base64')).metadata();
+      satelliteImgWidthPx = meta.width ?? null;
+      satelliteImgHeightPx = meta.height ?? null;
+    } catch {
+      // Decode failure — leave both null; footageFromLines treats null
+      // dimensions as "cannot compute" (returns null), not a thrown error.
+    }
+  }
+  const computedSatelliteSantasFootage = footageFromLines(
+    finalSantasLines, satelliteImgWidthPx, satelliteImgHeightPx, satellite?.feetPerPixel,
+  );
+  const computedSatelliteGingerbreadFootage = footageFromLines(
+    finalGingerbreadLines, satelliteImgWidthPx, satelliteImgHeightPx, satellite?.feetPerPixel,
+  );
+
   return {
     ...parsed,
     // Audit fix: coerce form-facing scalars (raw JSON is cast, never validated).
@@ -907,10 +954,22 @@ export async function analyzePhoto(
     gingerbreadDifficulty: coerceDifficulty(parsed.gingerbreadDifficulty),
     santasLines: normalizeLines(parsed.santasLines),
     gingerbreadLines: normalizeLines(parsed.gingerbreadLines),
-    satelliteSantasLines: normalizeLines(parsed.satelliteSantasLines),
-    satelliteGingerbreadLines: normalizeLines(parsed.satelliteGingerbreadLines),
-    satelliteSantasFootage: coerceFootage(parsed.satelliteSantasFootage),
-    satelliteGingerbreadFootage: coerceFootage(parsed.satelliteGingerbreadFootage),
+    satelliteSantasLines: finalSantasLines,
+    satelliteGingerbreadLines: finalGingerbreadLines,
+    satelliteSantasFootage: finalSatelliteSantasFootage,
+    satelliteGingerbreadFootage: finalSatelliteGingerbreadFootage,
+    // SHADOW MODE fields — see the PhotoAnalysisResult type comment. Rounded
+    // ONCE here (never inside footageFromLines, which returns an unrounded
+    // float) to the nearest whole foot, matching Math.round's standard
+    // round-half-up direction; the model's own stated numbers are rounded to
+    // the nearest 5ft by its own prompt instruction, so these are
+    // intentionally a finer-grained "what the lines actually measure".
+    computedSatelliteSantasFootage:
+      computedSatelliteSantasFootage == null ? null : Math.round(computedSatelliteSantasFootage),
+    computedSatelliteGingerbreadFootage:
+      computedSatelliteGingerbreadFootage == null ? null : Math.round(computedSatelliteGingerbreadFootage),
+    satelliteSantasFootageDisagrees: satelliteFootageDisagrees(finalSatelliteSantasFootage, computedSatelliteSantasFootage),
+    satelliteGingerbreadFootageDisagrees: satelliteFootageDisagrees(finalSatelliteGingerbreadFootage, computedSatelliteGingerbreadFootage),
     preferredSource: parsed.preferredSource === 'satellite' ? 'satellite' : 'street',
     // W5-026: enum-validate AFTER box-normalization — a detection with a
     // hallucinated box gets dropped by normalizeBoxArray first; one with a
