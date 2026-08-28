@@ -83,6 +83,7 @@ if (MISSING_ENV.length > 0) {
 import { getSupabaseServiceClient } from '../src/lib/supabase';
 import { firstYardstickPpf } from '../src/lib/design/yardstickPpf';
 import type { DesignScene } from '../src/lib/designs';
+import { classifyRow, mean, num, parseFtPerPx, stdev, str } from './door-anchor-report-core';
 
 type Row = {
   id: string;
@@ -107,25 +108,6 @@ type RowReport = {
   pctDisagree: number | null; // |doorAnchor - yardstick| / yardstick
 };
 
-function num(v: unknown): number | null {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function str(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
-
-function mean(xs: number[]): number | null {
-  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-}
-
-function stdev(xs: number[]): number | null {
-  if (xs.length < 2) return null;
-  const m = mean(xs)!;
-  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
-}
-
 async function main() {
   const sb = getSupabaseServiceClient();
   if (!sb) {
@@ -147,21 +129,16 @@ async function main() {
     const analysis = r.seed_analysis ?? null;
     const hasAnalysis = analysis != null;
 
-    const doorAnchorFtPerPx = hasAnalysis ? num((analysis as Record<string, unknown>).doorAnchorFtPerPx) : null;
+    const doorAnchorFtPerPx = hasAnalysis
+      ? parseFtPerPx((analysis as Record<string, unknown>).doorAnchorFtPerPx)
+      : null;
     const doorAnchorSource = hasAnalysis ? str((analysis as Record<string, unknown>).doorAnchorSource) : null;
     const doorAnchorConfidence = hasAnalysis ? num((analysis as Record<string, unknown>).doorAnchorConfidence) : null;
 
     const yardstickPpf = firstYardstickPpf(r.scene);
     const yardstickFtPerPx = yardstickPpf != null && yardstickPpf > 0 ? 1 / yardstickPpf : null;
 
-    let bucket: RowReport['bucket'];
-    if (!hasAnalysis) bucket = 'no_seed_analysis';
-    else if (doorAnchorFtPerPx == null) bucket = 'no_door_anchor';
-    else if (yardstickFtPerPx == null) bucket = 'no_yardstick';
-    else bucket = 'comparable';
-
-    const ratio = bucket === 'comparable' ? doorAnchorFtPerPx! / yardstickFtPerPx! : null;
-    const pctDisagree = bucket === 'comparable' ? Math.abs(doorAnchorFtPerPx! - yardstickFtPerPx!) / yardstickFtPerPx! : null;
+    const { bucket, ratio, pctDisagree } = classifyRow({ hasAnalysis, doorAnchorFtPerPx, yardstickFtPerPx });
 
     return {
       id: r.id,
