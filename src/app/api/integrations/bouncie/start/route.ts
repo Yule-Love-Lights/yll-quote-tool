@@ -30,7 +30,7 @@ export const runtime = 'nodejs';
 const AUTHORIZE_URL = 'https://auth.bouncie.com/dialog/authorize';
 
 export async function GET(_req: NextRequest) {
-  const settings = new URL('/settings/accounts', portalBaseUrl());
+  const settings = new URL('/settings/bouncie', portalBaseUrl());
 
   if (!isBouncieOAuthConfigured()) {
     settings.searchParams.set('bouncie', 'not_configured');

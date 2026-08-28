@@ -36,7 +36,7 @@ export const runtime = 'nodejs';
  * access logs, so anything put here is effectively published.
  */
 function back(status: string): NextResponse {
-  const url = new URL('/settings/accounts', portalBaseUrl());
+  const url = new URL('/settings/bouncie', portalBaseUrl());
   url.searchParams.set('bouncie', status);
   const res = NextResponse.redirect(url);
   // The state is spent either way: success, failure, or a forged attempt.
@@ -79,6 +79,13 @@ export async function GET(req: NextRequest) {
     // else is "look at the logs"; this one is "set an environment variable",
     // and the operator can act on it without help.
     if (/TOKEN_ENCRYPTION_KEY/.test(message)) return back('no_encryption_key');
+    // A 401 from auth.bouncie.com means OUR app credentials were rejected —
+    // wrong BOUNCIE_CLIENT_SECRET (the classic: the API key pasted where the
+    // client secret goes; both sit behind SHOW buttons on the same portal
+    // page). That has one specific fix, so it gets its own status instead of
+    // hiding inside "failed". Diagnosed live on 2026-08-27, three 401s in a
+    // row before the logs named it.
+    if (/returned 401/.test(message)) return back('bad_credentials');
     return back('failed');
   }
 }

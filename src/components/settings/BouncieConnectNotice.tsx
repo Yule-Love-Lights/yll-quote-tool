@@ -44,6 +44,12 @@ const MESSAGES: Record<string, { tone: 'ok' | 'warn' | 'bad'; title: string; det
     detail:
       'TOKEN_ENCRYPTION_KEY is not set, so the connection was stopped BEFORE using up the approval code. Set it, redeploy, then try again.',
   },
+  bad_credentials: {
+    tone: 'bad',
+    title: 'Bouncie rejected our app credentials',
+    detail:
+      'BOUNCIE_CLIENT_SECRET in Vercel does not match the CLIENT SECRET on the Bouncie app page. The usual cause: the API KEY was pasted instead — both hide behind SHOW buttons on the same page. Re-copy the CLIENT SECRET (under OAuth 2.0 Credentials), update Vercel, redeploy, then connect again.',
+  },
   failed: {
     tone: 'bad',
     title: 'Connecting to Bouncie failed',
