@@ -135,12 +135,15 @@ describe('proxy — perimeter enforcement (#81 W6-006)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Role-aware perimeter (row 279). Naldo's shared-login ruling put crew accounts
-// in the SAME auth store as operators, so "has a session" stopped implying "may
-// see the operator surface" — and that surface holds customer PII.
+// Role-aware perimeter. Crew logins shared the operator auth store, so "has a
+// session" never implied "may see the operator surface" — and that surface holds
+// customer PII. Crew logins were RETIRED (row 438) and nothing mints one, but
+// this refusal is now UNCONDITIONAL rather than deleted: roleOf collapses every
+// non-admin role to 'operator', so a crew account created by hand later would
+// otherwise be silently promoted. These tests pin the fail-closed behaviour.
 // ---------------------------------------------------------------------------
 
-describe('proxy — crew sessions are confined to the crew surface', () => {
+describe('proxy — crew sessions are refused everywhere (row 438)', () => {
   const crewUser = { id: 'crew-auth-1', app_metadata: { role: 'crew' } };
   const operatorUser = { id: 'op-1', app_metadata: { role: 'operator' } };
 
@@ -155,10 +158,13 @@ describe('proxy — crew sessions are confined to the crew surface', () => {
     process.env.AUTH_GATE_ENABLED = 'true';
   });
 
-  it('lets a crew session reach the crew API', async () => {
+  it('refuses a crew session on the RETIRED crew API too — there is no allowed path left', async () => {
+    // This asserted the opposite before row 438. `/api/ops/v1` was deleted with
+    // the Operations Hub, so the one namespace a crew login could reach is gone
+    // and the gate no longer carries an exception.
     withUser(crewUser);
     const res = await proxy(makeReq('/api/ops/v1/jobs/abc/arrive', 'POST'));
-    expect((res as unknown as { __res?: boolean }).__res).toBe(true);
+    expect(res.status).toBe(403);
   });
 
   it('403s a crew session on an operator API — this is the PII boundary', async () => {

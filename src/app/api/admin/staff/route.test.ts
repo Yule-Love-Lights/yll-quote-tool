@@ -259,49 +259,29 @@ describe('POST /api/admin/staff — office', () => {
   });
 });
 
-describe('POST /api/admin/staff — field', () => {
-  it('creates the pay row, mints a CREW login and attaches it', async () => {
+describe('POST /api/admin/staff — field (no login: crew logins retired, row 438)', () => {
+  it('creates the pay row and NO login at all', async () => {
+    const res = await POST(post({ type: 'field', displayName: 'Little James', hourlyRate: '17' }));
+    expect(res.status).toBe(201);
+    expect(createFieldCrewMember).toHaveBeenCalledWith({ displayName: 'Little James', baseRateCents: 1700 });
+    // The whole point of row 438: nothing mints a crew account any more.
+    expect(createUser).not.toHaveBeenCalled();
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('ignores an email and password if an old client still sends them', async () => {
+    // A stale browser tab holding the previous form must not resurrect the path.
     const res = await POST(
       post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
     );
     expect(res.status).toBe(201);
-    expect(createFieldCrewMember).toHaveBeenCalledWith({ displayName: 'Little James', baseRateCents: 1700 });
-    // The login must carry the crew marker, which is what confines it.
-    expect(createUser).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'lj@x.com', app_metadata: expect.objectContaining({ role: 'crew' }) }),
-    );
-    expect(linkStaffLogin).toHaveBeenCalledWith('crew-new-field', 'new-auth');
-  });
-
-  it('400s a bad email or a short password, before creating anything', async () => {
-    expect((await POST(post({ type: 'field', displayName: 'X', email: 'nope', password: 'password123', hourlyRate: '17' }))).status).toBe(400);
-    expect((await POST(post({ type: 'field', displayName: 'X', email: 'x@y.com', password: 'short', hourlyRate: '17' }))).status).toBe(400);
-    expect(createFieldCrewMember).not.toHaveBeenCalled();
     expect(createUser).not.toHaveBeenCalled();
   });
 
   it('400s a missing name', async () => {
-    const res = await POST(post({ type: 'field', email: 'x@y.com', password: 'password123', hourlyRate: '17' }));
+    const res = await POST(post({ type: 'field', hourlyRate: '17' }));
     expect(res.status).toBe(400);
     expect(createFieldCrewMember).not.toHaveBeenCalled();
-  });
-
-  it('rolls the orphan login back when the attach loses its compare-and-swap', async () => {
-    linkStaffLogin.mockResolvedValueOnce(null);
-    const res = await POST(
-      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
-    );
-    expect(res.status).toBe(409);
-    expect(deleteUser).toHaveBeenCalledWith('new-auth');
-  });
-
-  it('keeps the pay row and says so when the login cannot be created', async () => {
-    createUser.mockResolvedValueOnce({ data: null, error: { message: 'email already registered' } });
-    const res = await POST(
-      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
-    );
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toContain('was added');
   });
 });
 
@@ -544,16 +524,6 @@ describe('failure paths after an irreversible write', () => {
     expect(((await res.json()) as { loginDeleted: boolean }).loginDeleted).toBe(false);
   });
 
-  it('POST field rolls the orphan login back when the attach THROWS, not just when it loses the race', async () => {
-    linkStaffLogin.mockRejectedValueOnce(new Error('db exploded'));
-    const res = await POST(
-      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
-    );
-    expect(res.status).toBe(500);
-    // Without the rollback the login would sit orphaned, invisible to the panel
-    // and holding the email so the same person could never be added again.
-    expect(deleteUser).toHaveBeenCalledWith('new-auth');
-  });
 });
 
 describe('GET exposes the login TYPE, which decides how someone can clock in', () => {

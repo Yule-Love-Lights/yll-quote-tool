@@ -18,7 +18,7 @@ import { SkeletonBar, SkeletonRows } from '@/components/ui/LoadingSkeleton';
  * and the office/field difference is a GROUP HEADING, not a different screen.
  *
  * The one place the two genuinely differ is ADDING someone: office staff link an
- * existing operator login, field crew get a crew-role login created. That is a
+ * existing operator login; field crew get NO login (row 438). That is a
  * permission boundary, not a presentation choice.
  *
  * Admin access is a BADGE, deliberately not a third group. Role and
@@ -56,8 +56,6 @@ export function StaffAccounts() {
   const [type, setType] = useState<'office' | 'field'>('office');
   const [selected, setSelected] = useState('');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [rate, setRate] = useState('');
   const [busy, setBusy] = useState(false);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
@@ -146,7 +144,7 @@ export function StaffAccounts() {
         body: JSON.stringify(
           type === 'office'
             ? { type, authUserId: selected, hourlyRate: rate, displayName: name }
-            : { type, displayName: name, email, password, hourlyRate: rate },
+            : { type, displayName: name, hourlyRate: rate },
         ),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string; member?: { displayName?: string } };
@@ -154,8 +152,6 @@ export function StaffAccounts() {
       setDone(`${data.member?.displayName ?? who} was added.`);
       setSelected('');
       setName('');
-      setEmail('');
-      setPassword('');
       setRate('');
       reload();
     } catch (e) {
@@ -360,8 +356,8 @@ export function StaffAccounts() {
       <p className="text-sm text-gray-500 mt-2">
         How someone clocks in depends on their LOGIN, not on their group. An operator or admin
         login can clock in from the dashboard header, and by texting the bot once Telegram is
-        linked. A crew login cannot use the dashboard at all, by design, so texting the bot is
-        their only way in. Each row says which login it has.
+        linked. Someone with no login clocks in by texting the bot only. Each row says which
+        login it has.
       </p>
       <p className="text-xs text-gray-500 mt-2">
         Linking Telegram is necessary but not enough on its own: the bot only reads chats on its
@@ -543,7 +539,7 @@ export function StaffAccounts() {
                 onChange={(e) => setType(e.target.value as 'office' | 'field')}
               >
                 <option value="office">Office (uses an existing operator login)</option>
-                <option value="field">Field crew (creates a new crew login)</option>
+                <option value="field">Field crew (no login: they use the Telegram bot)</option>
               </select>
             </div>
 
@@ -588,40 +584,6 @@ export function StaffAccounts() {
               />
             </div>
 
-            {type === 'field' && (
-              <>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1" htmlFor="staff-email">
-                    Email
-                  </label>
-                  <input
-                    id="staff-email"
-                    type="email"
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1" htmlFor="staff-password">
-                    Temporary password
-                  </label>
-                  <input
-                    id="staff-password"
-                    type="text"
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    minLength={8}
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    At least 8 characters. Give it to them directly and have them change it.
-                  </p>
-                </div>
-              </>
-            )}
 
             <div>
               <label className="block text-sm text-gray-700 mb-1" htmlFor="staff-rate">
