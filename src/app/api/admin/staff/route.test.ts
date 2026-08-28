@@ -18,6 +18,7 @@ const {
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  clearStaffLogin,
   deleteStaffMember,
   getStaffMember,
   listNonCrewOperators,
@@ -67,6 +68,7 @@ const {
     setStaffType: vi.fn(),
     deleteStaffMember: vi.fn(),
     getStaffMember: vi.fn(),
+    clearStaffLogin: vi.fn(),
     listNonCrewOperators: vi.fn(),
     listAllAccountsById: vi.fn(),
     OperatorAlreadyLinkedError,
@@ -96,6 +98,7 @@ vi.mock('@/lib/crewMembers', () => ({
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  clearStaffLogin,
   deleteStaffMember,
   getStaffMember,
   StaffHasRecordsError,
@@ -151,6 +154,8 @@ beforeEach(() => {
   setStaffType.mockResolvedValue({ ...OFFICE, isOffice: false });
   deleteStaffMember.mockResolvedValue(OFFICE);
   getStaffMember.mockResolvedValue(OFFICE);
+  clearStaffLogin.mockResolvedValue({ ...OFFICE, authUserId: null });
+  linkStaffLogin.mockResolvedValue({ ...OFFICE, authUserId: 'op-ann' });
 });
 
 describe('GET /api/admin/staff', () => {
@@ -557,5 +562,98 @@ describe('GET exposes the login TYPE, which decides how someone can clock in', (
     const b = (await res.json()) as { staff: Array<{ id: string; isCrewLogin: boolean }> };
     expect(b.staff.find((x) => x.id === 'crew-1')?.isCrewLogin).toBe(true);
     expect(b.staff.find((x) => x.id === 'crew-office')?.isCrewLogin).toBe(false);
+  });
+});
+
+describe('PATCH clearLogin — row 359, repairing an orphaned pay row', () => {
+  it('clears the link when the login genuinely no longer exists', async () => {
+    // op-kelly is absent from the accounts map, i.e. the account was deleted.
+    listAllAccountsById.mockResolvedValueOnce(new Map());
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(200);
+    // CAS: the write is scoped to the exact dead id we verified.
+    expect(clearStaffLogin).toHaveBeenCalledWith('crew-office', 'op-kelly');
+  });
+
+  it('REFUSES to clear a login that still exists — that would lock a working staffer out', async () => {
+    // The guard is the whole feature: the row's login resolves fine, so this
+    // must not be cleared even though the caller asked for it.
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/still exists/);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('409s a row that has no login linked at all', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('404s an unknown staff id', async () => {
+    getStaffMember.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', clearLogin: true }))).status).toBe(404);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('ignores clearLogin:false rather than treating the key as an intent', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: false }));
+    expect(res.status).toBe(400); // nothing to update
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH authUserId — attaching a login to an EXISTING row (row 359, the other half)', () => {
+  it('links an eligible operator to a row that has no login', async () => {
+    // Without this the repair was half a repair: POST always INSERTS, so
+    // re-adding the same person collides with the unique display name.
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }));
+    expect(res.status).toBe(200);
+    expect(linkStaffLogin).toHaveBeenCalledWith('crew-office', 'op-ann');
+  });
+
+  it('REFUSES a row that already has a login, pointing at Clear first', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/Clear it first/);
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES a crew login — listNonCrewOperators never offers one', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'crew-auth-1' }));
+    expect(res.status).toBe(400);
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES an operator already linked to somebody else', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    listLinkedAuthUserIds.mockResolvedValueOnce(new Set(['op-ann']));
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }));
+    expect(res.status).toBe(409);
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('409s a lost compare-and-swap rather than reporting success', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    linkStaffLogin.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }))).status).toBe(409);
+  });
+
+  it('404s an unknown staff id', async () => {
+    getStaffMember.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', authUserId: 'op-ann' }))).status).toBe(404);
+  });
+});
+
+describe('PATCH clearLogin — the compare-and-swap', () => {
+  it('409s when the login on that row changed between the check and the write', async () => {
+    listAllAccountsById.mockResolvedValueOnce(new Map());
+    clearStaffLogin.mockResolvedValueOnce(null); // CAS matched nothing
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/changed while you were looking/);
   });
 });
