@@ -30,8 +30,13 @@ function norm(text: string): string {
 // that, and an unbounded match would happily read a phone number as a merge.
 const MERGE_RE = /^merge(?: pr)? #?(\d{1,6})$/;
 
-// Anything that opens with the merge word but is not the exact form above.
-const MERGE_SHAPED_RE = /^merge\b.*$/;
+// A short message that is clearly a merge ATTEMPT but names no usable number:
+// "merge", "merge pr", "merge all", "merge 0". Deliberately narrow, mirroring
+// isDepartMissingReason in crewTimeCommands.ts, which anchors the whole string
+// rather than matching a prefix. A broad `^merge\b.*` would treat ordinary
+// sentences like "merge conflict again on that branch" as a merge attempt and
+// answer them, which is how a coaching reply turns into chatter.
+const MERGE_SHAPED_RE = /^merge(?: pr)?(?: \S{1,12})?$/;
 
 /**
  * Parse a merge request. Returns null for anything else, so ordinary bot

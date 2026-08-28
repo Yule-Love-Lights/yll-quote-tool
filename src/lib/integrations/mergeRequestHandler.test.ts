@@ -121,6 +121,14 @@ describe('handleMergeRequest — what it refuses', () => {
     const out = await handleMergeRequest(OTHER_USER, 'merge', {});
     expect(out).toEqual({ handled: false });
   });
+
+  it('stays silent on a half-typed merge in a group, keeping the bot group contract', async () => {
+    configured();
+    // The bot answers only when spoken to in a group. A bare "merge" typed there
+    // by the approver must not make it volunteer deploy talk in front of the crew.
+    const out = await handleMergeRequest(APPROVER, 'merge', { addressed: false });
+    expect(out).toEqual({ handled: false });
+  });
 });
 
 describe('handleMergeRequest — when the hand-off fails', () => {

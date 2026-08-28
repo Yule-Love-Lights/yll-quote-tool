@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Merge-by-text: lets the owner approve a reviewed pull request from Telegram.
  *
  * WHAT THIS DOES AND DOES NOT DO. This module does NOT merge anything. It
@@ -97,10 +97,12 @@ export async function handleMergeRequest(
   const isApprover = !!approver && telegramUserId === approver;
 
   if (!command) {
-    // A merge-shaped message with no usable number. Coach the approver; stay
-    // out of everyone else's way, since "merge" is an ordinary English word and
-    // a crew group should not get deploy talk.
-    if (isApprover && isIncompleteMergeRequest(text)) {
+    // A merge-shaped message with no usable number. Coach the approver; stay out
+    // of everyone else's way, since "merge" is an ordinary English word and a
+    // crew group should not get deploy talk. The `addressed` check keeps the
+    // bot's group contract: in a group it speaks only when spoken to, so a
+    // half-typed "merge" there stays silent even for the approver.
+    if (isApprover && addressed && isIncompleteMergeRequest(text)) {
       return { handled: true, reply: NEEDS_A_NUMBER };
     }
     return { handled: false };

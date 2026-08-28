@@ -63,4 +63,13 @@ describe('isIncompleteMergeRequest', () => {
     expect(isIncompleteMergeRequest('we should merge that one')).toBe(false);
     expect(isIncompleteMergeRequest('emerge')).toBe(false);
   });
+
+  it('is false for ordinary sentences that merely OPEN with the word', () => {
+    // The reason this matcher anchors the whole string instead of matching a
+    // prefix: these are things people say to each other, not merge requests,
+    // and answering them turns a coaching reply into chatter.
+    expect(isIncompleteMergeRequest('merge conflict again on that branch')).toBe(false);
+    expect(isIncompleteMergeRequest('merge that when you get a chance')).toBe(false);
+    expect(isIncompleteMergeRequest('merged it already')).toBe(false);
+  });
 });
