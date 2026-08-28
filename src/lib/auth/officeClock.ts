@@ -6,17 +6,18 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 /**
  * Office-side authentication for the web clock (`source: 'office'`).
  *
- * This is the OFFICE twin of `getCrewCaller` (crewAuth.ts), and the split is
- * deliberate. Crew clock in from their own phones with a CREW login
- * (`isCrewAccount`), tagged `source: 'pwa'`/`'telegram'`. Office staff — Naldo,
- * Kelly, Ann, Khaye — are OPERATORS (they need the dashboard/settings a crew
- * login is refused), so they can never resolve through `getCrewCaller`, which
- * rejects operator sessions by design. Their time is the separate, audited
- * `source: 'office'` lane the crew module's own doc block names.
+ * Office staff — Naldo, Kelly, Ann, Khaye — are OPERATORS, and their time is
+ * the audited `source: 'office'` lane. This module was originally the OFFICE
+ * twin of `getCrewCaller` in crewAuth.ts; that module was deleted when crew
+ * logins were retired (row 438), so this is now the only login-backed clock.
+ * Field crew clock in through the Telegram bot on `telegram_user_id`, which
+ * never involved a login at all. The `isCrewAccount` refusal below STAYS: it
+ * is what stops a crew account, if one were ever created by hand, writing
+ * payroll through this door.
  *
  * WHY NOT JUST `requireOperator`: that gate is DORMANT while `AUTH_GATE_ENABLED`
  * is off (it was retrofitted onto pre-gate routes and returns null=allow then).
- * This writes PAYROLL, so — exactly like `getCrewCaller` — it fails closed from
+ * This writes PAYROLL, so it fails closed from
  * the first commit: a real authenticated session is required regardless of the
  * perimeter's dormancy.
  *

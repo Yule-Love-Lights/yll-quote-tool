@@ -409,7 +409,20 @@ export function StaffAccounts() {
                       )}
                       {s.email && <span className="ml-2 text-xs text-gray-400">{s.email}</span>}
                       <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
-                      {!s.hasLogin && <span className="ml-2 text-xs text-amber-700">No login yet</span>}
+                      {/*
+                        Amber means "there is something to fix". After row 438 a
+                        FIELD row having no login is the DESIGNED state, not a gap,
+                        so flagging it amber would invite an owner to "fix" it by
+                        linking an operator account — quietly re-granting the
+                        dashboard access this change removed. Office staff DO need
+                        a login to use the header clock, so it stays amber there.
+                      */}
+                      {!s.hasLogin &&
+                        (s.isOffice ? (
+                          <span className="ml-2 text-xs text-amber-700">No login yet</span>
+                        ) : (
+                          <span className="ml-2 text-xs text-gray-500">No login — texts the bot</span>
+                        ))}
                       {s.loginMissing && <span className="ml-2 text-xs text-red-600">login deleted</span>}
                       <span className={s.telegramUserId ? 'ml-2 text-xs text-green-700' : 'ml-2 text-xs text-amber-700'}>
                         {s.telegramUserId ? 'Telegram linked' : 'No Telegram'}
@@ -431,7 +444,7 @@ export function StaffAccounts() {
                     {!s.hasLogin && eligible.length > 0 && (
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <label className="text-xs text-gray-500" htmlFor={`link-${s.id}`}>
-                        Give them a login:
+                        {s.isOffice ? 'Give them a login:' : 'Give dashboard access (not needed to clock in):'}
                       </label>
                       <select
                         id={`link-${s.id}`}

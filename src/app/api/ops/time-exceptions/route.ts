@@ -11,7 +11,8 @@ export const runtime = 'nodejs';
  *
  * OPERATOR-ONLY. This is an office surface, not a crew one: it lists other
  * people's stuck time records, and it is the office that corrects them.
- * Deliberately NOT under /api/ops/v1, which is the crew-confined namespace.
+ * Deliberately NOT under /api/ops/v1, which WAS the crew-confined namespace
+ * (deleted with the Operations Hub, row 433; crew logins retired, row 438).
  *
  * READ-ONLY. It closes nothing. Manual punches are authoritative for pay, so a
  * human decides what actually happened; the midnight cron already handles the

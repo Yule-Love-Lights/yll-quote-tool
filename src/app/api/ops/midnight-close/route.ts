@@ -10,8 +10,7 @@ export const runtime = 'nodejs';
  * Vercel Cron — midnight auto-close for forgotten days (contract section 4).
  *
  * CRON-ONLY, behind the same Bearer CRON_SECRET guard as the sibling crons
- * (/api/ops/digest, low-stock-alert). Note this path is NOT under /api/ops/v1,
- * so it is not crew-reachable: it lives in the operatorGate PUBLIC allowlist so a
+ * (/api/ops/digest, low-stock-alert). It lives in the operatorGate PUBLIC allowlist so a
  * cron request (which carries no session at all) can reach its own secret check.
  *
  * Schedule it to run a little AFTER ET midnight rather than exactly at it, so a

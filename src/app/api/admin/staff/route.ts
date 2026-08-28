@@ -58,9 +58,9 @@ export const runtime = 'nodejs';
  * The type is stored as `is_office` and shown as a label. Everything downstream
  * of that — rate, Telegram, password, active — is identical for both.
  *
- * ADMIN ONLY, never dormancy-bypassed: `requireAdmin` fails closed. Not public
- * and not under `/api/ops/v1`, so `operatorGate` treats it as operator-only by
- * default and no allowlist entry is needed.
+ * ADMIN ONLY, never dormancy-bypassed: `requireAdmin` fails closed. Not public,
+ * so `operatorGate` treats it as operator-only by default and no allowlist
+ * entry is needed.
  *
  * A PASSWORD IS NEVER RESET BY RAW auth id. The target is resolved from the
  * staff row's own `auth_user_id`, so an admin can only reset the password of a
