@@ -2782,131 +2782,73 @@ alter table public.vehicle_events enable row level security;
 
 
 -- ---------------------------------------------------------------------
--- Fleet GPS — the SECOND CLOCK (ledger row 403 phase 3b).
--- Source migration: 2026-08-27-vehicle-visits.sql (read it for the reasoning).
+-- Fleet GPS — the SECOND CLOCK, polling shape (ledger row 403).
+-- Source migration: 2026-08-28-vehicle-visits-polling.sql (read it for the
+-- reasoning; it also names the two superseded geofence migrations that must
+-- never be applied). Customer coordinates never leave this database: the
+-- quote tool polls the vehicle position and does the proximity maths itself.
 --
--- The crew clock in and out by hand and that stays the payroll record. These
--- tables are an independent record of the same day, derived from where the vans
--- actually were, so the two can be COMPARED. Row 403 constraint (a): GPS never
--- writes payroll, and that is enforced structurally — there is deliberately NO
--- foreign key from here into `shifts` or `job_segments`.
+-- Crew clock in and out by hand and that stays the payroll record. These
+-- columns and this table are the independent record compared against it, and
+-- there is deliberately NO foreign key from here into shifts or job_segments.
 -- ---------------------------------------------------------------------
 -- ---------------------------------------------------------------------
--- job_geozones — the mapping between OUR jobs and BOUNCIE's geofences.
+-- Last known position per vehicle — what the office map reads.
 --
--- Bouncie runs the geofence server-side and tells us ENTER/EXIT by its own zone
--- id. That id means nothing to us on its own, so this is the lookup that turns
--- an incoming event back into "the Smith job on the 28th".
---
--- Zones are armed only for days that actually have scheduled jobs (Naldo's
--- rule), so rows here are created the night before and retired after. `retired_at`
--- rather than deletion, because an event can arrive slightly after we tear a
--- zone down and we would rather resolve it than drop it.
---
--- `job_id` is NULLABLE on purpose: the depot zone (6 Birch Road, Amityville) is
--- not a job. `kind` says which it is, so a reader never has to infer it from a
--- null.
+-- Written by the poller on every cycle. `last_seen_at` is Bouncie's own
+-- `stats.lastUpdated`, not our poll time, so a stale device shows as stale
+-- rather than as freshly parked (row 403 constraint (c): an absent or silent
+-- device must read as "no signal", never as "not at the job").
 -- ---------------------------------------------------------------------
-create table if not exists public.job_geozones (
-  id                   uuid primary key default gen_random_uuid(),
-  kind                 text not null check (kind in ('job', 'depot')),
-  job_id               uuid references public.jobs(id) on delete cascade,
-  assigned_date        date,
-  bouncie_location_id  text not null,
-  bouncie_geozone_id   text not null,
-  created_at           timestamptz not null default now(),
-  retired_at           timestamptz,
-
-  -- A depot zone has no job and no date; a job zone must have both. Enforced
-  -- here rather than in code, because a half-populated row would resolve events
-  -- to the wrong thing silently.
-  constraint job_geozones_shape check (
-    (kind = 'depot' and job_id is null and assigned_date is null)
-    or (kind = 'job' and job_id is not null and assigned_date is not null)
-  )
-);
-
--- The lookup the webhook does on every geozone event.
-create unique index if not exists job_geozones_bouncie_geozone_key
-  on public.job_geozones (bouncie_geozone_id);
-
--- One live zone per job per day. Partial, so a retired zone does not block
--- re-arming the same job on a later date.
-create unique index if not exists job_geozones_job_date_live_key
-  on public.job_geozones (job_id, assigned_date) where retired_at is null and kind = 'job';
-
--- At most one live depot zone.
-create unique index if not exists job_geozones_depot_live_key
-  on public.job_geozones (kind) where retired_at is null and kind = 'depot';
+alter table public.vehicles add column if not exists last_lat double precision;
+alter table public.vehicles add column if not exists last_lng double precision;
+alter table public.vehicles add column if not exists last_seen_at timestamptz;
 
 -- ---------------------------------------------------------------------
--- vehicle_visits — one row per arrival.
---
--- `exited_at` is NULL while a vehicle is still there. That is a normal, expected
--- state during the working day, not an error, and any reader has to handle it.
---
--- WHAT ACTUALLY MAKES THIS IDEMPOTENT is the writer refusing to open a second
--- visit while one is already open for the same vehicle and zone — not the unique
--- index below. Bouncie's documented duplicate pattern is two SEPARATE deliveries
--- reporting one physical arrival (its real-time and periodic streams overlap,
--- and a device that loses signal dumps a burst on reconnect). Those differ in
--- bytes, so a per-event index cannot see them as duplicates at all.
+-- vehicle_visits — one row per arrival, derived by proximity.
 -- ---------------------------------------------------------------------
 create table if not exists public.vehicle_visits (
   id              uuid primary key default gen_random_uuid(),
   vehicle_id      uuid not null references public.vehicles(id) on delete cascade,
-  geozone_id      uuid not null references public.job_geozones(id) on delete cascade,
 
-  -- Denormalised from job_geozones so the common queries ("visits to this job",
-  -- "did they leave the depot today") do not need a join, and so a visit stays
-  -- readable if its zone is later retired.
+  -- What the vehicle was near. 'depot' is the 6 Birch Road day-start anchor and
+  -- carries no job; a CHECK keeps the shapes honest so a half-populated row can
+  -- never be resolved wrongly.
   kind            text not null check (kind in ('job', 'depot')),
   job_id          uuid references public.jobs(id) on delete set null,
+  constraint vehicle_visits_shape check (
+    (kind = 'depot' and job_id is null) or (kind = 'job')
+  ),
 
   entered_at      timestamptz not null,
   exited_at       timestamptz,
 
-  -- Which raw events produced this. The whole point of the capture table is that
-  -- any derived row can be traced back to the bytes Bouncie actually sent.
-  --
-  -- BOTH ARE `on delete set null`, AND NULLABLE, ON PURPOSE. An earlier draft had
-  -- `enter_event_id not null ... on delete cascade`, which meant that the moment
-  -- anyone purged old raw events — and this project already anticipates a
-  -- retention job — every visit derived from them would be silently deleted too.
-  -- The timeline is the durable record; the raw event is the receipt for it.
-  -- Losing the receipt should cost the provenance link, not the history.
-  -- Found by the S68 technical lens.
-  enter_event_id  uuid references public.vehicle_events(id) on delete set null,
-  exit_event_id   uuid references public.vehicle_events(id) on delete set null,
+  -- Naldo's 15-minute rule, applied at CLOSE time and stored rather than
+  -- filtered: a below-threshold visit is data about drive-bys and quick stops,
+  -- and deleting it would make the radius impossible to tune later.
+  below_min_dwell boolean,
+
+  -- The evidence: where the vehicle actually was at entry, straight from the
+  -- poll. Replaces webhook-event provenance, and doubles as the record for
+  -- tuning the radius (how far from the anchor do real arrivals sit?).
+  entered_lat     double precision,
+  entered_lng     double precision,
 
   created_at      timestamptz not null default now()
 );
 
--- Provenance uniqueness: one visit per source event. Partial, because the column
--- is nullable now — a purged raw event leaves its visit intact with a null link,
--- and several such rows must not collide with each other.
---
--- NOTE this is NOT what makes arrivals idempotent. It only catches a redelivery
--- of the SAME stored event, and those never reach the visit writer anyway: the
--- body hash on `vehicle_events` drops them first. Real duplicate arrivals come
--- from Bouncie's overlapping streams as DIFFERENT events reporting one physical
--- arrival, and the writer guards those by refusing to open a second visit while
--- one is already open for that vehicle and zone.
-create unique index if not exists vehicle_visits_enter_event_key
-  on public.vehicle_visits (enter_event_id) where enter_event_id is not null;
+-- "What is open for this vehicle" — the poller's per-cycle lookup. One open
+-- visit per vehicle AT MOST, enforced: the poller closes before it opens, and
+-- this index makes a bug in that ordering loud instead of silent.
+create unique index if not exists vehicle_visits_one_open_per_vehicle
+  on public.vehicle_visits (vehicle_id) where exited_at is null;
 
--- "What is still open for this vehicle" — the lookup EXIT does.
-create index if not exists vehicle_visits_open_idx
-  on public.vehicle_visits (vehicle_id, geozone_id) where exited_at is null;
-
--- "Every visit to this job, in order" — including the second one when a crew
--- doubles back, which is the point.
+-- "Every visit to this job, in order" — doubling back shows as two rows.
 create index if not exists vehicle_visits_job_idx
   on public.vehicle_visits (job_id, entered_at) where job_id is not null;
 
--- "What happened on this day" — the comparison view against the manual clock.
+-- "What happened that day" — the compare view's read.
 create index if not exists vehicle_visits_entered_idx
   on public.vehicle_visits (entered_at desc);
 
-alter table public.job_geozones   enable row level security;
 alter table public.vehicle_visits enable row level security;
