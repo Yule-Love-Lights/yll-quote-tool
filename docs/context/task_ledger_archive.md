@@ -1,5 +1,11 @@
 ﻿# Task ledger - ARCHIVE (completed + shelved)
 
+## Archived at S71 (2026-08-28) - row #430 SHIPPED and verified live this session (the fleet-GPS session: 13 PRs, rows 403's phases 1-3 live; 403 itself stays ACTIVE for the un-built ETA/duration phases).
+
+| # | Task | Size | Notes | Old # |
+|---|---|---|---|---|
+| 430 | **Bouncie connection health: a visible status surface (the keep-alive HALF of this row is DONE)** | S | UPDATED S68 (same session, after the polling redesign): the original row had two gaps. (1) Disuse expiry of the rotating refresh token — **CLOSED BY DESIGN**: the vehicle-poll cron (`/api/ops/vehicle-poll`, every 2 minutes) calls `getAccessToken` all day, so the grant can no longer die of disuse. (2) **STILL OPEN**: no surface shows whether the Bouncie connection is currently alive. Settings → Accounts shows the outcome of a connection ATTEMPT (`BouncieConnectNotice`) but not current state, and the fleet page shows per-vehicle signal, not grant health — a revoked or broken grant shows as every vehicle "no signal", which also looks like two unplugged devices. Fix is small: read `integration_tokens` (provider='bouncie', updated_at, expiry) plus the last poll outcome, render on Settings → Accounts. Do it when the map is in daily use. | ✅ S71 — health surface shipped in #1030 (Settings->Bouncie: grant present/health, token freshness, per-device signal; an expired token reads DEAD immediately, no grace); the keep-alive is the 2-minute poller itself, whose every cycle refreshes the token via getAccessToken. Verified live 2026-08-28: grant stored encrypted, poll cycles errors 0. |
+
 ## Archived at S54 (2026-08-27) - rows #206/#209/#300/#324/#336/#356/#376/#388/#418/#419/#420, all SHIPPED and live this session. Row #335 shipped too (#982) but stays ACTIVE until its outstanding evening check runs (see the row).
 
 | # | Task | Size | Notes | Old # |
