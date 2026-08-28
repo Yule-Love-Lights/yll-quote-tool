@@ -158,6 +158,14 @@ language, no em dashes.
 - [ ] Naldo: cloud environment "posthog-daily" with the two Telegram variables and
       `api.telegram.org` allowed (values from Vercel env or BotFather; never paste
       values into chat).
-- [ ] Create the routine, run one dry run end to end, verify Telegram lands, enable
-      the 4:30 AM ET schedule.
+- [x] Routine created (`trig_01PCjNCUYyCwNL6k2vMHaWM9`), dry run passed end to end
+      2026-08-28 (report issue #1035, 4.6 min, zero bugs to fix, guardrails held),
+      schedule ENABLED, next run 08:37 UTC daily.
+- [ ] Naldo: Telegram values into the routine's cloud environment (until then,
+      reports land as GitHub issues plus a mobile push notification).
+- [ ] The live routine prompt still says "BOTH PostHog projects" in Step 1; this
+      doc's corrected host-split wording is the intended text. The update call was
+      blocked by the tool classifier in the setup session; sync it from the routine's
+      edit page or retry from a later session. Harmless meanwhile: the dry run
+      self-corrected and noted the single-project reality in its report.
 - [ ] Ledger row minted at session close (counter read 438 free on 2026-08-27).
