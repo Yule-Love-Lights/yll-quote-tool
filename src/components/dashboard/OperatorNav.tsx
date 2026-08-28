@@ -22,10 +22,9 @@ const ITEMS: NavItem[] = [
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
-  // Fleet shares the jobs area (both light up together — an accepted cosmetic
-  // cost of not widening OperatorArea). Unlinked pages are this repo's known
-  // inert-feature class; the S68 staff lens caught /admin/fleet shipping as one.
-  { label: 'Fleet', href: '/admin/fleet', match: ['jobs'] },
+  // Fleet is its own area (Naldo, 2026-08-28: Jobs and Fleet lighting up
+  // together was a bug, not an accepted cost).
+  { label: 'Fleet', href: '/admin/fleet', match: ['fleet'] },
   { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },
   { label: 'Insights', href: '/insights', match: ['insights'] },

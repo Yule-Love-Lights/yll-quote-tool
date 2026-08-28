@@ -7,8 +7,9 @@
 // comparing is the entire point, and a disagreement between them is information
 // to investigate, not an error to reconcile automatically.
 //
-// OFFICE ONLY (Naldo, 2026-08-27). The page that renders this sits behind the
-// operator session like the rest of /admin; crew do not see it.
+// WHO SEES WHAT (Naldo, 2026-08-28): the live fleet view (/admin/fleet) is for
+// every office operator; the two-clocks comparison (/admin/fleet/clocks) is
+// ADMIN ONLY — Naldo and Jason. Crew see neither, like the rest of /admin.
 //
 // THE VAN IS NOT THE PERSON, and every consumer of this data needs that
 // sentence. A crew member can be working after the van leaves; a van can sit
@@ -19,6 +20,16 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { MIN_DWELL_MINUTES, STALE_POSITION_MINUTES } from '@/lib/integrations/vehicleProximity';
 import { etMidnightAfter, addDays } from '@/lib/opsMidnightClose';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+
+/** Shared ET time formatter for the fleet pages, so the two never drift. */
+export function fmtFleetTime(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
 export type FleetOpenVisit = {
   kind: 'job' | 'depot';
