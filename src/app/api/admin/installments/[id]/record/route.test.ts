@@ -2,13 +2,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-const { requireOperator, markInstallmentPaid, getSupabaseServiceClient } = vi.hoisted(() => ({
+const { requireOperator, getOperator, markInstallmentPaid, getSupabaseServiceClient } = vi.hoisted(() => ({
   requireOperator: vi.fn<() => Promise<unknown>>(),
+  getOperator: vi.fn<() => Promise<unknown>>(),
   markInstallmentPaid: vi.fn(),
   getSupabaseServiceClient: vi.fn(),
 }));
 
-vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator }));
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator, getOperator }));
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient }));
 vi.mock('@/lib/installments', async () => {
   const actual = await vi.importActual<typeof import('@/lib/installments')>('@/lib/installments');
@@ -17,13 +18,18 @@ vi.mock('@/lib/installments', async () => {
 
 import { POST } from './route';
 
-type Row = { id: string; paid_at: string | null; valor_txn_id: string | null; amount_usd: number };
+type Row = { id: string; quote_id: string; seq: number; paid_at: string | null; valor_txn_id: string | null; amount_usd: number };
 
-function db(row: Row | null) {
+type Invoice = { id: string; quote_id: string | null; invoice_number: number | null; status: string; balance: number };
+
+function db(row: Row | null, invoices: Invoice[] = []) {
   return {
-    from: () => ({
+    from: (table: string) => ({
       select: () => ({
-        eq: () => ({ maybeSingle: async () => ({ data: row, error: null }) }),
+        eq: (_col: string, _val: unknown) =>
+          table === 'invoices'
+            ? Promise.resolve({ data: invoices, error: null })
+            : { maybeSingle: async () => ({ data: row, error: null }) },
       }),
     }),
   };
@@ -36,15 +42,27 @@ const ctx = { params: Promise.resolve({ id: 'i-4' }) };
 
 const unpaid = (over: Partial<Row> = {}): Row => ({
   id: 'i-4',
+  quote_id: 'q-1',
+  seq: 4,
   paid_at: null,
   valor_txn_id: null,
   amount_usd: 453.13,
   ...over,
 });
 
+const openInvoice = (over: Partial<Invoice> = {}): Invoice => ({
+  id: 'inv-1',
+  quote_id: 'q-1',
+  invoice_number: 1010,
+  status: 'draft',
+  balance: 1359.36,
+  ...over,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperator.mockResolvedValue(null);
+  getOperator.mockResolvedValue({ id: 'op-7' });
   getSupabaseServiceClient.mockReturnValue(db(unpaid()));
   markInstallmentPaid.mockResolvedValue({ ok: true, amountUsd: 453.13 });
 });
@@ -128,5 +146,63 @@ describe('an unresolved charge attempt', () => {
     );
     await POST(req({ confirmChargeSlot: true }), ctx);
     expect(markInstallmentPaid).toHaveBeenCalledWith(expect.objectContaining({ valorTxnId: null }));
+  });
+});
+
+
+describe('who recorded it', () => {
+  // The sibling manual invoice settle has recorded `settled_by` since #225: a
+  // money write needs a WHO. This one shipped without one — premerge admin lens.
+  it('records the operator who clicked', async () => {
+    await POST(req(), ctx);
+    expect(markInstallmentPaid).toHaveBeenCalledWith(expect.objectContaining({ paidBy: 'op-7' }));
+  });
+
+  it('records null rather than failing when the operator cannot be resolved', async () => {
+    getOperator.mockResolvedValue(null);
+    const res = await POST(req(), ctx);
+    expect(res.status).toBe(200);
+    expect(markInstallmentPaid).toHaveBeenCalledWith(expect.objectContaining({ paidBy: null }));
+  });
+});
+
+describe('a linked invoice that will not move', () => {
+  // Recording raises the quote's collected total; invoices.balance is a stored
+  // figure nothing updates yet (row 450), so the invoice list and the owner's
+  // dashboard go wrong by exactly this payment. The runner already refuses to
+  // CHARGE into that state; this route must not walk into it silently either.
+  // Premerge admin lens HIGH. Live today for Jane Laguerre's draft invoice #1010.
+  it('refuses the first attempt and names the invoice and both figures', async () => {
+    getSupabaseServiceClient.mockReturnValue(db(unpaid(), [openInvoice()]));
+    const res = await POST(req(), ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('invoice-would-drift');
+    expect(body.error).toContain('#1010');
+    expect(body.error).toContain('1359.36');
+    expect(body.error).toContain('906.23');
+    expect(markInstallmentPaid).not.toHaveBeenCalled();
+  });
+
+  it('records it once the operator confirms', async () => {
+    getSupabaseServiceClient.mockReturnValue(db(unpaid(), [openInvoice()]));
+    const res = await POST(req({ confirmInvoiceDrift: true }), ctx);
+    expect(res.status).toBe(200);
+    expect(markInstallmentPaid).toHaveBeenCalled();
+  });
+
+  it('does not ask when the invoice is already settled or cancelled', async () => {
+    for (const status of ['paid', 'cancelled']) {
+      vi.clearAllMocks();
+      getOperator.mockResolvedValue({ id: 'op-7' });
+      markInstallmentPaid.mockResolvedValue({ ok: true, amountUsd: 453.13 });
+      getSupabaseServiceClient.mockReturnValue(db(unpaid(), [openInvoice({ status })]));
+      expect((await POST(req(), ctx)).status, status).toBe(200);
+    }
+  });
+
+  it('does not ask when the quote has no invoice at all', async () => {
+    getSupabaseServiceClient.mockReturnValue(db(unpaid(), []));
+    expect((await POST(req(), ctx)).status).toBe(200);
   });
 });

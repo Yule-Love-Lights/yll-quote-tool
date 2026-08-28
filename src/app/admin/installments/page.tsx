@@ -71,7 +71,9 @@ export default function InstallmentsPage() {
   // Row 446: which installment is mid-record, and the confirm an unresolved
   // charge slot forces before we will write it down.
   const [recording, setRecording] = useState<string | null>(null);
-  const [confirmSlot, setConfirmSlot] = useState<{ id: string; message: string } | null>(null);
+  const [confirmSlot, setConfirmSlot] = useState<
+    { id: string; message: string; who: string; code: string } | null
+  >(null);
   const now = new Date();
 
   const load = async () => {
@@ -86,7 +88,11 @@ export default function InstallmentsPage() {
     setAutoCharge(json.autoCharge ?? null);
   };
 
-  const recordPayment = async (installmentId: string, opts: { confirmChargeSlot?: boolean } = {}) => {
+  const recordPayment = async (
+    installmentId: string,
+    who: string,
+    opts: { confirmChargeSlot?: boolean; confirmInvoiceDrift?: boolean } = {},
+  ) => {
     setRecording(installmentId);
     setError(null);
     try {
@@ -97,10 +103,13 @@ export default function InstallmentsPage() {
       });
       const json = (await res.json()) as { error?: string; code?: string };
       if (!res.ok) {
-        // The one refusal that has a next step: a charge attempt is recorded and
-        // nobody knows its outcome. Ask, rather than writing over an unknown.
-        if (json.code === 'charge-slot-unresolved') {
-          setConfirmSlot({ id: installmentId, message: json.error ?? '' });
+        // Two refusals have a next step rather than being errors: a charge
+        // attempt whose outcome nobody knows, and a linked invoice whose stored
+        // balance will not move with the payment. Both ask before writing.
+        // Premerge staff lens MED: the confirm has to say WHICH payment — it
+        // renders once, above a list of every plan.
+        if (json.code === 'charge-slot-unresolved' || json.code === 'invoice-would-drift') {
+          setConfirmSlot({ id: installmentId, message: json.error ?? '', who, code: json.code });
           return;
         }
         setError(json.error ?? 'Could not record that payment');
@@ -111,6 +120,11 @@ export default function InstallmentsPage() {
     } catch {
       setError("Couldn't reach the server — try reloading.");
     } finally {
+      // Premerge staff lens LOW: reload on EVERY outcome, not only success. A
+      // rare 3-strikes CAS failure marks the installment paid and still reports
+      // an error, and without this the row kept offering a Record button for a
+      // payment that was already recorded.
+      void load().catch(() => {});
       setRecording(null);
     }
   };
@@ -192,16 +206,28 @@ export default function InstallmentsPage() {
             className="rounded-md border p-3 text-sm mb-4"
             style={{ borderColor: '#b45309', color: 'var(--op-text)' }}
           >
+            <p className="mb-1 font-semibold">{confirmSlot.who}</p>
             <p className="mb-2">{confirmSlot.message}</p>
             <div className="flex gap-3">
               <button
                 type="button"
-                onClick={() => void recordPayment(confirmSlot.id, { confirmChargeSlot: true })}
+                onClick={() =>
+                  void recordPayment(confirmSlot.id, confirmSlot.who, {
+                    // Carry BOTH acknowledgements once one has been given: the
+                    // server checks them in sequence, and re-asking the same
+                    // question after the operator has answered it is how a
+                    // careful confirm turns into a click-through.
+                    confirmChargeSlot: true,
+                    confirmInvoiceDrift: true,
+                  })
+                }
                 disabled={recording === confirmSlot.id}
                 className="text-xs font-semibold underline disabled:opacity-50"
                 style={{ color: '#b45309' }}
               >
-                I checked Valor — the money arrived, record it
+                {confirmSlot.code === 'invoice-would-drift'
+                  ? 'Record it anyway'
+                  : 'I checked Valor — the money arrived, record it'}
               </button>
               <button
                 type="button"
@@ -349,7 +375,14 @@ export default function InstallmentsPage() {
                             {!i.paidAt && (
                               <button
                                 type="button"
-                                onClick={() => void recordPayment(i.id)}
+                                onClick={() =>
+                                  void recordPayment(
+                                    i.id,
+                                    `${plan.customerName ?? 'Unknown customer'} — payment ${i.seq} of ${money(i.amountUsd)}${
+                                      i.dueDate ? `, due ${fmtDate(i.dueDate)}` : ''
+                                    }`,
+                                  )
+                                }
                                 disabled={recording === i.id}
                                 className="text-xs underline disabled:opacity-50"
                                 style={{ color: 'var(--brand-evergreen-3)' }}

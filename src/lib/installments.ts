@@ -35,6 +35,10 @@ export type Installment = {
    *  charged), `pending:<iso>` (a charge is in flight, or crashed and left its
    *  claim), or a real Valor txn id. Read it with `describeChargeSlot`. */
   valorTxnId: string | null;
+  /** The operator who recorded this payment. NULL means not attributable: money
+   *  collected at home.works before this tool existed, or an automatic charge,
+   *  which has no human actor by definition. Mirrors `invoices.settled_by`. */
+  paidBy: string | null;
   note: string | null;
 };
 
@@ -122,6 +126,7 @@ type Row = {
   paid_at: string | null;
   paid_source: string | null;
   valor_txn_id: string | null;
+  paid_by: string | null;
   note: string | null;
 };
 
@@ -136,6 +141,7 @@ function toInstallment(r: Row): Installment {
     paidAt: r.paid_at,
     paidSource: (r.paid_source as Installment['paidSource']) ?? null,
     valorTxnId: r.valor_txn_id,
+    paidBy: r.paid_by,
     note: r.note,
   };
 }
@@ -149,7 +155,7 @@ export async function listInstallmentPlans(): Promise<
 
   const { data: rows, error } = await sb
     .from('installments')
-    .select('id, quote_id, seq, amount_usd, due_date, due_on_completion, paid_at, paid_source, valor_txn_id, note')
+    .select('id, quote_id, seq, amount_usd, due_date, due_on_completion, paid_at, paid_source, valor_txn_id, paid_by, note')
     .order('quote_id')
     .order('seq');
   if (error) return { ok: false, error: error.message };
@@ -221,6 +227,12 @@ export async function markInstallmentPaid(input: {
   paidAt: Date;
   source: 'valor' | 'manual';
   valorTxnId?: string | null;
+  /** The operator who recorded it. Omitted/null for the runner's automatic
+   *  charges, which have no human actor — a NULL here is information, not a
+   *  gap. Added after the premerge admin lens found this money write had no
+   *  attributable actor at all, while its sibling `markInvoicePaidManually` has
+   *  recorded `settled_by` since #225. */
+  paidBy?: string | null;
 }): Promise<{ ok: true; amountUsd: number } | { ok: false; error: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -233,6 +245,7 @@ export async function markInstallmentPaid(input: {
       paid_at: input.paidAt.toISOString(),
       paid_source: input.source,
       valor_txn_id: input.valorTxnId ?? null,
+      paid_by: input.paidBy ?? null,
     })
     .eq('id', input.installmentId)
     .is('paid_at', null)

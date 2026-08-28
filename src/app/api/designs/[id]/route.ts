@@ -23,7 +23,7 @@ import {
   type DesignPortalVisibility,
 } from '@/lib/designs';
 import { clampBrightness } from '@/lib/design/photoBrightness';
-import { SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
+import { SCENE_LOCKED_CODE, sceneLockedMessage } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -182,7 +182,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         // into the same lock.
         if (outcome.reason === 'locked') {
           return NextResponse.json(
-            { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
+            // Row 444: a migrated order gets a remedy that exists, instead of
+            // "decline, revive and re-send", which cannot work for it.
+            { error: sceneLockedMessage(outcome.migrated === true), code: SCENE_LOCKED_CODE },
             { status: 409 },
           );
         }

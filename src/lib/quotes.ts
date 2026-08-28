@@ -125,23 +125,11 @@ export function numberOrUndefined(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-/**
- * True when this quote's money came from the retired home.works CRM rather than
- * from our pricing engine (the #1049 migration stamps `approval_snapshot.
- * homeworks`).
- *
- * This matters because those figures are the customer's ACTUAL agreed and paid
- * amounts, copied verbatim, and the engine provably cannot reproduce them: it
- * disagrees with the charged tax on 8 of the 14 Homeworks invoices (per-line
- * rounding, two rates on one invoice, one rate absent from the document). So a
- * recompute is not a refresh, it is a silent replacement of what somebody paid.
- * Ledger row 444.
- */
-export function isMigratedQuote(
-  approvalSnapshot: { [key: string]: unknown } | null | undefined,
-): boolean {
-  return !!approvalSnapshot && approvalSnapshot.homeworks != null;
-}
+// Row 444's predicate lives in the import-free `quoteStatus` module so the
+// client-side QuoteBuilder can use it without dragging this file's Supabase
+// server chain into the browser bundle. Re-exported here because every server
+// caller already imports from `@/lib/quotes`.
+export { isMigratedQuote } from '@/lib/quoteStatus';
 
 // Row 409 — the deposit rate (0-1) a quote is on, for DISPLAY. Precedence
 // mirrors the money paths exactly: an approved quote's frozen

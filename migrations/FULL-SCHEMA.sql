@@ -2929,7 +2929,15 @@ create table if not exists public.installments (
   -- 'homeworks' for money collected before the migration, 'valor' for a card
   -- charge through this tool, 'manual' for cash/check recorded by staff.
   paid_source       text check (paid_source in ('homeworks', 'valor', 'manual')),
+  -- Doubles as the installment runner's idempotency slot (row 448): NULL, a
+  -- `pending:<iso>` claim, an `ambiguous-timeout:<iso>` marker, or a real Valor
+  -- transaction id. See src/lib/installmentRunner.ts.
   valor_txn_id      text,
+  -- Row 446: the operator who RECORDED this payment. NULL = collected before
+  -- the migration, or charged automatically (no human actor). Mirrors
+  -- invoices.settled_by; added by migrations/2026-08-28-installments-paid-by.sql
+  -- after a premerge admin lens found this money write had no attributable actor.
+  paid_by           uuid references auth.users(id) on delete set null,
   note              text,
 
   created_at        timestamptz not null default now(),

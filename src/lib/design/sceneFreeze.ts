@@ -35,10 +35,14 @@
 
 import { NextResponse } from 'next/server';
 import { deriveStatus, type QuoteStatusRow } from '@/lib/quoteStatus';
+import { isMigratedQuote } from '@/lib/quotes';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 
 /** The quote columns this predicate needs. */
-export type SceneFreezeRow = QuoteStatusRow & { is_test?: boolean | null };
+export type SceneFreezeRow = QuoteStatusRow & {
+  is_test?: boolean | null;
+  approval_snapshot?: { [key: string]: unknown } | null;
+};
 
 /** Wire code on the 409, so a client can tell this apart from a CAS conflict. */
 export const SCENE_LOCKED_CODE = 'design-locked';
@@ -50,9 +54,25 @@ export const SCENE_LOCKED_MESSAGE =
 
 export function isSceneFrozen(q: SceneFreezeRow): boolean {
   if (q.is_test) return false;
+  // Row 444: a home.works-migrated order is frozen regardless of status. The
+  // booked carve-out below exists for the amend path — edit here, Calculate,
+  // record the amendment — and that path does not exist for these 20 orders:
+  // /api/quote refuses to re-price them, so there is nothing to amend into.
+  // Without this, the design canvas autosaves straight past the money guard
+  // (PUT /api/designs/[id], 600ms debounce) and a staffer could redraw a
+  // historical record that was never drawn in this tool. Premerge staff lens.
+  if (isMigratedQuote(q.approval_snapshot)) return true;
   if (!q.customer_approved_at) return false;
   return deriveStatus(q) !== 'booked';
 }
+
+/** Row 444: the migrated case needs its own words. SCENE_LOCKED_MESSAGE tells
+ *  staff to decline, revive and re-send — futile here, because reviving does
+ *  not clear `approval_snapshot.homeworks` and the next save refuses again. */
+export const MIGRATED_SCENE_LOCKED_MESSAGE =
+  'This order was migrated from home.works. Its design and figures are a record of what the customer agreed and paid, ' +
+  'not something this tool drew or priced, so they cannot be edited here. To change this order, agree the new figures ' +
+  'with Jason and record them directly.';
 
 /**
  * Resolve whether a design's linked quote carries a frozen (approved)
@@ -81,6 +101,12 @@ export type SceneLock =
        * caller gets it from the read it was already doing.
        */
       auditable: boolean;
+      /** Row 444: locked because the order came from home.works, not because a
+       *  customer approved a drawing. The remedy differs, so the caller must be
+       *  able to tell them apart — the generic message's "decline, revive and
+       *  re-send" is futile here, since reviving does not clear the migration
+       *  stamp and the next save refuses again. */
+      migrated: boolean;
     }
   | { ok: false };
 
@@ -96,10 +122,10 @@ export async function readSceneLock(designId: string): Promise<SceneLock> {
     console.warn('[sceneFreeze] design read failed:', designErr.message);
     return { ok: false };
   }
-  if (!designRow?.quote_id) return { ok: true, locked: false, quoteId: null, auditable: false };
+  if (!designRow?.quote_id) return { ok: true, locked: false, quoteId: null, auditable: false, migrated: false };
   const { data: quoteRow, error: quoteErr } = await sb
     .from('quotes')
-    .select('status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, is_test')
+    .select('status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, is_test, approval_snapshot')
     .eq('id', designRow.quote_id)
     .maybeSingle<SceneFreezeRow>();
   if (quoteErr) {
@@ -107,13 +133,20 @@ export async function readSceneLock(designId: string): Promise<SceneLock> {
     return { ok: false };
   }
   // quote gone — nothing agreed to protect, and nothing to audit onto
-  if (!quoteRow) return { ok: true, locked: false, quoteId: null, auditable: false };
+  if (!quoteRow) return { ok: true, locked: false, quoteId: null, auditable: false, migrated: false };
   return {
     ok: true,
     locked: isSceneFrozen(quoteRow),
     quoteId: designRow.quote_id,
     auditable: !quoteRow.is_test && !!quoteRow.customer_approved_at,
+    migrated: !quoteRow.is_test && isMigratedQuote(quoteRow.approval_snapshot),
   };
+}
+
+/** The right words for a refused design write: the migrated case names a remedy
+ *  that exists, the ordinary case keeps the approval wording. */
+export function sceneLockedMessage(migrated: boolean): string {
+  return migrated ? MIGRATED_SCENE_LOCKED_MESSAGE : SCENE_LOCKED_MESSAGE;
 }
 
 /**

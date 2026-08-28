@@ -10,6 +10,7 @@ const inst = (over: Partial<Installment> & { seq: number }): Installment => ({
   paidAt: null,
   paidSource: null,
   valorTxnId: null,
+  paidBy: null,
   note: null,
   ...over,
 });
