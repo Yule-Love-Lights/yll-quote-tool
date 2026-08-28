@@ -21,6 +21,7 @@ import { useState, type FormEvent } from 'react';
 import { track } from '@/lib/analytics/posthog';
 import { usePartialCapture } from '@/lib/leads/usePartialCapture';
 import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
+import { formatUsd } from '@/components/portal/format';
 import type { ReferralAutoAnalyzePreview } from '@/lib/referralAutoAnalyze';
 
 const inputClass =
@@ -42,7 +43,11 @@ export function ReferralSuccessScreen({
   friendSpritzers,
 }: {
   preview: ReferralAutoAnalyzePreview | null;
-  friendSpritzers: { count: number; sizeInches: number };
+  /** naldo/referral-link-preview: valueUsd dollarizes the spritzer count for
+   *  a homeowner who has no reason to know what a spritzer even is,
+   *  computed by the server (src/lib/referralSpritzerValue.ts) from the
+   *  quote builder's own per-size rate, never a separate hardcoded number. */
+  friendSpritzers: { count: number; sizeInches: number; valueUsd: number };
 }) {
   if (preview) {
     return (
@@ -59,8 +64,9 @@ export function ReferralSuccessScreen({
         </div>
         <p className="mt-4 text-[13px] text-[#A89F87]">{preview.formattedAddress}</p>
         <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
-          Expect a text from us today to make it official. You get {friendSpritzers.count} free{' '}
-          {friendSpritzers.sizeInches}&quot; spritzers when you book.
+          Expect a text from us today to make it official. You get {formatUsd(friendSpritzers.valueUsd)}{' '}
+          in free lighting when you book: {friendSpritzers.count} staked spotlights for your yard (
+          {friendSpritzers.sizeInches}&quot; spritzers).
         </p>
       </div>
     );
@@ -84,7 +90,7 @@ export function ReferralForm({
   friendSpritzers,
 }: {
   code: string;
-  friendSpritzers: { count: number; sizeInches: number };
+  friendSpritzers: { count: number; sizeInches: number; valueUsd: number };
 }) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
