@@ -193,8 +193,8 @@ alter table public.advertising_placements enable row level security;
 -- ---------------------------------------------------------------------
 create table if not exists public.advertising_activity (
   id            uuid primary key default gen_random_uuid(),
-  actor         text,                                 -- auth.users id (as text) or 'system'
-  action        text not null,                        -- submitted|accepted|rejected|resubmitted|worker_created|campaign_created|rate_changed|...
+  actor         text,                                 -- who acted: auth.users id (review actions), advertising_workers id (worker actions), or 'system'
+  action        text not null,                        -- submitted|accepted|rejected|resubmitted|rate_changed|...
   placement_id  uuid references public.advertising_placements(id) on delete set null,
   worker_id     uuid references public.advertising_workers(id) on delete set null,
   detail        jsonb,

@@ -27,6 +27,10 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as { table: string; payload: AnyRow }[],
       selectError: null as DbError | null,
       insertError: null as DbError | null,
+      // When set, the NEXT single-row select returns this snapshot instead of
+      // the live row, then clears — models a stale read racing a concurrent
+      // writer, so the CAS guards can actually be exercised.
+      staleReadOnce: null as AnyRow | null,
     },
   },
 }));
@@ -66,14 +70,43 @@ function makeDb() {
               if (stateRef.current.selectError) {
                 return Promise.resolve({ data: null, error: stateRef.current.selectError });
               }
+              if (stateRef.current.staleReadOnce) {
+                const stale = stateRef.current.staleReadOnce;
+                stateRef.current.staleReadOnce = null;
+                return Promise.resolve({ data: stale, error: null });
+              }
               const found = rows().filter((r) => rowMatches(r, filters));
               return Promise.resolve({ data: found[0] ?? null, error: null });
             },
-            order(_col: string, _opts?: unknown) {
-              if (stateRef.current.selectError) {
-                return Promise.resolve({ data: null, error: stateRef.current.selectError });
-              }
-              return Promise.resolve({ data: rows().filter((r) => rowMatches(r, filters)), error: null });
+            order(col: string, opts?: { ascending?: boolean }) {
+              const sorted = () => {
+                const list = rows().filter((r) => rowMatches(r, filters));
+                const asc = opts?.ascending !== false;
+                return [...list].sort((a, b) => {
+                  const av = String(a[col] ?? '');
+                  const bv = String(b[col] ?? '');
+                  return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+                });
+              };
+              return {
+                range(from: number, to: number) {
+                  if (stateRef.current.selectError) {
+                    return Promise.resolve({ data: null, error: stateRef.current.selectError });
+                  }
+                  return Promise.resolve({ data: sorted().slice(from, to + 1), error: null });
+                },
+                // Awaiting without .range() models PostgREST's silent
+                // 1000-row default cap — the trap the paging exists to dodge.
+                then(
+                  resolve: (v: { data: AnyRow[] | null; error: DbError | null }) => void,
+                  reject?: (e: unknown) => void,
+                ) {
+                  if (stateRef.current.selectError) {
+                    return Promise.resolve({ data: null, error: stateRef.current.selectError }).then(resolve, reject);
+                  }
+                  return Promise.resolve({ data: sorted().slice(0, 1000), error: null }).then(resolve, reject);
+                },
+              };
             },
           };
           return b;
@@ -230,6 +263,7 @@ beforeEach(() => {
   stateRef.current.inserted = [];
   stateRef.current.selectError = null;
   stateRef.current.insertError = null;
+  stateRef.current.staleReadOnce = null;
   dbRef.current = makeDb();
 });
 
@@ -323,6 +357,46 @@ describe('acceptPlacement', () => {
     const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, photo_path: null });
 
     await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toThrow(/photo/i);
+    expect(placementUpdates()).toHaveLength(0);
+  });
+
+  it('a stale concurrent accept cannot re-stamp an already-accepted placement (CAS)', async () => {
+    const { acceptPlacement } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 300 }); // rate ALREADY moved since the first accept
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    // This reviewer's read predates the other admin's accept: they still see pending.
+    stateRef.current.staleReadOnce = { ...p, status: 'pending', accepted_rate_cents: null, reviewed_by: null, reviewed_at: null };
+
+    const result = await acceptPlacement(String(p.id), 'other-admin');
+
+    expect(result.acceptedRateCents).toBe(250); // first stamp survives
+    expect(result.reviewedBy).toBe(REVIEWER); // first review survives
+    expect(placementUpdates()).toHaveLength(0); // the stale write never landed
+  });
+
+  it('a stale accept against a just-rejected placement throws instead of overwriting the review (CAS)', async () => {
+    const { acceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'rejected',
+      rejection_reason: 'wrong spot',
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    stateRef.current.staleReadOnce = { ...p, status: 'pending', rejection_reason: null, reviewed_by: null, reviewed_at: null };
+
+    await expect(acceptPlacement(String(p.id), 'other-admin')).rejects.toThrow(/rejected/);
     expect(placementUpdates()).toHaveLength(0);
   });
 
@@ -456,6 +530,34 @@ describe('submitPlacement', () => {
   });
 });
 
+describe('listPlacements', () => {
+  it('returns newest first and honors an explicit limit', async () => {
+    const { listPlacements } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const base = { campaign_id: campaign.id, worker_id: worker.id };
+    const oldest = seedPlacement({ ...base, created_at: '2026-08-20T10:00:00.000Z' });
+    const middle = seedPlacement({ ...base, created_at: '2026-08-22T10:00:00.000Z' });
+    const newest = seedPlacement({ ...base, created_at: '2026-08-24T10:00:00.000Z' });
+
+    const two = await listPlacements({ workerId: String(worker.id), limit: 2 });
+    expect(two.map((p) => p.id)).toEqual([newest.id, middle.id]);
+    expect(two.some((p) => p.id === oldest.id)).toBe(false);
+  });
+});
+
+describe('ET week keys', () => {
+  it('buckets DST-transition instants into the right Monday week', async () => {
+    const { etWeekStartKey } = await import('./placements');
+    // 2026-11-01T07:00Z is 02:00 EST, just AFTER the fall-back — Sunday Nov 1,
+    // week of Monday Oct 26.
+    expect(etWeekStartKey(new Date('2026-11-01T07:00:00.000Z'))).toBe('2026-10-26');
+    // 2026-03-08T07:30Z is 03:30 EDT, just AFTER the spring-forward — Sunday
+    // Mar 8, week of Monday Mar 2.
+    expect(etWeekStartKey(new Date('2026-03-08T07:30:00.000Z'))).toBe('2026-03-02');
+  });
+});
+
 describe('earnings math', () => {
   it('accepted-only pay: pending, resubmitted, rejected and is_test rows contribute nothing to earned cents', async () => {
     const { earningsSummary } = await import('./placements');
@@ -562,6 +664,24 @@ describe('earnings math', () => {
       { weekStart: '2026-08-24', pendingEstimatedCents: 250, acceptedEarnedCents: 250 },
     ]);
     expect(mine?.total).toEqual({ pendingEstimatedCents: 250, acceptedEarnedCents: 500 });
+  });
+
+  it('totals stay right past the 1000-row PostgREST page cap', async () => {
+    const { earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    for (let i = 0; i < 1050; i++) {
+      seedPlacement({
+        campaign_id: campaign.id,
+        worker_id: worker.id,
+        status: 'pending',
+        created_at: `2026-08-24T15:00:${String(i % 60).padStart(2, '0')}.${String(i).padStart(3, '0')}Z`,
+      });
+    }
+
+    const summaries = await earningsSummary();
+    const mine = summaries.find((s) => s.workerId === worker.id);
+    expect(mine?.total.pendingEstimatedCents).toBe(1050 * 250);
   });
 
   it('earningsSummary can scope to one worker', async () => {

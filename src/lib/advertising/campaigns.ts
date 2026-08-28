@@ -1,4 +1,5 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
 // Campaign rate config is MONEY: rate_cents is the CURRENT
 // per-accepted-yard-sign rate (default 250 = $2.50, Naldo 2026-08-27). It is
@@ -101,9 +102,16 @@ export async function listAdvertisingCampaigns(opts?: { includeInactive?: boolea
   return (data ?? []).map((row) => toCampaign(row as Row));
 }
 
+/**
+ * Patch a campaign. `actor` is the auth user id of whoever is editing —
+ * required for the audit trail when the RATE moves: a rate change decides
+ * what every FUTURE acceptance pays, so it must never happen without a
+ * trace (admin lens, PR #1057 review).
+ */
 export async function updateAdvertisingCampaign(
   id: string,
   patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean },
+  actor?: string,
 ): Promise<AdvertisingCampaign | null> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
@@ -121,6 +129,15 @@ export async function updateAdvertisingCampaign(
   }
   if (patch.active !== undefined) payload.active = patch.active;
 
+  // Read the prior rate BEFORE the write, so the audit row can say what the
+  // rate moved FROM — an "it changed" row without the old value cannot
+  // reconstruct pay questions later.
+  let priorRateCents: number | null = null;
+  if (payload.rate_cents !== undefined) {
+    const prior = await getAdvertisingCampaign(id);
+    priorRateCents = prior?.rateCents ?? null;
+  }
+
   const { data, error } = await db
     .from('advertising_campaigns')
     .update(payload)
@@ -128,5 +145,20 @@ export async function updateAdvertisingCampaign(
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`updateAdvertisingCampaign: ${error.message}`);
-  return data ? toCampaign(data as Row) : null;
+  const updated = data ? toCampaign(data as Row) : null;
+
+  if (updated && payload.rate_cents !== undefined && priorRateCents !== updated.rateCents) {
+    await logAdvertisingActivity({
+      actor: actor ?? 'system',
+      action: 'rate_changed',
+      detail: {
+        campaignId: updated.id,
+        campaignName: updated.name,
+        priorRateCents,
+        newRateCents: updated.rateCents,
+      },
+    });
+  }
+
+  return updated;
 }

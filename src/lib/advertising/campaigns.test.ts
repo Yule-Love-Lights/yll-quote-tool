@@ -12,6 +12,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
     current: {
       rows: [] as AnyRow[],
       inserted: [] as AnyRow[],
+      activity: [] as AnyRow[],
     },
   },
 }));
@@ -22,7 +23,15 @@ vi.mock('@/lib/supabase', () => ({
 
 function makeDb() {
   return {
-    from(_table: string) {
+    from(table: string) {
+      if (table === 'advertising_activity') {
+        return {
+          insert(payload: AnyRow) {
+            stateRef.current.activity.push(payload);
+            return Promise.resolve({ data: null, error: null });
+          },
+        };
+      }
       return {
         select(_cols?: string) {
           const filters: Array<(r: AnyRow) => boolean> = [];
@@ -88,6 +97,7 @@ function makeDb() {
 beforeEach(() => {
   stateRef.current.rows = [];
   stateRef.current.inserted = [];
+  stateRef.current.activity = [];
   dbRef.current = makeDb();
 });
 
@@ -115,5 +125,32 @@ describe('updateAdvertisingCampaign', () => {
     expect(updated?.rateCents).toBe(300);
 
     await expect(updateAdvertisingCampaign(campaign.id, { rateCents: 1.5 })).rejects.toThrow(/rate/i);
+  });
+
+  it('a rate change writes a rate_changed audit row carrying prior and new rate', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'rate_changed');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('admin-user-1');
+    const detail = audit[0].detail as { priorRateCents: number; newRateCents: number };
+    expect(detail.priorRateCents).toBe(250);
+    expect(detail.newRateCents).toBe(300);
+  });
+
+  it('a patch that does not touch the rate writes no rate_changed row', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { notes: 'east side routes' }, 'admin-user-1');
+    // Same-value rate patch is also not a change.
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 250 }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
   });
 });

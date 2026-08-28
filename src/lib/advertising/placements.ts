@@ -1,5 +1,6 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
 // Placements: one row per yard sign (or door hanger) placed, plus the review
 // transitions and the earnings math. The money rules (Naldo 2026-08-27, do
@@ -101,32 +102,9 @@ async function getPlacementRow(db: Db, id: string): Promise<Row | null> {
   return (data as Row | null) ?? null;
 }
 
-/** Best-effort audit append. Never throws: the state change has already
- * landed, and failing the caller over a lost audit row would leave a retry
- * hitting "already accepted" (the clockOut auto-close posture). */
-async function logActivity(
-  db: Db,
-  entry: {
-    actor: string;
-    action: string;
-    placementId?: string | null;
-    workerId?: string | null;
-    detail?: Record<string, unknown>;
-  },
-): Promise<void> {
-  try {
-    const { error } = await db.from('advertising_activity').insert({
-      actor: entry.actor,
-      action: entry.action,
-      placement_id: entry.placementId ?? null,
-      worker_id: entry.workerId ?? null,
-      detail: entry.detail ?? null,
-    });
-    if (error) console.error('advertising logActivity error:', error);
-  } catch (error) {
-    console.error('advertising logActivity error:', error);
-  }
-}
+// Audit appends go through logAdvertisingActivity (activity.ts) — see the
+// actor convention documented there: worker id for worker actions, auth user
+// id for review actions.
 
 export async function getPlacement(id: string): Promise<AdvertisingPlacement | null> {
   const db = getSupabaseServiceClient();
@@ -140,18 +118,31 @@ export async function getPlacement(id: string): Promise<AdvertisingPlacement | n
   }
 }
 
+/** PostgREST silently caps an unranged select at 1000 rows (the repo has
+ * been bitten before — see selfServeMetrics.ts / inbox store #310). Every
+ * read here is either explicitly bounded (listPlacements) or paged to
+ * completeness (earningsSummary — money totals must never truncate). */
+const PAGE_SIZE = 1000;
+
+/**
+ * Newest-first listing, explicitly BOUNDED (default 500, max 1000 per call).
+ * This is a display read; anything that needs every row (pay math) goes
+ * through the paged fetch inside earningsSummary instead.
+ */
 export async function listPlacements(opts?: {
   workerId?: string;
   campaignId?: string;
   status?: PlacementStatus;
+  limit?: number;
 }): Promise<AdvertisingPlacement[]> {
   const db = getSupabaseServiceClient();
   if (!db) return [];
+  const limit = Math.max(1, Math.min(opts?.limit ?? 500, PAGE_SIZE));
   let query = db.from('advertising_placements').select(SELECT);
   if (opts?.workerId) query = query.eq('worker_id', opts.workerId.trim());
   if (opts?.campaignId) query = query.eq('campaign_id', opts.campaignId.trim());
   if (opts?.status) query = query.eq('status', opts.status);
-  const { data, error } = await query.order('created_at', { ascending: false });
+  const { data, error } = await query.order('created_at', { ascending: false }).range(0, limit - 1);
   if (error) {
     console.error('listPlacements error:', error);
     return [];
@@ -213,7 +204,7 @@ export async function submitPlacement(input: {
   if (!data) throw new Error('submitPlacement: no row returned');
 
   const placement = toPlacement(data as Row);
-  await logActivity(db, {
+  await logAdvertisingActivity({
     actor: placement.workerId,
     action: 'submitted',
     placementId: placement.id,
@@ -291,7 +282,7 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
   }
 
   const accepted = toPlacement(data as Row);
-  await logActivity(db, {
+  await logAdvertisingActivity({
     actor: reviewedBy,
     action: 'accepted',
     placementId: accepted.id,
@@ -340,7 +331,7 @@ export async function rejectPlacement(
   }
 
   const rejected = toPlacement(data as Row);
-  await logActivity(db, {
+  await logAdvertisingActivity({
     actor: reviewedBy,
     action: 'rejected',
     placementId: rejected.id,
@@ -375,7 +366,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   }
 
   const resubmitted = toPlacement(data as Row);
-  await logActivity(db, {
+  await logAdvertisingActivity({
     actor: resubmitted.workerId,
     action: 'resubmitted',
     placementId: resubmitted.id,
@@ -508,26 +499,38 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   const db = getSupabaseServiceClient();
   if (!db) return [];
 
-  let query = db.from('advertising_placements').select(SELECT);
-  if (opts?.workerId) query = query.eq('worker_id', opts.workerId.trim());
-  const { data, error } = await query.order('created_at', { ascending: true });
-  if (error) {
-    console.error('earningsSummary placements error:', error);
-    return [];
+  // Page to completeness: a pay total computed from a silently truncated
+  // read is exactly the wrong-money class this repo's history warns about.
+  const placements: AdvertisingPlacement[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    let query = db.from('advertising_placements').select(SELECT);
+    if (opts?.workerId) query = query.eq('worker_id', opts.workerId.trim());
+    const { data, error } = await query
+      .order('created_at', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) {
+      console.error('earningsSummary placements error:', error);
+      return [];
+    }
+    const rows = (data ?? []) as Row[];
+    placements.push(...rows.map((row) => toPlacement(row)));
+    if (rows.length < PAGE_SIZE) break;
   }
-  const placements = (data ?? []).map((row) => toPlacement(row as Row));
 
-  const { data: campaigns, error: campaignsError } = await db
-    .from('advertising_campaigns')
-    .select('id, rate_cents')
-    .order('created_at', { ascending: true });
-  if (campaignsError) {
-    console.error('earningsSummary campaigns error:', campaignsError);
-    return [];
-  }
   const rateByCampaign = new Map<string, number>();
-  for (const c of (campaigns ?? []) as { id: string; rate_cents: number }[]) {
-    rateByCampaign.set(c.id, c.rate_cents);
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data: campaigns, error: campaignsError } = await db
+      .from('advertising_campaigns')
+      .select('id, rate_cents')
+      .order('created_at', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (campaignsError) {
+      console.error('earningsSummary campaigns error:', campaignsError);
+      return [];
+    }
+    const rows = (campaigns ?? []) as { id: string; rate_cents: number }[];
+    for (const c of rows) rateByCampaign.set(c.id, c.rate_cents);
+    if (rows.length < PAGE_SIZE) break;
   }
 
   return summarizeEarnings(placements, rateByCampaign);
