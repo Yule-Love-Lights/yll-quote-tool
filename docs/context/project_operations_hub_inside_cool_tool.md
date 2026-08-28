@@ -10,16 +10,15 @@ The Cool Tool remains the system of record for customers, quotes, jobs, scheduli
 
 Past Operations Hub notes are product context only. They are not proof that the current repo has a feature, and they are not permission to copy old code or migrations.
 
-## Superseded Remnants Still On Master
+## Scrapped Hub Leftovers (removed in PR #1027)
 
-The scrapped separate-Hub direction left real artifacts on current master. They look authoritative but they describe the old direction, not this plan:
+The scrapped separate-Hub direction left artifacts on master. Naldo had them stripped in PR #1027 on 2026-08-27, closing ledger row 433:
 
-- `docs/context/OPERATIONS_HUB_CONTRACT.md` (v1.6.0-draft). It says the Hub owns all advertising and uses phone-OTP auth. Both points are superseded by this document.
-- The byte-identical mirror of that contract in the `yll-call-copilot` repo (`docs/operations-hub/INTEGRATION-CONTRACT.md`).
-- The AGENTS.md "Operations Hub contract" ownership row, written for the separate-Hub era. It locks `/api/ops/v1/**` and the shared-labor schema to this repo's assistant and bars the Hub's Codex from editing them.
-- Three machine routes with no consumer: `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`. Built for the Hub; they are the natural foundation for the Crew My Day actions.
+- `docs/context/OPERATIONS_HUB_CONTRACT.md` (v1.6.0-draft) and its OpenAPI schema folder. Deleted.
+- The AGENTS.md "Operations Hub contract" ownership row. Deleted.
+- The three machine routes `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`, plus `src/lib/shiftBreaks.ts`. Deleted. Git history holds them if a Crew My Day build wants a starting point.
 
-Task ledger row 433 tracks their disposition, which is Naldo's call. Any audit session must treat these as superseded remnants, not as current truth, and should propose what to do with each (likely: reuse the routes for Crew My Day, mark or strip the contract).
+One copy survives outside this repo: the contract's byte-identical mirror in the `yll-call-copilot` repo (`docs/operations-hub/INTEGRATION-CONTRACT.md`). It is now stale and historical. Old chats, branches, and that mirror may still present the contract as live; treat all of it as history, not current truth.
 
 ## How The System Should Work In Theory
 
@@ -69,7 +68,7 @@ The current Cool Tool already has major Operations Hub foundations:
 - Crew account restrictions.
 - Office clock concepts.
 - Shift, break, job segment, and job assignment foundations.
-- Crew-facing job action APIs under existing ops routes.
+- Crew-facing job action APIs existed under `/api/ops/v1` but were removed with the scrapped Hub (PR #1027); git history holds them.
 - Telegram and time/payroll-related foundations.
 
 Several of these foundations are dormant in production even though the schema and code exist: `job_segments` has never held a row, and shifts are barely used. An audit must count production rows and report each foundation as used or dormant. Schema shape alone is not proof of a working feature.
@@ -407,9 +406,9 @@ Output the product model, permission model, database proposal, privacy rules, re
 ```text
 Work inside Yule-Love-Lights/yll-quote-tool, also called the Cool Tool. Crew and Installer are the same restricted field group.
 
-Audit the current crew/install job actions, Telegram workflows, assignments, shifts, breaks, job segments, and existing /api/ops/v1 routes.
+Audit the current crew/install job actions, Telegram workflows, assignments, shifts, breaks, job segments, and remaining /api/ops routes.
 
-The /api/ops/v1 job routes were built for the scrapped separate Operations Hub and currently have no consumer, and job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
+The old /api/ops/v1 job routes (arrive, depart, complete) and src/lib/shiftBreaks.ts were deleted with the scrapped separate Operations Hub (PR #1027); git history holds them if useful. job_segments has never held a production row. Count production rows for shifts, breaks, job segments, and assignments; treat dormant foundations as first-real-use risk, not as proven features.
 
 Plan an optional app-based My Day view for crew/installers. Telegram will likely remain the main workflow, but the app should exist as an option and as a foundation for future workers.
 
@@ -479,13 +478,8 @@ The Cool Tool remains the source of truth for:
 
 Past Operations Hub chats, branches, migrations, and docs are context only. Do not treat them as current truth until the current repo proves it.
 
-SUPERSEDED REMNANTS ON MASTER
-The scrapped separate-Hub direction left artifacts on current master that look authoritative but describe the old direction:
-- docs/context/OPERATIONS_HUB_CONTRACT.md (v1.6.0-draft). It says the Hub owns all advertising and uses phone-OTP auth. Both points are superseded by this prompt.
-- The byte-identical mirror of that contract in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md).
-- The AGENTS.md "Operations Hub contract" ownership row, written for the separate-Hub era. It locks /api/ops/v1/** and the shared-labor schema to this repo's assistant and bars the Hub's Codex from editing them.
-- Three machine routes with no consumer: src/app/api/ops/v1/jobs/[id]/arrive, depart, and complete. Likely reusable for Crew My Day.
-Task ledger row 433 tracks their disposition, which is Naldo's decision. Treat these as superseded remnants, not current truth, and propose a disposition for each in your report.
+SCRAPPED HUB LEFTOVERS
+The separate-Hub direction was scrapped and its leftovers were removed from this repo in PR #1027 (ledger row 433, closed): the OPERATIONS_HUB_CONTRACT.md contract doc and its schema folder, the AGENTS.md "Operations Hub contract" ownership row, the three /api/ops/v1/jobs/[id] machine routes, and src/lib/shiftBreaks.ts. Git history holds the deleted routes if a Crew My Day build wants a starting point. A stale byte-identical mirror of the contract still exists in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md). Old chats, branches, and that mirror may still present the contract as live. Treat all of it as history, not current truth.
 
 FIRST TASK
 This first session is audit and planning only.
@@ -825,7 +819,7 @@ Audit:
 - Telegram workflows
 - existing /api/ops routes
 - any HighLevel/integration code
-- docs/context/OPERATIONS_HUB_CONTRACT.md and the AGENTS.md ownership row, as superseded remnants per above
+- confirm the scrapped Hub leftovers are actually gone at your master (PR #1027), and flag any that returned
 - production row counts for crew_members, shifts, breaks, job_segments, and job_assignments; several foundations are dormant (job_segments has never held a row), so report each as used or dormant, because schema shape alone is not proof of a working feature
 
 OUTPUT SHAPE
@@ -847,7 +841,7 @@ Give a full planning report with:
 10. Database tables likely needed.
 11. Routes/pages likely needed.
 12. Tests and verification needed.
-13. Questions for Naldo before code is written, including the row 433 remnant disposition.
+13. Questions for Naldo before code is written.
 
 Write the full report to a new file under docs/context/ in the repo so it persists beyond this chat, and propose task ledger rows for the build items.
 
@@ -868,5 +862,5 @@ Before finalizing, check:
 - Did you include GPS reverse lookup and exact address tracking?
 - Did you keep HighLevel automatic but deferred pending audit?
 - Did you treat old chats/docs as context, not current code truth?
-- Did you treat the superseded contract and the /api/ops/v1 remnants as row 433 decisions, not current truth?
+- Did you treat the deleted Hub contract and routes as history, not current code?
 ```
