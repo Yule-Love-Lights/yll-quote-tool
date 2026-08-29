@@ -1952,9 +1952,20 @@ export async function renderEditor(
     const before = items.filter(isMiniGroup);
     const after = pruneOrphanedMiniGroups(items);
     if (after.length === items.length) return after; // nothing pruned — the common case
-    const afterIds = new Set(after.filter(isMiniGroup).map((g) => g.id));
+    // #13 x #240 (item-1 fix round): pruneOrphanedMiniGroups now removes a
+    // group for TWO different reasons — its own members all died (#227), or
+    // it's a TWIN whose canonical is gone (linkedToId no longer resolves).
+    // The two need different copy: a twin's own members are typically still
+    // ALIVE (they just lost their group), so "lost all their strands" would
+    // be false for it.
+    const beforeIds = new Set(items.map((i) => i.id));
+    const afterIds = new Set(after.map((i) => i.id));
     before.filter((g) => !afterIds.has(g.id)).forEach((g) => {
       const label = MINI_SURFACE_LABELS[g.surface ?? ""] ?? "group";
+      if (g.linkedToId && !beforeIds.has(g.linkedToId)) {
+        showTransientNotice(`Also removed a linked copy: ${label} — its original is gone`);
+        return;
+      }
       const n = g.stringCount ?? 1;
       showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
     });
