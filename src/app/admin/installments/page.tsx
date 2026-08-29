@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
+import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import {
   nextDuePayment,
   isOverdue,
@@ -13,9 +14,13 @@ import { describeChargeSlot } from '@/lib/integrations/valorBalance';
 import { isAmbiguousTimeoutMarker, AMBIGUOUS_TIMEOUT_PREFIX } from '@/lib/installmentRunner';
 
 // Payment plans (Homeworks migration, 2026-08-28). Three customers pay their
-// 2026 job monthly. This page is READ-ONLY: it shows what is owed and when.
-// Collecting a payment is a separate, deliberate action — nothing on this page
-// charges a card or messages a customer.
+// 2026 job monthly: this page shows what is owed and when, and lets staff RECORD
+// a payment that has already been collected (ledger row 446).
+//
+// NOTHING HERE CHARGES A CARD OR MESSAGES A CUSTOMER. "Record payment" writes
+// down money that already arrived — cash, a check, a card charge taken in Valor
+// by hand, or a charge the runner made but could not finish recording. Taking
+// the money is a separate, deliberate act that happened before the click.
 
 const money = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -63,7 +68,72 @@ export default function InstallmentsPage() {
   const [plans, setPlans] = useState<InstallmentPlan[] | null>(null);
   const [autoCharge, setAutoCharge] = useState<{ runnerArmed: boolean; valorArmed: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Row 446: which installment is mid-record, and the confirm an unresolved
+  // charge slot forces before we will write it down.
+  const [recording, setRecording] = useState<string | null>(null);
+  const [confirmSlot, setConfirmSlot] = useState<
+    { id: string; who: string; blockers: { code: string; message: string }[] } | null
+  >(null);
   const now = new Date();
+
+  const load = async () => {
+    const res = await fetch('/api/admin/installments');
+    const json = (await res.json()) as {
+      plans?: InstallmentPlan[];
+      autoCharge?: { runnerArmed: boolean; valorArmed: boolean };
+      error?: string;
+    };
+    if (!res.ok) throw new Error(json.error ?? 'Could not load payment plans');
+    setPlans(json.plans ?? []);
+    setAutoCharge(json.autoCharge ?? null);
+  };
+
+  const recordPayment = async (
+    installmentId: string,
+    who: string,
+    opts: { confirmChargeSlot?: boolean; confirmInvoiceDrift?: boolean } = {},
+  ) => {
+    setRecording(installmentId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/installments/${installmentId}/record`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'manual', ...opts }),
+      });
+      const json = (await res.json()) as {
+        error?: string;
+        code?: string;
+        blockers?: { code: string; message: string }[];
+      };
+      if (!res.ok) {
+        // Some refusals have a next step rather than being errors: a charge
+        // attempt whose outcome nobody knows, and a linked invoice whose stored
+        // balance will not move with the payment. The server returns EVERY one
+        // that applies, and this shows all of them — the delta-verify caught an
+        // earlier cut that displayed one question and answered both.
+        // Premerge staff lens MED: it also has to say WHICH payment, since it
+        // renders once, above a list of every plan.
+        if (json.blockers?.length) {
+          setConfirmSlot({ id: installmentId, who, blockers: json.blockers });
+          return;
+        }
+        setError(json.error ?? 'Could not record that payment');
+        return;
+      }
+      setConfirmSlot(null);
+      await load();
+    } catch {
+      setError("Couldn't reach the server — try reloading.");
+    } finally {
+      // Premerge staff lens LOW: reload on EVERY outcome, not only success. A
+      // rare 3-strikes CAS failure marks the installment paid and still reports
+      // an error, and without this the row kept offering a Record button for a
+      // payment that was already recorded.
+      void load().catch(() => {});
+      setRecording(null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +165,7 @@ export default function InstallmentsPage() {
   return (
     <OperatorShell active="quotes">
       <div className="max-w-5xl mx-auto w-full">
+        <BillingSubNav active="installments" />
         <header className="mb-6">
           <h1 className="text-2xl font-semibold" style={{ color: 'var(--op-text)' }}>
             Payment plans
@@ -129,6 +200,55 @@ export default function InstallmentsPage() {
             style={{ borderColor: 'var(--op-border)', color: '#dc2626' }}
           >
             {error}
+          </div>
+        )}
+
+        {/* Row 446: recording a payment whose charge attempt never resolved
+            writes over an unknown, so it is never a single click. The server
+            refuses the first attempt and returns this text; confirming sends
+            the same request with the acknowledgement. */}
+        {confirmSlot && (
+          <div
+            className="rounded-md border p-3 text-sm mb-4"
+            style={{ borderColor: '#b45309', color: 'var(--op-text)' }}
+          >
+            <p className="mb-1 font-semibold">{confirmSlot.who}</p>
+            {confirmSlot.blockers.map((b) => (
+              <p key={b.code} className="mb-2">
+                {b.message}
+              </p>
+            ))}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  void recordPayment(confirmSlot.id, confirmSlot.who, {
+                    // ONLY the acknowledgements for the questions actually on
+                    // screen. Sending both from one click is what the delta-
+                    // verify caught: an operator answering "I checked Valor"
+                    // was also silently answering a question about a wrong
+                    // invoice figure they had never been shown.
+                    confirmChargeSlot: confirmSlot.blockers.some((b) => b.code === 'charge-slot-unresolved'),
+                    confirmInvoiceDrift: confirmSlot.blockers.some((b) => b.code === 'invoice-would-drift'),
+                  })
+                }
+                disabled={recording === confirmSlot.id}
+                className="text-xs font-semibold underline disabled:opacity-50"
+                style={{ color: '#b45309' }}
+              >
+                {confirmSlot.blockers.some((b) => b.code === 'charge-slot-unresolved')
+                  ? 'I checked Valor — record this payment'
+                  : 'Record it anyway'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmSlot(null)}
+                className="text-xs underline"
+                style={{ color: 'var(--op-text-2)' }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
 
@@ -220,6 +340,7 @@ export default function InstallmentsPage() {
                         <th className="text-right font-medium py-1 pr-3">Amount</th>
                         <th className="text-left font-medium py-1 pr-3">Status</th>
                         <th className="text-left font-medium py-1">Note</th>
+                        <th className="text-right font-medium py-1 pl-3">Record</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -256,6 +377,32 @@ export default function InstallmentsPage() {
                             )}
                           </td>
                           <td className="py-1.5 text-xs" style={{ color: 'var(--op-text-2)' }}>{i.note ?? ''}</td>
+                          {/* Row 446: the only way, anywhere in the app, to write
+                              down a payment that has already been collected —
+                              cash, a check, a card charge taken in Valor by hand,
+                              or one the runner charged but could not finish
+                              recording. It charges nothing. */}
+                          <td className="py-1.5 pl-3 text-right">
+                            {!i.paidAt && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void recordPayment(
+                                    i.id,
+                                    `${plan.customerName ?? 'Unknown customer'} — payment ${i.seq} of ${money(i.amountUsd)}${
+                                      i.dueDate ? `, due ${fmtDate(i.dueDate)}` : ''
+                                    }`,
+                                  )
+                                }
+                                disabled={recording === i.id}
+                                className="text-xs underline disabled:opacity-50"
+                                style={{ color: 'var(--brand-evergreen-3)' }}
+                                title="Write down a payment that has already been collected. This does not charge the customer."
+                              >
+                                {recording === i.id ? 'Recording…' : 'Record payment'}
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

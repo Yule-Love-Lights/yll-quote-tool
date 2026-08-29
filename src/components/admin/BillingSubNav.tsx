@@ -9,9 +9,14 @@ const ITEMS = [
   { label: 'Quotes', href: '/admin/quotes', key: 'quotes' as const },
   { label: 'Jobs', href: '/admin/jobs', key: 'jobs' as const },
   { label: 'Invoices', href: '/admin/invoices', key: 'invoices' as const },
+  // Row 445: /admin/installments shipped with zero references anywhere in the
+  // tree - a whole page reachable only by typing the URL, the same inert-feature
+  // class AGENTS.md already records for CrewLogins. Payment plans are billing,
+  // so they belong here, beside the invoices they will eventually settle.
+  { label: 'Payment plans', href: '/admin/installments', key: 'installments' as const },
 ];
 
-export type BillingTab = 'quotes' | 'jobs' | 'invoices';
+export type BillingTab = 'quotes' | 'jobs' | 'invoices' | 'installments';
 
 export function BillingSubNav({ active }: { active: BillingTab }) {
   return (

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
-import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
+import { saveQuote, updateQuote, getQuoteRaw, Customer, isMigratedQuote } from '@/lib/quotes';
 import { deriveStatus, repriceSignalCanFire, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
@@ -712,6 +712,33 @@ export async function POST(req: NextRequest) {
     // all — the amend flow's own documented mechanism ("edit in the builder +
     // Calculate, then record the amendment", amend/route.ts:9-15) IS these three
     // surfaces, and they 409'd unconditionally.
+    // Row 444: a quote migrated from the retired home.works CRM is a RECORD of
+    // what a customer agreed and paid, not something this engine priced. The
+    // migration's founding measurement is that the engine cannot reproduce the
+    // charged tax on 8 of the 14 Homeworks invoices, so re-pricing one does not
+    // refresh it - it silently replaces the figures the customer actually paid.
+    // All 20 of those rows are `status='booked'`, which the amendReprice
+    // carve-out below deliberately unlocks, and the builder sends
+    // `amendReprice: true` on EVERY save of a booked quote - so this guard sits
+    // above that carve-out and is not subject to it.
+    //
+    // There is no override. Changing one of these orders is a conversation with
+    // a customer about money the tool cannot recompute, not a button. This was a
+    // live production defect from the migration until this shipped.
+    if (isUpdate && existing && isMigratedQuote(existing.approval_snapshot)) {
+      return NextResponse.json(
+        {
+          error:
+            'This order was migrated from home.works, and its figures are the ones the customer actually agreed and paid. ' +
+            'Re-pricing it here would replace them with engine-calculated numbers that do not match - the engine cannot ' +
+            'reproduce the tax charged on most of these invoices. Nothing was changed. To alter this order, agree the new ' +
+            'figures with Jason and record them directly.',
+          code: 'migrated-quote-locked',
+        },
+        { status: 409 },
+      );
+    }
+
     let amendRepriceAllowed = false;
     if (isUpdate && existing) {
       const currentStatus = deriveStatus(existing);

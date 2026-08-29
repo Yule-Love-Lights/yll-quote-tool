@@ -635,7 +635,10 @@ export type UpdateSceneOutcome =
   // Row 367: the linked quote carries a frozen (customer-approved) agreement,
   // so the picture they signed off on must not change. Callers surface this as
   // a 409 with `code: 'design-locked'`, NOT as a generic failure.
-  | { ok: false; reason: 'locked' }
+  // Row 444 adds `migrated`: locked because the order came from home.works
+  // rather than because a customer approved a drawing. The remedy differs, so
+  // the route must be able to tell the two apart.
+  | { ok: false; reason: 'locked'; migrated?: boolean }
   // Row 367: the freeze state could not be READ. Neither a lock nor a licence
   // to write — callers surface it as a retryable 5xx.
   | { ok: false; reason: 'unverified' }
@@ -683,7 +686,11 @@ export async function updateDesignSceneGuarded(
   // moments earlier and has no quote link yet.
   const lock = await readSceneLock(id);
   if (!lock.ok) return { ok: false, reason: 'unverified' };
-  if (lock.locked) return { ok: false, reason: 'locked' };
+  // Row 444: `migrated` rides out with the refusal so the route can say
+  // something true. The generic lock copy tells staff to decline, revive and
+  // re-send, which for a migrated order is both wrong (no design was ever drawn
+  // in this tool) and futile (reviving does not clear the migration stamp).
+  if (lock.locked) return { ok: false, reason: 'locked', migrated: lock.migrated };
 
   // Row 423: the only design writes that reach a signed-off quote are the ones
   // row 367 deliberately allows on a BOOKED order (the amend path), which is
@@ -967,7 +974,11 @@ export type UpdateSatelliteLinesOutcome =
   // from what is stored, i.e. this is a redraw or a deletion of the trace the
   // customer signed off on — which the portal renders. An identical re-write
   // (the ordinary re-Calculate) is NOT refused; see satelliteLinesEqual.
-  | { ok: false; reason: 'locked' }
+  // Row 444 carries `migrated` out here for the same reason its scene-write
+  // sibling does: the generic remedy ("decline, revive, re-send") is futile for
+  // a home.works order, and the delta-verify on the fix round caught that only
+  // one of the two consumers had been updated.
+  | { ok: false; reason: 'locked'; migrated?: boolean }
   | { ok: false; reason: 'unverified' }
   | { ok: false; reason: 'error' };
 
@@ -996,7 +1007,7 @@ export async function updateDesignSatelliteLines(
       return { ok: false, reason: 'unverified' };
     }
     if (!satelliteLinesEqual(current?.satellite_lines ?? null, lines)) {
-      return { ok: false, reason: 'locked' };
+      return { ok: false, reason: 'locked', migrated: lock.migrated };
     }
     // Identical — fall through and let the no-op write land, so the caller's
     // ordinary success path is completely unchanged.
