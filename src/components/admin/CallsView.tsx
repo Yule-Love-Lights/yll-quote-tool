@@ -6,6 +6,13 @@
 // GET /api/calls/status and POST /api/calls/process. Style follows this
 // repo's other admin debug surfaces (GeocodeFixRow's card/button classes)
 // rather than the copilot's zinc/amber palette.
+//
+// S6 adds an "Extract commitments" button (POST /api/calls/extract) plus
+// the commitment status counts + extraction progress GET /api/calls/status
+// now returns. The section renders nothing (not an error banner) when
+// `commitments` comes back null -- that means call_commitments isn't
+// migrated yet, which is a normal, expected state before Naldo applies it,
+// same posture as the top-level "not migrated" banner below.
 
 import { useCallback, useEffect, useState } from 'react';
 
@@ -25,6 +32,10 @@ type Recording = {
 
 type Counts = { pending: number; processing: number; transcribed: number; skipped: number; failed: number };
 
+type CommitmentCounts = { open: number; cleared: number; done: number; dismissed: number; expired: number };
+type ExtractionProgress = { pending: number; extracted: number; quarantined: number };
+type CommitmentSummary = { counts: CommitmentCounts; extraction: ExtractionProgress } | null;
+
 type CallsResponse = {
   configured: boolean;
   migrated?: boolean;
@@ -33,6 +44,20 @@ type CallsResponse = {
   lastSyncedAt?: string | null;
   counts?: Counts;
   recordings?: Recording[];
+  commitments?: CommitmentSummary;
+};
+
+type ExtractResponse = {
+  configured: boolean;
+  migrated?: boolean;
+  reason?: string;
+  error?: string;
+  done?: number;
+  skipped?: number;
+  failed?: number;
+  refused?: number;
+  quarantined?: number;
+  tasksCreated?: number;
 };
 
 const bannerClass = 'rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900';
@@ -67,6 +92,8 @@ export function CallsView() {
   const [status, setStatus] = useState<'loading' | 'done' | 'error'>('loading');
   const [processing, setProcessing] = useState(false);
   const [processMessage, setProcessMessage] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractMessage, setExtractMessage] = useState<string | null>(null);
 
   const load = useCallback(() => {
     return fetch('/api/calls/status')
@@ -102,6 +129,31 @@ export function CallsView() {
       setProcessMessage('Could not process the batch.');
     } finally {
       setProcessing(false);
+    }
+  }
+
+  async function onExtractCommitments() {
+    setExtracting(true);
+    setExtractMessage(null);
+    try {
+      const res = await fetch('/api/calls/extract', { method: 'POST' });
+      const json = (await res.json()) as ExtractResponse;
+      if (json.error) {
+        setExtractMessage(json.error);
+        return;
+      }
+      if (json.migrated === false || json.configured === false) {
+        setExtractMessage(json.reason ?? 'Could not extract commitments.');
+        return;
+      }
+      setExtractMessage(
+        `Extracted ${json.done} done, ${json.skipped} skipped, ${json.failed} failed, ${json.refused} refused, ${json.quarantined} quarantined -- ${json.tasksCreated} task(s) created.`,
+      );
+      await load();
+    } catch {
+      setExtractMessage('Could not extract commitments.');
+    } finally {
+      setExtracting(false);
     }
   }
 
@@ -143,6 +195,37 @@ export function CallsView() {
         <StatTile label="Skipped" value={counts.skipped} />
         <StatTile label="Failed" value={counts.failed} />
       </div>
+
+      {data.commitments && (
+        <div className="flex flex-col gap-3 border-t border-gray-200 pt-6">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={onExtractCommitments}
+              disabled={extracting}
+              className="rounded px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              style={{ background: 'var(--brand-evergreen-3)' }}
+            >
+              {extracting ? 'Extracting…' : 'Extract commitments'}
+            </button>
+            {extractMessage && <span className="text-sm text-gray-500">{extractMessage}</span>}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <StatTile label="Open" value={data.commitments.counts.open} />
+            <StatTile label="Cleared" value={data.commitments.counts.cleared} />
+            <StatTile label="Done" value={data.commitments.counts.done} />
+            <StatTile label="Dismissed" value={data.commitments.counts.dismissed} />
+            <StatTile label="Expired" value={data.commitments.counts.expired} />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3 sm:max-w-md">
+            <StatTile label="Extraction pending" value={data.commitments.extraction.pending} />
+            <StatTile label="Extracted" value={data.commitments.extraction.extracted} />
+            <StatTile label="Quarantined" value={data.commitments.extraction.quarantined} />
+          </div>
+        </div>
+      )}
 
       {recordings.length === 0 ? (
         <p className="text-sm text-gray-500">No recordings synced yet.</p>

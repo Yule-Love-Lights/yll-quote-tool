@@ -2,11 +2,21 @@
 // (calls_merge_plan_2026-08.md slice S2): the last sync time, counts by
 // status, and the most recent 50 recordings (with their outcome, once
 // transcribed) for the /admin/calls page. Operator-only.
+//
+// S6 adds commitment status counts (open/cleared/done/dismissed/expired)
+// and extraction progress (pending/extracted/quarantined, derived from
+// call_transcripts' tracking columns). Both degrade to null rather than
+// failing the whole response when call_commitments isn't migrated yet
+// (S2's tables can be applied before S6's) -- the recordings section above
+// already works without it, and the commitments section should not take it
+// down.
 
 import { NextResponse } from 'next/server';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isMissingTableError } from '@/lib/calls/errors';
+import { isCommitmentsSchemaUnavailable } from '@/lib/commitments/errors';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 type CallRecordingRow = {
   id: string;
@@ -22,6 +32,55 @@ type CallRecordingRow = {
 };
 
 const STATUS_KEYS = ['pending', 'processing', 'transcribed', 'skipped', 'failed'] as const;
+const COMMITMENT_STATUS_KEYS = ['open', 'cleared', 'done', 'dismissed', 'expired'] as const;
+
+type CommitmentSummary = {
+  counts: Record<(typeof COMMITMENT_STATUS_KEYS)[number], number>;
+  extraction: { pending: number; extracted: number; quarantined: number };
+};
+
+/**
+ * Commitment status counts + extraction progress for the /admin/calls page
+ * (S6). Returns null (not a thrown error) when call_commitments/the
+ * extraction tracking columns aren't migrated yet -- this section degrades
+ * independently of the call_recordings section above it.
+ */
+async function loadCommitmentSummary(supabase: SupabaseClient): Promise<CommitmentSummary | null> {
+  const { data: commitmentRows, error: commitmentError } = await supabase
+    .from('call_commitments')
+    .select('status');
+  if (commitmentError) {
+    if (isCommitmentsSchemaUnavailable(commitmentError)) return null;
+    throw commitmentError;
+  }
+
+  const counts = { open: 0, cleared: 0, done: 0, dismissed: 0, expired: 0 };
+  for (const row of (commitmentRows ?? []) as { status: string }[]) {
+    if ((COMMITMENT_STATUS_KEYS as readonly string[]).includes(row.status)) {
+      counts[row.status as keyof typeof counts]++;
+    }
+  }
+
+  const { data: transcriptRows, error: transcriptError } = await supabase
+    .from('call_transcripts')
+    .select('commitments_extracted_at, commitment_extraction_quarantined_at');
+  if (transcriptError) {
+    if (isCommitmentsSchemaUnavailable(transcriptError)) return null;
+    throw transcriptError;
+  }
+
+  const extraction = { pending: 0, extracted: 0, quarantined: 0 };
+  for (const row of (transcriptRows ?? []) as {
+    commitments_extracted_at: string | null;
+    commitment_extraction_quarantined_at: string | null;
+  }[]) {
+    if (row.commitments_extracted_at) extraction.extracted++;
+    else if (row.commitment_extraction_quarantined_at) extraction.quarantined++;
+    else extraction.pending++;
+  }
+
+  return { counts, extraction };
+}
 
 export async function GET() {
   const denied = await requireOperator();
@@ -82,12 +141,15 @@ export async function GET() {
       createdAt: row.created_at,
     }));
 
+    const commitments = await loadCommitmentSummary(supabase);
+
     return NextResponse.json({
       configured: true,
       migrated: true,
       lastSyncedAt: (stateData as { last_synced_at: string | null } | null)?.last_synced_at ?? null,
       counts,
       recordings,
+      commitments,
     });
   } catch (err) {
     if (isMissingTableError(err)) {
