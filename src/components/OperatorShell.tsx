@@ -14,7 +14,11 @@ export type OperatorArea =
   | 'inventory'
   | 'new'
   | 'training'
-  | 'settings';
+  | 'settings'
+  // 'time' matches no nav item on purpose (the leads precedent in
+  // OperatorNav.tsx: /admin/time-tracking is admin-only, reached from the
+  // Fleet page link, and the 1024px nav row has no room for another slot).
+  | 'time';
 
 // Shared chrome for every internal operator page: the branded top nav (links to
 // every area) on the cream operator surface. Wrap a page's content in this so
