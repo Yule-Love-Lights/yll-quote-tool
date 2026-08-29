@@ -14,7 +14,7 @@
 import { NextResponse } from 'next/server';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { isMissingTableError } from '@/lib/calls/errors';
+import { isMissingTableError, isCallNotesSchemaUnavailable } from '@/lib/calls/errors';
 import { isCommitmentsSchemaUnavailable } from '@/lib/commitments/errors';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -96,6 +96,63 @@ async function loadCommitmentSummary(supabase: SupabaseClient): Promise<Commitme
   return { counts, extraction };
 }
 
+type NoteSummary = {
+  posted: number;
+  pending: number;
+  skipped: number;
+  quarantined: number;
+  lastPostedAt: string | null;
+  lastFailureCode: string | null;
+};
+
+/**
+ * Post-call HighLevel note progress for the /admin/calls page. Added because
+ * the note phase writes its whole state onto call_transcripts and nothing
+ * read it, so a batch that quietly stopped posting was invisible to staff:
+ * this feature replaces a note reps wrote by hand every time, and an
+ * automated replacement that can go dark without a signal is worse than the
+ * manual one. Returns null (not a thrown error) when the note columns are
+ * not migrated yet, so this section degrades on its own like the
+ * commitments section above it.
+ */
+async function loadNoteSummary(supabase: SupabaseClient): Promise<NoteSummary | null> {
+  const { data, error } = await supabase
+    .from('call_transcripts')
+    .select('ghl_note_posted_at, ghl_note_skip_reason, ghl_note_quarantined_at, ghl_note_last_failure_code');
+  if (error) {
+    if (isCallNotesSchemaUnavailable(error)) return null;
+    throw error;
+  }
+
+  const summary: NoteSummary = {
+    posted: 0, pending: 0, skipped: 0, quarantined: 0, lastPostedAt: null, lastFailureCode: null,
+  };
+  for (const row of (data ?? []) as {
+    ghl_note_posted_at: string | null;
+    ghl_note_skip_reason: string | null;
+    ghl_note_quarantined_at: string | null;
+    ghl_note_last_failure_code: string | null;
+  }[]) {
+    if (row.ghl_note_posted_at) {
+      summary.posted++;
+      if (!summary.lastPostedAt || row.ghl_note_posted_at > summary.lastPostedAt) {
+        summary.lastPostedAt = row.ghl_note_posted_at;
+      }
+    } else if (row.ghl_note_quarantined_at) {
+      summary.quarantined++;
+    } else if (row.ghl_note_skip_reason) {
+      summary.skipped++;
+    } else {
+      summary.pending++;
+    }
+    // The most recent failure reason wins; it is a hint for a human reading
+    // the page, not a per-row report.
+    if (row.ghl_note_last_failure_code) summary.lastFailureCode = row.ghl_note_last_failure_code;
+  }
+
+  return summary;
+}
+
 export async function GET() {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -156,6 +213,7 @@ export async function GET() {
     }));
 
     const commitments = await loadCommitmentSummary(supabase);
+    const notes = await loadNoteSummary(supabase);
 
     return NextResponse.json({
       configured: true,
@@ -164,6 +222,7 @@ export async function GET() {
       counts,
       recordings,
       commitments,
+      notes,
     });
   } catch (err) {
     if (isMissingTableError(err)) {
