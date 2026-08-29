@@ -62,4 +62,16 @@ describe('sign stock route', () => {
     }
     expect(setSignStockQty).not.toHaveBeenCalled();
   });
+
+  it('a lost CAS race surfaces as 409 with the reload message, and other failures as 500', async () => {
+    const { SignStockConflictError } = await import('@/lib/advertising/signStock');
+    setSignStockQty.mockRejectedValue(new SignStockConflictError());
+    const conflict = await PATCH(makeReq({ onHandQty: 55 }));
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).error).toMatch(/changed while/);
+
+    setSignStockQty.mockRejectedValue(new Error('db down'));
+    const failed = await PATCH(makeReq({ onHandQty: 55 }));
+    expect(failed.status).toBe(500);
+  });
 });

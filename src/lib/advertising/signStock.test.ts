@@ -33,6 +33,32 @@ function makeDb() {
   return {
     from(table: string) {
       return {
+        update(payload: AnyRow) {
+          const filters: Record<string, unknown> = {};
+          const ub = {
+            eq(col: string, val: unknown) {
+              filters[col] = val;
+              return ub;
+            },
+            select(_cols?: string) {
+              return {
+                maybeSingle: () => {
+                  const row = stateRef.current.onHand;
+                  if (
+                    table !== 'inventory_on_hand' ||
+                    !row ||
+                    Object.entries(filters).some(([k, v]) => row[k] !== v)
+                  ) {
+                    return Promise.resolve({ data: null, error: null });
+                  }
+                  Object.assign(row, payload);
+                  return Promise.resolve({ data: { sku: row.sku }, error: null });
+                },
+              };
+            },
+          };
+          return ub;
+        },
         select(_cols?: string, opts?: { count?: string; head?: boolean }) {
           const filters: Record<string, unknown> = {};
           const b = {
@@ -101,16 +127,59 @@ describe('getSignStock', () => {
 });
 
 describe('setSignStockQty', () => {
-  it('writes the new count and audits prior and new with the acting admin', async () => {
-    const { setSignStockQty, YARD_SIGN_SKU } = await import('./signStock');
+  it('writes the new count via a CAS on the prior and audits prior and new', async () => {
+    const { setSignStockQty } = await import('./signStock');
     await setSignStockQty(55, 'admin-1');
-    expect(upsertOnHand).toHaveBeenCalledWith({ sku: YARD_SIGN_SKU, on_hand_qty: 55 });
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(55);
     expect(logAdvertisingActivity).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: 'admin-1',
         action: 'sign_stock_adjusted',
         detail: expect.objectContaining({ priorQty: 40, newQty: 55 }),
       }),
+    );
+  });
+
+  it('a lost race throws instead of logging a stale prior, and the other write survives', async () => {
+    const { setSignStockQty, SignStockConflictError } = await import('./signStock');
+    // Another admin's count (40 -> 44) lands between this caller's read and
+    // write: the mock CAS matches on on_hand_qty, so drift the row after
+    // getSignStock has read it by intercepting the first read.
+    const original = stateRef.current.onHand!;
+    let firstRead = true;
+    const realDb = dbRef.current as { from: (t: string) => unknown };
+    dbRef.current = {
+      from(table: string) {
+        const inner = realDb.from(table) as Record<string, unknown>;
+        if (table !== 'inventory_on_hand' || !firstRead) return inner;
+        return {
+          ...inner,
+          select: (..._args: unknown[]) => ({
+            eq: () => ({
+              maybeSingle: () => {
+                firstRead = false;
+                const stale = { ...original, on_hand_qty: 40 };
+                original.on_hand_qty = 44; // the concurrent write
+                return Promise.resolve({ data: stale, error: null });
+              },
+            }),
+          }),
+        };
+      },
+    };
+
+    await expect(setSignStockQty(55, 'admin-1')).rejects.toThrow(SignStockConflictError);
+    expect(original.on_hand_qty).toBe(44); // the other admin's count survives
+    expect(logAdvertisingActivity).not.toHaveBeenCalled();
+  });
+
+  it('recreates the row when it was deleted on the stock page, with an honest prior of 0', async () => {
+    const { setSignStockQty, YARD_SIGN_SKU } = await import('./signStock');
+    stateRef.current.onHand = null;
+    await setSignStockQty(25, 'admin-1');
+    expect(upsertOnHand).toHaveBeenCalledWith({ sku: YARD_SIGN_SKU, on_hand_qty: 25 });
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: expect.objectContaining({ priorQty: 0, newQty: 25 }) }),
     );
   });
 
@@ -124,6 +193,7 @@ describe('setSignStockQty', () => {
 
   it('a failed write logs nothing — the audit trail never claims a change that did not land', async () => {
     const { setSignStockQty } = await import('./signStock');
+    stateRef.current.onHand = null; // recreate path, whose write is upsertOnHand
     upsertOnHand.mockRejectedValue(new Error('write failed'));
     await expect(setSignStockQty(55, 'admin-1')).rejects.toThrow();
     expect(logAdvertisingActivity).not.toHaveBeenCalled();

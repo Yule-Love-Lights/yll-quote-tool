@@ -77,7 +77,9 @@ export default function PeoplePanel() {
         setWorkers(w);
         setCampaigns(c);
         setSignStock(s);
-        setError(null);
+        // A failed stock read must not vanish silently (staff lens LOW): the
+        // rest of the panel still works, but say the card is missing.
+        setError(sRes.ok ? null : 'Sign stock could not be loaded; the rest of this page is fine.');
       } catch {
         if (!cancelled) setError('Could not load.');
       }
@@ -204,11 +206,19 @@ export default function PeoplePanel() {
       String(signStock?.onHandQty ?? 0),
     );
     if (raw === null) return;
-    const qty = Number(raw.trim());
+    const trimmed = raw.trim();
+    // Number('') is 0 — an emptied prompt must be a refusal, never a silent
+    // zeroing of the count (staff lens MED on this PR).
+    if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+      setError('Enter a whole number, 0 or more.');
+      return;
+    }
+    const qty = Number(trimmed);
     if (!Number.isInteger(qty) || qty < 0) {
       setError('Enter a whole number, 0 or more.');
       return;
     }
+    if (qty === 0 && !window.confirm('Set the sign stock to ZERO?')) return;
     const ok = await call('/api/admin/advertising/sign-stock', 'PATCH', { onHandQty: qty });
     if (ok) setNotice(`Sign stock set to ${qty}.`);
   };
@@ -227,7 +237,7 @@ export default function PeoplePanel() {
               <p className="text-2xl font-semibold text-gray-900">{signStock.onHandQty}</p>
             </div>
             <div>
-              <p className="text-xs uppercase tracking-wide text-gray-500">Signs accepted all time</p>
+              <p className="text-xs uppercase tracking-wide text-gray-500">Accepted, cumulative (retrieved signs included)</p>
               <p className="text-2xl font-semibold text-gray-900">{signStock.acceptedAllTime}</p>
             </div>
             <div>

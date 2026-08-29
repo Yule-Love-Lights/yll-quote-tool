@@ -64,17 +64,52 @@ export async function getSignStock(): Promise<SignStock> {
   };
 }
 
+/** Thrown when the stock number changed between this caller's read and
+ * their write — refusing keeps the audit row's "prior" true (the
+ * updateAdvertisingCampaign rate-CAS posture; sibling-guard parity). */
+export class SignStockConflictError extends Error {
+  constructor() {
+    super('The sign count changed while you were editing it. Reload and count again.');
+    this.name = 'SignStockConflictError';
+  }
+}
+
 /**
  * Manual reconciliation write: the admin counted the pile and this is the
  * number. Audits prior and new (an adjustment with no before-value cannot
- * answer "where did 30 signs go" later); a failed write logs nothing.
+ * answer "where did 30 signs go" later). The write is a compare-and-swap on
+ * the prior count, so the audited "prior" can never be a lie; a lost race
+ * throws instead. A failed write logs nothing.
  */
 export async function setSignStockQty(qty: number, actor: string): Promise<SignStock> {
   if (!Number.isInteger(qty) || qty < 0) {
     throw new Error(`Invalid count: ${qty} — the sign count must be a whole number, 0 or more`);
   }
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
   const prior = await getSignStock();
-  await upsertOnHand({ sku: YARD_SIGN_SKU, on_hand_qty: qty });
+  const { data, error } = await db
+    .from('inventory_on_hand')
+    .update({ on_hand_qty: qty })
+    .eq('sku', YARD_SIGN_SKU)
+    .eq('on_hand_qty', prior.onHandQty)
+    .select('sku')
+    .maybeSingle();
+  if (error) throw new Error(`setSignStockQty: ${error.message}`);
+  if (!data) {
+    // No row matched: either the count moved under us (refuse — the audit
+    // must not record a stale prior) or the row was deleted on the
+    // /inventory/stock page (recreate it; the read honestly saw 0).
+    const { data: row, error: rowError } = await db
+      .from('inventory_on_hand')
+      .select('sku')
+      .eq('sku', YARD_SIGN_SKU)
+      .maybeSingle();
+    if (rowError) throw new Error(`setSignStockQty: ${rowError.message}`);
+    if (row) throw new SignStockConflictError();
+    await upsertOnHand({ sku: YARD_SIGN_SKU, on_hand_qty: qty });
+  }
   await logAdvertisingActivity({
     actor,
     action: 'sign_stock_adjusted',

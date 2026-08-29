@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/auth/supabaseServer';
-import { getSignStock, setSignStockQty } from '@/lib/advertising/signStock';
+import { getSignStock, setSignStockQty, SignStockConflictError } from '@/lib/advertising/signStock';
 
 export const runtime = 'nodejs';
 
@@ -38,6 +38,9 @@ export async function PATCH(req: NextRequest) {
     const stock = await setSignStockQty(qty, auth.operator.id);
     return NextResponse.json({ stock });
   } catch (e) {
+    if (e instanceof SignStockConflictError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
     console.error('PATCH /api/admin/advertising/sign-stock:', e instanceof Error ? e.message : e);
     return NextResponse.json({ error: 'Could not save the count. Try again.' }, { status: 500 });
   }
