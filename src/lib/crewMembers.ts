@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 
 export type CrewPayMode = 'hourly' | 'shadow' | 'p4p';
@@ -6,6 +7,7 @@ export type CrewMember = {
   id: string;
   hubEmployeeId: string | null;
   telegramUserId: string | null;
+  sessionEpoch: string | null;
   displayName: string;
   baseRateCents: number;
   inP4pPool: boolean;
@@ -33,6 +35,7 @@ type Row = {
   id: string;
   hub_employee_id: string | null;
   telegram_user_id: string | null;
+  session_epoch: string | null;
   display_name: string;
   base_rate_cents: number;
   in_p4p_pool: boolean;
@@ -44,7 +47,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, hub_employee_id, telegram_user_id, display_name, base_rate_cents, in_p4p_pool, pay_mode, language, active, created_at, updated_at';
+  'id, hub_employee_id, telegram_user_id, session_epoch, display_name, base_rate_cents, in_p4p_pool, pay_mode, language, active, created_at, updated_at';
 
 function isDisplayNameUniqueViolation(error: { code?: string; message?: string } | null): boolean {
   return error?.code === '23505' && error.message?.includes('crew_members_display_name_key') === true;
@@ -156,6 +159,7 @@ function toCrewMember(row: Row): CrewMember {
     id: row.id,
     hubEmployeeId: row.hub_employee_id,
     telegramUserId: row.telegram_user_id,
+    sessionEpoch: row.session_epoch,
     displayName: row.display_name,
     baseRateCents: row.base_rate_cents,
     inP4pPool: row.in_p4p_pool,
@@ -499,7 +503,10 @@ async function patchStaffRow(
 
 /** Activate or deactivate any staff member. */
 export async function setStaffActive(id: string, active: boolean): Promise<StaffMember | null> {
-  return patchStaffRow(id, { active });
+  // Deactivating ends their My Day sessions too. resolveCrewCaller already
+  // refuses an inactive crew member, so this is belt and braces for the window
+  // between a reactivation and the office noticing a stale session.
+  return patchStaffRow(id, active ? { active } : { active, session_epoch: randomUUID() });
 }
 
 /**
@@ -513,7 +520,12 @@ export async function setStaffTelegram(
   id: string,
   telegramUserId: string | null,
 ): Promise<StaffMember | null> {
-  return patchStaffRow(id, { telegram_user_id: telegramUserId });
+  // Rotating the epoch here is what makes unlink (or relink, even to the SAME
+  // account) a real sign-out everywhere for this one person: every My Day
+  // session issued before this moment stops resolving. Binding sessions to the
+  // Telegram id itself did NOT do that, because relinking the same account
+  // restored the same id and revived a leaked session (delta-verify, #1094).
+  return patchStaffRow(id, { telegram_user_id: telegramUserId, session_epoch: randomUUID() });
 }
 
 /** Correct or raise any staff member's hourly rate, in integer cents. */
@@ -697,4 +709,40 @@ export async function consumeCrewLinkJti(crewMemberId: string, jti: string): Pro
     .select('id');
   if (error) throw new Error(`consumeCrewLinkJti: ${error.message}`);
   return ((data as unknown as { id: string }[] | null) ?? []).length > 0;
+}
+
+/**
+ * The value a crew member's My Day sessions are bound to. Rotating it ends
+ * every session they hold; nobody else is affected. Created on first use, so a
+ * crew member who predates the column still gets one the first time they open
+ * a link.
+ */
+export async function ensureCrewSessionEpoch(crewMemberId: string): Promise<string> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const existing = await getCrewMember(crewMemberId);
+  if (existing?.sessionEpoch) return existing.sessionEpoch;
+
+  const epoch = randomUUID();
+  const { error } = await db
+    .from('crew_members')
+    .update({ session_epoch: epoch, updated_at: new Date().toISOString() })
+    .eq('id', crewMemberId);
+  if (error) throw new Error(`ensureCrewSessionEpoch: ${error.message}`);
+  return epoch;
+}
+
+/** Sign one crew member out of My Day everywhere, at once. */
+export async function rotateCrewSessionEpoch(crewMemberId: string): Promise<string> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const epoch = randomUUID();
+  const { error } = await db
+    .from('crew_members')
+    .update({ session_epoch: epoch, updated_at: new Date().toISOString() })
+    .eq('id', crewMemberId);
+  if (error) throw new Error(`rotateCrewSessionEpoch: ${error.message}`);
+  return epoch;
 }

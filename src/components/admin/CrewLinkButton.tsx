@@ -14,6 +14,7 @@ export function CrewLinkButton({ crewMemberId, displayName }: { crewMemberId: st
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [revoked, setRevoked] = useState(false);
 
   async function mint() {
     setState('working');
@@ -27,6 +28,24 @@ export function CrewLinkButton({ crewMemberId, displayName }: { crewMemberId: st
         setUrl(null);
       } else {
         setUrl(body.url as string);
+      }
+    } catch {
+      setError('Could not reach the server. Try again.');
+    } finally {
+      setState('idle');
+    }
+  }
+
+  async function revoke() {
+    setState('working');
+    setError(null);
+    setRevoked(false);
+    try {
+      const res = await fetch(`/api/admin/crew/${crewMemberId}/revoke`, { method: 'POST' });
+      if (!res.ok) setError('Could not sign them out. Try again.');
+      else {
+        setRevoked(true);
+        setUrl(null);
       }
     } catch {
       setError('Could not reach the server. Try again.');
@@ -70,6 +89,22 @@ export function CrewLinkButton({ crewMemberId, displayName }: { crewMemberId: st
           </p>
         </div>
       )}
+
+      <div className="mt-2">
+        <button
+          type="button"
+          onClick={revoke}
+          disabled={state === 'working'}
+          className="text-xs font-medium text-red-700 underline disabled:opacity-60"
+        >
+          Sign {displayName} out everywhere
+        </button>
+        {revoked && (
+          <p className="mt-1 text-xs text-green-700">
+            Signed out. Any link or phone still holding a session has stopped working.
+          </p>
+        )}
+      </div>
 
       {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
     </div>

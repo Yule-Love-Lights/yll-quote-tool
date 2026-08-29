@@ -4,12 +4,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const { getCrewMember, consumeCrewLinkJti, logCrewAccess } = vi.hoisted(() => ({
+const { getCrewMember, consumeCrewLinkJti, ensureCrewSessionEpoch, logCrewAccess } = vi.hoisted(() => ({
   getCrewMember: vi.fn(),
   consumeCrewLinkJti: vi.fn(),
+  ensureCrewSessionEpoch: vi.fn(),
   logCrewAccess: vi.fn(),
 }));
-vi.mock('@/lib/crewMembers', () => ({ getCrewMember, consumeCrewLinkJti }));
+vi.mock('@/lib/crewMembers', () => ({ getCrewMember, consumeCrewLinkJti, ensureCrewSessionEpoch }));
 vi.mock('@/lib/crew/accessEvents', () => ({ logCrewAccess }));
 
 import { GET } from './route';
@@ -34,6 +35,7 @@ beforeEach(() => {
   process.env.CREW_LINK_SECRET = 'test-secret-value-for-crew-links';
   getCrewMember.mockResolvedValue(member());
   consumeCrewLinkJti.mockResolvedValue(true);
+  ensureCrewSessionEpoch.mockResolvedValue('epoch-1');
   logCrewAccess.mockResolvedValue(undefined);
 });
 afterEach(() => {
@@ -117,10 +119,18 @@ describe('GET /crew/enter', () => {
     expect(consumeCrewLinkJti).not.toHaveBeenCalled();
   });
 
-  it('binds the session cookie to the Telegram account it was minted for', async () => {
+  // Bound to the ROTATABLE epoch, not the Telegram id: rotating it is what
+  // signs one crew member out everywhere (delta-verify, PR #1094).
+  it('binds the session cookie to the crew member session epoch', async () => {
     const res = await GET(req(mintCrewToken('link', CREW, Date.now(), '900001', 'jti-1')));
     const cookie = res.cookies.get(CREW_COOKIE_NAME)!.value;
-    expect(verifyCrewToken('session', cookie, Date.now())).toMatchObject({ ok: true, binding: '900001' });
+    expect(verifyCrewToken('session', cookie, Date.now())).toMatchObject({ ok: true, binding: 'epoch-1' });
+  });
+
+  it('never issues a session without first consuming the link', async () => {
+    consumeCrewLinkJti.mockResolvedValue(false);
+    await GET(req(mintCrewToken('link', CREW, Date.now(), '900001', 'jti-1')));
+    expect(ensureCrewSessionEpoch).not.toHaveBeenCalled();
   });
 
   it('records the entry, and records a refusal as a refusal', async () => {

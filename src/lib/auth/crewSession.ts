@@ -34,12 +34,18 @@ export async function resolveCrewCaller(
   if (!member) return { ok: false, reason: 'no_crew_row' };
   if (!member.active) return { ok: false, reason: 'inactive' };
   if (!member.telegramUserId) return { ok: false, reason: 'unlinked' };
-  // The session is bound to the Telegram account it was minted for, so the
-  // office can end a LEAKED session for one person by unlinking and relinking
-  // that account. Without this, a stolen cookie is good for its full 30 days
-  // and the only lever is deactivating the real crew member (customer lens,
-  // PR #1094).
-  if (verified.binding !== member.telegramUserId) return { ok: false, reason: 'revoked' };
+  // The session is bound to the crew member's session EPOCH, a value whose only
+  // job is to change: it rotates on link, unlink, deactivation and Sign out
+  // everywhere, so any of those ends every session that person holds, including
+  // a leaked one, and touches nobody else. An earlier cut bound to the Telegram
+  // id instead, which looked equivalent and was not: the office's real
+  // remediation is to unlink and relink the SAME account, which restored the
+  // same id and revived the stolen session (delta-verify, PR #1094).
+  // A session with no binding, or a crew row with no epoch, is refused: fail
+  // closed rather than treat "nothing to compare" as a match.
+  if (!verified.binding || !member.sessionEpoch || verified.binding !== member.sessionEpoch) {
+    return { ok: false, reason: 'revoked' };
+  }
   return { ok: true, member };
 }
 

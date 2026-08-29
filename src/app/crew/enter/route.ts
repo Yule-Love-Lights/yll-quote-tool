@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { verifyCrewToken, mintCrewToken } from '@/lib/auth/crewLink';
 import { CREW_COOKIE_NAME, crewCookieOptions } from '@/lib/auth/crewSession';
-import { consumeCrewLinkJti, getCrewMember } from '@/lib/crewMembers';
+import { consumeCrewLinkJti, ensureCrewSessionEpoch, getCrewMember } from '@/lib/crewMembers';
 import { logCrewAccess } from '@/lib/crew/accessEvents';
 
 export const dynamic = 'force-dynamic';
@@ -44,15 +44,13 @@ export async function GET(req: NextRequest) {
     return refuse('used', member.id, 'already_used');
   }
 
+  const epoch = await ensureCrewSessionEpoch(member.id);
+
   const url = req.nextUrl.clone();
   url.pathname = '/crew';
   url.search = '';
   const res = NextResponse.redirect(url);
-  res.cookies.set(
-    CREW_COOKIE_NAME,
-    mintCrewToken('session', member.id, Date.now(), member.telegramUserId),
-    crewCookieOptions(),
-  );
+  res.cookies.set(CREW_COOKIE_NAME, mintCrewToken('session', member.id, Date.now(), epoch), crewCookieOptions());
   await logCrewAccess({ crewMemberId: member.id, actor: 'crew', action: 'entered' });
   return res;
 }
