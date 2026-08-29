@@ -2883,9 +2883,23 @@ export default function QuoteBuilder({
   const clearAllTracedLines = () => {
     if (postApprovalFrozen) return;
     if (!anyTracedLines) return;
+    // Premerge staff lens (MED): the first wording promised the footage
+    // "resets to 0". That is only true when the satellite has a known scale —
+    // the measurement effect bails out early on a manually-uploaded photo with
+    // no feet-per-pixel, where staff type the footage by hand, so the numbers
+    // would have stayed put while this dialog claimed otherwise. Say the true
+    // thing in both cases rather than the convenient one.
+    const derivesFootage = satelliteFeetPerPixel != null;
     if (
       !window.confirm(
-        'Clear every traced line on this satellite image? The footage they measured resets to 0 and you can re-trace from scratch. The photo and its scale stay.',
+        [
+          'Clear every traced line on this satellite image?',
+          '',
+          derivesFootage
+            ? 'The footage measured from them goes back to 0 and you can re-trace from scratch.'
+            : 'This photo has no scale, so the footage fields are whatever was typed by hand and will NOT change. Check them yourself after re-tracing.',
+          'The photo itself and its scale stay.',
+        ].join('\n'),
       )
     ) {
       return;
@@ -7442,7 +7456,10 @@ Send anyway?`,
                           <button type="button" onClick={clearAllTracedLines}
                             disabled={postApprovalFrozen}
                             title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : 'Wipe every traced line and start over'}
-                            className="ml-auto text-xs font-medium text-gray-600 hover:text-red-700 disabled:text-gray-300 border border-gray-300 hover:border-red-400 disabled:border-gray-200 rounded px-3 py-1.5">
+                            // No ml-auto: on a narrow window the row wraps and
+                            // an auto margin strands this button on a line of
+                            // its own, far from the controls it belongs with.
+                            className="text-xs font-medium text-gray-600 hover:text-red-700 disabled:text-gray-300 border border-gray-300 hover:border-red-400 disabled:border-gray-200 rounded px-3 py-1.5">
                             Clear all traced lines
                           </button>
                         )}

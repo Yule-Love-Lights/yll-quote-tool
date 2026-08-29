@@ -50,6 +50,9 @@ import {
   asArchiveOutcome,
   outcomeForStageId,
   decideArchive,
+  serviceTypesForPipeline,
+  quoteIsInScope,
+  ARCHIVABLE_FROM,
   type ArchiveOutcome,
 } from '@/lib/integrations/ghlQuoteArchive';
 
@@ -66,6 +69,11 @@ type QuoteRow = {
   deposit_paid_at: string | null;
   view_only: boolean;
   approval_snapshot: Record<string, unknown> | null;
+  // Scoping (premerge technical + admin lenses, converged): which pipeline this
+  // quote's card lives in, so a drag in one pipeline cannot archive a live
+  // quote in another.
+  service_type: string | null;
+  legacy_rebook: boolean;
 };
 
 /** Pull the contact id out of whichever spelling the workflow happens to send. */
@@ -92,6 +100,23 @@ export function readStageId(body: Record<string, unknown>): string | null {
   if (opp && typeof opp === 'object') {
     const o = opp as Record<string, unknown>;
     for (const key of ['pipelineStageId', 'pipeline_stage_id']) {
+      const v = o[key];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+
+/** The pipeline id, so the archive can be scoped to the deal that moved. */
+export function readPipelineId(body: Record<string, unknown>): string | null {
+  for (const key of ['pipelineId', 'pipeline_id']) {
+    const v = body[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  const opp = body.opportunity;
+  if (opp && typeof opp === 'object') {
+    const o = opp as Record<string, unknown>;
+    for (const key of ['pipelineId', 'pipeline_id']) {
       const v = o[key];
       if (typeof v === 'string' && v.trim()) return v.trim();
     }
@@ -134,11 +159,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ignored: 'not-an-archive-stage' });
   }
 
+  // Scope the archive to the pipeline the drag happened in, when the payload
+  // named one. Null means the payload carried no pipeline (the explicit-outcome
+  // form does not carry one), in which case every live quote for the contact is
+  // in scope, exactly as before — reported as `scoped` in the response so a
+  // wide sweep is never silent.
+  const scope = serviceTypesForPipeline(readPipelineId(body));
+
   const sb = getSupabaseServiceClient()!;
   const { data: quotes, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, quote_number, customer_name, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only, approval_snapshot',
+      'id, quote_number, customer_name, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only, approval_snapshot, service_type, legacy_rebook',
     )
     .eq('highlevel_contact_id', contactId)
     .returns<QuoteRow[]>();
@@ -148,7 +180,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Quote lookup failed' }, { status: 500 });
   }
   if (!quotes || quotes.length === 0) {
-    return NextResponse.json({ ok: true, outcome, matched: 0, archived: 0, skipped: [], refused: [] });
+    return NextResponse.json({
+      ok: true,
+      outcome,
+      scoped: !!scope,
+      matched: 0,
+      archived: 0,
+      skipped: [],
+      refused: [],
+    });
   }
 
   const at = new Date().toISOString();
@@ -163,6 +203,10 @@ export async function POST(req: NextRequest) {
   }[] = [];
 
   for (const q of quotes) {
+    if (!quoteIsInScope({ serviceType: q.service_type, legacyRebook: q.legacy_rebook }, scope)) {
+      skipped.push({ id: q.id, reason: 'other-pipeline' });
+      continue;
+    }
     const typed = isQuoteStatus(q.status) ? q.status : null;
     const status = deriveStatus({ ...q, status: typed });
     const decision = decideArchive({
@@ -211,11 +255,20 @@ export async function POST(req: NextRequest) {
     //
     // The status is the ONLY thing written. Setting view_only as well was the
     // first cut and was wrong — see the archive doc at the top of this file.
+    //
+    // Premerge technical lens (MED): the STATUS itself is re-checked here too,
+    // mirroring staff-abandon's `abandonableFilter`. Without it, a quote a
+    // customer declined in the read-write gap could be flipped declined ->
+    // abandoned, which the transition table forbids. Legacy rows carry a null
+    // status (deriveStatus reconstructs it from timestamps), so null is
+    // explicitly allowed, exactly as the sibling routes allow it.
+    const archivableFilter = `status.in.(${ARCHIVABLE_FROM.join(',')}),status.is.null`;
     const { data: claimed, error: updErr } = await sb
       .from('quotes')
       .update({ status: outcome satisfies QuoteStatus, approval_snapshot: snapshot })
       .eq('id', q.id)
       .eq('view_only', false)
+      .or(archivableFilter)
       .is('customer_approved_at', null)
       .is('deposit_paid_at', null)
       .select('id');
@@ -247,13 +300,23 @@ export async function POST(req: NextRequest) {
   // who has money on the books. Staff need to see that, so it is a ping, not a
   // log line. Best-effort: notifyTelegramAudience never throws.
   if (refused.length) {
+    // Premerge technical lens (LOW): say WHY per row rather than asserting
+    // money for all of them — a lost-race refusal is a different story from an
+    // approved quote, and a message that overstates its own cause is the kind
+    // staff learn to ignore.
+    const why: Record<string, string> = {
+      'has-money': 'already approved or paid',
+      'lost-race': 'changed while we were writing',
+      'illegal-transition': 'not in a state we can close',
+    };
     const lines = refused.map(
-      (r) => `- ${r.name || 'Unknown'} (quote #${r.quoteNumber ?? '?'}) is ${r.status}: ${r.reason}`,
+      (r) =>
+        `- ${r.name || 'Unknown'} (quote #${r.quoteNumber ?? '?'}, ${r.status}): ${why[r.reason] ?? r.reason}`,
     );
     await notifyTelegramAudience(
       'leads',
       [
-        `HighLevel moved a contact to ${outcome}, but ${refused.length} quote(s) were left alone because there is money on them:`,
+        `HighLevel moved a contact to ${outcome}, but ${refused.length} quote(s) were left alone:`,
         ...lines,
         'Nothing changed in the quote tool. Check whether the CRM move was right.',
       ].join('\n'),
@@ -263,6 +326,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     outcome,
+    scoped: !!scope,
     matched: quotes.length,
     archived: archived.length,
     skipped,

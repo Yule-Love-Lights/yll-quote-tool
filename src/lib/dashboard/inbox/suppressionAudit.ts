@@ -55,9 +55,22 @@ export async function recordSuppressionChange(
     contact_id: ctx.contactId ?? null,
     detail: { value, note: ctx.note ?? null },
   }));
-  const { error } = await sb.from('dashboard_activity').insert(rows);
-  if (error) {
-    console.warn('[suppressionAudit] activity write failed (non-fatal):', error.message);
+  // Premerge technical lens (MED): the try/catch is the thing that makes the
+  // "never throws" promise above true. Checking `error` only covers a Postgrest
+  // error RESULT; a network-level rejection throws instead, and this is called
+  // from the dismiss path, where a throw would 500 a request whose dismiss had
+  // already succeeded. The comment claimed this guarantee before the code
+  // delivered it.
+  try {
+    const { error } = await sb.from('dashboard_activity').insert(rows);
+    if (error) {
+      console.warn('[suppressionAudit] activity write failed (non-fatal):', error.message);
+    }
+  } catch (err) {
+    console.warn(
+      '[suppressionAudit] activity write threw (non-fatal):',
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 

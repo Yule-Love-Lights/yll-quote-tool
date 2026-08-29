@@ -20,7 +20,8 @@ vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
 vi.mock('@/lib/integrations/telegramRouting', () => ({ notifyTelegramAudience: notifyMock }));
 
 import { POST } from './route';
-import { NEIGHBORS_DECLINED_STAGE_ID } from '@/lib/integrations/ghlPipelineMap';
+import { NEIGHBORS_DECLINED_STAGE_ID, resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
+import { ARCHIVABLE_FROM } from '@/lib/integrations/ghlQuoteArchive';
 
 const SECRET = 'test-webhook-secret';
 
@@ -40,8 +41,12 @@ type Quote = Record<string, unknown>;
 function makeSb(quotes: Quote[], opts: { writeMatches?: boolean; readError?: string } = {}) {
   const writeMatches = opts.writeMatches ?? true;
   const updates: Record<string, unknown>[] = [];
+  // Every `.or(...)` filter the write applied, so a test can prove the status
+  // CAS is really on the statement rather than assuming it.
+  const writeFilters: string[] = [];
   const sb = {
     updates,
+    writeFilters,
     from() {
       const readChain: Record<string, unknown> = {
         select: () => readChain,
@@ -56,6 +61,10 @@ function makeSb(quotes: Quote[], opts: { writeMatches?: boolean; readError?: str
       };
       const writeChain: Record<string, unknown> = {
         eq: () => writeChain,
+        or: (filter: string) => {
+          writeFilters.push(filter);
+          return writeChain;
+        },
         is: () => writeChain,
         select: () => writeChain,
         then: (resolve: (v: unknown) => unknown) =>
@@ -94,6 +103,8 @@ const liveQuote = (over: Quote = {}): Quote => ({
   deposit_paid_at: null,
   view_only: false,
   approval_snapshot: null,
+  service_type: 'holiday',
+  legacy_rebook: false,
   ...over,
 });
 
@@ -305,5 +316,80 @@ describe('the archive write', () => {
     sbRef.current = makeSb([], { readError: 'boom' });
     const res = await POST(req({ contactId: 'c1', outcome: 'declined' }));
     expect(res.status).toBe(500);
+  });
+});
+
+// Premerge technical + admin lenses, converged (HIGH/MED). One GHL contact can
+// hold live quotes in more than one pipeline; 3 contacts did on prod when this
+// shipped. A drag in one pipeline must not kill the other vertical's live deal.
+describe('pipeline scoping', () => {
+  const HOLIDAY_PIPELINE = resolvePipelineStages('holiday').pipelineId;
+
+  it("leaves another vertical's live quote alone when the payload names a pipeline", async () => {
+    const sb = makeSb([
+      liveQuote({ id: 'q-holiday', service_type: 'holiday' }),
+      liveQuote({ id: 'q-permanent', service_type: 'permanent' }),
+    ]);
+    sbRef.current = sb;
+    const json = await (
+      await POST(req({ contactId: 'c1', outcome: 'declined', pipelineId: HOLIDAY_PIPELINE }))
+    ).json();
+    expect(json.scoped).toBe(true);
+    expect(json.archived).toBe(1);
+    expect(json.skipped).toContainEqual({ id: 'q-permanent', reason: 'other-pipeline' });
+    expect(sb.updates).toHaveLength(1);
+  });
+
+  it('reports scoped:false when no pipeline was named, so a wide sweep is never silent', async () => {
+    const sb = makeSb([
+      liveQuote({ id: 'q-holiday', service_type: 'holiday' }),
+      liveQuote({ id: 'q-permanent', service_type: 'permanent' }),
+    ]);
+    sbRef.current = sb;
+    const json = await (await POST(req({ contactId: 'c1', outcome: 'declined' }))).json();
+    expect(json.scoped).toBe(false);
+    expect(json.archived).toBe(2);
+  });
+
+  it('reads a nested pipeline id from the opportunity object', async () => {
+    const sb = makeSb([liveQuote({ service_type: 'permanent' })]);
+    sbRef.current = sb;
+    const json = await (
+      await POST(
+        req({ contactId: 'c1', outcome: 'declined', opportunity: { pipelineId: HOLIDAY_PIPELINE } }),
+      )
+    ).json();
+    expect(json.scoped).toBe(true);
+    expect(json.archived).toBe(0);
+    expect(sb.updates).toHaveLength(0);
+  });
+});
+
+// Premerge technical lens (MED): without a status CAS on the write, a quote a
+// customer declined in the read-write gap could be flipped declined ->
+// abandoned, which ALLOWED_TRANSITIONS forbids. These pin the filter onto the
+// statement, since a fake that ignores it would happily pass either way.
+describe('the status guard on the write itself', () => {
+  it('constrains the write to statuses an archive is legal from', async () => {
+    const sb = makeSb([liveQuote()]);
+    sbRef.current = sb;
+    await POST(req({ contactId: 'c1', outcome: 'declined' }));
+    expect(sb.writeFilters).toHaveLength(1);
+    const filter = sb.writeFilters[0];
+    for (const legal of ARCHIVABLE_FROM) expect(filter).toContain(legal);
+    // A legacy row carries a null status and must still be archivable.
+    expect(filter).toContain('status.is.null');
+  });
+
+  it('never allows approved, booked, or an already-terminal status through that filter', async () => {
+    const sb = makeSb([liveQuote()]);
+    sbRef.current = sb;
+    await POST(req({ contactId: 'c1', outcome: 'declined' }));
+    const listed = sb.writeFilters[0];
+    for (const illegal of ['approved', 'booked', 'declined', 'abandoned', 'cancelled']) {
+      expect(listed).not.toContain(`,${illegal},`);
+      expect(listed).not.toContain(`(${illegal},`);
+      expect(listed).not.toContain(`,${illegal})`);
+    }
   });
 });

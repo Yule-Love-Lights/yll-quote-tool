@@ -12,7 +12,8 @@
 // pay. Nothing is deleted, and staff reverse it with the existing view-only
 // toggle plus a revive (canRevive covers declined and abandoned).
 
-import { allPipelineStages } from './ghlPipelineMap';
+import { allPipelineStages, resolvePipelineStages, NEIGHBORS_PIPELINE_ID } from './ghlPipelineMap';
+import { asServiceType, DEFAULT_SERVICE_TYPE, SERVICE_TYPES, type ServiceType } from '@/lib/serviceType';
 import { canTransition, QUOTE_STATUSES, type QuoteStatus } from '@/lib/quoteStatus';
 
 export type ArchiveOutcome = Extract<QuoteStatus, 'declined' | 'abandoned'>;
@@ -109,4 +110,46 @@ export function decideArchive(quote: ArchiveCandidate): ArchiveDecision {
   // staff-abandon and staff-decline, which both refuse a view-only quote.
   if (quote.viewOnly) return { action: 'skip', reason: 'already-view-only' };
   return { action: 'archive' };
+}
+
+/**
+ * Which service types live in a given GHL pipeline, so an archive can be scoped
+ * to the deal that actually moved.
+ *
+ * Premerge technical lens (MED): the first cut archived EVERY live quote linked
+ * to the contact, whichever pipeline the drag happened in. Measured on prod: 3
+ * contacts currently hold live quotes in two different service types, so a
+ * customer declining their holiday quote could have silently killed a live
+ * permanent one. Small, but real, and silent is the bad part.
+ *
+ * Returns null when the payload named no pipeline (the explicit-outcome form
+ * does not carry one) or named an unknown pipeline. Null means "do not scope",
+ * which is the previous behaviour and is reported in the response so it is
+ * never a silent widening.
+ */
+export function serviceTypesForPipeline(
+  pipelineId: string | null | undefined,
+): { serviceTypes: ServiceType[]; legacyRebookOnly: boolean } | null {
+  const id = pipelineId?.trim();
+  if (!id) return null;
+  // The Neighbors pipeline is not a service type at all: it is where legacy
+  // rebooks live, across every vertical. A drag there scopes to rebook quotes
+  // rather than to a vertical.
+  if (id === NEIGHBORS_PIPELINE_ID) return { serviceTypes: [], legacyRebookOnly: true };
+  const matches = SERVICE_TYPES.filter((t) => resolvePipelineStages(t).pipelineId === id);
+  return matches.length ? { serviceTypes: matches, legacyRebookOnly: false } : null;
+}
+
+/** Whether one quote belongs to the pipeline the stage move happened in. */
+export function quoteIsInScope(
+  quote: { serviceType: string | null; legacyRebook: boolean },
+  scope: { serviceTypes: ServiceType[]; legacyRebookOnly: boolean } | null,
+): boolean {
+  if (!scope) return true; // no pipeline named — unscoped, as before
+  if (scope.legacyRebookOnly) return quote.legacyRebook;
+  // A legacy-rebook quote lives in the Neighbors pipeline whatever its service
+  // type, so a vertical pipeline's drag must not claim it.
+  if (quote.legacyRebook) return false;
+  const type = asServiceType(quote.serviceType) ?? DEFAULT_SERVICE_TYPE;
+  return scope.serviceTypes.includes(type);
 }

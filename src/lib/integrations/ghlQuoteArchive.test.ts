@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   archiveStageMap,
+  serviceTypesForPipeline,
+  quoteIsInScope,
   outcomeForStageId,
   asArchiveOutcome,
   ARCHIVABLE_FROM,
   decideArchive,
   type ArchiveCandidate,
 } from './ghlQuoteArchive';
-import { allPipelineStages } from './ghlPipelineMap';
+import { allPipelineStages, resolvePipelineStages, NEIGHBORS_PIPELINE_ID } from './ghlPipelineMap';
 import { QUOTE_STATUSES } from '@/lib/quoteStatus';
 
 const candidate = (over: Partial<ArchiveCandidate> = {}): ArchiveCandidate => ({
@@ -118,5 +120,57 @@ describe('archive decision: the money guard (S75, Naldo 2026-08-29)', () => {
       const d = decideArchive(candidate({ status }));
       expect(['archive', 'skip', 'refuse']).toContain(d.action);
     }
+  });
+});
+
+// Premerge technical + admin lenses converged on this (HIGH/MED): one GHL
+// contact can hold live quotes in more than one pipeline. Measured on prod at
+// the time: 3 contacts did. Without scoping, declining a holiday deal would
+// silently archive that customer's live permanent quote too.
+describe('pipeline scoping (S75 premerge fix)', () => {
+  it('maps a vertical pipeline id back to its service type', () => {
+    const holiday = resolvePipelineStages('holiday').pipelineId;
+    const scope = serviceTypesForPipeline(holiday);
+    expect(scope).not.toBeNull();
+    expect(scope!.serviceTypes).toContain('holiday');
+    expect(scope!.legacyRebookOnly).toBe(false);
+  });
+
+  it('treats the Neighbors pipeline as legacy rebooks, not a vertical', () => {
+    const scope = serviceTypesForPipeline(NEIGHBORS_PIPELINE_ID);
+    expect(scope!.legacyRebookOnly).toBe(true);
+    expect(scope!.serviceTypes).toEqual([]);
+  });
+
+  it('returns null for a missing or unknown pipeline, meaning do not scope', () => {
+    expect(serviceTypesForPipeline(null)).toBeNull();
+    expect(serviceTypesForPipeline('   ')).toBeNull();
+    expect(serviceTypesForPipeline('not-a-pipeline')).toBeNull();
+  });
+
+  it('keeps every quote in scope when no pipeline was named, as before', () => {
+    expect(quoteIsInScope({ serviceType: 'permanent', legacyRebook: false }, null)).toBe(true);
+    expect(quoteIsInScope({ serviceType: null, legacyRebook: true }, null)).toBe(true);
+  });
+
+  it("excludes another vertical's live quote for the same customer", () => {
+    const scope = serviceTypesForPipeline(resolvePipelineStages('holiday').pipelineId);
+    expect(quoteIsInScope({ serviceType: 'holiday', legacyRebook: false }, scope)).toBe(true);
+    expect(quoteIsInScope({ serviceType: 'permanent', legacyRebook: false }, scope)).toBe(false);
+    expect(quoteIsInScope({ serviceType: 'event', legacyRebook: false }, scope)).toBe(false);
+  });
+
+  it('reads an uncategorised quote as holiday, matching DEFAULT_SERVICE_TYPE', () => {
+    const scope = serviceTypesForPipeline(resolvePipelineStages('holiday').pipelineId);
+    expect(quoteIsInScope({ serviceType: null, legacyRebook: false }, scope)).toBe(true);
+  });
+
+  it('never lets a vertical pipeline claim a legacy-rebook quote, or the reverse', () => {
+    const holidayScope = serviceTypesForPipeline(resolvePipelineStages('holiday').pipelineId);
+    const neighborsScope = serviceTypesForPipeline(NEIGHBORS_PIPELINE_ID);
+    // A rebook lives in Neighbors whatever its service type.
+    expect(quoteIsInScope({ serviceType: 'holiday', legacyRebook: true }, holidayScope)).toBe(false);
+    expect(quoteIsInScope({ serviceType: 'holiday', legacyRebook: true }, neighborsScope)).toBe(true);
+    expect(quoteIsInScope({ serviceType: 'holiday', legacyRebook: false }, neighborsScope)).toBe(false);
   });
 });

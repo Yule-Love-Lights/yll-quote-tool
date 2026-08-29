@@ -27,6 +27,14 @@ type Entry = {
 
 const MONEY_STATUSES = new Set(['approved', 'booked']);
 
+// The audit stores whoever the auth layer resolved, which is a Supabase user id
+// on a real click and the literal 'system' when the auth gate was dormant. Show
+// the honest thing for each rather than dressing an id up as a name we do not
+// have.
+function formatActor(actor: string): string {
+  return actor === 'system' ? 'an automatic rule' : `operator ${actor.slice(0, 8)}`;
+}
+
 function formatWhen(iso: string | null): string {
   if (!iso) return 'Before we started recording this';
   const d = new Date(iso);
@@ -165,6 +173,7 @@ export default function SuppressedSendersPage() {
                     <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
                       {entry.kind === 'email' ? 'Email' : 'Phone'} · Suppressed{' '}
                       {formatWhen(entry.suppressedAt)}
+                      {entry.suppressedBy && <> by {formatActor(entry.suppressedBy)}</>}
                       {entry.hasQuote && (
                         <>
                           {' '}
