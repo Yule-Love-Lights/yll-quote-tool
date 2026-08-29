@@ -23,13 +23,26 @@ hurts SEO, plus what else we should measure.
     video; swapped for `aria-hidden="true"`.
   - Carousel: `aria-label` "Previous slide" / "Next slide" on the Elementor swiper
     buttons, which had `role="button"` and no accessible name.
-  - Lead-form honeypot: `tabindex="-1"` on the hidden `input[name=company]` spam traps,
-    which were keyboard reachable — a homeowner tabbing through the form could have had a
-    genuine quote request flagged as spam.
+  - Lead-form honeypot: `tabindex="-1"` on the hidden `input[name=company]` spam traps.
+    **CORRECTED at close:** this was reported mid-session as closing a real lead-loss
+    hazard, and that claim was wrong. The wrap technical lens found the widget already
+    bakes `tabindex: '-1'` into the honeypot, and `git log` confirms it has done so in
+    `public/lead-form.js` since 2026-07-11, before this session started. The live page and
+    a Lighthouse `aria-hidden-focus` failure both showed the attribute absent at the time,
+    most likely a stale cached copy of that script being served, but the widget was never
+    actually unprotected. The change is harmless belt-and-braces, not a hazard closed.
 - **Edit to pre-existing snippet 3559** (April's accessibility fixes): added
   `nitro-exclude` to its script tag. No logic change.
 - **NitroPack**: Naldo renewed the lapsed subscription and upgraded to Plus (40,000
   pageviews, 25GB CDN). Cache purged and rebuilt several times.
+
+- **CORRECTION shipped inside the close:** the `!important` background added for the
+  contact bars was also applied to the lead-form submit button, which silently killed that
+  button's hover darken, because `!important` beats the widget's own non-`!important`
+  `:hover` rule regardless of specificity. Found by the wrap technical lens with a real
+  hover in a headless browser, not by reading CSS. The rule was split so the bars keep the
+  override and the button gets its own `:hover`/`:focus` state at `#21633e` (contrast 7.19).
+  This was a regression introduced by this session on the site's primary conversion CTA.
 
 ## Results, measured
 
