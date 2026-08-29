@@ -7,7 +7,7 @@ import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
 import { getSessionRole } from '@/lib/auth/sessionRole';
-import { countDoorHangersByWorker, earningsSummary, listPlacements } from '@/lib/advertising/placements';
+import { doorHangerCountsByWorker, earningsSummary } from '@/lib/advertising/placements';
 import { listAdvertisingWorkers } from '@/lib/advertising/workers';
 
 export const dynamic = 'force-dynamic';
@@ -20,15 +20,12 @@ export default async function AdvertisingPayPage() {
   const role = await getSessionRole();
   if (role !== 'admin') redirect('/');
 
-  const [summaries, workers, allPlacements] = await Promise.all([
+  const [summaries, workers, doorHangers] = await Promise.all([
     earningsSummary(),
     listAdvertisingWorkers({ includeInactive: true }),
-    listPlacements(),
+    doorHangerCountsByWorker(),
   ]);
   const nameById = new Map(workers.map((w) => [w.id, w.displayName]));
-  // Door hangers pay nothing by ruling, so they appear in no money figure;
-  // this count shows the hustle anyway (and whether workers log them at all).
-  const doorHangers = countDoorHangersByWorker(allPlacements);
 
   return (
     <OperatorShell active="advertising-pay">

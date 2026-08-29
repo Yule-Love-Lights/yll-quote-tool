@@ -15,12 +15,9 @@ vi.mock('@/lib/auth/advertisingAuth', async (importOriginal) => {
   return { ...actual, getAdvertisingCaller };
 });
 vi.mock('@/lib/advertising/placements', () => ({ earningsSummary, listPlacements }));
-vi.mock('@/lib/advertising/rateChangeNote', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/advertising/rateChangeNote')>();
-  // hasPendingRateChange stays REAL (it is the pure logic under test through
-  // the route); only the db read is mocked.
-  return { ...actual, listRateChangeEvents };
-});
+vi.mock('@/lib/advertising/activity', () => ({ listRateChangeEvents }));
+// hasPendingRateChange stays REAL (the pure logic under test through the
+// route); only the activity-table read is mocked, at its real home now.
 
 import { GET } from './route';
 

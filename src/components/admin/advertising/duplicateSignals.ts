@@ -11,7 +11,8 @@ export function isStrongDuplicate(reasons: string[]): boolean {
 
 export function splitDuplicateSignals<T extends { reasons: string[] }>(
   duplicates: T[],
-): { strong: T[]; weakCount: number } {
+): { strong: T[]; weak: T[]; weakCount: number } {
   const strong = duplicates.filter((d) => isStrongDuplicate(d.reasons));
-  return { strong, weakCount: duplicates.length - strong.length };
+  const weak = duplicates.filter((d) => !isStrongDuplicate(d.reasons));
+  return { strong, weak, weakCount: weak.length };
 }

@@ -2,8 +2,10 @@
 // money is estimated at the campaign's CURRENT rate, so a rate edit moves a
 // worker's pending figure with no explanation; the rate_changed audit rows
 // (campaigns.ts) are the signal that makes a one-line explanation honest.
-
-import { getSupabaseServiceClient } from '@/lib/supabase';
+// PURE module: the audit-table read lives in activity.ts
+// (listRateChangeEvents), which owns every advertising_activity access —
+// the technical lens caught the first cut querying the table from here,
+// drifting past that module's stated only-door boundary.
 
 export type PendingRowTime = { campaignId: string; at: string };
 export type RateChangeEvent = { campaignId: string; createdAt: string };
@@ -29,34 +31,3 @@ export function hasPendingRateChange(pending: PendingRowTime[], events: RateChan
   return false;
 }
 
-/** rate_changed audit events for these campaigns since a floor time. The
- * campaign id lives in the event's detail json (campaigns.ts writes it
- * there); a failed read returns [] so the earnings view degrades to "no
- * note" instead of an error. */
-export async function listRateChangeEvents(
-  campaignIds: string[],
-  sinceIso: string,
-): Promise<RateChangeEvent[]> {
-  if (campaignIds.length === 0) return [];
-  const db = getSupabaseServiceClient();
-  if (!db) return [];
-  const { data, error } = await db
-    .from('advertising_activity')
-    .select('detail, created_at')
-    .eq('action', 'rate_changed')
-    .gt('created_at', sinceIso)
-    .limit(200);
-  if (error) {
-    console.error('listRateChangeEvents error:', error);
-    return [];
-  }
-  const wanted = new Set(campaignIds);
-  const out: RateChangeEvent[] = [];
-  for (const row of data ?? []) {
-    const campaignId = (row.detail as { campaignId?: unknown } | null)?.campaignId;
-    if (typeof campaignId === 'string' && wanted.has(campaignId)) {
-      out.push({ campaignId, createdAt: row.created_at as string });
-    }
-  }
-  return out;
-}

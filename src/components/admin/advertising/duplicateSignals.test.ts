@@ -22,19 +22,25 @@ describe('splitDuplicateSignals', () => {
     expect(weakCount).toBe(0);
   });
 
-  it('collapses worker-day-only matches into a count', () => {
-    const { strong, weakCount } = splitDuplicateSignals([
+  it('collapses worker-day-only matches into the weak list, preserving every candidate', () => {
+    const rows = [
       dup(['same worker, same day']),
       dup(['same worker, same day']),
       dup(['12m away', 'same suggested address', 'same worker, same day']),
-    ]);
+    ];
+    const { strong, weak, weakCount } = splitDuplicateSignals(rows);
     expect(strong).toHaveLength(1);
+    expect(weak).toHaveLength(2);
     expect(weakCount).toBe(2);
+    // Nothing is ever dropped (admin lens: the weak list must stay reachable,
+    // a re-placed sign can carry only the worker-day reason).
+    expect(strong.length + weak.length).toBe(rows.length);
   });
 
   it('handles the empty list', () => {
-    const { strong, weakCount } = splitDuplicateSignals([]);
+    const { strong, weak, weakCount } = splitDuplicateSignals([]);
     expect(strong).toHaveLength(0);
+    expect(weak).toHaveLength(0);
     expect(weakCount).toBe(0);
   });
 });

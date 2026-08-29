@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 
 import { advertisingRefusalStatus, getAdvertisingCaller } from '@/lib/auth/advertisingAuth';
 import { earningsSummary, listPlacements, type WorkerEarningsSummary } from '@/lib/advertising/placements';
-import { hasPendingRateChange, listRateChangeEvents } from '@/lib/advertising/rateChangeNote';
+import { listRateChangeEvents } from '@/lib/advertising/activity';
+import { hasPendingRateChange } from '@/lib/advertising/rateChangeNote';
 
 export const runtime = 'nodejs';
 
@@ -35,6 +36,13 @@ export async function GET() {
   // changed after one of this worker's pending rows was captured, say so
   // instead of letting the number move silently. Best effort: a failed read
   // means no note, never an error on the money view.
+  // Bounded read, accepted deliberately (technical lens LOW): the newest 500
+  // rows of ONE worker; a still-pending row older than a worker's 500 most
+  // recent placements could miss the note. The note is advisory, the money
+  // math itself pages to completeness in earningsSummary. Also accepted: a
+  // rate round trip (A to B back to A) still shows the note, because the
+  // capture-time rate is not stored to compare against; the copy stays true
+  // either way (the estimate DID move in between).
   const own = await listPlacements({ workerId: caller.worker.id });
   const pendingTimes = own
     .filter((p) => !p.isTest && p.kind === 'yard_sign' && (p.status === 'pending' || p.status === 'resubmitted'))

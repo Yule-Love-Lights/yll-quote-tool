@@ -509,6 +509,36 @@ export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Ma
   return out;
 }
 
+/** Door hangers placed per worker, PAGED to completeness — both premerge
+ * lenses on the ops-polish PR caught the first cut riding listPlacements'
+ * bounded newest-first 500, where the count silently drifts (even DOWN) as
+ * other workers submit. Reads only worker_id with the predicates pushed to
+ * the server; the pure countDoorHangersByWorker above stays as the tested
+ * pin of the counting rules (door hangers only, test rows never count). */
+export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
+  const db = getSupabaseServiceClient();
+  if (!db) return new Map();
+  const out = new Map<string, number>();
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await db
+      .from('advertising_placements')
+      .select('worker_id')
+      .eq('kind', 'door_hanger')
+      .eq('is_test', false)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) {
+      console.error('doorHangerCountsByWorker error:', error);
+      return new Map(); // fail empty, never a partial count dressed as truth
+    }
+    const rows = (data ?? []) as { worker_id: string }[];
+    for (const r of rows) out.set(r.worker_id, (out.get(r.worker_id) ?? 0) + 1);
+    if (rows.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
 /** Per-worker earnings: pending estimated cents and accepted earned cents,
  * total plus ET day and week groupings. Scope with workerId for the worker's
  * own view; unscoped for the admin pay summary. */
