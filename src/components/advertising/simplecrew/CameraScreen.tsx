@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
+import { chipStateFor, GPS_TICK_MS, isFixFresh, type GpsPermission } from './cameraGps';
 import { CloseIcon, FlashOffIcon, FlipCameraIcon, SearchIcon } from './icons';
 import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
 
@@ -130,17 +131,17 @@ export default function CameraScreen({
   // starts the moment the camera opens: the prompt fires before the first
   // shot, and the warm watch means the fix is already in hand at the
   // shutter. The status chip above the shutter shows which state we're in.
-  const [gpsStatus, setGpsStatus] = useState<'starting' | 'ready' | 'denied' | 'no_signal' | 'unsupported'>('starting');
+  const [gpsStatus, setGpsStatus] = useState<GpsPermission>('starting');
   const lastFixRef = useRef<{ lat: number; lng: number; accuracyM: number | null; at: number } | null>(null);
-  // The chip must not claim "ready" on a fix that has gone stale (staff
-  // lens: a green chip over a 12s shutter stall reads as a lie). A slow
-  // tick re-checks the last fix's age.
+  // The chip must not claim "ready" on a fix the shutter would refuse
+  // (staff lens + delta-verify on PR #1090): the tick re-checks the last
+  // fix's age with the SAME isFixFresh rule getGps() uses, so a green
+  // chip always means the warm fix will actually be reused.
   const [fixFresh, setFixFresh] = useState(false);
   useEffect(() => {
     const t = setInterval(() => {
-      const f = lastFixRef.current;
-      setFixFresh(f !== null && Date.now() - f.at < 15_000);
-    }, 3_000);
+      setFixFresh(isFixFresh(lastFixRef.current?.at ?? null, Date.now()));
+    }, GPS_TICK_MS);
     return () => clearInterval(t);
   }, []);
 
@@ -182,14 +183,12 @@ export default function CameraScreen({
 
   // Both lenses converged here: at 25s a canvassing worker walks to the
   // NEXT house before the warm fix expires, so the shot inherits the
-  // previous house's GPS. 5s keeps the drift inside ordinary GPS noise
-  // (~7m at walking pace) while still skipping the one-shot wait when the
-  // watch is streaming fixes.
-  const GPS_FRESH_MS = 5_000;
-
+  // previous house's GPS. GPS_FRESH_MS (5s, in cameraGps.ts, shared with
+  // the chip) keeps the drift inside ordinary GPS noise at walking pace
+  // while still skipping the one-shot wait when the watch is streaming.
   const getGps = (): Promise<{ lat: number; lng: number; accuracyM: number | null } | null> => {
     const warm = lastFixRef.current;
-    if (warm && Date.now() - warm.at < GPS_FRESH_MS) {
+    if (warm && isFixFresh(warm.at, Date.now())) {
       return Promise.resolve({ lat: warm.lat, lng: warm.lng, accuracyM: warm.accuracyM });
     }
     return new Promise((resolve) => {
@@ -403,23 +402,30 @@ export default function CameraScreen({
 
       {/* GPS status — the worker sees the location state BEFORE shooting */}
       <div className="flex justify-center px-6 pt-2">
-        {gpsStatus === 'ready' && fixFresh && (
-          <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
-            <span className="h-2 w-2 rounded-full" style={{ background: '#4ADE80' }} /> GPS ready
-          </span>
-        )}
-        {(gpsStatus === 'starting' || gpsStatus === 'no_signal' || (gpsStatus === 'ready' && !fixFresh)) && (
-          <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-white/70" /> Getting your location…
-          </span>
-        )}
-        {(gpsStatus === 'denied' || gpsStatus === 'unsupported') && (
-          <span className="rounded-full px-3 py-1 text-xs text-white" style={{ background: SC.danger }}>
-            {gpsStatus === 'denied'
-              ? 'Location blocked. Allow it for this site in your browser settings, then reload'
-              : 'This browser has no location support'}
-          </span>
-        )}
+        {(() => {
+          const chip = chipStateFor(gpsStatus, fixFresh);
+          if (chip === 'ready') {
+            return (
+              <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
+                <span className="h-2 w-2 rounded-full" style={{ background: '#4ADE80' }} /> GPS ready
+              </span>
+            );
+          }
+          if (chip === 'locating') {
+            return (
+              <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-white/70" /> Getting your location…
+              </span>
+            );
+          }
+          return (
+            <span className="rounded-full px-3 py-1 text-xs text-white" style={{ background: SC.danger }}>
+              {chip === 'blocked'
+                ? 'Location blocked. Allow it for this site in your browser settings, then reload'
+                : 'This browser has no location support'}
+            </span>
+          );
+        })()}
       </div>
 
       {/* bottom controls */}
