@@ -300,7 +300,7 @@
 - **CLEARED, not fixed:** the lead form. Naldo tested it end to end and the submit event fired. 30-day funnel is 486 views, 107 starts, 20 submissions, so the robot's "0 submits in 2 days" was window noise. Row 441 stays open pending per-field data.
 - REVIEW (full four lenses, live non-repo surface): customer PASS, admin PASS, technical 5 MED, process **BLOCK 2 HIGH**. Three technical MEDs refuted with evidence, the rollback HIGH fixed inside the close, the rest dispositioned to rows 470-472.
 - MISTAKES: reported a 3-day count as all-time (promoted to AGENTS.md, second occurrence) · probed a blocked tool call three times · read a purge as done from a click that had missed · a scroll test that could not scroll (`innerHeight` 0 in the automated tab).
-- Full detail: `docs/context/journal/S77-naldo.md`. Ledger: 440 shipped and archived, 441 updated, **470-472** minted, counter 473. Gates on fresh master: tsc 0 · lint 0 errors (21 warnings) · vitest **9156 / 522 files**. Master at branch time: `9d883b7f`.
+- Full detail: `docs/context/journal/S77-naldo.md`. Ledger: 440 shipped and archived, 441 updated, **470-472** minted, counter 473. Gates: tsc 0 · lint 0 errors (21 warnings) · vitest **9156 / 522 files** at branch time, **9158 / 522** on the re-synced tree after PR #1078 landed mid-close. Master at branch time: `9d883b7f`, re-synced to `993d95cc`.
 
 ### S76 (Naldo) — 2026-08-28→29 — the ops hub plan finished and LIVE: View-as as a header menu, time tracking, advertising proven with real photos, and the suggestions round built the same night — close PR naldo/s76-close
 

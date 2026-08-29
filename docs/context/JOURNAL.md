@@ -3472,7 +3472,7 @@ Customer PASS (0 HIGH, 0 MED, 1 LOW), admin PASS (0 HIGH), technical CONCERNS (5
 
 ## Ending state
 
-Master `9d883b7f` at branch time. Gates on fresh master: **tsc 0 · lint 0 errors (21 warnings) · vitest 9156 passed across 522 files**. Ledger: row 440 shipped and archived, 441 updated, 470-472 minted, counter at 473.
+Master `9d883b7f` at branch time; `origin/master` then moved to `993d95cc` (PR #1078) mid-close, so the branch was re-synced and re-gated. Gates at branch time: tsc 0 · lint 0 errors (21 warnings) · vitest **9156** across 522 files. Gates on the merged tree, which is what this PR actually is: **tsc 0 · lint 0 errors (21 warnings) · vitest 9158 passed across 522 files**. Ledger: row 440 shipped and archived, 441 updated, 470-472 minted, counter at 473.
 
 ## Next
 
