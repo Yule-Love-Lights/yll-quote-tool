@@ -14,6 +14,7 @@ type WorkerSummary = {
   displayName: string;
   total: { pendingEstimatedCents: number; acceptedEarnedCents: number };
   byWeek: Array<{ weekStart: string; pendingEstimatedCents: number; acceptedEarnedCents: number }>;
+  doorHangerCount?: number;
 };
 
 export default function PayScreen() {
@@ -48,7 +49,7 @@ export default function PayScreen() {
     <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>
       <ScreenHeader title="Pay" />
       <p className="-mt-2 px-5 pb-4 text-sm" style={{ color: SC.muted }}>
-        Earned is settled history, the rate stamped when each sign was accepted. Pending is an
+        Earned is settled history, the rate stamped when each photo was accepted. Pending is an
         estimate at today&apos;s rates and moves until review happens. Test workers are excluded.
       </p>
 
@@ -68,6 +69,11 @@ export default function PayScreen() {
             <div className="flex items-baseline justify-between">
               <span className="text-xl font-semibold" style={{ color: SC.text }}>
                 {w.displayName}
+                {(w.doorHangerCount ?? 0) > 0 && (
+                  <span className="ml-2 text-sm font-normal" style={{ color: SC.muted }}>
+                    {w.doorHangerCount} door hangers
+                  </span>
+                )}
               </span>
               <span className="text-lg font-bold" style={{ color: SC.text }}>
                 {dollars(w.total.acceptedEarnedCents)}

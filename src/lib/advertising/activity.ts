@@ -88,3 +88,39 @@ export async function listAdvertisingActivity(opts?: {
     createdAt: row.created_at,
   }));
 }
+
+/** rate_changed audit events for these campaigns since a floor time, for
+ * the worker earnings view's "rate changed since you placed these" note
+ * (rateChangeNote.ts holds the pure decision; the table read lives HERE,
+ * this module's only-door rule). The campaign id rides the event's detail
+ * json (see updateAdvertisingCampaign's log call). Newest-first ordering
+ * makes the 200-row bound deterministic if it is ever hit; a failed read
+ * returns [] so the money view degrades to "no note", never an error. */
+export async function listRateChangeEvents(
+  campaignIds: string[],
+  sinceIso: string,
+): Promise<Array<{ campaignId: string; createdAt: string }>> {
+  if (campaignIds.length === 0) return [];
+  const db = getSupabaseServiceClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from('advertising_activity')
+    .select('detail, created_at')
+    .eq('action', 'rate_changed')
+    .gt('created_at', sinceIso)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  if (error) {
+    console.error('listRateChangeEvents error:', error);
+    return [];
+  }
+  const wanted = new Set(campaignIds);
+  const out: Array<{ campaignId: string; createdAt: string }> = [];
+  for (const row of data ?? []) {
+    const campaignId = (row.detail as { campaignId?: unknown } | null)?.campaignId;
+    if (typeof campaignId === 'string' && wanted.has(campaignId)) {
+      out.push({ campaignId, createdAt: row.created_at as string });
+    }
+  }
+  return out;
+}

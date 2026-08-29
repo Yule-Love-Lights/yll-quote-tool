@@ -28,12 +28,14 @@ type Placement = {
 type Campaign = { id: string; name: string };
 
 type Earnings = { total: { pendingEstimatedCents: number; acceptedEarnedCents: number } };
+type EarningsPayload = { summary: Earnings; rateChangedSincePending?: boolean };
 
 export default function ProfileScreen({ displayName, email }: { displayName: string; email: string | null }) {
   const [view, setView] = useState<'feed' | 'map'>('feed');
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
+  const [rateChanged, setRateChanged] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -48,7 +50,11 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
         if (cancelled) return;
         if (pRes.ok) setPlacements(((await pRes.json()) as { placements: Placement[] }).placements);
         if (cRes.ok) setCampaigns(((await cRes.json()) as { campaigns: Campaign[] }).campaigns);
-        if (eRes.ok) setEarnings(((await eRes.json()) as { summary: Earnings }).summary);
+        if (eRes.ok) {
+          const payload = (await eRes.json()) as EarningsPayload;
+          setEarnings(payload.summary);
+          setRateChanged(payload.rateChangedSincePending === true);
+        }
       } catch {
         /* cards render what loaded */
       } finally {
@@ -110,6 +116,12 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
             </p>
           </div>
         </div>
+      )}
+      {earnings && rateChanged && (
+        <p className="mx-5 mt-2 text-center text-xs" style={{ color: SC.muted }}>
+          A campaign&apos;s rate changed after some of these were placed, so the pending estimate
+          moved. Accepted photos always pay the rate from the moment they were approved.
+        </p>
       )}
 
       <div className="mx-5 mt-5">

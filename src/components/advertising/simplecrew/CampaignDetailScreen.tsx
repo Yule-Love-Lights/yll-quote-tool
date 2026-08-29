@@ -13,6 +13,7 @@ import { BackIcon, DotsIcon, CameraIcon, MapFoldIcon, PersonIcon, PinIcon } from
 import PlacementMap from './PlacementMap';
 import { dollars, SC } from './ui';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { splitDuplicateSignals } from '@/components/admin/advertising/duplicateSignals';
 
 export type DetailPlacement = {
   id: string;
@@ -294,12 +295,21 @@ export default function CampaignDetailScreen({
                           {p.rejectionReason}
                         </p>
                       )}
-                      {mode === 'admin' && (p.duplicates?.length ?? 0) > 0 && (
-                        <div className="mb-2 rounded-xl px-3 py-2 text-sm" style={{ background: '#FDF3DF', color: '#8a6d1f' }}>
-                          Possible duplicates, your call:{' '}
-                          {p.duplicates!.map((d) => `${d.workerName} (${d.reasons.join(', ')})`).join(' · ')}
-                        </div>
-                      )}
+                      {mode === 'admin' && (p.duplicates?.length ?? 0) > 0 && (() => {
+                        // Split by signal strength (ops suggestions round): a
+                        // busy worker's every sign matches its same-day
+                        // siblings, so worker-day-only matches collapse to a
+                        // count instead of drowning the real location and
+                        // address hits.
+                        const { strong, weakCount } = splitDuplicateSignals(p.duplicates!);
+                        const parts = strong.map((d) => `${d.workerName} (${d.reasons.join(', ')})`);
+                        if (weakCount > 0) parts.push(`${weakCount} more from the same worker that day`);
+                        return (
+                          <div className="mb-2 rounded-xl px-3 py-2 text-sm" style={{ background: '#FDF3DF', color: '#8a6d1f' }}>
+                            Possible duplicates, your call: {parts.join(' · ')}
+                          </div>
+                        );
+                      })()}
                       {mode === 'admin' && (p.status === 'pending' || p.status === 'resubmitted') && (
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <button
