@@ -92,6 +92,21 @@ export function resolvedTimeFor(task: Pick<OfficeTask, 'completedAt' | 'dismisse
   return at ? formatDueTime(at) : null;
 }
 
+/**
+ * Fix round (staff lens, calls merge S6): a shared, non-manual task
+ * (created_by/assigned_to both null — see officeTasks.ts's listOfficeTasks
+ * comment) is visible to and actionable by EVERY operator, unlike a manual
+ * task's creator-or-assignee scope. Without a visible marker, two staffers
+ * could independently work the same call_commitment task (e.g. both call the
+ * same customer back about the same promised quote) with neither aware the
+ * other already saw it. null for 'manual' (no badge — the common case).
+ */
+export function sourceLabel(sourceSystem: TaskSourceSystem): string | null {
+  if (sourceSystem === 'manual') return null;
+  if (sourceSystem === 'call_commitment') return 'From a call';
+  return 'Shared';
+}
+
 async function requestTasks(view: ViewMode): Promise<TaskLoadResult> {
   const url = view === 'history' ? '/api/tasks?status=history' : '/api/tasks';
   try {
@@ -472,6 +487,15 @@ export default function OfficeTasksCard() {
                               ? 'Dismissed'
                               : 'Open'}
                       </span>
+                      {sourceLabel(task.sourceSystem) ? (
+                        <span
+                          className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                          style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}
+                          title="Visible to every operator. Anyone can pick this up."
+                        >
+                          {sourceLabel(task.sourceSystem)}
+                        </span>
+                      ) : null}
                     </div>
                     {task.detail ? (
                       <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5" style={{ color: 'var(--op-text-dim)' }}>

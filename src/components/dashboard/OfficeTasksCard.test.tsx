@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import OfficeTasksCard, { formatDueTime, isAmbiguousMutationFailure, resolvedTimeFor } from './OfficeTasksCard';
+import OfficeTasksCard, { formatDueTime, isAmbiguousMutationFailure, resolvedTimeFor, sourceLabel } from './OfficeTasksCard';
 
 describe('isAmbiguousMutationFailure', () => {
   it('treats 5xx, 408, 425, and 429 as ambiguous (outcome unknown — keep the key)', () => {
@@ -34,6 +34,20 @@ describe('formatDueTime', () => {
 
   it('falls back to a plain message for an unparsable value', () => {
     expect(formatDueTime('not-a-date')).toBe('Due time unavailable');
+  });
+});
+
+describe('sourceLabel', () => {
+  it('shows no badge for a manual (personal) task', () => {
+    expect(sourceLabel('manual')).toBeNull();
+  });
+
+  it('labels a call_commitment task as shared, so staff know anyone can act on it', () => {
+    expect(sourceLabel('call_commitment')).toBe('From a call');
+  });
+
+  it('falls back to a generic shared label for a future non-manual source', () => {
+    expect(sourceLabel('quote_tool')).toBe('Shared');
   });
 });
 
