@@ -19,12 +19,17 @@
 // for a live run, both flags must be set, and a person must have recorded that
 // this particular customer agreed to it.
 //
-// DO NOT ARM THIS UNTIL LEDGER ROW 446 SHIPS. When a charge lands but recording
-// it fails — an ambiguous Valor timeout, a lost CAS race — the payment needs to
-// be recorded by hand, and `markInstallmentPaid` still has no caller anywhere in
-// the app (/admin/installments is read-only). Until that exists, the recovery
-// for a stuck payment is a developer editing the database. Premerge staff lens,
-// PR #1051.
+// ⛔ JASON'S RULING, 2026-08-29: THIS STAYS UNARMED, indefinitely. He collects
+// the remaining installments by hand and sends each customer a pay link on the
+// day. Do not add the cron or set the flags without him saying so; the
+// preconditions if that ever changes are in src/lib/installmentRunner.ts's
+// header (ledger rows 450 and 451, both real, both dormant only because nothing
+// charges automatically).
+//
+// The recovery path for a stuck payment now EXISTS, which it did not when this
+// was written: PR #1053 shipped POST /api/admin/installments/[id]/record and a
+// Record button, so a charge that landed without being recorded can be settled
+// from /admin/installments instead of by editing the database.
 //
 // AUTH. A cron request carries `Authorization: Bearer <CRON_SECRET>` and no
 // operator session; an operator request carries a session and no Authorization
