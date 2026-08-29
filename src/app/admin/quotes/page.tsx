@@ -9,6 +9,7 @@ import { deriveStatus, APPROVED_DISPLAYS_AS, statusMatchesFilter, type QuoteStat
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { MigratedBadge } from '@/components/admin/MigratedBadge';
 import { DepositRateChip } from '@/components/admin/DepositRateChip';
 import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
@@ -400,6 +401,8 @@ export default function QuotesAdminPage() {
                           {/* Row 409 — the deposit rate this quote is really on,
                               beside the tag that implies one. Amber when the two
                               disagree; nothing here corrects it (Jason's ruling). */}
+                          {/* Row 444 — says WHY this quote refuses to re-price. */}
+                          {q.migrated && <MigratedBadge />}
                           <DepositRateChip
                             isNce={q.is_nce}
                             rate={q.deposit_rate}

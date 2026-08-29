@@ -34,11 +34,18 @@ const { save, update, getRaw, rawRef } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('@/lib/quotes', () => ({
-  saveQuote: save,
-  updateQuote: update,
-  getQuoteRaw: getRaw,
-}));
+vi.mock('@/lib/quotes', async () => {
+  // Row 444: isMigratedQuote is a pure predicate over approval_snapshot and
+  // stays REAL. Stubbing the module wholesale left it undefined here, which
+  // failed every test in this file the moment the route started calling it.
+  const actual = await vi.importActual<typeof import('@/lib/quotes')>('@/lib/quotes');
+  return {
+    isMigratedQuote: actual.isMigratedQuote,
+    saveQuote: save,
+    updateQuote: update,
+    getQuoteRaw: getRaw,
+  };
+});
 
 vi.mock('@/lib/designs', () => ({
   isValidDesignId: () => false,

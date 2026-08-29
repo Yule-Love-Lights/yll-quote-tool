@@ -11,7 +11,8 @@
 // token from expiring through disuse (ledger row 430), and the position columns
 // keep the map honest on quiet days.
 //
-// Deliberately NOT under /api/ops/v1: that prefix is the crew surface.
+// Deliberately NOT under /api/ops/v1: that prefix WAS the crew surface, deleted
+// with the Operations Hub (row 433) when crew logins were retired (row 438).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { cronDenial } from '@/lib/auth/cronAuth';

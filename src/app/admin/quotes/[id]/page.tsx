@@ -7,6 +7,7 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { MigratedBadge } from '@/components/admin/MigratedBadge';
 import { depositCaution } from '@/components/admin/DepositRateChip';
 import { NceToggle } from '@/components/admin/NceToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
@@ -16,7 +17,7 @@ import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { getQuoteRaw, resolveQuoteDepositRate, numberOrUndefined } from '@/lib/quotes';
+import { getQuoteRaw, resolveQuoteDepositRate, numberOrUndefined, isMigratedQuote } from '@/lib/quotes';
 import { deriveStatus, repriceSignalCanFire, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
@@ -273,6 +274,10 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           {/* NCE (#198) — the barter/trade network tag. Tags coexist: a quote
               can be both Neighbor and NCE. */}
           {quote.is_nce && <NceBadge />}
+          {/* Row 444 — this order's money came from home.works and the pricing
+              engine cannot reproduce it, so /api/quote refuses to re-price it.
+              The badge is the only thing on screen that explains the refusal. */}
+          {isMigratedQuote(quote.approval_snapshot) && <MigratedBadge />}
           {/* View-only portal (#176) — mirrors the Test pill above. */}
           {quote.view_only && (
             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">

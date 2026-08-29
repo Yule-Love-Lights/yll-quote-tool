@@ -19,7 +19,7 @@
 // being unconfigured (that would be a NEW fail-open on a prod misconfig).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isAdvertisingPath, isCrewPath, isPublicPath } from '@/lib/auth/operatorGate';
+import { isAdvertisingPath, isPublicPath } from '@/lib/auth/operatorGate';
 import {
   authGateEngaged,
   createMiddlewareSupabase,
@@ -42,15 +42,20 @@ export async function proxy(req: NextRequest) {
       data: { user },
     } = await supabase.auth.getUser();
     if (user) {
-      // ROLE-AWARE, not merely authenticated. Naldo's 2026-08-16 ruling put crew
-      // logins in the SAME auth store as operator logins, so "has a session" no
-      // longer implies "may see the operator surface" — and that surface holds
-      // customer PII. A crew session may reach ONLY the crew API; everywhere
-      // else it is refused. Route handlers enforce this again via requireCrew /
-      // requireOperator (defense in depth), but this is the perimeter half, and
-      // it is the half that covers operator PAGES that lean on the perimeter
-      // rather than calling requireOperator themselves.
-      if (isCrewAccount(user.app_metadata) && !isCrewPath(pathname)) {
+      // ROLE-AWARE, not merely authenticated. Crew logins shared the operator
+      // auth store, so "has a session" never implied "may see the operator
+      // surface" — and that surface holds customer PII.
+      //
+      // Crew logins were RETIRED (row 438, 2026-08-28) along with the
+      // `/api/ops/v1` surface they existed to reach, and nothing mints one any
+      // more. This refusal STAYS, and is now unconditional, because deleting it
+      // would do the opposite of cleaning up: `roleOf` collapses every non-admin
+      // role to 'operator', so a crew account that appeared later — created by
+      // hand in the Supabase dashboard, say — would be silently PROMOTED to the
+      // operator surface. That is the escalation recorded in AGENTS.md. Fail
+      // closed: no crew account reaches anything. `getOperator` returns null on
+      // the same marker, which is the defense-in-depth half.
+      if (isCrewAccount(user.app_metadata)) {
         if (pathname.startsWith('/api/')) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
         }

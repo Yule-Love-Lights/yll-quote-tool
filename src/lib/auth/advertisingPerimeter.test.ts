@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isAdvertisingPath, isCrewPath, isPublicPath } from '@/lib/auth/operatorGate';
+import { isAdvertisingPath, isPublicPath } from '@/lib/auth/operatorGate';
 
 describe('advertising surface reachability matrix', () => {
   const workerPage = '/advertising';
@@ -39,9 +39,15 @@ describe('advertising surface reachability matrix', () => {
     expect(isAdvertisingPath('/api/dashboard/activity')).toBe(false);
   });
 
-  it('crew markers never overlap the advertising surface', () => {
-    expect(isCrewPath(workerPage)).toBe(false);
-    expect(isCrewPath(workerApi)).toBe(false);
+  it('the RETIRED crew namespace never overlaps the advertising surface', () => {
+    // This asserted the crew path predicate returned false here, until crew
+    // logins were retired (row 438) and that predicate was deleted. The
+    // guarantee got STRONGER, not weaker: a crew account is now refused at the
+    // proxy unconditionally, so it cannot reach the advertising surface either
+    // — pinned by proxy.test.ts. What is still worth asserting here is that the
+    // advertising prefixes never claimed the retired namespace.
+    expect(isAdvertisingPath('/api/ops/v1')).toBe(false);
+    expect(isAdvertisingPath('/api/ops/v1/jobs/abc/arrive')).toBe(false);
   });
 
   it('operator/admin sessions pass the perimeter here, so the ROUTE layer is the gate — pinned by the route tests', () => {

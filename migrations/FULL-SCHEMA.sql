@@ -2704,6 +2704,23 @@ comment on column public.quotes.ghl_event_date_pushed is
   'MM/DD/YYYY value last CONFIRMED pushed to GHL''s "Event Date" custom field (ledger #314). Stamped by every push site (send route, quote/route.ts''s date-changing update, the approve route reconcile) on a successful push. Compared against the quote''s current formatted event date to detect "our side changed since the last push" — never compared against GHL''s live value, which would silently revert a staff correction made directly in GHL. Null = legacy/never-confirmed-pushed row.';
 
 -- ---------------------------------------------------------------------
+-- quotes.installment_auto_charge_consent_at (2026-08-28, migrations/
+-- 2026-08-28-installment-auto-charge-consent.sql, ledger row 448) — the
+-- customer's agreement that scheduled installment payments may be charged
+-- to their saved card with no human in the loop. NULL = no consent, and
+-- src/lib/installmentRunner.ts refuses; that is the default for every row.
+-- Added because the three migrated payment-plan customers came from a CRM
+-- where every payment was collected by hand, and the card vaults as an
+-- unconditional side effect of any card payment — so nothing in the system
+-- had ever established consent to a recurring debit.
+-- ---------------------------------------------------------------------
+alter table public.quotes
+  add column if not exists installment_auto_charge_consent_at timestamptz;
+
+comment on column public.quotes.installment_auto_charge_consent_at is
+  'When the customer agreed that scheduled installment payments may be charged to their saved card automatically. NULL = no consent = the runner refuses (src/lib/installmentRunner.ts).';
+
+-- ---------------------------------------------------------------------
 -- job_stock_movements (2026-08-25, migrations/2026-08-25-job-stock-
 -- movements.sql, ledger row 386, renamed row 397) — durable, append-only
 -- audit of stock taken off / put back on the shelf per JOB PREP OR
@@ -2948,7 +2965,15 @@ create table if not exists public.installments (
   -- 'homeworks' for money collected before the migration, 'valor' for a card
   -- charge through this tool, 'manual' for cash/check recorded by staff.
   paid_source       text check (paid_source in ('homeworks', 'valor', 'manual')),
+  -- Doubles as the installment runner's idempotency slot (row 448): NULL, a
+  -- `pending:<iso>` claim, an `ambiguous-timeout:<iso>` marker, or a real Valor
+  -- transaction id. See src/lib/installmentRunner.ts.
   valor_txn_id      text,
+  -- Row 446: the operator who RECORDED this payment. NULL = collected before
+  -- the migration, or charged automatically (no human actor). Mirrors
+  -- invoices.settled_by; added by migrations/2026-08-28-installments-paid-by.sql
+  -- after a premerge admin lens found this money write had no attributable actor.
+  paid_by           uuid references auth.users(id) on delete set null,
   note              text,
 
   created_at        timestamptz not null default now(),
@@ -4418,3 +4443,42 @@ revoke all on function public.record_commitment_extraction_failure(uuid, text)
   from public, anon, authenticated, service_role;
 grant execute on function public.record_commitment_extraction_failure(uuid, text)
   to service_role;
+-- yard-sign SKU (2026-08-29, migrations/2026-08-29-yard-sign-sku.sql) —
+-- advertising phase 2 seed rows. Content below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Yard-sign SKU (advertising phase 2, Naldo's 2026-08-29 go on the audit
+-- doc's ruling 8: "catalog SKU plus manual reconciliation first; per-unit
+-- tracking only after placements prove the workflow").
+--
+-- Two idempotent seed rows, nothing else:
+--   * inventory_catalog: YLL-YARD-SIGN under a 'Marketing' category. This is
+--     a NON-VENDOR row — the Thunder CSV import is a pure upsert keyed by
+--     the CSV's own SKUs (upsertCatalogItems), so re-imports never touch or
+--     delete it. wholesale_cost stays NULL: signs are not purchased through
+--     the Thunder PO flow, and a NULL cost keeps them out of any cost math.
+--   * inventory_on_hand: the stock row at qty 0. The office counts the real
+--     pile and sets the number on /admin/advertising/people (or the
+--     existing /inventory/stock page, where this SKU now also appears).
+--
+-- NO auto-decrement on placement acceptance — deliberately. Phase 2 is
+-- MANUAL reconciliation: the admin page shows accepted-sign counts beside
+-- this stock number and a human reconciles them. Per-unit tracking is a
+-- later phase gated on the workflow proving itself.
+--
+-- The WHERE NOT EXISTS guards make re-running SAFE, not corrective: if a
+-- seeded value is ever wrong, fix it with an UPDATE (or the stock page),
+-- never by editing this file and re-applying (the crew_members lesson).
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (idempotent seed inserts
+-- guarded by where not exists).
+-- =====================================================================
+
+insert into inventory_catalog (sku, name, category, yll_category)
+select 'YLL-YARD-SIGN', 'Yard sign (advertising)', 'Marketing', 'Marketing'
+where not exists (select 1 from inventory_catalog where sku = 'YLL-YARD-SIGN');
+
+insert into inventory_on_hand (sku, on_hand_qty, reorder_point)
+select 'YLL-YARD-SIGN', 0, 0
+where not exists (select 1 from inventory_on_hand where sku = 'YLL-YARD-SIGN');
