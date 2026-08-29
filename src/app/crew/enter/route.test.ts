@@ -141,4 +141,15 @@ describe('GET /crew/enter', () => {
     await GET(req('not-a-token'));
     expect(logCrewAccess).toHaveBeenCalledWith(expect.objectContaining({ action: 'entry_refused' }));
   });
+
+  // The link is minted for one Telegram account. If the office moves or
+  // relinks that account, links already sent go stale on top of being single
+  // use (delta-verify 2 on PR #1094: that binding was otherwise dead data).
+  it('refuses a link minted for a different Telegram account than the crew row now has', async () => {
+    getCrewMember.mockResolvedValue(member({ telegramUserId: '900002' }));
+    const res = await GET(req(mintCrewToken('link', CREW, Date.now(), '900001', 'jti-1')));
+    expect(denied(res)).toBe('invalid');
+    expect(consumeCrewLinkJti).not.toHaveBeenCalled();
+    expect(res.cookies.get(CREW_COOKIE_NAME)).toBeUndefined();
+  });
 });

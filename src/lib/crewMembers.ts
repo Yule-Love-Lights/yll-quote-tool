@@ -724,13 +724,26 @@ export async function ensureCrewSessionEpoch(crewMemberId: string): Promise<stri
   const existing = await getCrewMember(crewMemberId);
   if (existing?.sessionEpoch) return existing.sessionEpoch;
 
+  // Compare-and-set on the null, so two entries racing the FIRST use do not
+  // mint two epochs and immediately invalidate one of the two sessions: the
+  // loser re-reads and takes the winner's value. .select() also makes a write
+  // that matched no row an error rather than a silent success, because an epoch
+  // nobody stored would refuse the very session it was minted for.
   const epoch = randomUUID();
-  const { error } = await db
+  const { data, error } = await db
     .from('crew_members')
     .update({ session_epoch: epoch, updated_at: new Date().toISOString() })
-    .eq('id', crewMemberId);
+    .eq('id', crewMemberId)
+    .is('session_epoch', null)
+    .select('id')
+    .maybeSingle();
   if (error) throw new Error(`ensureCrewSessionEpoch: ${error.message}`);
-  return epoch;
+  if (data) return epoch;
+
+  const now = await getCrewMember(crewMemberId);
+  if (!now) throw new Error('ensureCrewSessionEpoch: crew member not found');
+  if (!now.sessionEpoch) throw new Error('ensureCrewSessionEpoch: could not stamp an epoch');
+  return now.sessionEpoch;
 }
 
 /** Sign one crew member out of My Day everywhere, at once. */
@@ -739,10 +752,13 @@ export async function rotateCrewSessionEpoch(crewMemberId: string): Promise<stri
   if (!db) throw new Error('Supabase service role not configured');
 
   const epoch = randomUUID();
-  const { error } = await db
+  const { data, error } = await db
     .from('crew_members')
     .update({ session_epoch: epoch, updated_at: new Date().toISOString() })
-    .eq('id', crewMemberId);
+    .eq('id', crewMemberId)
+    .select('id')
+    .maybeSingle();
   if (error) throw new Error(`rotateCrewSessionEpoch: ${error.message}`);
+  if (!data) throw new Error('rotateCrewSessionEpoch: crew member not found');
   return epoch;
 }

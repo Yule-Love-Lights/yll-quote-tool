@@ -4,6 +4,10 @@ type Row = {
   id: string;
   hub_employee_id: string | null;
   telegram_user_id: string | null;
+  // The fake DB must carry session_epoch, or the rotation this repo relies on
+  // for "sign out everywhere" could be dropped from setStaffTelegram or
+  // setStaffActive and no test here could see it (delta-verify, PR #1094).
+  session_epoch: string | null;
   display_name: string;
   base_rate_cents: number;
   in_p4p_pool: boolean;
@@ -20,6 +24,7 @@ const CREW_1: Row = {
   id: 'crew-1',
   hub_employee_id: null,
   telegram_user_id: '111',
+  session_epoch: null,
   display_name: 'SonSon',
   base_rate_cents: 1600,
   in_p4p_pool: true,
@@ -36,6 +41,7 @@ const CREW_2: Row = {
   id: 'crew-2',
   hub_employee_id: 'hub-2',
   telegram_user_id: '222',
+  session_epoch: null,
   display_name: 'Big James',
   base_rate_cents: 2000,
   in_p4p_pool: true,
@@ -52,6 +58,7 @@ const CREW_3: Row = {
   id: 'crew-3',
   hub_employee_id: null,
   telegram_user_id: null,
+  session_epoch: null,
   display_name: 'Inactive Jason',
   base_rate_cents: 1000,
   in_p4p_pool: false,
@@ -70,6 +77,7 @@ const CREW_OFFICE: Row = {
   id: 'crew-office',
   hub_employee_id: null,
   telegram_user_id: null,
+  session_epoch: null,
   display_name: 'Kelly',
   base_rate_cents: 2500,
   in_p4p_pool: false,
@@ -104,6 +112,7 @@ function rowFromPayload(payload: Record<string, unknown>, id: string): Row {
     id,
     hub_employee_id: (payload.hub_employee_id as string | null | undefined) ?? null,
     telegram_user_id: (payload.telegram_user_id as string | null | undefined) ?? null,
+    session_epoch: (payload.session_epoch as string | null | undefined) ?? null,
     display_name: String(payload.display_name),
     base_rate_cents: Number(payload.base_rate_cents),
     in_p4p_pool: Boolean(payload.in_p4p_pool),
@@ -124,6 +133,8 @@ function mergeRow(existing: Row, payload: Record<string, unknown>): Row {
       payload.hub_employee_id === undefined ? existing.hub_employee_id : (payload.hub_employee_id as string | null),
     telegram_user_id:
       payload.telegram_user_id === undefined ? existing.telegram_user_id : (payload.telegram_user_id as string | null),
+    session_epoch:
+      payload.session_epoch === undefined ? existing.session_epoch : (payload.session_epoch as string | null),
     display_name: payload.display_name === undefined ? existing.display_name : String(payload.display_name),
     base_rate_cents:
       payload.base_rate_cents === undefined ? existing.base_rate_cents : Number(payload.base_rate_cents),
@@ -295,6 +306,13 @@ function makeDb() {
               filters.push([col, val]);
               return chain;
             },
+            // .is(col, null) is a FILTER like .eq, and the crew-door epoch mint
+            // uses it as a compare-and-set on the null. Modelled here so that
+            // CAS is exercised rather than mocked away.
+            is: (col: keyof Row, val: unknown) => {
+              filters.push([col, val]);
+              return chain;
+            },
             select: () => ({ maybeSingle: () => Promise.resolve(resolve()) }),
           };
           return chain;
@@ -318,8 +336,10 @@ beforeEach(() => {
 });
 
 import {
+  ensureCrewSessionEpoch,
   getCrewMember,
   getCrewMemberByTelegramUserId,
+  rotateCrewSessionEpoch,
   insertCrewMember,
   linkOfficeStaff,
   listActiveCrewMembers,
@@ -350,6 +370,7 @@ describe('getCrewMember', () => {
       id: 'crew-1',
       hubEmployeeId: null,
       telegramUserId: '111',
+      sessionEpoch: null,
       displayName: 'SonSon',
       baseRateCents: 1600,
       inP4pPool: true,
@@ -379,6 +400,7 @@ describe('getCrewMemberByTelegramUserId', () => {
       id: 'crew-2',
       hubEmployeeId: 'hub-2',
       telegramUserId: '222',
+      sessionEpoch: null,
       displayName: 'Big James',
       baseRateCents: 2000,
       inP4pPool: true,
@@ -403,6 +425,7 @@ describe('listActiveCrewMembers', () => {
         id: 'crew-1',
         hubEmployeeId: null,
         telegramUserId: '111',
+        sessionEpoch: null,
         displayName: 'SonSon',
         baseRateCents: 1600,
         inP4pPool: true,
@@ -416,6 +439,7 @@ describe('listActiveCrewMembers', () => {
         id: 'crew-2',
         hubEmployeeId: 'hub-2',
         telegramUserId: '222',
+        sessionEpoch: null,
         displayName: 'Big James',
         baseRateCents: 2000,
         inP4pPool: true,
@@ -479,6 +503,7 @@ describe('insertCrewMember', () => {
       id: 'generated-4',
       hubEmployeeId: null,
       telegramUserId: '333',
+      sessionEpoch: null,
       displayName: 'Little James',
       baseRateCents: 1700,
       inP4pPool: true,
@@ -611,6 +636,7 @@ describe('updateCrewMember', () => {
       id: 'crew-2',
       hubEmployeeId: null,
       telegramUserId: '333',
+      sessionEpoch: null,
       displayName: 'Little James',
       baseRateCents: 1700,
       inP4pPool: true,
@@ -895,5 +921,64 @@ describe('getStaffMember', () => {
     expect((await getStaffMember('crew-1'))?.isOffice).toBe(false);
     expect((await getStaffMember('crew-office'))?.isOffice).toBe(true);
     await expect(getStaffMember('nobody')).resolves.toBeNull();
+  });
+});
+
+// The rotation these two writes perform is the whole revocation story for My
+// Day sessions (PR #1094). Before this block the fake DB did not even carry
+// session_epoch, so dropping the rotation would have broken nothing here.
+describe('session epoch rotation', () => {
+  it('rotates on link AND on unlink, so relinking the SAME account still signs old sessions out', async () => {
+    const before = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    await setStaffTelegram('crew-1', '900001');
+    const afterLink = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    expect(afterLink).toBeTruthy();
+    expect(afterLink).not.toBe(before);
+
+    await setStaffTelegram('crew-1', null);
+    const afterUnlink = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    expect(afterUnlink).not.toBe(afterLink);
+
+    await setStaffTelegram('crew-1', '900001');
+    const afterRelink = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    expect(afterRelink).not.toBe(afterUnlink);
+    expect(afterRelink).not.toBe(afterLink);
+  });
+
+  it('rotates when a staff member is deactivated', async () => {
+    const before = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    await setStaffActive('crew-1', false);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch).not.toBe(before);
+  });
+
+  it('leaves the epoch alone on reactivation, because no session can be minted while inactive', async () => {
+    await setStaffActive('crew-1', false);
+    const afterDeactivate = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    await setStaffActive('crew-1', true);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch).toBe(afterDeactivate);
+  });
+
+  it('rotateCrewSessionEpoch changes it and returns the new value', async () => {
+    const before = stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch;
+    const epoch = await rotateCrewSessionEpoch('crew-1');
+    expect(epoch).toBeTruthy();
+    expect(epoch).not.toBe(before);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch).toBe(epoch);
+  });
+
+  it('ensureCrewSessionEpoch mints once and is stable afterwards', async () => {
+    const first = await ensureCrewSessionEpoch('crew-1');
+    expect(first).toBeTruthy();
+    await expect(ensureCrewSessionEpoch('crew-1')).resolves.toBe(first);
+  });
+});
+
+describe('ensureCrewSessionEpoch races', () => {
+  // Two entries racing the FIRST use must agree on one epoch: if both minted,
+  // one crew member's brand-new session would be invalidated at birth.
+  it('two concurrent first entries settle on the same epoch', async () => {
+    const [a, b] = await Promise.all([ensureCrewSessionEpoch('crew-1'), ensureCrewSessionEpoch('crew-1')]);
+    expect(a).toBe(b);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')!.session_epoch).toBe(a);
   });
 });

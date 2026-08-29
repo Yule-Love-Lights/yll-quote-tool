@@ -33,12 +33,18 @@ export type CrewTokenResult =
   | { ok: false; reason: 'unconfigured' | 'malformed' | 'bad_signature' | 'expired' | 'wrong_purpose' };
 
 /**
- * `b` is the BINDING: the crew member's Telegram account id at the moment the
- * token was minted. A session whose binding no longer matches the crew row is
- * refused, which is what makes unlink-then-relink a working "sign out
- * everywhere" for one person, without a schema change and without touching
- * anybody else's session. Absent on older tokens, which then simply fail the
- * comparison and force a fresh link.
+ * `b` is the BINDING, and what it holds depends on the purpose:
+ *
+ * - a SESSION binds to the crew member's `session_epoch`, a value whose only
+ *   job is to change. Rotating it (link, unlink, deactivation, or the explicit
+ *   Sign out everywhere) ends every session that person holds. An earlier cut
+ *   bound sessions to the Telegram id instead, which looked equivalent and was
+ *   not: the office's real remediation is to unlink and relink the SAME
+ *   account, which restored the same id and revived a leaked session.
+ * - a LINK binds to the Telegram id it was minted for, so a link goes stale the
+ *   moment that account changes, on top of being single use.
+ *
+ * A token with no binding is refused rather than treated as a match.
  */
 type Payload = { v: 1; p: CrewTokenPurpose; c: string; e: number; b?: string; j?: string };
 

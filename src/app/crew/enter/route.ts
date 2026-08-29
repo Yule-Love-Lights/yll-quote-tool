@@ -37,6 +37,10 @@ export async function GET(req: NextRequest) {
   if (!member) return refuse('invalid', null, 'no_crew_row');
   if (!member.active) return refuse('invalid', member.id, 'inactive');
   if (!member.telegramUserId) return refuse('invalid', member.id, 'unlinked');
+  // The link was minted for one Telegram account. If that account has changed
+  // since, the link is stale: the office relinked or moved it, and whoever
+  // holds the old link should not get in on it.
+  if (verified.binding !== member.telegramUserId) return refuse('invalid', member.id, 'stale_binding');
 
   // Single use, compare-and-set: two taps on the same link race and exactly one
   // wins, and a link superseded by a newer one finds nothing to consume.
