@@ -252,6 +252,19 @@ describe('postPendingCallNotes', () => {
     expect(result.posted).toBe(1);
   });
 
+  it('dry run writes nothing even for a row it would skip', async () => {
+    // The skip branch has its own write, so the dry-run guard has to hold
+    // there too. Found by a mutation probe: removing that guard failed no
+    // test, because the dry-run case above never reaches this branch.
+    const { supabase, updates } = fakeSupabase([candidate({ is_test: true })]);
+
+    const result = await postPendingCallNotes(supabase, 3, new Date(), { dryRun: true });
+
+    expect(updates).toHaveLength(0);
+    expect(createContactNoteMock).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+  });
+
   it('dry run writes nothing, posts nothing, and hands back the real body', async () => {
     const previews: { contactId: string; body: string }[] = [];
     const { supabase, updates } = fakeSupabase([candidate()], {
