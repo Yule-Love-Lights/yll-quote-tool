@@ -80,12 +80,20 @@ describe('findDuplicateCandidates', () => {
     expect(candidates[0].reasons.join(' ')).toMatch(/same day/i);
   });
 
-  it('never crosses campaigns, never flags the target itself, and skips test rows', () => {
+  it('never crosses campaigns, never flags the target itself, and never crosses the test/real line', () => {
     const target = placement();
     const otherCampaign = placement({ campaignId: 'campaign-2' });
     const testRow = placement({ isTest: true });
 
     expect(findDuplicateCandidates(target, [target, otherCampaign, testRow])).toHaveLength(0);
+
+    // Test fixtures DO flag against each other, so a device check with
+    // seeded test rows still demonstrates the feature.
+    const testTarget = placement({ isTest: true });
+    const testNear = placement({ isTest: true, lat: 40.7503, workerId: 'worker-2', suggestedAddress: null });
+    const real = placement();
+    const testFlags = findDuplicateCandidates(testTarget, [testTarget, testNear, real]);
+    expect(testFlags.map((c) => c.placement.id)).toEqual([testNear.id]);
   });
 
   it('collects MULTIPLE reasons on one candidate', () => {

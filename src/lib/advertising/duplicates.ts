@@ -42,7 +42,9 @@ export function findDuplicateCandidates(
   const out: DuplicateCandidate[] = [];
   for (const p of all) {
     if (p.id === target.id) continue;
-    if (p.isTest || target.isTest) continue;
+    // Same population only: test fixtures flag against each other (so a
+    // device check sees the feature) but never against real placements.
+    if (p.isTest !== target.isTest) continue;
     if (p.campaignId !== target.campaignId) continue;
 
     const reasons: string[] = [];
