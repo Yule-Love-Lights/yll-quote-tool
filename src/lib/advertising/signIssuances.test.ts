@@ -210,6 +210,13 @@ describe('issueSigns', () => {
     expect(stateRef.current.onHand?.on_hand_qty).toBe(50); // drawn once
   });
 
+  it('the dedup window is scoped to the SAME admin — a second admin handing out the same qty records its own row', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    await issueSigns('worker-1', 50, 'admin-1');
+    await issueSigns('worker-1', 50, 'admin-2'); // a real second hand-out
+    expect(stateRef.current.issuances).toHaveLength(2);
+  });
+
   it('refuses an unknown worker before writing anything', async () => {
     const { issueSigns } = await import('./signIssuances');
     getAdvertisingWorker.mockResolvedValue(null);

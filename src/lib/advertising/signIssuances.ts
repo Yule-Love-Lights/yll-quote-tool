@@ -95,6 +95,7 @@ export async function issueSigns(
   if (
     latest &&
     latest.qty === qty &&
+    latest.issued_by === issuedBy && // a DIFFERENT admin's identical hand-out is a real second stack
     Date.now() - Date.parse(latest.created_at) < DUPLICATE_WINDOW_MS
   ) {
     return { issuance: toIssuance(latest), issuedQty: qty };
