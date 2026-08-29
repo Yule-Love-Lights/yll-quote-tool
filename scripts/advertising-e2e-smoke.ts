@@ -42,8 +42,6 @@ function loadEnvLocal(): void {
 }
 loadEnvLocal();
 
-/* eslint-disable no-console */
-
 async function main(): Promise<void> {
   const { getSupabaseServiceClient } = await import('../src/lib/supabase');
   const { createAdvertisingCampaign } = await import('../src/lib/advertising/campaigns');
