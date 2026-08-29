@@ -1,84 +1,99 @@
-// Coverage for produceOfficeTasksFromCommitments -- proves it reads the
-// transcript's OPEN commitments and calls the producer RPC once per id,
-// tolerating a single commitment's failure without aborting the batch. The
-// RPC's own idempotency (office_tasks' (source_system, source_event_id)
-// unique index -- a second call for the same commitment returns the SAME
-// existing task id rather than creating a duplicate) lives in
-// migrations/2026-08-29-call-commitments.sql and cannot run under vitest;
-// this file proves the TS wrapper's call shape and counting, not the SQL.
+// Coverage for countOfficeTasksForTranscript -- proves it reads the
+// transcript's commitment ids and counts the matching office_tasks rows.
+// This is a READ-ONLY reporting helper (fix round: the producer itself now
+// runs inside call_commitments_finalize_extraction's own transaction, see
+// migrations/2026-08-29-call-commitments.sql and this file's own header),
+// so there is no RPC/mutation to test here, only the two reads and their
+// composition.
 
 import { describe, it, expect, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { produceOfficeTasksFromCommitments } from './produceTasks';
+import { countOfficeTasksForTranscript } from './produceTasks';
 
 function fakeSupabase(opts: {
-  openCommitmentIds: string[];
-  rpcResults: Record<string, { data: unknown; error: { message: string } | null }>;
+  commitmentIds: string[];
+  commitmentError?: { message: string } | null;
+  officeTaskCount: number | null;
+  officeTaskError?: { message: string } | null;
 }) {
-  const rpcCalls: { p_commitment_id: string }[] = [];
+  const officeTasksFilters: { column: string; value: unknown }[] = [];
   const from = vi.fn((table: string) => {
     if (table === 'call_commitments') {
       return {
         select: () => ({
-          eq: () => ({
-            eq: async () => ({ data: opts.openCommitmentIds.map(id => ({ id })), error: null }),
+          eq: async () => ({
+            data: opts.commitmentError ? null : opts.commitmentIds.map(id => ({ id })),
+            error: opts.commitmentError ?? null,
           }),
+        }),
+      };
+    }
+    if (table === 'office_tasks') {
+      return {
+        select: () => ({
+          eq: (column: string, value: unknown) => {
+            officeTasksFilters.push({ column, value });
+            return {
+              in: (column2: string, value2: unknown) => {
+                officeTasksFilters.push({ column: column2, value: value2 });
+                return Promise.resolve({
+                  count: opts.officeTaskError ? null : opts.officeTaskCount,
+                  error: opts.officeTaskError ?? null,
+                });
+              },
+            };
+          },
         }),
       };
     }
     throw new Error(`unexpected table ${table}`);
   });
-  const rpc = vi.fn(async (_fn: string, args: { p_commitment_id: string }) => {
-    rpcCalls.push(args);
-    return opts.rpcResults[args.p_commitment_id] ?? { data: null, error: null };
-  });
-  return { client: { from, rpc } as unknown as SupabaseClient, rpcCalls };
+  return { client: { from } as unknown as SupabaseClient, officeTasksFilters };
 }
 
-describe('produceOfficeTasksFromCommitments', () => {
-  it('creates one task per open commitment and counts each success', async () => {
-    const { client, rpcCalls } = fakeSupabase({
-      openCommitmentIds: ['c-1', 'c-2'],
-      rpcResults: {
-        'c-1': { data: 'task-1', error: null },
-        'c-2': { data: 'task-2', error: null },
-      },
+describe('countOfficeTasksForTranscript', () => {
+  it('counts office_tasks rows matching the transcript\'s commitment ids', async () => {
+    const { client, officeTasksFilters } = fakeSupabase({
+      commitmentIds: ['c-1', 'c-2'],
+      officeTaskCount: 2,
     });
 
-    const result = await produceOfficeTasksFromCommitments(client, 't-1');
+    const result = await countOfficeTasksForTranscript(client, 't-1');
 
-    expect(result).toEqual({ attempted: 2, created: 2 });
-    expect(rpcCalls).toEqual([{ p_commitment_id: 'c-1' }, { p_commitment_id: 'c-2' }]);
+    expect(result).toBe(2);
+    expect(officeTasksFilters).toEqual([
+      { column: 'source_system', value: 'call_commitment' },
+      { column: 'source_event_id', value: ['c-1', 'c-2'] },
+    ]);
   });
 
-  it('does not count a commitment the RPC returned null for (already actioned, not open by the time it ran)', async () => {
+  it('returns 0 without querying office_tasks when the transcript has no commitments', async () => {
+    const { client } = fakeSupabase({ commitmentIds: [], officeTaskCount: 0 });
+    const result = await countOfficeTasksForTranscript(client, 't-1');
+    expect(result).toBe(0);
+  });
+
+  it('treats a null count as 0 rather than throwing', async () => {
+    const { client } = fakeSupabase({ commitmentIds: ['c-1'], officeTaskCount: null });
+    const result = await countOfficeTasksForTranscript(client, 't-1');
+    expect(result).toBe(0);
+  });
+
+  it('throws on a commitment-read error', async () => {
     const { client } = fakeSupabase({
-      openCommitmentIds: ['c-1'],
-      rpcResults: { 'c-1': { data: null, error: null } },
+      commitmentIds: [],
+      commitmentError: { message: 'boom' },
+      officeTaskCount: 0,
     });
-
-    const result = await produceOfficeTasksFromCommitments(client, 't-1');
-
-    expect(result).toEqual({ attempted: 1, created: 0 });
+    await expect(countOfficeTasksForTranscript(client, 't-1')).rejects.toEqual({ message: 'boom' });
   });
 
-  it('a single commitment failing the RPC does not abort the batch -- best-effort, like the calls pipeline', async () => {
+  it('throws on an office_tasks-count read error', async () => {
     const { client } = fakeSupabase({
-      openCommitmentIds: ['c-1', 'c-2'],
-      rpcResults: {
-        'c-1': { data: null, error: { message: 'boom' } },
-        'c-2': { data: 'task-2', error: null },
-      },
+      commitmentIds: ['c-1'],
+      officeTaskCount: null,
+      officeTaskError: { message: 'boom' },
     });
-
-    const result = await produceOfficeTasksFromCommitments(client, 't-1');
-
-    expect(result).toEqual({ attempted: 2, created: 1 });
-  });
-
-  it('returns zero attempted/created when the transcript has no open commitments', async () => {
-    const { client } = fakeSupabase({ openCommitmentIds: [], rpcResults: {} });
-    const result = await produceOfficeTasksFromCommitments(client, 't-1');
-    expect(result).toEqual({ attempted: 0, created: 0 });
+    await expect(countOfficeTasksForTranscript(client, 't-1')).rejects.toEqual({ message: 'boom' });
   });
 });

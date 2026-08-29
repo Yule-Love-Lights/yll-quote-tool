@@ -1,12 +1,16 @@
 // Coverage for backfillCommitments -- the batch entry point that runs
-// call_transcripts through the extractor, persist, and THE PRODUCER. Mocks
-// extraction/persist/produce; no live Supabase/Claude calls. Ported from the
+// call_transcripts through the extractor and persist. Mocks
+// extraction/persist/count; no live Supabase/Claude calls. Ported from the
 // yll-call-copilot repo's src/lib/commitments/backfill.test.ts (master
 // fb1bf326), adapted: table is call_transcripts (not transcripts), no
-// metric_scope anywhere, extractRawCommitments takes no verticalName, and
-// every successful-fresh-finalize case now also asserts THE PRODUCER
-// (produceOfficeTasksFromCommitments) is called and its count folded into
-// the result's new tasksCreated field.
+// metric_scope anywhere, extractRawCommitments takes no verticalName.
+//
+// Fix round: THE PRODUCER no longer runs from this file at all -- it runs
+// INSIDE call_commitments_finalize_extraction's own transaction (see
+// backfill.ts's own header and migrations/2026-08-29-call-commitments.sql).
+// Every successful-fresh-finalize case now asserts only that
+// countOfficeTasksForTranscript (a READ, produceTasks.ts, repurposed) is
+// called for reporting and its count folded into tasksCreated.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -24,9 +28,9 @@ vi.mock('./persist', () => ({
   persistCommitments: (...args: unknown[]) => persistCommitmentsMock(...args),
 }));
 
-const produceOfficeTasksFromCommitmentsMock = vi.fn();
+const countOfficeTasksForTranscriptMock = vi.fn();
 vi.mock('./produceTasks', () => ({
-  produceOfficeTasksFromCommitments: (...args: unknown[]) => produceOfficeTasksFromCommitmentsMock(...args),
+  countOfficeTasksForTranscript: (...args: unknown[]) => countOfficeTasksForTranscriptMock(...args),
 }));
 
 import { backfillCommitments, selectBackfillCandidates } from './backfill';
@@ -112,7 +116,7 @@ describe('backfillCommitments', () => {
   beforeEach(() => {
     extractRawCommitmentsMock.mockReset().mockResolvedValue([]);
     persistCommitmentsMock.mockReset().mockResolvedValue({ ok: true, alreadyFinalized: false });
-    produceOfficeTasksFromCommitmentsMock.mockReset().mockResolvedValue({ attempted: 0, created: 0 });
+    countOfficeTasksForTranscriptMock.mockReset().mockResolvedValue(0);
   });
 
   it('extracts and persists for each candidate transcript not already processed, no verticalName passed', async () => {
@@ -127,43 +131,52 @@ describe('backfillCommitments', () => {
     expect(result).toEqual({ done: 1, skipped: 0, failed: 0, refused: 0, quarantined: 0, tasksCreated: 0 });
   });
 
-  it('a transcript with zero commitments still counts as done, not failed, and calls the producer (which creates zero tasks)', async () => {
+  it('a transcript with zero commitments still counts as done, not failed, and counts zero tasks (THE PRODUCER already ran, atomically, inside finalize)', async () => {
     extractRawCommitmentsMock.mockResolvedValue([]);
     const { client: supabase } = fakeSupabase([t1]);
 
     const result = await backfillCommitments(supabase, 10);
 
-    expect(produceOfficeTasksFromCommitmentsMock).toHaveBeenCalledWith(supabase, 't1');
+    expect(countOfficeTasksForTranscriptMock).toHaveBeenCalledWith(supabase, 't1');
     expect(result).toEqual({ done: 1, skipped: 0, failed: 0, refused: 0, quarantined: 0, tasksCreated: 0 });
   });
 
-  it('THE PRODUCER runs after a fresh finalize and its created count is folded into tasksCreated', async () => {
-    produceOfficeTasksFromCommitmentsMock.mockResolvedValueOnce({ attempted: 2, created: 2 });
+  it('a fresh finalize\'s task count is folded into tasksCreated (read-only reporting, not creation)', async () => {
+    countOfficeTasksForTranscriptMock.mockResolvedValueOnce(2);
     const { client: supabase } = fakeSupabase([t1]);
 
     const result = await backfillCommitments(supabase, 10);
 
-    expect(produceOfficeTasksFromCommitmentsMock).toHaveBeenCalledTimes(1);
+    expect(countOfficeTasksForTranscriptMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ done: 1, skipped: 0, failed: 0, refused: 0, quarantined: 0, tasksCreated: 2 });
   });
 
-  it('does NOT run the producer on an already-finalized outcome -- no new open commitment rows were written', async () => {
+  it('does not fail the batch when the task-count READ itself errors -- the tasks already exist regardless', async () => {
+    countOfficeTasksForTranscriptMock.mockRejectedValueOnce(new Error('count read failed'));
+    const { client: supabase } = fakeSupabase([t1]);
+
+    const result = await backfillCommitments(supabase, 10);
+
+    expect(result).toEqual({ done: 1, skipped: 0, failed: 0, refused: 0, quarantined: 0, tasksCreated: 0 });
+  });
+
+  it('does NOT count tasks on an already-finalized outcome -- no new open commitment rows were written', async () => {
     persistCommitmentsMock.mockResolvedValueOnce({ ok: true, alreadyFinalized: true });
     const { client: supabase } = fakeSupabase([t1]);
 
     const result = await backfillCommitments(supabase, 10);
 
-    expect(produceOfficeTasksFromCommitmentsMock).not.toHaveBeenCalled();
+    expect(countOfficeTasksForTranscriptMock).not.toHaveBeenCalled();
     expect(result).toEqual({ done: 0, skipped: 1, failed: 0, refused: 0, quarantined: 0, tasksCreated: 0 });
   });
 
-  it('does NOT run the producer on a refused persist -- the guard against relabeling a settled commitment', async () => {
+  it('does NOT count tasks on a refused persist -- the guard against relabeling a settled commitment', async () => {
     persistCommitmentsMock.mockResolvedValueOnce({ ok: false, reason: 'has_resolved_commitments' });
     const { client: supabase } = fakeSupabase([t1]);
 
     const result = await backfillCommitments(supabase, 10);
 
-    expect(produceOfficeTasksFromCommitmentsMock).not.toHaveBeenCalled();
+    expect(countOfficeTasksForTranscriptMock).not.toHaveBeenCalled();
     expect(result).toEqual({ done: 0, skipped: 0, failed: 0, refused: 1, quarantined: 0, tasksCreated: 0 });
   });
 

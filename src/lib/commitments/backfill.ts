@@ -8,12 +8,23 @@
 //     filter/column (no verticals system exists here yet -- S3 is unbuilt).
 //   - Drops the verticalName parameter (extractRawCommitments no longer
 //     takes one -- see extract.ts's header).
-//   - After a FRESH finalize (ok && not alreadyFinalized), calls THE
-//     PRODUCER (produceOfficeTasksFromCommitments) so every open commitment
-//     immediately gets an office_tasks row -- the copilot never built this
-//     step (see the merge plan's S6 paragraph); it does not run on an
-//     already-finalized/refused outcome, since either means no NEW open
-//     commitment rows were written this call.
+//
+// FIX ROUND (technical-lens finding, same day): THE PRODUCER used to run
+// here as a SEPARATE round trip after persistCommitments/finalize
+// succeeded -- a crash or transient failure between the two could orphan
+// an open commitment with no task forever, since backfillCommitments's own
+// candidate queries permanently exclude any transcript once
+// commitments_extracted_at is set. Fixed by folding task production INTO
+// call_commitments_finalize_extraction's own transaction
+// (migrations/2026-08-29-call-commitments.sql) -- either the commitments
+// AND their tasks commit together, or neither does. This file no longer
+// calls the producer at all; after a FRESH finalize (ok && not
+// alreadyFinalized) it only READS how many tasks already exist for that
+// transcript (countOfficeTasksForTranscript, produceTasks.ts, repurposed
+// into a reporting-only helper) so the batch result can still report an
+// honest tasksCreated count. A failure of that READ is caught and logged,
+// never thrown -- the tasks themselves already exist regardless of whether
+// this count succeeds.
 //
 // The transcript-level completion markers (call_transcripts.
 // commitments_extracted_at etc., added by S2's migration) are required even
@@ -29,7 +40,7 @@ import {
 } from './extract';
 import { buildCommitmentRows } from './build';
 import { persistCommitments } from './persist';
-import { produceOfficeTasksFromCommitments } from './produceTasks';
+import { countOfficeTasksForTranscript } from './produceTasks';
 
 // Batch cap only. The database filters durable extraction markers BEFORE
 // applying this bound, so processed recent transcripts cannot hide older work.
@@ -160,11 +171,16 @@ export async function backfillCommitments(
           skipped++;
         } else {
           done++;
-          // THE PRODUCER: only for a FRESH finalize -- an already-finalized
-          // or refused outcome wrote no new open commitment rows, so there
-          // is nothing new to turn into a task.
-          const produced = await produceOfficeTasksFromCommitments(supabase, t.id);
-          tasksCreated += produced.created;
+          // THE PRODUCER already ran, atomically, inside finalize's own
+          // transaction (migrations/2026-08-29-call-commitments.sql) -- this
+          // is a read-only count for reporting only, not what creates the
+          // tasks. A count failure is logged and swallowed: the tasks
+          // themselves already exist regardless.
+          try {
+            tasksCreated += await countOfficeTasksForTranscript(supabase, t.id);
+          } catch (err) {
+            console.error(`Failed to count office tasks for transcript ${t.id}:`, err);
+          }
         }
       } else {
         refused++;
