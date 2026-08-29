@@ -5,6 +5,7 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getAdvertisingCampaign } from '@/lib/advertising/campaigns';
 import { submitPlacement } from '@/lib/advertising/placements';
 import { reverseGeocode } from '@/lib/advertising/geocode';
+import { computePhotoHash } from '@/lib/advertising/photoHashCompute';
 import { MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 import type { AdvertisingWorker } from '@/lib/advertising/workers';
 
@@ -112,6 +113,9 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
   }
 
   const suggestedAddress = await reverseGeocode(lat, lng);
+  // Perceptual hash for the review queue's "very similar photo" flag.
+  // Best-effort: null on any failure, the capture never fails over it.
+  const photoHash = await computePhotoHash(bytes);
 
   try {
     const placement = await submitPlacement({
@@ -127,6 +131,7 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
       route: routeText || null,
       neighborhood: neighborhood || null,
       workerNote: workerNote || null,
+      photoHash,
       isTest: worker.isTest,
     });
     return NextResponse.json({ placement }, { status: 201 });
