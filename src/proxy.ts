@@ -19,8 +19,13 @@
 // being unconfigured (that would be a NEW fail-open on a prod misconfig).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isPublicPath } from '@/lib/auth/operatorGate';
-import { authGateEngaged, createMiddlewareSupabase, isCrewAccount } from '@/lib/auth/supabaseServer';
+import { isAdvertisingPath, isPublicPath } from '@/lib/auth/operatorGate';
+import {
+  authGateEngaged,
+  createMiddlewareSupabase,
+  isAdvertisingAccount,
+  isCrewAccount,
+} from '@/lib/auth/supabaseServer';
 
 export async function proxy(req: NextRequest) {
   if (!authGateEngaged()) return NextResponse.next(); // deliberately opted out
@@ -57,6 +62,22 @@ export async function proxy(req: NextRequest) {
         const denied = req.nextUrl.clone();
         denied.pathname = '/login';
         denied.searchParams.set('error', 'crew-account');
+        return NextResponse.redirect(denied);
+      }
+      // Same seam as the crew branch above, for the advertising population
+      // (Naldo's 2026-08-27 ruling). The advertising surface is live as of
+      // the workstream B build: isAdvertisingPath() names /advertising and
+      // /api/advertising/**, and this branch confines every advertising
+      // session to exactly that surface, without ever widening the crew
+      // branch above. The reachability matrix is pinned by
+      // src/lib/auth/advertisingPerimeter.test.ts.
+      if (isAdvertisingAccount(user.app_metadata) && !isAdvertisingPath(pathname)) {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        const denied = req.nextUrl.clone();
+        denied.pathname = '/login';
+        denied.searchParams.set('error', 'advertising-account');
         return NextResponse.redirect(denied);
       }
       return res;

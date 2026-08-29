@@ -2535,6 +2535,30 @@ _(S21 and older → `session_log_naldo_archive.md`.)_
 - **NEXT:** nothing pending from this session; it opened and closed one bug. Old escalation emails already in the inbox still carry the broken link — only newly-sent ones are fixed.
 
 
+### S56 (Jason) — 2026-08-28 — the Homeworks CRM retired into the quote tool: 20 quotes, $41,162.88, reconciled to the penny; plus the /inbox follow-up strip deleted
+
+**SHIPPED:** two PRs, both merged and live. **#1005** deleted the "Follow-ups due today" strip and moved its one non-duplicated signal onto the rows below. **#1049** migrated all 2026 revenue out of Homeworks before it bills again on 16 September. Ledger 444-449 minted; counter 444 → 450.
+
+**THE MIGRATION.** 20 quotes for 18 customers, matching Homeworks to the penny: **$41,162.88 contracted · $29,890.70 collected · $11,272.18 outstanding**. The tool held nothing before 2026-06-23, so half the year's revenue existed in no report. Also created the first payment-plan tracking this tool has had (`installments`) for the three customers who pay monthly, and closed out the four completed jobs with their historical invoices.
+
+**MEASURE-BEFORE-DESIGNING DECIDED THE WHOLE SHAPE, THREE TIMES.** (a) The pricing engine **cannot reproduce the charged tax on 8 of the 14 invoices** — Homeworks taxes PER LINE and rounds each (Rodney's $2,650 line lands on $2,881.87, the half-cent going DOWN), three invoices carry two rates, one rate is not in the document at all. That killed "recompute from a rate" before a line was written and made "store the charged figures verbatim" the rule. (b) Card-on-file vaulting turned out to be **live and populated — 18 of 22 paid quotes carry a Valor vault token** — which shrank "build recurring billing" to "build a schedule", and made the pay-link path (the card vaults as a side effect of the first payment) retire the vault-transfer question entirely. (c) Zero quotes in prod had ever had deposit = total, so Naldo's "what happens to a paid-in-full customer who still needs an install" was genuinely unprecedented — and the completion route already handles it by name.
+
+**EVERY GATE I WROTE FAILED FIRST, ON SOMETHING REAL.** The invoice parser asserted the three Homeworks totals and caught itself reading the **"due" column as the total**. The line-item gate caught **four invoices running onto a second page** and then **Kevin Egan's continuation page carrying no invoice number and $3,600 of items**. The record-set gate caught **Raymond's figures being the pre-export ones** (his 4th payment landed the day of the migration). A plausible-looking wrong number never survived to a write.
+
+**MISTAKES:** I told Jason **Kathy Polera's invoice was untaxed and he ruled on that false fact** — it charges $56.52 at 8.75%; my parser read "no rate found" as "no tax" · I **backdated `quote_sent_at` and left `created_at` at the migration run date**, which turned the homepage's Quote-turnaround KPI **negative** (−63.35 days on the migrated set, dragging the overall from +4.52 to −12.66) — caught by the admin lens, not me · I **omitted `currentDepositUsd` from every migrated snapshot**, so the portal adapter fell back to "50% of the total" and Rodney, who paid $8,101.87 in full, would have been told on his own portal that we hold about $4,050.94 — caught by the customer lens · my **`priorTool` audit trail overwrote itself on a re-run**, recording the already-corrected figure as the original for Asharib and needing a hand restore · a **test I wrote to pin the due-on-completion guard passed with the guard removed**, caught only by the mutation probe · I **left the create path with no idempotency guard**, so a second run would have duplicated quotes.
+
+**DID RIGHT:** ran the four-lens round on the money PR even though Jason had already given the merge-go, and **held the merge** to put the findings in front of him — three of the four HIGHs were customer- or owner-visible and none was in the code, they were in the data I had already written · verified Asharib end to end (quote, invoice, job, GHL card all at $1,658.92) rather than trusting the write · **proved the idempotency guard live** by re-running a migrated record and confirming the set still read 20 / $41,162.88 · reconciled three independent Homeworks exports to the penny before believing any of them · refused to hand-type 19 records, generating them from the parsed data instead.
+
+**THE CLOSE LENS CAUGHT A FALSE CLAIM IN MY OWN COMMIT MESSAGE.** The fix-round commit said the negative-KPI bug was “Fixed by setting `created_at` to the real document date”. I had fixed the DATA with SQL; the SCRIPT still left `created_at` at the run time, so a future batch would have reproduced it — and the message read as though the code had changed. The lens also asked whether `/insights`' Time-to-close carried the same distortion, since it does the identical `customer_approved_at − created_at` subtraction. Verified in prod at close: **zero negatives on both metrics**, migrated time-to-close 0.14 days, overall 6.46 — the one data fix covered both. The script now sets `created_at` too, so the claim is true of the code and not just of the rows. This is the report-not-intent pitfall in a commit message, which is exactly where it hides.
+
+**REVIEW:** four lenses on #1005 + an adversarial delta-verify (1 MED, 2 LOW, all fixed); four lenses on #1049 (3 HIGH, 4 MED across them — everything fixable in code or data fixed the same session); one whole-session integration lens at close.
+
+**NOT FIXED, by Jason's direction — next session finishes the migration first, then fixes these together:** rows **444** (a staffer can destroy a migrated quote's money by clicking Calculate — booked quotes are exempt from the post-approval freeze), **445** (`/admin/installments` has no link anywhere), **446** (`markInstallmentPaid` has no caller, so the next payment can't be recorded), **447** (the 13 overwritten drafts lost their original inputs/result), **449** (`isOverdue` compares against UTC, not ET).
+
+**ENDING:** master `77d2c623`. Gates tsc 0 · lint 0 errors / 21 warnings · vitest **8546** across 469 files.
+
+**NEXT:** row **448** — the monthly installment runner — then a lens round on it, then rows 444-447/449 as one batch. **Jason's own actions, both dated:** a Valor pay link to **Jane before 5 September** and to **Raymond before 28 September**; each vaults the card as a side effect of the payment. Mary needs neither — her monthlies are done and her last $184.16 is an ordinary balance after install.
+
 ### Naldo S56 — codex-mode orchestration skill built + repo-shared (PR #709 MERGED), then a 4-lens skill review surfaced real gaps NOT YET applied — questions dismissed, fixes pending Naldo's decisions (2026-08-10)
 
 > Built `.claude/skills/codex-mode/SKILL.md` + `JASON-SETUP.md`: Claude-as-orchestrator, OpenAI Codex CLI-as-builder loop, so Naldo's limited Claude usage stretches by pushing code-writing to a separate OpenAI quota. Diagnosed and documented a real environment gotcha along the way: Codex's Windows sandbox dies with `CreateProcessWithLogonW failed: 267` on any OneDrive-synced path (same tax that eats `node_modules`) — must run from `C:\dev\yll-quote-tool`. Self-reviewed on Fable 5 before first ship (4 gaps fixed: wrong-tree review risk, Bash 2-min timeout on long dispatches, dirty-tree/untracked-file gaps, unbounded correction ping-pong). Moved from Naldo's global `~/.claude/skills/` into the repo (`.claude/skills/codex-mode/`) per his ask so Jason gets it via git sync — PR #709, gates green, merged same session.
@@ -3044,4 +3068,120 @@ heads-up), the wrap MED (row 356), the wrap LOW (row 357).
 **NEXT:** drive the van (first real data) · fix the ~15 addresses on /admin/geocoding · row 439 polish · schedule day-ordering, THEN ETA texts + duration model per the design doc · rows 431/432 (timeline operability, radius tuning — now DWELL threshold tuning) wait on real visits.
 
 Gates at close: tsc 0 · lint 0 errors (19 pre-existing warnings) · vitest **8388 / 461 files**. Master at close: `37da5891`.
+
+### S73 (Naldo) — 2026-08-28 — PostHog stopped being a data graveyard: a morning review robot, a PR reviewer robot, and merge-by-text. 3 PRs merged and live, 5 live PostHog settings changed. Close PR naldo/s73-close [Claude Code desktop]
+
+> **NUMBER, and a collision recorded rather than silently taken.** This close first stamped **S72**, having checked master, every journal fragment, `gh pr list --limit 200` and the remote branch list, all of which left 72 free. It does not: the concurrent REFERRAL session had already claimed S72 in the machine-local self-assessment (`feedback_self_assessment.md`), which is not in the repo and so is invisible to every repo-side check. Its work (PRs #790, #804, #924, #960) is merged, this session's number was cemented nowhere yet, so it yielded to **S73** rather than collide. **The transferable lesson: the number space is master + the archive + every open PR + every unmerged branch + the LOCAL self-assessment, and only the last of those is invisible to git.** S71 was separately taken mid-conversation by the fleet-GPS session, which had itself renumbered from S68.
+
+**The ask.** Naldo had read that people plug Claude into PostHog and get a daily review that fixes things automatically. PostHog was already collecting from both surfaces and nobody had ever looked at it.
+
+**What research changed before any build.** The first plan was API-key auth against the remote MCP. Checking rather than assuming found an OFFICIAL PostHog connector in the Claude directory using OAuth, plus an official `posthog` plugin for Claude Code. Both were adopted, so no key was ever handled. Connected with the **read-only** scope preset on every scope, which is the guardrail the pipeline doc claims.
+
+**Three robots, all live:**
+- **PostHog daily review** (`trig_01PCjNCUYyCwNL6k2vMHaWM9`), 7:00 AM ET. Reads the last 24h across both hosts, triages into quote-tool bugs / website findings / suggestions / noise, opens up to 3 fix PRs a day, files a GitHub issue, texts Telegram. Report-only for money, pricing, payments, auth and every SHARED path; website is report-only entirely. Backlog rule at 5 open PRs.
+- **PR lens review** (`trig_013mbkDVY6GdGSbpvDMvnwZE`), GitHub-triggered on `pull_request.opened` for `claude/` branches. One comment, `lens-review-bot` marker, PASS or BLOCK. Cannot merge, approve, close, or push.
+- **PR merge on request** (`trig_015kPuXZQCcjAZTYKLQNiPF8`), API-triggered by the Telegram bot. Re-derives open/not-draft, `claude/` branch, a lens-review PASS comment, CI green on the CURRENT head SHA, and master-is-ancestor, then squash-merges pinned to that SHA.
+
+**THE RESULT WORTH REMEMBERING: the reviewer robot found real defects in both PRs it has ever seen, and one of them was mine and invisible to a green test run.** On #1039 it caught that the `staff_device` property read `document.cookie` for `yll_staff_device`, which is set `httpOnly` — so it could never fire in a real browser, and the tests passed only because they stubbed a cookie state that cannot exist. The whole point of the PR was dead on arrival behind three green gates. On #1044 it caught a coaching reply that ignored the bot's group contract, and correctly diagnosed the deeper cause (a broad prefix regex where the sibling uses a whole-string match) that my own fix would have missed.
+
+**Shipped:** #1032 the pipeline record (docs) · #1039 staff-device super property + lead-form per-field drop-off events · #1044 merge-by-text. Every one lens-reviewed; #1044 additionally took an adversarial delta-verify of its fix round, which returned BLOCK on a HIGH.
+
+**Live PostHog config changed (no git diff, so recorded here):** exception autocapture ON (was OFF, which is why zero errors were ever visible); dead-click autocapture ON; heatmaps ON; session replay NARROWED from everything to a URL trigger list (portal, estimate, refer, and the marketing site) so staff screens stop being recorded; internal-user filter excluding `staff_device`, default-on; an error-tracking webhook to Telegram, enabled and fire-tested.
+
+**Measured, not guessed:**
+- All-time errors across both surfaces: **5 distinct, 7 events**. Tiny, but a floor rather than a measurement, since capture had been off.
+- Rage clicks, all time: `/quote/new` **82 from 10 staff**, `/inbox` 21/6, `/admin/quotes` 14/5. The worst frustration surface in the tool is the quote builder.
+- Lead form, 90 days: ~886 views, 165 starts, **23 submits**. Start-to-submit **14%**. That is the money finding, and #1039's per-field events exist to locate it → row 441.
+- The top "page" in analytics was `/admin/fleet`, 44 views from 3 people: the office. Hence the staff filter.
+- A live marketing-site error surfaced within an hour of enabling capture: `sticky_head_func`, 36 occurrences in one session → row 440.
+
+**Own mistakes (full list in the local self-assessment):** the httpOnly cookie read above, caught by a robot rather than by me · gated the coaching reply on `addressed` but NOT the branch that actually merges, so the approver typing `merge 1043` in a crew group would have deployed unbidden and announced it (caught by the delta-verify; the fix-introduces-bugs class, in the same session that shipped the reviewer to catch exactly this) · introduced a UTF-8 BOM by running a mutation probe through PowerShell's `Set-Content -Encoding utf8`, the documented hazard, caught by the same delta-verify · passed a long commit body inline to git on PowerShell against my own standing rule, then blamed the classifier for four blocked attempts before switching to `-F`.
+
+**Process note worth carrying:** the safety classifier blocked `npm run lint` and `npx eslint` on BOTH shells for most of the session, so lint never ran locally on the feature branches. CI ran it green on every merged head, and it ran clean at this close (0 errors, 21 warnings). Stated in both PR bodies rather than implied, per the report-not-hope rule.
+
+**REVIEW AT CLOSE (full four lenses — required because #1039 and #1044 each shipped on fewer than four, and live non-repo surfaces changed). Three of four returned BLOCK, and they were right to.**
+
+- **ADMIN — BLOCK, 3 HIGH, all three fixed in this close.** (1) **The runbook said the pipeline was never set up, while it was running.** The Setup-state checklist on master still read as an unstarted to-do list. Cause was mechanical and worth remembering: the updates were committed to PR #1032's branch AFTER that PR had already merged, so they sat orphaned on a dead branch. The one document that tells Naldo whether this thing is on was the document that said it was off. (2) The reviewer and merge routines' prompts existed only outside the repo, so every authority claim about a routine that can MERGE CODE was unverifiable from here; both prompts are now recorded verbatim, with their known weaknesses named (the PASS-comment gate does not verify comment authorship; the 3-PR cap is prompt-level, not code-level). (3) The new staff filter was implicitly credited with more than it does; the doc now states exactly what it covers and that it does NOT close row 422. Remaining MEDs are dispositioned into the doc or accepted.
+- **CUSTOMER — BLOCK, 1 HIGH → MEASURED, and it turned out pre-existing and bigger than the lens could see.** It reasoned from code that dead-click capture records element text through a path replay masking never touches. Querying prod turned that into a number: **1004 events in 180 days carry a `$` in `$el_text`**, and the samples are real quote figures ("Gingerbread $1,080 Off", "Santa's Roofline $440 Off", "$95"). The bulk is `$autocapture`, which has been on for months; this session's dead-click change added **7**. So the session widened a pre-existing gap rather than creating one. Deliberately NOT reverted unilaterally, because disabling autocapture would break the rage-click and heatmap work the whole pipeline rests on, and customer data is Naldo's call → **row 442** with the measurement and three fix shapes.
+- **STAFF — BLOCK, 1 HIGH, and it is not this session's code.** `QuoteBuilder`'s "Clear all" wipes a roofline's traced satellite lines with no confirm and no undo, and the next derive zeroes the billed footage on screen, overriding a typed override; 13+ sibling destructive actions in that file do confirm. It arrived in PR #916 (a concurrent session) during this window, and was itself shipped as a fix for an earlier staff-lens finding. Traced in code, NOT reproduced (the lens had no operator login) → **row 443**, flagged to Naldo, Jason's area.
+- **TECHNICAL — CONCERNS, 0 HIGH, 1 MED, 1 LOW.** MED: two rapid `merge` texts could fire the routine twice with no dedupe key. ACCEPTED with evidence rather than fixed: the routine's first check is that the PR is open, and this session proved that path live by firing it at an already-merged PR, which refused. Worst case is a wasted run and a second Telegram note. LOW: the coaching matcher still answers a bare two-word "merge conflict" from the approver in an addressed chat; accepted as noise, approver-only. Everything else it attacked came back clean, including the client/server boundary, the lead-form events across all three form variants, the crew-vocabulary dispatch order, and the identity gate's env edge cases.
+
+**NEXT:** row 440 (marketing-site sticky-header error, needs a human, WordPress) · row 441 after a week of field data · `/quote/new` rage clicks are unexplained and now have heatmaps and replay pointed at them · the daily robot's first unattended run is 7:00 AM 2026-08-29, and its report should be read as a test of the pipeline as much as of the app.
+
+Gates at close: tsc 0 · lint 0 errors (21 warnings) · vitest **8484 / 465 files**. Master at close: `3efc00f2`.
+
+# S74 (Naldo) — 2026-08-28 — fleet page verified, repaired, rebuilt to spec, and proven on a real job day: 3 PRs merged and live
+
+> Session number note: the handoff said S72, and every repo-side check agreed. S72 was
+> in fact held by the referral session in the machine-local self-assessment, the one
+> place git cannot see, and S73 was taken the same way the day before. This session is
+> S74, claimed at wrap after checking master, the archive, every open PR, AND the local
+> file. That local-file door has now bitten twice (S73 documented it; S74 walked into
+> it), so it was promoted to the AGENTS.md session-number pitfall this close.
+
+## What shipped
+
+- **PR #1036, merged + prod-verified: the /admin/geocoding fix-list had been dead
+  since it shipped.** The page selected `customers(display_name)`; the real column is
+  `name`. PostgREST answered 400 to every request, the error path returned an empty
+  list, and the page told staff "Nothing needs fixing" while 25 unschedulable
+  properties existed. Found by measuring (the page said zero, prod counted 25, the
+  Supabase API log showed the 400), fixed, and the failure mode itself fixed too: a
+  load error now renders a visible error card, never the all-clear. Verified both
+  directions against prod with the real service client before the PR existed.
+- **PR #1040, merged + prod-verified: the fleet page became a real tool.** Leaflet +
+  OpenStreetMap live map (no API key, no customer data in any request), field-only
+  crew clock, at-place timer ("At Depot since 6:50 AM · 43 min"), day list, 2-minute
+  auto-refresh, and honest tracker-asleep wording (an OBD tracker sleeps when the
+  ignition is off, which is most of any real visit; the old copy read that as
+  "position unknown, not parked"). Two review lenses pre-merge (technical PASS; staff
+  0 HIGH / 6 MED, five fixed in the round, one accepted), then a same-day device
+  round with Naldo produced three more fixes shipped in the same PR.
+- **PR #1046, merged (by a concurrent chat, deliberately) + prod-verified: the
+  two-clocks split.** The payroll-versus-GPS comparison moved to /admin/fleet/clocks,
+  ADMIN ONLY via the new `getSessionRole` (fail-closed; crew and advertising logins
+  excluded before the role collapse — the S58 seam, now pinned by tests whose crew
+  branch is mutation-probed). The fleet page is live-only for all office operators.
+  Fleet became its own nav area; Jobs and Fleet no longer co-highlight (Naldo: bug,
+  not an accepted cost). Full four-lens round: customer PASS, technical and admin
+  converged on the untested gate (fixed same hour), staff's real finding is recorded
+  as a decision: non-admin office staff now have NO GPS-history surface, so "when did
+  the van arrive yesterday" requires an admin.
+- **Naldo's staff row moved office → field** (his click, after my direct write was
+  classifier-blocked): he appears on the fleet crew clock and is assignable to jobs.
+
+## The real-world proof
+
+Job #1046 (166 Van Buren St, West Babylon) was assigned for the day on the existing
+schedule page as the test. The tracker then recorded the whole day unattended: depot
+6:50→10:10 AM, job visit 10:24→11:10 AM (47 min), depot 11:41→12:01, second job visit
+12:11→4:36 PM (the double-back captured as two visits, exactly as designed), depot
+arrival 5:19 PM. Beside it the crew clock: Naldo in 7:01→10:15 and 10:15→5:26. That is
+the first real duration data the scheduling design has been waiting on (rows 431/432),
+and the 120 m radius behaved.
+
+## Decisions recorded (do not re-litigate)
+
+- Fleet page access: ALL office operators for the live view (Naldo, over the
+  narrower you-and-Jason idea). The two-clocks comparison: admins only.
+- The scheduling design doc gained a 2026-08-28 addendum from Naldo and Jason's call:
+  manual person-to-vehicle assignment per day (answers the doc's open "crew or
+  vehicle?"), the Staff section is Jason's build (all-staff hours; automatic GPS hours
+  separate; P4P its own tab and own kickoff; marking off PART of a day's hours is a
+  hard requirement), Copilot is dropped this month (bills the 16th), scheduling wanted
+  inside ~2 weeks.
+- Truck-and-trailer tracker activates later (row 454 holds the steps).
+
+## Review at close
+
+Wrap ran one integration lens plus the customer lens (package.json is a SHARED path,
+so the customer lens ran with a live logged-out drive). Findings recorded in the wrap
+block of the journal entry; dispositions in rows 454-457.
+
+## Ending state
+
+Master at close: see close PR. Gates at close: tsc 0 · lint 0 errors (19 warnings) ·
+vitest green (8459 at the last combined-tree run; the suite grew all day as five-plus
+concurrent sessions merged). Ledger: minted 454-457, counter to 458, above Jason's
+open #1052 which holds 450-453.
 

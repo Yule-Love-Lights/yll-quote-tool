@@ -29,7 +29,12 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
-import { REFERRAL_CREDIT_USD, REFERRAL_CREDIT_EXPIRY_YEARS, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import {
+  REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
+  REFERRAL_FRIEND_SPRITZERS,
+  REFERRAL_FRIEND_ALT_CREDIT_USD,
+} from '@/lib/referrals';
 import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { CompactTrustRow } from '@/components/portal/dark/CompactTrustRow';
 import { formatUsd } from '@/components/portal/format';
@@ -84,8 +89,10 @@ export default async function ReferralLinkPage({
             lighting, or bistro.
           </p>
           <p className="mt-3 text-[16px] md:text-[17px] text-[#E0D7C1] leading-[1.6]">
-            You are also giving them {formatUsd(SPRITZER_VALUE_USD)} in free lighting on their
-            first install: {REFERRAL_FRIEND_SPRITZERS.count} staked spotlights for their yard.
+            You are also giving them {REFERRAL_FRIEND_SPRITZERS.count} free spritzers on their
+            first install, worth {formatUsd(SPRITZER_VALUE_USD)}, or{' '}
+            {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead,
+            their choice.
           </p>
           {/* Trust row (naldo/referral-link-preview, PIECE 1): the same
               compact rating / license / guarantee signals the referral

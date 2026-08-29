@@ -122,6 +122,35 @@ const QUOTE_BY_ID_RE = /^\/api\/quotes\/[^/]+$/;
  * capability-token read (#81 W6-005), but DELETE on that same path is an
  * operator-only action and must stay gated.
  */
+/**
+ * The advertising-only surface: `/advertising` (pages) and `/api/advertising`
+ * (its APIs). Confined at the perimeter for the same reason the retired crew
+ * population was (row 438) — an
+ * advertising session must be confined to exactly this surface at the
+ * perimeter, which otherwise admits any authenticated user onto the operator
+ * surface and its customer PII.
+ *
+ * Naldo's 2026-08-27 ruling: advertising gets a real future surface here
+ * (`/advertising` pages, `/api/advertising/**` routes), never a widened
+ * `OperatorRole`. Both prefixes are EMPTY today — no advertising page or route
+ * exists yet — and that is expected: this ships the population lock (the
+ * marker + the perimeter confinement) before the first advertising surface
+ * does, so nothing has to race to land guard and surface in the same PR.
+ *
+ * Positive allowlist, prefix-matched: a future
+ * `/api/advertising/campaigns` needs no change here.
+ */
+export function isAdvertisingPath(pathname: string): boolean {
+  const path =
+    pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return (
+    path === '/advertising' ||
+    path.startsWith('/advertising/') ||
+    path === '/api/advertising' ||
+    path.startsWith('/api/advertising/')
+  );
+}
+
 export function isPublicPath(pathname: string, method: string = 'GET'): boolean {
   // Normalize a single trailing slash before classifying. Next strips these when
   // trailingSlash is false (the default), but a third-party webhook (Twilio /

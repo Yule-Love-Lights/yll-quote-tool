@@ -47,7 +47,11 @@ function LoginForm() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? 'Login failed');
       }
-      router.replace(safeRedirectTarget(from));
+      // The server names a `home` for populations confined to their own
+      // surface (advertising -> /advertising); it wins over ?from=, which
+      // for them would only bounce off the proxy back to this page.
+      const body = (await res.json().catch(() => ({}))) as { home?: string };
+      router.replace(safeRedirectTarget(typeof body.home === 'string' ? body.home : from));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');

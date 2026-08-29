@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { createRouteSupabase, isCrewAccount } from '@/lib/auth/supabaseServer';
+import { createRouteSupabase, isAdvertisingAccount, isCrewAccount } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 
 /**
@@ -27,6 +27,14 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
  *
  * A crew login that lands here is refused (`is_crew`): crew have their own path,
  * and letting a crew punch land as `source: 'office'` would mislabel the lane.
+ *
+ * An advertising login is refused the same way (`is_advertising`, advertising
+ * role hardening 2026-08-27). This is a defense-in-depth guard, not the only
+ * thing standing between advertising and a payroll write — `listNonCrewOperators`
+ * already refuses to offer an advertising login as a linkable office staffer —
+ * but this route writes PAYROLL directly from the session, and it must fail
+ * closed on its own even if a `crew_members` row ever ends up pointing at an
+ * advertising account's auth_user_id through some other path.
  */
 
 export type OfficeCaller = {
@@ -46,6 +54,7 @@ type CrewRow = {
 /**
  * `unauthenticated` — no valid session at all.
  * `is_crew`         — a crew login; it must use the crew clock, not this one.
+ * `is_advertising`  — an advertising login; it has no office-clock surface at all.
  * `unlinked`        — an operator login with no `crew_members` row pointing at
  *                     it, so there is no pay identity to attach office hours to.
  *                     An admin links the login to the person first.
@@ -54,7 +63,10 @@ type CrewRow = {
  */
 export type OfficeLookup =
   | { ok: true; caller: OfficeCaller }
-  | { ok: false; reason: 'unauthenticated' | 'is_crew' | 'unlinked' | 'inactive' | 'unconfigured' };
+  | {
+      ok: false;
+      reason: 'unauthenticated' | 'is_crew' | 'is_advertising' | 'unlinked' | 'inactive' | 'unconfigured';
+    };
 
 export async function getOfficeClockCaller(): Promise<OfficeLookup> {
   const supabase = await createRouteSupabase();
@@ -69,6 +81,11 @@ export async function getOfficeClockCaller(): Promise<OfficeLookup> {
   // Crew logins have their own clock (source 'pwa'/'telegram'); routing them
   // through here would stamp their punch 'office' and double-book the two lanes.
   if (isCrewAccount(user.app_metadata)) return { ok: false, reason: 'is_crew' };
+
+  // Same reason, for advertising: it has no clock surface of any kind, and
+  // must never resolve a payroll punch even in the extreme case where a
+  // crew_members row somehow points at its auth_user_id.
+  if (isAdvertisingAccount(user.app_metadata)) return { ok: false, reason: 'is_advertising' };
 
   const db = getSupabaseServiceClient();
   if (!db) return { ok: false, reason: 'unconfigured' };
@@ -111,6 +128,11 @@ export function officeDenialResponse(
     case 'is_crew':
       return NextResponse.json(
         { error: 'Crew logins clock in from the crew app, not the office clock.', reason },
+        { status: 403 },
+      );
+    case 'is_advertising':
+      return NextResponse.json(
+        { error: 'This login has no office clock access.', reason },
         { status: 403 },
       );
     case 'unlinked':

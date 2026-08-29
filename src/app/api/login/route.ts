@@ -7,7 +7,7 @@
 // failure (no account enumeration).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createRouteSupabase } from '@/lib/auth/supabaseServer';
+import { createRouteSupabase, isAdvertisingAccount } from '@/lib/auth/supabaseServer';
 import { rateLimitResponse } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
@@ -37,12 +37,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Auth not configured on server' }, { status: 503 });
   }
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
     // Generic message — don't reveal whether the email exists.
     return NextResponse.json({ error: 'Incorrect email or password' }, { status: 401 });
   }
 
+  // An advertising login's only surface is /advertising — landing it on '/'
+  // would bounce straight back here via the proxy's population confinement.
+  // The server names the home so the page never has to guess from a role it
+  // cannot see. Operators get no `home` and keep the ?from= behavior.
+  const home = isAdvertisingAccount(data?.user?.app_metadata) ? '/advertising' : undefined;
+
   // The SSR client set the session cookies on this response via setAll().
-  return NextResponse.json({ ok: true });
+  return NextResponse.json(home ? { ok: true, home } : { ok: true });
 }

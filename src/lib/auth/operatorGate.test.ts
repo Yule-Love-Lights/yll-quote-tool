@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPublicPath } from './operatorGate';
+import { isAdvertisingPath, isPublicPath } from './operatorGate';
 
 describe('isPublicPath — customer-facing allowlist', () => {
   it('treats the customer portal + its assets as public', () => {
@@ -329,6 +329,55 @@ describe('the office web clock is operator-only, not public and not crew', () =>
     // silently omitted from classification serves the login shell / 401s.
     for (const method of ['GET', 'POST', 'OPTIONS']) {
       expect(isPublicPath('/api/office/clock', method), method).toBe(false);
+    }
+  });
+})
+
+describe('isAdvertisingPath — the advertising-only surface (advertising role hardening)', () => {
+  it('claims the /advertising page prefix', () => {
+    expect(isAdvertisingPath('/advertising')).toBe(true);
+    // Not built yet, but the prefix must already cover a future subpath so
+    // adding one needs no change here.
+    expect(isAdvertisingPath('/advertising/campaigns')).toBe(true);
+  });
+
+  it('claims the /api/advertising namespace', () => {
+    expect(isAdvertisingPath('/api/advertising')).toBe(true);
+    expect(isAdvertisingPath('/api/advertising/campaigns')).toBe(true);
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(isAdvertisingPath('/advertising/')).toBe(true);
+    expect(isAdvertisingPath('/api/advertising/')).toBe(true);
+  });
+
+  it('does not claim the operator surface, which is the whole point', () => {
+    // An advertising session reaching any of these would be reaching customer PII.
+    expect(isAdvertisingPath('/customers')).toBe(false);
+    expect(isAdvertisingPath('/api/customers')).toBe(false);
+    expect(isAdvertisingPath('/admin/jobs')).toBe(false);
+    expect(isAdvertisingPath('/api/jobs')).toBe(false);
+    expect(isAdvertisingPath('/')).toBe(false);
+  });
+
+  it('does not claim the RETIRED ops/v1 namespace either', () => {
+    // /api/ops/v1 went with the Operations Hub (row 433) and crew logins were
+    // retired (row 438), so there is no crew predicate left to cross-check
+    // against. The advertising prefix must still not creep onto that path.
+    expect(isAdvertisingPath('/api/ops/v1/jobs/abc/arrive')).toBe(false);
+  });
+
+  it('is not fooled by a lookalike prefix', () => {
+    expect(isAdvertisingPath('/advertisingx')).toBe(false);
+    expect(isAdvertisingPath('/api/advertisingx/campaigns')).toBe(false);
+  });
+});
+
+describe('the advertising surface is NOT public — it needs a session, just an advertising one', () => {
+  it('keeps every advertising path out of the public allowlist (both prefixes are empty today, and that is expected)', () => {
+    for (const p of ['/advertising', '/advertising/campaigns', '/api/advertising', '/api/advertising/campaigns']) {
+      expect(isPublicPath(p, 'GET')).toBe(false);
+      expect(isPublicPath(p, 'POST')).toBe(false);
     }
   });
 });

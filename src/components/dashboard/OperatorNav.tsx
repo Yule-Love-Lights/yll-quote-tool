@@ -4,33 +4,15 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
+import { navItemsForView, type NavItem } from './operatorView';
+import { useOperatorView } from './OperatorViewContext';
+import { ViewAsControl } from './ViewAsControl';
 
-type NavItem = { label: string; href: string; match: OperatorArea[] };
-
-// Top-level operator areas, in the order Naldo specified. "New quote" lives on
-// the dashboard CTA + the Quotes page (so /quote/* highlights Quotes); Training
-// lives under Settings (so /training/* highlights Settings) — neither is a
-// top-level item.
-const ITEMS: NavItem[] = [
-  { label: 'Home', href: '/', match: ['home'] },
-  { label: 'Inbox', href: '/inbox', match: ['inbox'] },
-  // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
-  // page and everything behind it stay live — reachable by URL and from any
-  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
-  // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
-  // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
-  { label: 'Customers', href: '/customers', match: ['customers'] },
-  { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
-  { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
-  // Fleet shares the jobs area (both light up together — an accepted cosmetic
-  // cost of not widening OperatorArea). Unlinked pages are this repo's known
-  // inert-feature class; the S68 staff lens caught /admin/fleet shipping as one.
-  { label: 'Fleet', href: '/admin/fleet', match: ['jobs'] },
-  { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
-  { label: 'Inventory', href: '/inventory', match: ['inventory'] },
-  { label: 'Insights', href: '/insights', match: ['insights'] },
-  { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
-];
+// The item list itself lives in operatorView.ts (ops hub workstream A slice
+// 2): it flows through navItemsForView(view) so the later Crew My Day and
+// Advertising builds add role-filtered nav by extending that data, not by
+// rewriting this component. Today every operator's view is 'office' and the
+// list is unchanged.
 
 // Small numeric pill for the Inbox nav item — red once something's overdue
 // (>4h, matching the /inbox escalation convention), otherwise a neutral tone
@@ -72,6 +54,8 @@ export function OperatorNav({
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const { view } = useOperatorView();
+  const items = navItemsForView(view);
   const isActive = (item: NavItem) => item.match.includes(active);
 
   // This nav is shared chrome rendered on every operator page, several of
@@ -90,6 +74,10 @@ export function OperatorNav({
   // because one fetch blipped, which would silently strand a signed-in
   // staffer with no way to sign out until their next page load.
   const [sessionState, setSessionState] = useState<SessionState>('unknown');
+  // The caller's own role, from the same session answer. Drives the
+  // admin-only View-as control below; null (pre-fetch, signed out, retry
+  // exhausted) renders no control, so the safe default is "not admin".
+  const [role, setRole] = useState<'admin' | 'operator' | null>(null);
   useEffect(() => {
     let cancelled = false;
 
@@ -98,10 +86,13 @@ export function OperatorNav({
         .then(res => {
           if (res.status === 401) return { signedIn: false }; // real answer, not a failure
           if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
-          return res.json() as Promise<{ signedIn?: boolean }>;
+          return res.json() as Promise<{ signedIn?: boolean; role?: string }>;
         })
         .then(body => {
-          if (!cancelled) setSessionState(body.signedIn === true ? 'signedIn' : 'signedOut');
+          if (cancelled) return;
+          const signedIn = body.signedIn === true;
+          setSessionState(signedIn ? 'signedIn' : 'signedOut');
+          setRole(signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null);
         })
         .catch(() => {
           if (cancelled) return;
@@ -169,10 +160,37 @@ export function OperatorNav({
             Inbox badge showed — measured in headless Chromium, the exact
             iPad-width horizontal-scroll class #56/S22 fixed. Ten gaps × 2px
             saved = exactly the overflow. */}
+        {/* lg:px-1.5 xl:px-3 (premerge staff MED, advertising-role-hardening
+            fix round): adding the Schedule item (11 top-level items now, 13
+            <li>s total with the CTA + Sign out) measured a 45px page-level
+            overflow at 1024px in headless Chromium —
+            document.documentElement.scrollWidth 1069 vs clientWidth 1024, the
+            exact #56/S22 class recurring.
+
+            FIRST ATTEMPT (px-3 → lg:px-2, no whitespace-nowrap) measured 0
+            overflow, but that reading was a FALSE PASS: the "+ New quote" CTA
+            and Sign-out button (both multi-word) were silently WRAPPING onto
+            a second line under the remaining squeeze — their boxes rendered
+            52px tall vs the other 11 links' 32px, poking out above and below
+            the h-12 bar — and the wrap shrank their apparent WIDTH enough to
+            hide a REAL 16px shortfall from a plain scrollWidth check. Adding
+            `whitespace-nowrap` to both (below) to force single-line, then
+            re-measuring, is what surfaced the true 16px overflow at 1024
+            (1120/1280 were genuinely fine both times).
+
+            lg:px-1.5 (not px-2) on these 11 links — WITH whitespace-nowrap in
+            place so nothing can hide behind a wrap again — closes it with
+            room to spare: measured (headless Chromium, 3 widths, font-ready +
+            stability-checked, zero wrapped elements confirmed at every width):
+              1024px: 0 overflow, ~11.75px real margin
+              1120px: 0 overflow, ~107.75px margin
+              1280px: 0 overflow (xl:px-3 restores full padding — this is
+                       the original pre-Schedule design's natural fit)
+            */}
         <ul className="hidden lg:flex items-center gap-0.5 text-sm">
-          {ITEMS.map(item => (
+          {items.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
+              <Link href={item.href} className="lg:px-1.5 xl:px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
                 {item.label}
                 {inboxBadge(item)}
               </Link>
@@ -185,10 +203,16 @@ export function OperatorNav({
               active-tab highlight (that is Quotes' job for /quote/*). */}
           <li>
             {/* px-2.5 (not the tabs' px-3): 4px of extra headroom on top of
-                the gap fix above, so the 1024px fit isn't zero-margin. */}
+                the gap fix above, so the 1024px fit isn't zero-margin.
+                whitespace-nowrap (advertising-role-hardening fix round): this
+                CTA's label has a space ("+ New quote") and, once squeezed
+                enough, would silently wrap onto 2 lines rather than shrink in
+                width — that's the false-pass trap the lg:px-1.5 comment above
+                explains. Forcing single-line makes its true width count
+                toward the overflow check instead of hiding behind a wrap. */}
             <Link
               href="/quote/new"
-              className="px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              className="whitespace-nowrap px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
               + New quote
@@ -201,10 +225,18 @@ export function OperatorNav({
               removes it from the tab order — no separate disabled handling
               needed. */}
           <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
+            {/* lg:px-2 xl:px-3 + whitespace-nowrap (advertising-role-hardening
+                fix round): same reasoning as the CTA above — "Sign out" has a
+                space and was one of the two elements silently wrapping onto 2
+                lines in the first (wrong) measurement of the tab-link fix.
+                whitespace-nowrap forces it single-line; the padding step
+                mirrors the tab links and contributes to the ~11.75px real
+                margin measured at 1024px (see the lg:px-1.5 comment above for
+                the full before/after numbers at all 3 widths). */}
             <button
               type="button"
               onClick={signOut}
-              className="px-3 py-1.5 rounded-md transition-colors"
+              className="whitespace-nowrap lg:px-2 xl:px-3 py-1.5 rounded-md transition-colors"
               style={{ color: 'var(--op-text-2)' }}
             >
               Sign out
@@ -227,6 +259,26 @@ export function OperatorNav({
         </button>
       </div>
 
+      {/* Admin-only View-as strip (ops hub workstream A slice 2). Its own
+          block row UNDER the h-12 header row on purpose: the 1024px header
+          fit has ~12px of margin (see the lg:px-1.5 comment above), so the
+          control must add zero width there. A block row adds ~29px of height
+          for admins only, at every viewport width, and no width for anyone.
+          Renders nothing until the session check above resolves an admin.
+
+          KNOWN RESIDUAL (staff lens on PR #1055, deferred; reach widened by
+          the advertising view's pages, staff lens on the one-merge round):
+          because this nav remounts on every page and the role arrives by
+          fetch, the strip pops in after each navigation and shifts admin
+          page content down ~29px, the vertical twin of the #347 Sign-out
+          flash fixed above. Reserving the space here would show a permanent
+          blank band to every non-admin operator, so it is deliberately NOT
+          reserve-space fixed. The real fix is server-rendering the role into
+          OperatorShell (one getOperator read in the shell, role passed as a
+          prop); top of the ops suggestions list from the 2026-08-29 close.
+          Affects only the two admin accounts. */}
+      <ViewAsControl role={role} />
+
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
       {open && (
         <ul
@@ -245,7 +297,7 @@ export function OperatorNav({
               + New quote
             </Link>
           </li>
-          {ITEMS.map(item => (
+          {items.map(item => (
             <li key={item.href}>
               <Link
                 href={item.href}

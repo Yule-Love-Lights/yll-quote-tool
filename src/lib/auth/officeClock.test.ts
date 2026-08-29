@@ -5,20 +5,21 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { createRouteSupabase, isCrewAccount, getUser, maybeSingle, eq } = vi.hoisted(() => {
+const { createRouteSupabase, isCrewAccount, isAdvertisingAccount, getUser, maybeSingle, eq } = vi.hoisted(() => {
   const getUser = vi.fn();
   const maybeSingle = vi.fn();
   const eq = vi.fn(() => ({ maybeSingle }));
   return {
     createRouteSupabase: vi.fn(),
     isCrewAccount: vi.fn(),
+    isAdvertisingAccount: vi.fn(),
     getUser,
     maybeSingle,
     eq,
   };
 });
 
-vi.mock('@/lib/auth/supabaseServer', () => ({ createRouteSupabase, isCrewAccount }));
+vi.mock('@/lib/auth/supabaseServer', () => ({ createRouteSupabase, isCrewAccount, isAdvertisingAccount }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({ from: () => ({ select: () => ({ eq }) }) }),
 }));
@@ -30,6 +31,7 @@ beforeEach(() => {
   createRouteSupabase.mockResolvedValue({ auth: { getUser } });
   getUser.mockResolvedValue({ data: { user: { id: 'auth-1', app_metadata: {} } }, error: null });
   isCrewAccount.mockReturnValue(false);
+  isAdvertisingAccount.mockReturnValue(false);
   maybeSingle.mockResolvedValue({ data: { id: 'crew-1', display_name: 'Kelly', active: true }, error: null });
 });
 
@@ -59,6 +61,15 @@ describe('getOfficeClockCaller', () => {
   it("REJECTS a crew login ('is_crew') BEFORE any crew_members lookup", async () => {
     isCrewAccount.mockReturnValue(true);
     expect(await getOfficeClockCaller()).toEqual({ ok: false, reason: 'is_crew' });
+    expect(maybeSingle).not.toHaveBeenCalled();
+  });
+
+  // Advertising role hardening (technical-lens fix round): same guard, same
+  // reason, for the advertising population — defense in depth alongside
+  // listNonCrewOperators refusing to ever offer one as a linkable staffer.
+  it("REJECTS an advertising login ('is_advertising') BEFORE any crew_members lookup", async () => {
+    isAdvertisingAccount.mockReturnValue(true);
+    expect(await getOfficeClockCaller()).toEqual({ ok: false, reason: 'is_advertising' });
     expect(maybeSingle).not.toHaveBeenCalled();
   });
 
