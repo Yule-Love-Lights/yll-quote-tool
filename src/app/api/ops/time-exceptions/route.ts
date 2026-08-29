@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { DEFAULT_STALE_SEGMENT_HOURS, listTimeExceptions } from '@/lib/opsTimeExceptions';
 
@@ -9,9 +9,11 @@ export const runtime = 'nodejs';
 /**
  * GET /api/ops/time-exceptions — the time-exception queue (row 278).
  *
- * OPERATOR-ONLY. This is an office surface, not a crew one: it lists other
- * people's stuck time records, and it is the office that corrects them.
- * Deliberately NOT under /api/ops/v1, which is the crew-confined namespace.
+ * ADMIN-ONLY (Naldo's ruling, 2026-08-29 — was operator-only from row 278).
+ * The queue's UI lives on the admin-only /admin/time-tracking page, and the
+ * API gate now agrees with the page gate: it lists other people's stuck time
+ * records, which sit next to pay. Still deliberately NOT under /api/ops/v1,
+ * which is the crew-confined namespace.
  *
  * READ-ONLY. It closes nothing. Manual punches are authoritative for pay, so a
  * human decides what actually happened; the midnight cron already handles the
@@ -21,8 +23,8 @@ export const runtime = 'nodejs';
  * can widen or tighten it without a deploy.
  */
 export async function GET(req: NextRequest) {
-  const denied = await requireOperator();
-  if (denied) return denied;
+  const auth = await requireAdmin();
+  if ('response' in auth) return auth.response;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
