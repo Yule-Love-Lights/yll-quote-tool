@@ -9,7 +9,39 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import OfficeTasksCard, { formatDueTime, isAmbiguousMutationFailure, resolvedTimeFor, sourceLabel, personalLabel } from './OfficeTasksCard';
+import OfficeTasksCard, {
+  applyTaskViewControls,
+  assignedLabel,
+  CARD_TASK_LIMIT,
+  formatDueTime,
+  isAmbiguousMutationFailure,
+  personalLabel,
+  resolvedTimeFor,
+  sourceFilterLabel,
+  sourceLabel,
+} from './OfficeTasksCard';
+
+/** Minimal task shape for the pure filter/sort tests. */
+function task(over: Partial<Parameters<typeof applyTaskViewControls>[0][number]> = {}) {
+  return {
+    id: 't-1',
+    sourceSystem: 'manual' as const,
+    title: 'Call the vendor',
+    detail: null,
+    status: 'open' as const,
+    dueAt: '2026-08-29T12:00:00.000Z',
+    createdAt: '2026-08-28T12:00:00.000Z',
+    blockedReason: null,
+    dismissalReason: null,
+    completedAt: null,
+    dismissedAt: null,
+    createdByLabel: null,
+    assignedToLabel: null,
+    ...over,
+  };
+}
+
+const ALL = { source: 'all' as const, owner: 'all', sort: 'due' as const };
 
 describe('isAmbiguousMutationFailure', () => {
   it('treats 5xx, 408, 425, and 429 as ambiguous (outcome unknown — keep the key)', () => {
@@ -67,6 +99,121 @@ describe('personalLabel ("everything is shared" ruling)', () => {
   });
 });
 
+describe('assignedLabel', () => {
+  it('reads in the second person for the viewer', () => {
+    expect(assignedLabel('You')).toBe('Assigned to you');
+  });
+
+  it('names anyone else', () => {
+    expect(assignedLabel('Jason')).toBe('Assigned to Jason');
+  });
+
+  it('shows nothing when nobody is assigned', () => {
+    expect(assignedLabel(null)).toBeNull();
+  });
+});
+
+describe('sourceFilterLabel', () => {
+  it('names every source system a task can carry, so no option is missing from the filter', () => {
+    expect(sourceFilterLabel('manual')).toBe('Personal');
+    expect(sourceFilterLabel('call_commitment')).toBe('From a call');
+    expect(sourceFilterLabel('quote_tool')).toBe('From the quote tool');
+  });
+});
+
+describe('applyTaskViewControls — filtering', () => {
+  it('returns everything when nothing is filtered', () => {
+    const tasks = [task({ id: 'a' }), task({ id: 'b', sourceSystem: 'call_commitment' })];
+    expect(applyTaskViewControls(tasks, ALL).map((t) => t.id)).toEqual(['a', 'b']);
+  });
+
+  it('filters by source system', () => {
+    const tasks = [task({ id: 'a' }), task({ id: 'b', sourceSystem: 'call_commitment' })];
+    expect(applyTaskViewControls(tasks, { ...ALL, source: 'call_commitment' }).map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('does not silently drop a source it has no dedicated option for', () => {
+    // The regression this guards: an "all / call / personal" filter would
+    // make a quote_tool task invisible under BOTH non-all selections. Source
+    // options are built from the loaded list, so quote_tool selects itself.
+    const tasks = [task({ id: 'a', sourceSystem: 'quote_tool' })];
+    expect(applyTaskViewControls(tasks, ALL).map((t) => t.id)).toEqual(['a']);
+    expect(applyTaskViewControls(tasks, { ...ALL, source: 'quote_tool' }).map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('filters by assignee', () => {
+    const tasks = [task({ id: 'a', assignedToLabel: 'Jason' }), task({ id: 'b', assignedToLabel: 'You' })];
+    expect(applyTaskViewControls(tasks, { ...ALL, owner: 'Jason' }).map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('filters to the unassigned with the sentinel, which a name filter must not also match', () => {
+    const tasks = [task({ id: 'a', assignedToLabel: null }), task({ id: 'b', assignedToLabel: 'Jason' })];
+    const unassigned = applyTaskViewControls(tasks, { ...ALL, owner: '\u0000unassigned' });
+    expect(unassigned.map((t) => t.id)).toEqual(['a']);
+    expect(applyTaskViewControls(tasks, { ...ALL, owner: 'Jason' }).map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('combines the two filters rather than letting either win alone', () => {
+    const tasks = [
+      task({ id: 'a', sourceSystem: 'call_commitment', assignedToLabel: 'Jason' }),
+      task({ id: 'b', sourceSystem: 'call_commitment', assignedToLabel: 'You' }),
+      task({ id: 'c', sourceSystem: 'manual', assignedToLabel: 'Jason' }),
+    ];
+    const result = applyTaskViewControls(tasks, { source: 'call_commitment', owner: 'Jason', sort: 'due' });
+    expect(result.map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('never mutates the array it was given', () => {
+    const tasks = [task({ id: 'b', dueAt: '2026-09-02T00:00:00.000Z' }), task({ id: 'a', dueAt: '2026-08-01T00:00:00.000Z' })];
+    applyTaskViewControls(tasks, ALL);
+    expect(tasks.map((t) => t.id)).toEqual(['b', 'a']);
+  });
+});
+
+describe('applyTaskViewControls — sorting', () => {
+  it('due: soonest first', () => {
+    const tasks = [
+      task({ id: 'late', dueAt: '2026-09-05T00:00:00.000Z' }),
+      task({ id: 'soon', dueAt: '2026-08-30T00:00:00.000Z' }),
+    ];
+    expect(applyTaskViewControls(tasks, ALL).map((t) => t.id)).toEqual(['soon', 'late']);
+  });
+
+  it('created: newest first, the opposite direction from due', () => {
+    const tasks = [
+      task({ id: 'old', createdAt: '2026-08-01T00:00:00.000Z' }),
+      task({ id: 'new', createdAt: '2026-08-28T00:00:00.000Z' }),
+    ];
+    expect(applyTaskViewControls(tasks, { ...ALL, sort: 'created' }).map((t) => t.id)).toEqual(['new', 'old']);
+  });
+
+  it('resolved: most recently finished first, reading completedAt or dismissedAt', () => {
+    const tasks = [
+      task({ id: 'older', completedAt: '2026-08-20T00:00:00.000Z' }),
+      task({ id: 'newer', completedAt: null, dismissedAt: '2026-08-27T00:00:00.000Z' }),
+    ];
+    expect(applyTaskViewControls(tasks, { ...ALL, sort: 'resolved' }).map((t) => t.id)).toEqual(['newer', 'older']);
+  });
+
+  it('sinks an unsortable timestamp to the bottom, never to the top', () => {
+    // A broken date parses to NaN. Left unguarded it compares false against
+    // everything and can land anywhere, including first — which would put a
+    // corrupt row at the head of the working list.
+    const tasks = [
+      task({ id: 'broken', dueAt: 'not-a-date', createdAt: 'not-a-date' }),
+      task({ id: 'real', dueAt: '2026-09-01T00:00:00.000Z', createdAt: '2026-08-20T00:00:00.000Z' }),
+    ];
+    expect(applyTaskViewControls(tasks, ALL).map((t) => t.id)).toEqual(['real', 'broken']);
+    expect(applyTaskViewControls(tasks, { ...ALL, sort: 'created' }).map((t) => t.id)).toEqual(['real', 'broken']);
+  });
+
+  it('breaks a tie by id so the order is stable rather than arbitrary', () => {
+    const same = '2026-09-01T00:00:00.000Z';
+    const tasks = [task({ id: 'b', dueAt: same }), task({ id: 'a', dueAt: same })];
+    expect(applyTaskViewControls(tasks, ALL).map((t) => t.id)).toEqual(['a', 'b']);
+  });
+});
+
 describe('resolvedTimeFor', () => {
   it('prefers completedAt when both are somehow set', () => {
     const result = resolvedTimeFor({ completedAt: '2026-08-29T17:00:00.000Z', dismissedAt: '2026-08-30T17:00:00.000Z' });
@@ -91,6 +238,37 @@ describe('OfficeTasksCard — initial static render', () => {
     expect(html).toContain('Loading tasks');
     // The create-task form fields exist from first paint.
     expect(html).toContain('office-task-title');
-    expect(html).toContain('View history');
+  });
+
+  it('the card links out to /tasks even while loading, so a failed fetch still leaves a route there', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('href="/tasks"');
+    expect(html).toContain('See all tasks');
+  });
+
+  it('the card carries no history control — that is what the page is for', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).not.toContain('View history');
+  });
+
+  it('the page variant does not repeat the "Office Tasks" eyebrow that its own h1 already says', () => {
+    const card = renderToStaticMarkup(<OfficeTasksCard />);
+    const page = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(card).toContain('Office Tasks');
+    expect(page).not.toContain('Office Tasks');
+  });
+
+  it('the page variant renders both tabs instead', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain('History');
+    expect(html).toContain('Open work');
+    // and does not link to itself
+    expect(html).not.toContain('See all tasks');
+  });
+
+  it('caps the card at a few tasks, which is the whole reason the page exists', () => {
+    expect(CARD_TASK_LIMIT).toBeGreaterThan(0);
+    expect(CARD_TASK_LIMIT).toBeLessThan(10);
   });
 });

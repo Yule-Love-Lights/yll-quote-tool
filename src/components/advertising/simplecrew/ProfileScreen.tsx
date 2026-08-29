@@ -83,7 +83,7 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
       <div className="flex flex-col items-center px-5 pt-[max(env(safe-area-inset-top),40px)]">
         <span
           className="flex h-28 w-28 items-center justify-center rounded-full text-4xl font-semibold"
-          style={{ background: '#E4E7E3', color: '#9AA29B' }}
+          style={{ background: '#EDE6D3', color: '#A89F87' }}
         >
           {displayName.slice(0, 1)}
         </span>
@@ -174,7 +174,7 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
                     // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL
                     <img src={p.photoUrl} alt="Placement" className="max-h-[420px] w-full object-cover" />
                   ) : (
-                    <div className="flex h-40 items-center justify-center" style={{ background: '#F0F2EF', color: SC.muted }}>
+                    <div className="flex h-40 items-center justify-center" style={{ background: '#F1EBDB', color: SC.muted }}>
                       photo unavailable
                     </div>
                   )}
@@ -210,7 +210,7 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
 
 function StatusChip({ p }: { p: Placement }) {
   const map = {
-    pending: { text: 'Pending', bg: '#EFF1EE', fg: '#3A423C' },
+    pending: { text: 'Pending', bg: '#F1EAD8', fg: '#3A423C' },
     resubmitted: { text: 'Resubmitted', bg: '#FDF3DF', fg: '#8a6d1f' },
     accepted: { text: p.acceptedRateCents !== null ? `Accepted · ${dollars(p.acceptedRateCents)}` : 'Accepted', bg: '#E4F2E8', fg: '#2E7D4F' },
     rejected: { text: 'Rejected', bg: '#FBE7E7', fg: '#B3383F' },

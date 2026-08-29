@@ -1,5 +1,6 @@
 import type { AdvertisingPlacement } from '@/lib/advertising/placements';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { isSimilarPhotoHash } from '@/lib/advertising/photoHash';
 
 // Review-time duplicate detection (Naldo's ruling, audit doc 8B): FLAG
 // candidates for the human, never auto-block — several signs can
@@ -69,6 +70,13 @@ export function findDuplicateCandidates(
       etDayKey(new Date(p.capturedAt)) === targetDay
     ) {
       reasons.push('same worker, same day');
+    }
+
+    // Rows carry their own perceptual hash (photoHash.ts, stamped at
+    // capture). When both sides have one and they nearly match, that is its
+    // own flag reason — assistance only, the human still decides.
+    if (isSimilarPhotoHash(target.photoHash, p.photoHash)) {
+      reasons.push('very similar photo');
     }
 
     if (reasons.length > 0) out.push({ placement: p, reasons });

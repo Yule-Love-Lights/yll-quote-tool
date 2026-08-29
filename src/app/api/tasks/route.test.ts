@@ -31,6 +31,8 @@ const TASK = {
   dismissalReason: null,
   completedAt: null,
   dismissedAt: null,
+  createdByLabel: 'You',
+  assignedToLabel: 'Jason',
 };
 
 function makeGetReq(query = ''): NextRequest {
@@ -84,6 +86,13 @@ describe('GET /api/tasks — view dispatch and shape', () => {
     // The list-fix from the plan: sourceSystem rides through so a later
     // slice's call_commitment/quote_tool rows need no route change.
     expect(body.tasks[0].sourceSystem).toBe('manual');
+  });
+
+  it('passes the assignee label through, which is what the /tasks owner filter reads', async () => {
+    const res = await GET(makeGetReq());
+    const body = await res.json();
+    expect(body.tasks[0].assignedToLabel).toBe('Jason');
+    expect(body.tasks[0].createdByLabel).toBe('You');
   });
 
   it('reads the history view on ?status=history — finished work stays reachable', async () => {

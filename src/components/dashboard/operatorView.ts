@@ -49,6 +49,11 @@ const OFFICE_ITEMS: NavItem[] = [
   // together was a bug, not an accepted cost).
   { label: 'Fleet', href: '/admin/fleet', match: ['fleet'] },
   { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
+  // Office Tasks (Naldo, 2026-08-29). The dashboard card is a glance at the
+  // next few; this is the whole list, its history, and the filters. Placed
+  // after Invoices so the daily-work items (Inbox through Invoices) stay
+  // together ahead of the reference areas.
+  { label: 'Tasks', href: '/tasks', match: ['tasks'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },
   { label: 'Insights', href: '/insights', match: ['insights'] },
   { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
@@ -58,9 +63,9 @@ const OFFICE_ITEMS: NavItem[] = [
 // highlights alone: Jobs and Fleet lighting up together was ruled a bug
 // (Naldo, 2026-08-28), not an accepted cost.
 const ADVERTISING_ITEMS: NavItem[] = [
-  { label: 'Review', href: '/admin/advertising', match: ['advertising'] },
-  { label: 'Pay', href: '/admin/advertising/pay', match: ['advertising-pay'] },
-  { label: 'People', href: '/admin/advertising/crew', match: ['advertising-people'] },
+  { label: 'Campaigns', href: '/admin/advertising', match: ['advertising'] },
+  { label: 'Settings & pay', href: '/admin/advertising/settings', match: ['advertising-pay'] },
+  { label: 'Crew', href: '/admin/advertising/crew', match: ['advertising-people'] },
 ];
 
 /**
