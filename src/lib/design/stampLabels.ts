@@ -3,7 +3,7 @@
 // billing-link dropdown (editor-core/editor.ts). Extracted to a pure module
 // (no Konva/DOM) so the numbering rule below is unit-testable.
 
-import type { Scene, SceneItem } from './sceneTypes';
+import type { MiniGroupItem, Scene, SceneItem } from './sceneTypes';
 import { isWreath, isBow, isGarland, isSpritzer, isMiniArea, isMiniGroup, isStrand } from './sceneTypes';
 
 // The base (unnumbered) label for one canonical item. A MiniGroupItem (a
@@ -147,3 +147,43 @@ export function numberStampLabels(items: SceneItem[]): Map<string, string> {
   return labels;
 }
 
+// Second fix round MEDIUM: editor.ts's pruneOrphanedMiniGroupsNotify toast
+// wrapper only ever diffed `isMiniGroup` items, so a dangling SINGLE-ITEM
+// twin (item 1's fix taught pruneOrphanedMiniGroups to remove ANY item, not
+// just a group, whose linkedToId no longer resolves) was removed with ZERO
+// staff notification — exactly what the wrapper exists to prevent. This is
+// the pure "which items were removed, and why" decision, extracted so it's
+// testable without a live editor (which needs Konva's Node canvas binding,
+// not installed in this test env): editor.ts calls this with the items
+// BEFORE and AFTER a pruneOrphanedMiniGroups call and turns each notice into
+// its own toast string. `itemsAfter` must be pruneOrphanedMiniGroups's own
+// output (not a caller's guess) — a removed item's REASON is derived by
+// checking which of the two rules pruneOrphanedMiniGroups applies, not by
+// re-deriving the prune itself.
+export type PrunedItemNotice =
+  | { reason: 'linked-copy-gone'; item: SceneItem }
+  | { reason: 'empty-group'; item: MiniGroupItem };
+
+export function describePrunedItems(itemsBefore: SceneItem[], itemsAfter: SceneItem[]): PrunedItemNotice[] {
+  const beforeIds = new Set(itemsBefore.map((i) => i.id));
+  const afterIds = new Set(itemsAfter.map((i) => i.id));
+  const notices: PrunedItemNotice[] = [];
+  for (const item of itemsBefore) {
+    // Only a miniGroup (the #227 empty-member rule) or an item carrying
+    // linkedToId (the dangling-twin rule) is ever something
+    // pruneOrphanedMiniGroups can explain the removal of.
+    if (!isMiniGroup(item) && !item.linkedToId) continue;
+    if (afterIds.has(item.id)) continue; // survived — nothing to notify
+    // A dangling twin (of ANY kind — group or single item) reads the same
+    // way regardless of kind. A non-group item can ONLY ever reach this
+    // branch (the empty-group rule below never applies to it), so this
+    // always fires for one.
+    if (item.linkedToId && !beforeIds.has(item.linkedToId)) {
+      notices.push({ reason: 'linked-copy-gone', item });
+      continue;
+    }
+    // Only reachable for a miniGroup (see above) — its own members all died.
+    if (isMiniGroup(item)) notices.push({ reason: 'empty-group', item });
+  }
+  return notices;
+}

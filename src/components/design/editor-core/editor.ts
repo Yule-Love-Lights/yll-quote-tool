@@ -6,7 +6,7 @@ import Konva from "konva";
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
-import { backfillStampOrdinals, baseStampLabel, numberStampLabels } from "@/lib/design/stampLabels";
+import { backfillStampOrdinals, baseStampLabel, describePrunedItems, numberStampLabels } from "@/lib/design/stampLabels";
 import { itemThumbnailBBox } from "@/lib/design/stampThumbnails";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
@@ -1962,24 +1962,22 @@ export async function renderEditor(
   // dropped and surfaces one notice per group. Every call site below should
   // call THIS, not pruneOrphanedMiniGroups directly.
   function pruneOrphanedMiniGroupsNotify(items: SceneItem[]): SceneItem[] {
-    const before = items.filter(isMiniGroup);
     const after = pruneOrphanedMiniGroups(items);
     if (after.length === items.length) return after; // nothing pruned — the common case
-    // #13 x #240 (item-1 fix round): pruneOrphanedMiniGroups now removes a
-    // group for TWO different reasons — its own members all died (#227), or
-    // it's a TWIN whose canonical is gone (linkedToId no longer resolves).
-    // The two need different copy: a twin's own members are typically still
-    // ALIVE (they just lost their group), so "lost all their strands" would
-    // be false for it.
-    const beforeIds = new Set(items.map((i) => i.id));
-    const afterIds = new Set(after.map((i) => i.id));
-    before.filter((g) => !afterIds.has(g.id)).forEach((g) => {
-      const label = MINI_SURFACE_LABELS[g.surface ?? ""] ?? "group";
-      if (g.linkedToId && !beforeIds.has(g.linkedToId)) {
-        showTransientNotice(`Also removed a linked copy: ${label} — its original is gone`);
+    // #13 x #240 (second fix round, MEDIUM): the WHICH-items-and-why decision
+    // is pure (stampLabels.ts, tested) — pruneOrphanedMiniGroups can drop a
+    // miniGroup with zero surviving members (#227) OR any item (group or
+    // single) whose linkedToId no longer resolves (a dangling twin, item 1's
+    // fix). The old version here only ever diffed isMiniGroup items, so a
+    // dangling SINGLE-ITEM twin was removed with ZERO staff notification —
+    // exactly what this wrapper exists to prevent.
+    describePrunedItems(items, after).forEach((notice) => {
+      if (notice.reason === "linked-copy-gone") {
+        showTransientNotice(`Also removed a linked copy: ${baseStampLabel(notice.item)} — its original is gone`);
         return;
       }
-      const n = g.stringCount ?? 1;
+      const label = MINI_SURFACE_LABELS[notice.item.surface ?? ""] ?? "group";
+      const n = notice.item.stringCount ?? 1;
       showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
     });
     return after;

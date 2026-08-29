@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { assignStampOrdinals, backfillStampOrdinals, baseStampLabel, numberStampLabels } from './stampLabels';
+import { assignStampOrdinals, backfillStampOrdinals, baseStampLabel, describePrunedItems, numberStampLabels } from './stampLabels';
+import { pruneOrphanedMiniGroups } from './sceneTypes';
 import type { GarlandItem, MiniAreaItem, MiniGroupItem, Scene, SceneItem, StrandItem, WreathItem } from './sceneTypes';
 
 function strand(id: string, over: Partial<StrandItem> = {}): StrandItem {
@@ -355,3 +356,59 @@ describe('backfillStampOrdinals', () => {
   });
 });
 
+// Second fix round MEDIUM: editor.ts's pruneOrphanedMiniGroupsNotify toast
+// wrapper used to diff isMiniGroup items only, so a dangling SINGLE-ITEM
+// twin (item 1's fix taught pruneOrphanedMiniGroups to remove one of THOSE
+// too) was removed with zero staff notification.
+describe('describePrunedItems', () => {
+  it('describes a dangling SINGLE-ITEM twin (not a group) — the exact gap the old isMiniGroup-only diff missed', () => {
+    const before: SceneItem[] = [
+      wreath('dangling-twin', { linkedToId: 'dead-canonical', sizeIn: 36 }),
+      strand('healthy', { surface: 'column' }),
+    ];
+    const after = pruneOrphanedMiniGroups(before);
+    const notices = describePrunedItems(before, after);
+    expect(notices).toEqual([{ reason: 'linked-copy-gone', item: before[0] }]);
+  });
+
+  it('describes a dangling TWIN GROUP the same way as a single item', () => {
+    const before: SceneItem[] = [
+      area('tm1', { groupId: 'twin-g', surface: 'column' }),
+      miniGroup('twin-g', ['tm1'], { linkedToId: 'dead-canonical-group', surface: 'column' }),
+    ];
+    const after = pruneOrphanedMiniGroups(before);
+    const notices = describePrunedItems(before, after);
+    expect(notices).toEqual([{ reason: 'linked-copy-gone', item: before[1] }]);
+  });
+
+  it('describes a miniGroup that lost all its members (#227) as "empty-group", unrelated to any twin', () => {
+    const before: SceneItem[] = [
+      miniGroup('g1', ['dead-1', 'dead-2'], { surface: 'railing', stringCount: 8 }),
+    ];
+    const after = pruneOrphanedMiniGroups(before);
+    const notices = describePrunedItems(before, after);
+    expect(notices).toEqual([{ reason: 'empty-group', item: before[0] }]);
+  });
+
+  it('reports nothing for an item that survives the prune', () => {
+    const before: SceneItem[] = [strand('s1', { surface: 'column' })];
+    const after = pruneOrphanedMiniGroups(before);
+    expect(describePrunedItems(before, after)).toEqual([]);
+  });
+
+  it('reports both a dangling twin AND an unrelated empty group when both are pruned in the same edit', () => {
+    const before: SceneItem[] = [
+      wreath('dangling-twin', { linkedToId: 'dead-canonical' }),
+      miniGroup('g1', ['dead-1'], { surface: 'railing', stringCount: 4 }),
+    ];
+    const after = pruneOrphanedMiniGroups(before);
+    const notices = describePrunedItems(before, after);
+    expect(notices).toHaveLength(2);
+    expect(notices).toEqual(
+      expect.arrayContaining([
+        { reason: 'linked-copy-gone', item: before[0] },
+        { reason: 'empty-group', item: before[1] },
+      ]),
+    );
+  });
+});
