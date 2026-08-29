@@ -6,6 +6,12 @@ describe('isMissingTableError', () => {
     expect(isMissingTableError({ code: '42P01', message: 'relation "call_recordings" does not exist' })).toBe(true);
   });
 
+  it('is true for the schema-unavailable codes the sibling helpers also check (fix round: widened to match isOfficeTasksSchemaUnavailable/isCommitmentsSchemaUnavailable)', () => {
+    for (const code of ['PGRST205', '42883', 'PGRST202']) {
+      expect(isMissingTableError({ code })).toBe(true);
+    }
+  });
+
   it('is false for any other error code', () => {
     expect(isMissingTableError({ code: '22P02', message: 'invalid input syntax' })).toBe(false);
   });
