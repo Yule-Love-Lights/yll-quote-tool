@@ -58,7 +58,14 @@ const DEFAULT_FILE = 'docs/context/task_ledger.md';
 // the reasoning that…" — a proximity match on the first 64 characters reads
 // DORMANT and files a shipped row as parked. Only the first token counts.
 const NOISE = String.raw`[\s~*\[\(]*`; // markdown/bracket noise before the marker
-const DONE_LEAD = new RegExp(`^${NOISE}(?:[✅🟢]${NOISE})?(SHIPPED|CLOSED|RESOLVED|BUILT S\\d|FIXED by|ANSWERED|DONE\\b)`, 'u');
+// RULED was added 2026-08-29 (S58) when that session started recording the
+// dev's decisions INTO the rows they close - "**RULED 2026-08-29 (Jason S58) -
+// CLOSED, everything shipped.**". Without it the linter went clean while rows
+// carrying an explicit closing ruling sat in the ACTIVE tables: a new marker
+// introduced in the same breath as the tool that is supposed to see it. Only
+// matches at a cell head and only in caps, so ordinary prose ("Jason ruled
+// against it") is unaffected.
+const DONE_LEAD = new RegExp(`^${NOISE}(?:[✅🟢]${NOISE})?(SHIPPED|CLOSED|RESOLVED|RULED|BUILT S\\d|FIXED by|ANSWERED|DONE\\b)`, 'u');
 const DONE_TICK = new RegExp(`^${NOISE}[✅🟢]`, 'u'); // a bare tick, no verdict word
 // Deliberately NOT done-markers: "LIVE" and "COMPLETE". Both lead rows that are
 // still open — an epic reading "core LIVE" with unbuilt slices below it, and
