@@ -2685,6 +2685,23 @@ comment on column public.quotes.ghl_event_date_pushed is
   'MM/DD/YYYY value last CONFIRMED pushed to GHL''s "Event Date" custom field (ledger #314). Stamped by every push site (send route, quote/route.ts''s date-changing update, the approve route reconcile) on a successful push. Compared against the quote''s current formatted event date to detect "our side changed since the last push" — never compared against GHL''s live value, which would silently revert a staff correction made directly in GHL. Null = legacy/never-confirmed-pushed row.';
 
 -- ---------------------------------------------------------------------
+-- quotes.installment_auto_charge_consent_at (2026-08-28, migrations/
+-- 2026-08-28-installment-auto-charge-consent.sql, ledger row 448) — the
+-- customer's agreement that scheduled installment payments may be charged
+-- to their saved card with no human in the loop. NULL = no consent, and
+-- src/lib/installmentRunner.ts refuses; that is the default for every row.
+-- Added because the three migrated payment-plan customers came from a CRM
+-- where every payment was collected by hand, and the card vaults as an
+-- unconditional side effect of any card payment — so nothing in the system
+-- had ever established consent to a recurring debit.
+-- ---------------------------------------------------------------------
+alter table public.quotes
+  add column if not exists installment_auto_charge_consent_at timestamptz;
+
+comment on column public.quotes.installment_auto_charge_consent_at is
+  'When the customer agreed that scheduled installment payments may be charged to their saved card automatically. NULL = no consent = the runner refuses (src/lib/installmentRunner.ts).';
+
+-- ---------------------------------------------------------------------
 -- job_stock_movements (2026-08-25, migrations/2026-08-25-job-stock-
 -- movements.sql, ledger row 386, renamed row 397) — durable, append-only
 -- audit of stock taken off / put back on the shelf per JOB PREP OR

@@ -104,6 +104,14 @@ const PUBLIC_API_EXACT = new Set([
   '/api/referrals/sweep', // Vercel Cron (CRON_SECRET-guarded, naldo/referral-link-sweep), same
   // reason as every other cron above: a scheduled request carries no operator
   // session, so it must be allowlisted here to reach its own CRON_SECRET check.
+  '/api/ops/installment-run', // The installment runner (row 448). NOT in vercel.json yet — no
+  // cron is armed (Jason's call 2026-08-28, dry-run first) — but the entry lands
+  // WITH the route rather than with the schedule, because the failure this list
+  // exists to prevent is exactly a cron added later without it and silently 401'd
+  // before its own CRON_SECRET check runs (S42/S44/S47). Allowlisted here means
+  // "the perimeter lets it reach its own auth", not "public": the route answers a
+  // request with an Authorization header via cronDenial and one without via
+  // requireOperator, so an anonymous caller is refused either way.
 ]);
 
 // Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
