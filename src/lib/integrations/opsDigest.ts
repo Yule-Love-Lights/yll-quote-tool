@@ -493,12 +493,9 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
       )
     : null;
 
-  // Stuck time records: a partial scan (errors present) reads as null, not a
-  // low count — an undercount would read as "handled" on exactly the morning
-  // something is wrong.
   const timeExceptionsCount = await safeCount(async () => {
     const res = await listTimeExceptions(now);
-    return res.errors.length > 0 ? null : res.exceptions.length;
+    return timeExceptionsCountFromScan(res);
   }, 'time exceptions');
 
   return {
@@ -518,6 +515,14 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     overdueFollowUps,
     timeExceptionsCount,
   };
+}
+
+/** PURE (technical lens LOW on this PR: the branch was untestable inline):
+ * a partial scan (errors present) reads as null, never a low count — an
+ * undercount would read as "handled" on exactly the morning something is
+ * wrong. Exported for the test that pins the inversion. */
+export function timeExceptionsCountFromScan(res: { exceptions: unknown[]; errors: string[] }): number | null {
+  return res.errors.length > 0 ? null : res.exceptions.length;
 }
 
 async function safeCount<T>(read: () => Promise<T | null>, label: string): Promise<T | null> {

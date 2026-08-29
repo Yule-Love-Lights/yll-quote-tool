@@ -19,7 +19,7 @@ vi.mock('@/lib/dashboard/inbox/store', () => ({ listOpenItems, listDueFollowUps 
 // real figure set sbRef.current to a fake client (see makeDepositClient).
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
-import { collectOpsDigest, opsDigestMessage, type OpsDigestData } from './opsDigest';
+import { collectOpsDigest, opsDigestMessage, timeExceptionsCountFromScan, type OpsDigestData } from './opsDigest';
 
 /** Fake Supabase client for fetchDepositAmounts' `.from('quotes').select(...).in(...)`
  *  chain — the only shape opsDigest.ts's deposit lookup ever calls. */
@@ -99,6 +99,18 @@ const emptyData: OpsDigestData = {
   overdueFollowUps: [],
   timeExceptionsCount: 0,
 };
+
+describe('timeExceptionsCountFromScan — the collector-side null-vs-zero decision', () => {
+  it('a clean scan returns the count, including a real zero', () => {
+    expect(timeExceptionsCountFromScan({ exceptions: [], errors: [] })).toBe(0);
+    expect(timeExceptionsCountFromScan({ exceptions: [{}, {}], errors: [] })).toBe(2);
+  });
+
+  it('ANY scan error returns null, never a low count (an undercount reads as handled)', () => {
+    expect(timeExceptionsCountFromScan({ exceptions: [{}, {}], errors: ['shifts query failed'] })).toBeNull();
+    expect(timeExceptionsCountFromScan({ exceptions: [], errors: ['x'] })).toBeNull();
+  });
+});
 
 describe('opsDigestMessage — stuck time records line (ops suggestions round)', () => {
   it('renders the line with the count and the time-tracking link when there are exceptions', () => {

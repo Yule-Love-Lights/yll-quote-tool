@@ -55,6 +55,17 @@ export function TimeExceptionsSection({
         exception: a forgotten Depart can corrupt job time and pay data while the day is still
         live, so look at those first.
       </p>
+      {/* The fix path (admin lens on the digest PR: a queue with no repair
+          door nags forever): the manual shift editor on the two-clocks page
+          is where a human corrects the times; closing the shift there closes
+          its stuck children. */}
+      <p className="text-sm text-gray-500 -mt-2 mb-4">
+        To fix one, correct the shift&apos;s times on{' '}
+        <a href="/admin/fleet/clocks" className="underline">
+          the day&apos;s two clocks page
+        </a>
+        .
+      </p>
 
       {errors.length > 0 && (
         <div className="mb-4 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800">
