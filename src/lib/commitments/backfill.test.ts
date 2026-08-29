@@ -11,6 +11,11 @@
 // Every successful-fresh-finalize case now asserts only that
 // countOfficeTasksForTranscript (a READ, produceTasks.ts, repurposed) is
 // called for reporting and its count folded into tasksCreated.
+//
+// Rep-assignment ruling: listNonCrewOperators is mocked (one fetch per
+// batch, not per transcript); matchOperatorByEmail runs FOR REAL (via
+// vi.importActual) so the actual case-insensitive matching logic is
+// exercised here, not just re-asserted from adminUsers.test.ts.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -32,6 +37,15 @@ const countOfficeTasksForTranscriptMock = vi.fn();
 vi.mock('./produceTasks', () => ({
   countOfficeTasksForTranscript: (...args: unknown[]) => countOfficeTasksForTranscriptMock(...args),
 }));
+
+const listNonCrewOperatorsMock = vi.fn();
+vi.mock('@/lib/auth/adminUsers', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/auth/adminUsers')>('@/lib/auth/adminUsers');
+  return {
+    ...actual,
+    listNonCrewOperators: (...args: unknown[]) => listNonCrewOperatorsMock(...args),
+  };
+});
 
 import { backfillCommitments, selectBackfillCandidates } from './backfill';
 import type { BackfillCandidate } from './backfill';
@@ -117,6 +131,7 @@ describe('backfillCommitments', () => {
     extractRawCommitmentsMock.mockReset().mockResolvedValue([]);
     persistCommitmentsMock.mockReset().mockResolvedValue({ ok: true, alreadyFinalized: false });
     countOfficeTasksForTranscriptMock.mockReset().mockResolvedValue(0);
+    listNonCrewOperatorsMock.mockReset().mockResolvedValue([]);
   });
 
   it('extracts and persists for each candidate transcript not already processed, no verticalName passed', async () => {
@@ -127,8 +142,57 @@ describe('backfillCommitments', () => {
     expect(extractRawCommitmentsMock).toHaveBeenCalledTimes(1);
     expect(extractRawCommitmentsMock).toHaveBeenCalledWith(t2.raw_text);
     expect(persistCommitmentsMock).toHaveBeenCalledTimes(1);
-    expect(persistCommitmentsMock).toHaveBeenCalledWith(supabase, 't2', null, null, [], 'test-extractor-v1');
+    expect(persistCommitmentsMock).toHaveBeenCalledWith(supabase, 't2', null, null, [], 'test-extractor-v1', null);
     expect(result).toEqual({ done: 1, skipped: 0, failed: 0, refused: 0, quarantined: 0, tasksCreated: 0 });
+  });
+
+  it('rep-assignment: matches t1.rep_email against the fetched operator population and passes the matched id as assignedTo', async () => {
+    listNonCrewOperatorsMock.mockResolvedValueOnce([
+      { id: 'operator-1', email: 'Rep@x.com', role: 'operator', name: 'Rep Person', createdAt: null, lastSignInAt: null },
+    ]);
+    const { client: supabase } = fakeSupabase([t1]); // t1.rep_email = 'rep@x.com'
+
+    await backfillCommitments(supabase, 10);
+
+    expect(persistCommitmentsMock).toHaveBeenCalledWith(supabase, 't1', 'rep@x.com', 'g1', [], 'test-extractor-v1', 'operator-1');
+  });
+
+  it('rep-assignment: fetches the operator population exactly ONCE for a multi-transcript batch, not once per transcript', async () => {
+    const { client: supabase } = fakeSupabase([t1, t2]);
+    await backfillCommitments(supabase, 10);
+    expect(listNonCrewOperatorsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rep-assignment: passes assignedTo=null when no operator email matches', async () => {
+    listNonCrewOperatorsMock.mockResolvedValueOnce([
+      { id: 'operator-1', email: 'someoneelse@x.com', role: 'operator', name: null, createdAt: null, lastSignInAt: null },
+    ]);
+    const { client: supabase } = fakeSupabase([t1]);
+
+    await backfillCommitments(supabase, 10);
+
+    expect(persistCommitmentsMock).toHaveBeenCalledWith(supabase, 't1', 'rep@x.com', 'g1', [], 'test-extractor-v1', null);
+  });
+
+  it('rep-assignment: a transcript with no rep_email resolves assignedTo=null without needing a match', async () => {
+    listNonCrewOperatorsMock.mockResolvedValueOnce([
+      { id: 'operator-1', email: 'rep@x.com', role: 'operator', name: null, createdAt: null, lastSignInAt: null },
+    ]);
+    const { client: supabase } = fakeSupabase([t2]); // t2.rep_email = null
+
+    await backfillCommitments(supabase, 10);
+
+    expect(persistCommitmentsMock).toHaveBeenCalledWith(supabase, 't2', null, null, [], 'test-extractor-v1', null);
+  });
+
+  it('rep-assignment: a failure loading the operator population degrades to assignedTo=null for the whole batch, never fails extraction', async () => {
+    listNonCrewOperatorsMock.mockRejectedValueOnce(new Error('listUsers boom'));
+    const { client: supabase } = fakeSupabase([t1]);
+
+    const result = await backfillCommitments(supabase, 10);
+
+    expect(persistCommitmentsMock).toHaveBeenCalledWith(supabase, 't1', 'rep@x.com', 'g1', [], 'test-extractor-v1', null);
+    expect(result.done).toBe(1);
   });
 
   it('a transcript with zero commitments still counts as done, not failed, and counts zero tasks (THE PRODUCER already ran, atomically, inside finalize)', async () => {

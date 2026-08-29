@@ -15,6 +15,13 @@
 // not an ON CONFLICT upsert (0022's earlier, superseded design) -- see the
 // migration file's own header for why. This wrapper's contract is
 // unaffected either way; it only calls the RPC and interprets its result.
+//
+// REP ASSIGNMENT (same-day ruling): the finalize RPC now takes a 4th param,
+// p_assigned_to -- the operator id every commitment-derived task from this
+// transcript should be assigned to (or null, unresolved). The MAPPING
+// itself (rep email -> operator account) happens in the caller
+// (backfill.ts), via src/lib/auth/adminUsers.ts's findOperatorByEmail --
+// this function only forwards an already-resolved id, it does no lookup.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CommitmentRow } from './types';
@@ -30,6 +37,7 @@ export async function persistCommitments(
   ghlContactId: string | null,
   commitments: CommitmentRow[],
   extractorVersion: string,
+  assignedTo: string | null,
 ): Promise<PersistResult> {
   // status/dismissed_reason/verified_by_event/cleared_at are deliberately
   // absent -- the finalizer refuses any transcript with a resolved row and
@@ -45,6 +53,7 @@ export async function persistCommitments(
       extraction_index: c.extraction_index,
     })),
     p_extractor_version: extractorVersion,
+    p_assigned_to: assignedTo,
   });
   if (error) throw error;
 

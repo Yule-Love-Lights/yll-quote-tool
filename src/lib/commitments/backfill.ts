@@ -31,6 +31,17 @@
 // when extraction finds zero commitments, and the database filters them
 // before applying the batch limit so an older transcript cannot be hidden
 // forever behind a full window of already-processed recent rows.
+//
+// REP ASSIGNMENT (same-day ruling): before the per-transcript loop, fetches
+// the non-crew, non-advertising operator population ONCE
+// (listNonCrewOperators) rather than once per transcript -- a batch is
+// bounded (COMMITMENT_EXTRACTION_BATCH_SIZE) and every transcript in it
+// needs the SAME lookup, so one fetch + local matching
+// (matchOperatorByEmail) avoids re-listing every auth user per row. A
+// failure of that ONE fetch degrades to an empty population (every
+// transcript's assignedTo resolves to null) rather than failing the whole
+// batch -- matching this file's own best-effort posture for every other
+// per-transcript failure.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -41,6 +52,7 @@ import {
 import { buildCommitmentRows } from './build';
 import { persistCommitments } from './persist';
 import { countOfficeTasksForTranscript } from './produceTasks';
+import { listNonCrewOperators, matchOperatorByEmail, type OperatorAccount } from '@/lib/auth/adminUsers';
 
 // Batch cap only. The database filters durable extraction markers BEFORE
 // applying this bound, so processed recent transcripts cannot hide older work.
@@ -144,6 +156,13 @@ export async function backfillCommitments(
     return { done: 0, skipped: 0, failed: 0, refused: 0, quarantined: 0, tasksCreated: 0 };
   }
 
+  let operators: OperatorAccount[] = [];
+  try {
+    operators = await listNonCrewOperators(supabase);
+  } catch (err) {
+    console.error('Failed to load the operator population for rep assignment; every task in this batch will be unassigned:', err);
+  }
+
   let done = 0;
   let skipped = 0;
   let failed = 0;
@@ -154,6 +173,9 @@ export async function backfillCommitments(
     try {
       const raw = await extractRawCommitments(t.raw_text);
       const rows = buildCommitmentRows(raw, t.called_at);
+      // Every commitment on this transcript came from the SAME call, so one
+      // rep-email match covers the whole batch of rows below.
+      const assignedTo = matchOperatorByEmail(operators, t.rep_email)?.id ?? null;
       // A transcript can reach this branch with preexisting rows if a prior
       // process wrote commitments but crashed before writing the completion
       // marker. Persist remains idempotent for open rows and refuses resolved
@@ -165,6 +187,7 @@ export async function backfillCommitments(
         t.ghl_contact_id,
         rows,
         EXTRACT_MODEL,
+        assignedTo,
       );
       if (result.ok) {
         if (result.alreadyFinalized) {
