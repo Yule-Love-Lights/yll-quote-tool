@@ -141,6 +141,9 @@ function makeDb() {
                     accepted_rate_cents: null,
                     reviewed_by: null,
                     reviewed_at: null,
+                    voided_at: null,
+                    voided_by: null,
+                    void_reason: null,
                     is_test: false,
                   }
                 : {};
@@ -250,6 +253,9 @@ function seedPlacement(overrides: AnyRow = {}): AnyRow {
     accepted_rate_cents: null,
     reviewed_by: null,
     reviewed_at: null,
+    voided_at: null,
+    voided_by: null,
+    void_reason: null,
     is_test: false,
     created_at: '2026-08-24T15:00:00.000Z',
     updated_at: '2026-08-24T15:00:00.000Z',
@@ -520,6 +526,143 @@ describe('rejectPlacement / resubmitPlacement', () => {
     const second = await resubmitPlacement(String(p.id));
     expect(first.status).toBe('resubmitted');
     expect(second.status).toBe('resubmitted');
+  });
+});
+
+describe('voidPlacement (Naldo 2026-08-29: the duplicate-overcount fix)', () => {
+  it('voids any placement with a required reason, stamping who and when, and audits it', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+
+    const voided = await voidPlacement(String(p.id), 'admin-1', 'duplicate submission of the same sign');
+    expect(voided.voidedAt).toBeTruthy();
+    expect(voided.voidedBy).toBe('admin-1');
+    expect(voided.voidReason).toBe('duplicate submission of the same sign');
+    expect(voided.status).toBe('accepted'); // history preserved, overlay only
+    expect(voided.acceptedRateCents).toBe(250); // the stamp is history too
+  });
+
+  it('refuses an empty reason and never writes', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id });
+    await expect(voidPlacement(String(p.id), 'admin-1', '  ')).rejects.toThrow(/reason/i);
+    expect(placementUpdates()).toHaveLength(0);
+  });
+
+  it('a retried void is idempotent: the first void stands untouched', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id });
+    const first = await voidPlacement(String(p.id), 'admin-1', 'dup');
+    const second = await voidPlacement(String(p.id), 'admin-2', 'other reason');
+    expect(second.voidedAt).toBe(first.voidedAt);
+    expect(second.voidedBy).toBe('admin-1');
+    expect(second.voidReason).toBe('dup');
+    expect(placementUpdates().filter((u) => u.voided_at)).toHaveLength(1);
+  });
+
+  it('a voided placement cannot be accepted, rejected, or resubmitted', async () => {
+    const { voidPlacement, acceptPlacement, rejectPlacement, resubmitPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id });
+    await voidPlacement(String(p.id), 'admin-1', 'dup');
+    await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toThrow(/void/i);
+    await expect(rejectPlacement(String(p.id), REVIEWER, 'x')).rejects.toThrow(/void/i);
+    const rejected = seedPlacement({
+      campaign_id: campaign.id, worker_id: worker.id, status: 'rejected', rejection_reason: 'no',
+      reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:00:00.000Z',
+      voided_at: '2026-08-24T17:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup',
+    });
+    await expect(resubmitPlacement(String(rejected.id))).rejects.toThrow(/void/i);
+  });
+
+  it('a voided ACCEPTED placement stops earning — the pay reversal is the point', async () => {
+    const { voidPlacement, earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    const keep = seedPlacement({
+      campaign_id: campaign.id, worker_id: worker.id, status: 'accepted',
+      accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    const dup = seedPlacement({
+      campaign_id: campaign.id, worker_id: worker.id, status: 'accepted',
+      accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:05:00.000Z',
+    });
+    expect(keep.id).not.toBe(dup.id);
+
+    let summaries = await earningsSummary();
+    expect(summaries.find((s) => s.workerId === worker.id)?.total.acceptedEarnedCents).toBe(500);
+
+    await voidPlacement(String(dup.id), 'admin-1', 'duplicate of the first');
+    summaries = await earningsSummary();
+    expect(summaries.find((s) => s.workerId === worker.id)?.total.acceptedEarnedCents).toBe(250);
+  });
+
+  it('voided pending rows stop estimating too', async () => {
+    const { voidPlacement, earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'pending' });
+    await voidPlacement(String(p.id), 'admin-1', 'dup');
+    const summaries = await earningsSummary();
+    expect(summaries.find((s) => s.workerId === worker.id)?.total.pendingEstimatedCents).toBe(0);
+  });
+});
+
+describe('voided rows leave every counter (delta-verify: these had no tests)', () => {
+  it('doorHangerCountsByWorker skips voided hangers', async () => {
+    const { doorHangerCountsByWorker } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const base = { campaign_id: campaign.id, worker_id: worker.id, kind: 'door_hanger' };
+    seedPlacement({ ...base, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:00:00.000Z' });
+    seedPlacement({ ...base, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:00:00.000Z',
+      voided_at: '2026-08-29T18:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup' });
+
+    const counts = await doorHangerCountsByWorker();
+    expect(counts.get(String(worker.id))).toBe(1);
+  });
+
+  it('campaignActivitySummary counts and the review badge skip voided rows', async () => {
+    const { campaignActivitySummary } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const base = { campaign_id: campaign.id, worker_id: worker.id };
+    seedPlacement({ ...base, status: 'pending' });
+    seedPlacement({ ...base, status: 'pending', voided_at: '2026-08-29T18:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup' });
+
+    const summary = await campaignActivitySummary([String(campaign.id)]);
+    const activity = summary.get(String(campaign.id));
+    expect(activity?.photoCount).toBe(1);
+    expect(activity?.pendingCount).toBe(1);
+  });
+
+  it('an accept that loses its race to a VOID says so instead of reporting a wrong state', async () => {
+    const { acceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id, worker_id: worker.id,
+      voided_at: '2026-08-29T18:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup',
+    });
+    // This reviewer's read predates the void: they still see a live pending row.
+    stateRef.current.staleReadOnce = { ...p, voided_at: null, voided_by: null, void_reason: null };
+
+    await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toThrow(/voided/i);
+    expect(placementUpdates()).toHaveLength(0);
   });
 });
 

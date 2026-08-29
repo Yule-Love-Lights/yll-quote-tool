@@ -224,6 +224,18 @@ export function EditShiftTimes({
   );
 }
 
+/** A shift time as an admin reads it: Eastern, because payroll is Eastern. */
+function etStamp(iso: string | null): string {
+  if (!iso) return 'still open';
+  return new Date(iso).toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 /**
  * Remove a manual entry that should never have existed (row 458). Only shown
  * on rows the office typed itself, mirroring the server guard; the server
@@ -232,15 +244,33 @@ export function EditShiftTimes({
  * The confirm says what actually happens: the row leaves payroll, and the
  * activity log keeps the record of what was removed and who removed it.
  */
-export function VoidShiftButton({ shiftId }: { shiftId: string }) {
+export function VoidShiftButton({
+  shiftId,
+  crewName,
+  clockInAt,
+  clockOutAt,
+}: {
+  shiftId: string;
+  crewName: string;
+  clockInAt: string;
+  clockOutAt: string | null;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
     if (busy) return;
+    // The confirm NAMES the shift. A day with several manual entries gives an
+    // admin several identical Remove links, and a generic prompt is no check
+    // at all when the risk is removing the wrong person's pay (S78 wrap,
+    // staff lens).
     const ok = window.confirm(
-      'Remove this shift from payroll? The activity log keeps a record of what was removed, but the shift itself is gone. Use this only for an entry that should never have existed.',
+      `Remove this shift from payroll?
+
+${crewName}: ${etStamp(clockInAt)} to ${etStamp(clockOutAt)}
+
+The activity log keeps a record of what was removed, but the shift itself is gone. Use this only for an entry that should never have existed.`,
     );
     if (!ok) return;
     setBusy(true);

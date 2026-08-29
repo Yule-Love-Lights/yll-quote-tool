@@ -46,7 +46,7 @@ export async function GET() {
   // either way (the estimate DID move in between).
   const own = await listPlacements({ workerId: caller.worker.id });
   const pendingTimes = own
-    .filter((p) => !p.isTest && (p.status === 'pending' || p.status === 'resubmitted'))
+    .filter((p) => !p.isTest && !p.voidedAt && (p.status === 'pending' || p.status === 'resubmitted'))
     .map((p) => ({ campaignId: p.campaignId, at: p.capturedAt ?? p.createdAt }));
   let rateChangedSincePending = false;
   if (pendingTimes.length > 0) {
