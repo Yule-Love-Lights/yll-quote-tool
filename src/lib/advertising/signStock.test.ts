@@ -66,6 +66,9 @@ function makeDb() {
               filters[col] = val;
               return b;
             },
+            is(_col: string, _val: unknown) {
+              return b; // voided_at filter: mock rows are never voided
+            },
             in(col: string, vals: unknown[]) {
               filters[col] = vals;
               return b;
