@@ -101,9 +101,12 @@ export default function PeoplePanel() {
       const payload = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setError(payload.error ?? 'Action failed.');
+        // Refresh anyway: a 409 means the numbers on screen are stale, and
+        // "reload and try again" should not require a browser refresh.
+        reload();
         return false;
       }
-      await reload();
+      reload();
       return true;
     } catch {
       setError('Action failed. Try again.');

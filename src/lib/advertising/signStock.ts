@@ -97,10 +97,18 @@ export async function setSignStockQty(qty: number, actor: string): Promise<SignS
     .select('sku')
     .maybeSingle();
   if (error) throw new Error(`setSignStockQty: ${error.message}`);
+
+  // What the audit row claims as "before" must be what was TRUE at the
+  // write, not what this function happened to read earlier.
+  let auditPriorQty = prior.onHandQty;
+  let recreated = false;
   if (!data) {
     // No row matched: either the count moved under us (refuse — the audit
-    // must not record a stale prior) or the row was deleted on the
-    // /inventory/stock page (recreate it; the read honestly saw 0).
+    // must not record a stale prior) or the row is GONE (deleted on the
+    // /inventory/stock page — possibly between our read and this write).
+    // Recreate it, and audit the truth: at write time there was no count,
+    // so the prior is 0 and the row says so, whatever the earlier read saw
+    // (delta-verify MED: logging the stale read here would hide the delete).
     const { data: row, error: rowError } = await db
       .from('inventory_on_hand')
       .select('sku')
@@ -109,11 +117,15 @@ export async function setSignStockQty(qty: number, actor: string): Promise<SignS
     if (rowError) throw new Error(`setSignStockQty: ${rowError.message}`);
     if (row) throw new SignStockConflictError();
     await upsertOnHand({ sku: YARD_SIGN_SKU, on_hand_qty: qty });
+    auditPriorQty = 0;
+    recreated = true;
   }
   await logAdvertisingActivity({
     actor,
     action: 'sign_stock_adjusted',
-    detail: { sku: YARD_SIGN_SKU, priorQty: prior.onHandQty, newQty: qty },
+    detail: recreated
+      ? { sku: YARD_SIGN_SKU, priorQty: auditPriorQty, newQty: qty, recreated: true }
+      : { sku: YARD_SIGN_SKU, priorQty: auditPriorQty, newQty: qty },
   });
   return { ...prior, onHandQty: qty };
 }

@@ -173,6 +173,42 @@ describe('setSignStockQty', () => {
     expect(logAdvertisingActivity).not.toHaveBeenCalled();
   });
 
+  it('a delete landing BETWEEN the read and the write still audits an honest prior of 0, flagged as recreated', async () => {
+    const { setSignStockQty } = await import('./signStock');
+    // Read sees 40; an operator deletes the row on /inventory/stock before
+    // the CAS lands. Logging 40 -> 25 would hide the delete entirely
+    // (delta-verify MED on this PR's own fix round).
+    const original = stateRef.current.onHand!;
+    let firstRead = true;
+    const realDb = dbRef.current as { from: (t: string) => unknown };
+    dbRef.current = {
+      from(table: string) {
+        const inner = realDb.from(table) as Record<string, unknown>;
+        if (table !== 'inventory_on_hand' || !firstRead) return inner;
+        return {
+          ...inner,
+          select: (..._args: unknown[]) => ({
+            eq: () => ({
+              maybeSingle: () => {
+                firstRead = false;
+                const seen = { ...original };
+                stateRef.current.onHand = null; // the concurrent delete
+                return Promise.resolve({ data: seen, error: null });
+              },
+            }),
+          }),
+        };
+      },
+    };
+
+    await setSignStockQty(25, 'admin-1');
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ priorQty: 0, newQty: 25, recreated: true }),
+      }),
+    );
+  });
+
   it('recreates the row when it was deleted on the stock page, with an honest prior of 0', async () => {
     const { setSignStockQty, YARD_SIGN_SKU } = await import('./signStock');
     stateRef.current.onHand = null;
