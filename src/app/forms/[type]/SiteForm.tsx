@@ -208,10 +208,18 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
     }
   }
 
-  const text = dark ? '#fff' : '#1C2230';
-  const muted = dark ? 'rgba(255,255,255,.85)' : '#565e70';
-  const fieldBg = dark ? 'rgba(255,255,255,.12)' : '#fff';
-  const fieldBorder = dark ? 'rgba(255,255,255,.35)' : '#D1D5DB';
+  // theme=dark describes the footer STRIP on yulelovelights.com, which is red.
+  // The compact embed itself sits inside a white card inside that strip, so
+  // painting its text white put white on white: the email placeholder, the
+  // thank-you line and the error line were all invisible. The compact embed
+  // therefore always uses the light pairing; the full-page forms still follow
+  // the theme they are given.
+  const onLightSurface = !dark || compact;
+
+  const text = onLightSurface ? '#1C2230' : '#fff';
+  const muted = onLightSurface ? '#565e70' : 'rgba(255,255,255,.85)';
+  const fieldBg = onLightSurface ? '#fff' : 'rgba(255,255,255,.12)';
+  const fieldBorder = onLightSurface ? '#D1D5DB' : 'rgba(255,255,255,.35)';
 
   if (status === 'done') {
     return (
@@ -234,7 +242,7 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
     borderRadius: 50,
     border: `1px solid ${fieldBorder}`,
     background: fieldBg,
-    color: dark ? '#fff' : '#1C2230',
+    color: onLightSurface ? '#1C2230' : '#fff',
     fontFamily: '"DM Sans", sans-serif',
     fontSize: 15,
     boxSizing: 'border-box',
@@ -252,11 +260,16 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
   return (
     <form
       onSubmit={onSubmit}
+      className="yll-site-form"
       ref={(el) => {
         rootRef.current = el;
       }}
       style={{ fontFamily: '"DM Sans", sans-serif', color: text, maxWidth: compact ? 520 : 680 }}
     >
+      {/* An inline style object cannot reach ::placeholder, so every browser
+          substituted its own gray, which washed out against the footer field.
+          opacity:1 is required for Firefox, which dims placeholders by default. */}
+      <style>{`.yll-site-form ::placeholder { color: ${muted}; opacity: 1; }`}</style>
       {!compact && (
         <>
           <h2
@@ -325,7 +338,7 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
               name="email"
               type="email"
               required
-              placeholder={compact ? 'Your email address' : undefined}
+              placeholder={compact ? 'Enter email address here' : undefined}
               style={inputStyle}
               autoComplete="email"
             />
@@ -499,7 +512,7 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
         )}
 
         {status === 'error' && (
-          <p role="alert" style={{ color: dark ? '#FFD1D1' : '#B00020', fontSize: 14, margin: 0 }}>
+          <p role="alert" style={{ color: onLightSurface ? '#B00020' : '#FFD1D1', fontSize: 14, margin: 0 }}>
             {error}
           </p>
         )}
