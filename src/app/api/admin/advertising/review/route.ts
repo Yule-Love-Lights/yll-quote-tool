@@ -4,6 +4,7 @@ import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import {
   acceptPlacement,
+  DuplicatePlacementError,
   listPlacements,
   rejectPlacement,
   unacceptPlacement,
@@ -174,6 +175,11 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Review action failed';
     console.error('POST /api/admin/advertising/review:', message);
+    if (e instanceof DuplicatePlacementError) {
+      // Accepting a second copy of a photo already accepted for this
+      // worker and campaign. A refusal the admin can act on, not a crash.
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
     if (isStateRefusal(message)) {
       return NextResponse.json(
         { error: 'That placement was already reviewed. Reload the queue.' },

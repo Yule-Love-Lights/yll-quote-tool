@@ -27,6 +27,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as { table: string; payload: AnyRow }[],
       selectError: null as DbError | null,
       insertError: null as DbError | null,
+      updateError: null as DbError | null,
       // When set, the NEXT single-row select returns this snapshot instead of
       // the live row, then clears — models a stale read racing a concurrent
       // writer, so the CAS guards can actually be exercised.
@@ -202,6 +203,12 @@ function makeDb() {
             select(_cols?: string) {
               return {
                 maybeSingle: () => {
+                  // An UPDATE can violate a unique index too (the accepted
+                  // photo index applies to a row TRANSITIONING into
+                  // accepted, not only to inserts).
+                  if (stateRef.current.updateError) {
+                    return Promise.resolve({ data: null, error: stateRef.current.updateError });
+                  }
                   const idx = rows().findIndex((r) => rowMatches(r, filters));
                   if (idx === -1) return Promise.resolve({ data: null, error: null });
                   stateRef.current.updates.push({ table, payload });
@@ -295,6 +302,7 @@ beforeEach(() => {
   stateRef.current.inserted = [];
   stateRef.current.selectError = null;
   stateRef.current.insertError = null;
+  stateRef.current.updateError = null;
   stateRef.current.staleReadOnce = null;
   dbRef.current = makeDb();
 });
@@ -1022,5 +1030,21 @@ describe('dedupe and undo hardening (delta-verify BLOCK on PR #1093)', () => {
     const again = await unacceptPlacement(String(p.id), REVIEWER, 'a different reason');
     expect(again.changed).toBe(false);
     expect(again.placement.rejectionReason).toBe('wrong campaign');
+  });
+});
+
+describe('the accepted-photo unique index also guards UPDATES (delta-verify round 2)', () => {
+  it('acceptPlacement maps a 23505 to DuplicatePlacementError, so a duplicate resubmission refuses cleanly instead of 500ing', async () => {
+    const { acceptPlacement, DuplicatePlacementError } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'pending',
+      photo_hash: 'dddd444455556666',
+    });
+    stateRef.current.updateError = { code: '23505', message: 'duplicate key value violates unique constraint' };
+    await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toBeInstanceOf(DuplicatePlacementError);
   });
 });

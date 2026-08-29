@@ -485,7 +485,14 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     .in('status', ['pending', 'resubmitted'])
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`acceptPlacement: ${error.message}`);
+  if (error) {
+    // The accepted-photo unique index guards the TRANSITION into accepted,
+    // not just inserts: accepting a second copy of a photo already accepted
+    // for this worker and campaign is refused here. Report it as the
+    // duplicate it is rather than a raw 500 (delta-verify, PR #1093).
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`acceptPlacement: ${error.message}`);
+  }
 
   if (!data) {
     // Lost the CAS race: someone else reviewed it between our read and write.
