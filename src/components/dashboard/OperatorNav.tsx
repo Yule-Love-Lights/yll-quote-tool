@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 import { navItemsForView, type NavItem } from './operatorView';
 import { useOperatorView } from './OperatorViewContext';
+import { readRoleHint, writeRoleHint } from './roleHint';
 import { ViewAsControl } from './ViewAsControl';
 
 // The item list itself lives in operatorView.ts (ops hub workstream A slice
@@ -78,6 +79,16 @@ export function OperatorNav({
   // admin-only View-as control below; null (pre-fetch, signed out, retry
   // exhausted) renders no control, so the safe default is "not admin".
   const [role, setRole] = useState<'admin' | 'operator' | null>(null);
+  // Hint-first (ops suggestions round): seed the role from the localStorage
+  // echo of the LAST session answer, one effect tick after hydration, so an
+  // admin's strip does not wait a network round trip on every page mount.
+  // The fetch below remains the truth: it overwrites the hint and the state
+  // both, so a stale or hand-edited hint survives at most one page load, and
+  // everything the strip opens is server-gated on the real role anyway.
+  useEffect(() => {
+    const hint = readRoleHint();
+    if (hint) setRole(prev => prev ?? hint);
+  }, []);
   useEffect(() => {
     let cancelled = false;
 
@@ -91,8 +102,10 @@ export function OperatorNav({
         .then(body => {
           if (cancelled) return;
           const signedIn = body.signedIn === true;
+          const trueRole = signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null;
           setSessionState(signedIn ? 'signedIn' : 'signedOut');
-          setRole(signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null);
+          setRole(trueRole);
+          writeRoleHint(trueRole);
         })
         .catch(() => {
           if (cancelled) return;
@@ -264,19 +277,20 @@ export function OperatorNav({
           fit has ~12px of margin (see the lg:px-1.5 comment above), so the
           control must add zero width there. A block row adds ~29px of height
           for admins only, at every viewport width, and no width for anyone.
-          Renders nothing until the session check above resolves an admin.
+          Renders nothing until a role is known: the localStorage hint (one
+          effect tick after hydration on every page after a tab's first) or
+          the session fetch, whichever lands first; the fetch stays the truth.
 
-          KNOWN RESIDUAL (staff lens on PR #1055, deferred; reach widened by
-          the advertising view's pages, staff lens on the one-merge round):
-          because this nav remounts on every page and the role arrives by
-          fetch, the strip pops in after each navigation and shifts admin
-          page content down ~29px, the vertical twin of the #347 Sign-out
-          flash fixed above. Reserving the space here would show a permanent
-          blank band to every non-admin operator, so it is deliberately NOT
-          reserve-space fixed. The real fix is server-rendering the role into
-          OperatorShell (one getOperator read in the shell, role passed as a
-          prop); top of the ops suggestions list from the 2026-08-29 close.
-          Affects only the two admin accounts. */}
+          RESIDUAL HISTORY (staff lens on PR #1055, then the one-merge
+          round): the strip used to pop in only when the fetch resolved,
+          shifting admin content ~29px per navigation. The role hint
+          (roleHint.ts) shrank that to the first-ever page of a browser;
+          after that the strip is present at first paint. Reserving space
+          instead would band every non-admin page, and the once-suggested
+          "server-render the role into OperatorShell" fix is IMPOSSIBLE:
+          about two dozen 'use client' surfaces (QuoteBuilder included)
+          render OperatorShell, and a client component cannot render an
+          async server component. Affects only the two admin accounts. */}
       <ViewAsControl role={role} />
 
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
