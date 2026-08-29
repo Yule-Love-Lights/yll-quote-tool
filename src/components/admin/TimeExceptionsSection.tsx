@@ -42,10 +42,18 @@ export function TimeExceptionsSection({
   return (
     <section>
       <h2 className="text-lg font-semibold text-gray-900 mb-1">Time exceptions</h2>
+      {/* Copy scoped per class (admin-lens HIGH on this PR): the module
+          header's "neither corrupts pay" covers only the two ORPHAN classes
+          (open rows under a closed shift clip to the recorded clock-out).
+          A possible missed Depart tap is different: the classifier's own
+          detail calls it the one un-backstopped pay-and-data corruption
+          path, so the banner must not claim blanket pay safety. */}
       <p className="text-sm text-gray-500 mb-4">
         Stuck time records that need a human: a shift, break, or job segment left open that no
-        automatic path will ever close. Pay is not corrupted by these (open rows clip to the
-        recorded clock-out), but until someone looks, the record lies about what happened.
+        automatic path will close. Rows left open under an already-closed shift only lie about
+        what happened (pay clips to the recorded clock-out). A possible missed tap is the
+        exception: a forgotten Depart can corrupt job time and pay data while the day is still
+        live, so look at those first.
       </p>
 
       {errors.length > 0 && (

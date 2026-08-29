@@ -28,6 +28,19 @@ describe('timeExceptionLabel', () => {
 });
 
 describe('TimeExceptionsSection', () => {
+  it('never claims blanket pay safety: the missed-tap caveat is in the banner copy', () => {
+    // Admin-lens HIGH on this PR: the first cut said "Pay is not corrupted by
+    // these" while the classifier's own stale_open_segment detail calls a
+    // forgotten Depart "the one un-backstopped pay-and-data corruption path".
+    // The banner must carry the caveat, and the false blanket claim must not
+    // come back.
+    const html = renderToStaticMarkup(
+      <TimeExceptionsSection exceptions={[]} crewNames={new Map()} errors={[]} />
+    );
+    expect(html).toContain('can corrupt job time and pay data');
+    expect(html).not.toContain('Pay is not corrupted');
+  });
+
   it('renders the empty state when there are no exceptions', () => {
     const html = renderToStaticMarkup(
       <TimeExceptionsSection exceptions={[]} crewNames={new Map()} errors={[]} />
