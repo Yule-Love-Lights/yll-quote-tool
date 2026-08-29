@@ -5,7 +5,7 @@ import Konva from "konva";
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
-import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
+import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -256,8 +256,7 @@ export async function renderEditor(
   // ── #13 linked twins — "Place on this photo" ─────────────────────────────
   // Staff re-draw the whole display on every photo; a TWIN is a render-only
   // depiction of a canonical item from another photo (bills once, toggles/
-  // recolors everywhere). Billable per-unit kinds only; mini GROUPS are
-  // excluded (stamp members individually).
+  // recolors everywhere). Billable per-unit kinds only.
   const MINI_WRAP_SURFACES = new Set<string>(["bush", "tree", "column", "railing", "curtain"]);
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
@@ -270,7 +269,13 @@ export async function renderEditor(
       // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
       // roofline, which staff re-draw per photo) so a portal package toggle
       // hides/shows a side's lights on every angle it appears on.
-      (isStrand(i) && i.bulbType === "permanent"));
+      (isStrand(i) && i.bulbType === "permanent") ||
+      // A mini GROUP (a railing/curtain/etc, #240) IS stampable as a whole
+      // unit — twinMiniGroupAt re-places the group AND every live member
+      // together, geometry preserved relative to each other. (A grouped
+      // strand/scattershot MEMBER stays excluded above; the group is the
+      // billable unit, not its members individually.)
+      isMiniGroup(i));
   const stampCandidates = (): SceneItem[] =>
     scene.items.filter((i) => isStampableCanonical(i) && !onActivePhoto(i));
   const photoLabelOf = (i: { photoId?: string | null }): string => {
@@ -286,9 +291,10 @@ export async function renderEditor(
         : isGarland(i) ? "garland run"
           : isSpritzer(i) ? `${i.sizeIn}" spritzer`
             : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
-              : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
-                : isStrand(i) ? `${i.surface ?? "mini"} wrap`
-                  : "item";
+              : isMiniGroup(i) ? `${i.surface ?? "bush"} minis`
+                : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
+                  : isStrand(i) ? `${i.surface ?? "mini"} wrap`
+                    : "item";
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
@@ -5683,14 +5689,26 @@ export async function renderEditor(
     if (e.target.findAncestor("Transformer", true)) return;
 
     // #13: an armed "Place on this photo" stamp consumes this click — place a
-    // linked twin of the source at the click point, select it, disarm.
+    // linked twin of the source at the click point, select it, disarm. A mini
+    // GROUP source (#240) twins as a WHOLE unit (the group + every live
+    // member, one undo step) via twinMiniGroupAt instead of the single-item
+    // makeTwinAt below.
     if (stampSourceId) {
       const p = imagePoint();
       if (!p || !inPhoto(p)) return;
       const src = scene.items.find((i) => i.id === stampSourceId);
       stampSourceId = null;
       stage.container().style.cursor = toolMode === "select" ? "crosshair" : "";
-      if (src) {
+      if (src && isMiniGroup(src)) {
+        const result = twinMiniGroupAt(scene, src, p, { activePhotoId, idGen: cryptoId });
+        if (result) {
+          scene = result.scene;
+          selectedIds = new Set(result.memberIds);
+          scheduleSave();
+          commit();
+          redrawScene();
+        }
+      } else if (src) {
         const twin = makeTwinAt(src, p);
         scene = { ...scene, items: [...scene.items, twin] };
         selectedIds = new Set([twin.id]);
