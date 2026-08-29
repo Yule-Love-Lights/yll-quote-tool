@@ -279,6 +279,13 @@ export async function findAcceptedByPhotoHash(
     .eq('worker_id', workerId.trim())
     .eq('campaign_id', campaignId.trim())
     .eq('status', 'accepted')
+    // A VOIDED row is not a duplicate. Void is an overlay that leaves
+    // status='accepted' forever, so without this the office could never
+    // re-do the very work a void exists to undo: the re-upload would be
+    // reported as an already-uploaded duplicate and silently skipped
+    // (close integration lens HIGH — the dedupe shipped before void
+    // existed, so neither PR's own review could see the seam).
+    .is('voided_at', null)
     .eq('photo_hash', photoHash)
     .limit(1);
   if (error) {
