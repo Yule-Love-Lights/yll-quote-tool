@@ -4357,8 +4357,13 @@ export default function QuoteBuilder({
     setNceDepositHeldBack(null);
     setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
+    // Stamp the picked id into the form too: on a NOT-YET-SAVED quote the
+    // insert payload reads form.highlevelContactId, so a pre-save re-pick must
+    // ride the INSERT directly instead of relying on the post-save attach to
+    // correct a stale lead-prefill value (S49 wrap-review HIGH).
     setForm(f => ({
       ...f,
+      highlevelContactId: c.id,
       customer: {
         name: hlName || f.customer.name,
         phone: c.phone || f.customer.phone,
@@ -4514,13 +4519,19 @@ export default function QuoteBuilder({
     setAttachError(null);
     setAttachResurrected(false);
     lastAttachKey.current = null;
+    // S49 wrap-review HIGH: the undo must also cover the NOT-YET-SAVED case.
+    // A lead-prefilled quote seeds form.highlevelContactId + dbLinked at mount;
+    // without these unconditional resets, rejecting the auto-matched contact
+    // ("Change" before the first Calculate) left the rejected id riding the
+    // INSERT payload while the UI claimed nothing was linked.
+    setDbLinked(false);
+    setForm(f => ({ ...f, highlevelContactId: null }));
     // #172 (staff-lens HIGH): Clear must be a REAL undo. The pick-time attach
     // may already have written the DB link (or still be in flight — chaining
     // on attachPromiseRef serializes us after it), and a link the UI no longer
     // shows would make Send message the wrong person. Best-effort detach; the
     // pre-send guard re-links whatever is actually picked at send time.
     if (savedQuoteId) {
-      setDbLinked(false);
       attachPromiseRef.current = (attachPromiseRef.current ?? Promise.resolve(false)).then(async () => {
         try {
           const res = await fetch('/api/integrations/highlevel/attach', {

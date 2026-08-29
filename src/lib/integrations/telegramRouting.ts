@@ -132,6 +132,14 @@ export async function notifyTelegramAudience(
     console.error('[telegramRouting] falling back to broadcast:', err);
   }
   const chats = chatsForAudience(audience, routing, allow);
+  if (routing && chats.length === 0) {
+    // Greppable breadcrumb (S49 admin lens): a saved routing that resolves an
+    // audience to zero live chats drops the message by design — but silently,
+    // and the Settings-page warning only shows when someone looks. Log it so a
+    // mid-flight blackout (chat removed from the env allowlist after the save)
+    // is visible in Vercel logs.
+    console.warn(`[telegramRouting] audience '${audience}' has no live chats — message dropped`);
+  }
   for (const chat of chats) {
     try {
       await send(chat, text);
