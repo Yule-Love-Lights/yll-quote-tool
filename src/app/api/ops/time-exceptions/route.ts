@@ -13,7 +13,8 @@ export const runtime = 'nodejs';
  * The queue's UI lives on the admin-only /admin/time-tracking page, and the
  * API gate now agrees with the page gate: it lists other people's stuck time
  * records, which sit next to pay. Still deliberately NOT under /api/ops/v1,
- * which is the crew-confined namespace.
+ * which WAS the crew-confined namespace (deleted with the Operations Hub,
+ * row 433; crew logins retired, row 438).
  *
  * READ-ONLY. It closes nothing. Manual punches are authoritative for pay, so a
  * human decides what actually happened; the midnight cron already handles the
