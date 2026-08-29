@@ -8,6 +8,7 @@
 // this file proves the TS wrapper's call shape and counting, not the SQL.
 
 import { describe, it, expect, vi } from 'vitest';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { produceOfficeTasksFromCommitments } from './produceTasks';
 
 function fakeSupabase(opts: {
@@ -31,7 +32,7 @@ function fakeSupabase(opts: {
     rpcCalls.push(args);
     return opts.rpcResults[args.p_commitment_id] ?? { data: null, error: null };
   });
-  return { client: { from, rpc } as any, rpcCalls };
+  return { client: { from, rpc } as unknown as SupabaseClient, rpcCalls };
 }
 
 describe('produceOfficeTasksFromCommitments', () => {

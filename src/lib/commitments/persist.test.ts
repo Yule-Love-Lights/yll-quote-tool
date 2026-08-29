@@ -7,12 +7,13 @@
 // verifies it instead).
 
 import { describe, it, expect, vi } from 'vitest';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { persistCommitments } from './persist';
 import type { CommitmentRow } from './types';
 
 function fakeSupabase(result: { data: unknown; error: { message: string } | null }) {
   const rpc = vi.fn(async () => result);
-  return { client: { rpc } as any, rpc };
+  return { client: { rpc } as unknown as SupabaseClient, rpc };
 }
 
 const ROWS: CommitmentRow[] = [
