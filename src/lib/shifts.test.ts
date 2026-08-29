@@ -134,7 +134,8 @@ function makeChildBuilder(
   log: () => Array<Record<string, unknown>>,
 ) {
   const childBuilder = {
-    // Read path: getOpenBreak/getOpenSegment do select().eq().is(null).maybeSingle().
+    // Read path: single-row getters use maybeSingle; the containment guard
+    // awaits the builder directly for a LIST.
     select: () => {
       let filtered = [...rows()];
       const readBuilder = {
@@ -148,6 +149,10 @@ function makeChildBuilder(
         },
         maybeSingle: () =>
           Promise.resolve({ data: filtered[0] ? { ...filtered[0] } : null, error: null }),
+        then: (
+          res: (v: { data: Array<Record<string, unknown>>; error: null }) => unknown,
+          rej?: (e: unknown) => unknown,
+        ) => Promise.resolve({ data: filtered.map((r) => ({ ...r })), error: null }).then(res, rej),
       };
       return readBuilder;
     },
@@ -606,6 +611,42 @@ describe('adminUpdateShiftTimes', () => {
       }),
       'invalid-times',
     );
+  });
+
+  it('refuses a typed clock-IN later than a running break start (the same clip from the other end)', async () => {
+    stateRef.current.breaks = [{ ...OPEN_BREAK }]; // started 14:00 on shift-open-1
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-open-1',
+        clockInAt: '2026-08-10T14:30:00.000Z',
+        clockOutAt: null,
+        actor: 'Jason',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.updated).toEqual([]);
+  });
+
+  it('refuses moving a CLOSED shift clock-in past its historical break', async () => {
+    stateRef.current.breaks = [
+      {
+        ...OPEN_BREAK,
+        id: 'break-done-1',
+        shift_id: 'shift-closed-1',
+        started_at: '2026-08-10T08:30:00.000Z',
+        ended_at: '2026-08-10T09:00:00.000Z',
+      },
+    ];
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-closed-1',
+        clockInAt: '2026-08-10T08:45:00.000Z',
+        clockOutAt: '2026-08-10T10:00:00.000Z',
+        actor: 'Jason',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.updated).toEqual([]);
   });
 
   it('refuses a typed clock-out earlier than a still-running break (silent-overpay guard)', async () => {

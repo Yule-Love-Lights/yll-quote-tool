@@ -1,6 +1,6 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
-import { closeOpenBreakForShift, getOpenBreak } from '@/lib/shiftBreaks';
-import { closeOpenSegmentForShift, getOpenSegment } from '@/lib/jobSegments';
+import { closeOpenBreakForShift } from '@/lib/shiftBreaks';
+import { closeOpenSegmentForShift } from '@/lib/jobSegments';
 import { sendTelegramMessage } from '@/lib/integrations/telegram';
 
 export type ShiftSource = 'pwa' | 'telegram' | 'office' | 'system';
@@ -359,6 +359,60 @@ export async function adminCreateShift(input: {
   return toShift(data as Row);
 }
 
+/** Every existing break and job segment must fit inside the typed interval.
+ * Direct reads (not the child modules' getters) so a failed lookup REFUSES
+ * instead of silently passing — the getters fail open by design for their own
+ * callers, which is the wrong posture on a payroll write. */
+async function assertContainsChildren(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  shiftId: string,
+  clockInAt: string,
+  clockOutAt: string | null,
+): Promise<void> {
+  const refuseUnreadable = (what: string) =>
+    new ManualShiftRefusedError(
+      'invalid-times',
+      `Could not check this shift's ${what}. Nothing was written; try again.`,
+    );
+  const inMs = Date.parse(clockInAt);
+  const outMs = clockOutAt === null ? Infinity : Date.parse(clockOutAt);
+
+  const { data: breakData, error: breakError } = await db
+    .from('shift_breaks')
+    .select('started_at, ended_at')
+    .eq('shift_id', shiftId);
+  if (breakError) throw refuseUnreadable('breaks');
+  const { data: segData, error: segError } = await db
+    .from('job_segments')
+    .select('arrived_at, departed_at')
+    .eq('shift_id', shiftId);
+  if (segError) throw refuseUnreadable('job segments');
+
+  const children: { label: string; start: string; end: string | null }[] = [
+    ...(((breakData as unknown as { started_at: string; ended_at: string | null }[]) ?? []).map(
+      (b) => ({ label: 'a break', start: b.started_at, end: b.ended_at }),
+    )),
+    ...(((segData as unknown as { arrived_at: string; departed_at: string | null }[]) ?? []).map(
+      (s) => ({ label: 'a job segment', start: s.arrived_at, end: s.departed_at }),
+    )),
+  ];
+  for (const child of children) {
+    if (Date.parse(child.start) < inMs) {
+      throw new ManualShiftRefusedError(
+        'invalid-times',
+        `This shift has ${child.label} that started at ${child.start}; the clock-in must be at or before that.`,
+      );
+    }
+    const childEnd = child.end === null ? Date.parse(child.start) + 1 : Date.parse(child.end);
+    if (childEnd > outMs) {
+      throw new ManualShiftRefusedError(
+        'invalid-times',
+        `This shift has ${child.label} running past the typed clock-out (${child.end ?? 'still running from ' + child.start}); the clock-out must cover it.`,
+      );
+    }
+  }
+}
+
 export async function adminUpdateShiftTimes(input: {
   shiftId: string;
   /** null = keep the shift OPEN (valid only while it IS open — a crew member
@@ -388,28 +442,22 @@ export async function adminUpdateShiftTimes(input: {
   await assertNoOverlap(db, row.crew_member_id, input.clockInAt, input.clockOutAt, shiftId);
 
   const closingOpenShift = row.clock_out_at === null && input.clockOutAt !== null;
-  if (closingOpenShift) {
-    // A typed clock-out EARLIER than a still-running break or job segment
-    // would auto-close that child backwards; the payroll math then silently
-    // drops the negative interval and the break is never subtracted (PR #1062
-    // technical lens). Refuse with the time so the admin can decide.
-    const [openBreak, openSegment] = await Promise.all([
-      getOpenBreak(shiftId),
-      getOpenSegment(shiftId),
-    ]);
-    if (openBreak && (input.clockOutAt as string) <= openBreak.startedAt) {
-      throw new ManualShiftRefusedError(
-        'invalid-times',
-        `This shift has a break still running that started at ${openBreak.startedAt}; the clock-out must be after that.`,
-      );
-    }
-    if (openSegment && (input.clockOutAt as string) <= openSegment.arrivedAt) {
-      throw new ManualShiftRefusedError(
-        'invalid-times',
-        `This shift has a job segment still running that started at ${openSegment.arrivedAt}; the clock-out must be after that.`,
-      );
-    }
-  }
+
+  // CONTAINMENT RULE (PR #1062 delta-verify): the typed interval must CONTAIN
+  // every break and job segment this shift already has — pulling the clock-in
+  // later than a break's start clips the break out of the pay math exactly the
+  // way a too-early clock-out does (paidSecondsForShift clips child spans to
+  // the shift envelope and silently drops what falls outside). One rule kills
+  // the class from both ends, compared numerically, never as strings.
+  //
+  // FAIL-CLOSED: if the children cannot be read, the edit is refused — on
+  // payroll a refusal is a retry; a clipped break is silent overpay.
+  //
+  // Known residual, on record: this is check-then-act. A break the bot starts
+  // in the instant between this read and the CAS write below is not seen; the
+  // window is milliseconds, the writer is one crew member's own bot action,
+  // and closing it needs a DB transaction this codebase does not use yet.
+  await assertContainsChildren(db, shiftId, input.clockInAt, input.clockOutAt);
 
   const payload: Record<string, unknown> = {
     clock_in_at: input.clockInAt,
