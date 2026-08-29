@@ -153,6 +153,16 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
   - Reason: added 2026-08-20 after a review flagged a `claude/*` branch as breaking the naming rule, when the rule had simply never addressed sessions that don't pick their own branch name.
 - Branch off fresh `master` (pull first); keep PRs small; merge `master` back in if a branch lives more than a day.
 
+## One session per lane (PROPOSED 2026-08-29, not in force until Jason gives his go)
+
+A session owns the workstream lane it is working. It merges its own branches, and it does NOT bundle another session's open branch into its own merge. When two lanes have to land together, the sessions coordinate and each lane's owner merges its own branch.
+
+What this does not restrict: reading another lane's branch, merging current `master` into your own branch, or one session picking up a lane another session has finished and closed.
+
+Reason: on 2026-08-29 `master` moved about twelve times underneath a single session, and that session's one-merge bundle had absorbed a snapshot of another session's branch. That other session then merged a newer copy of the same work, so re-syncing produced add/add two-way merges (a squash against branch history), the class that silently mangles content. Nothing was lost, but the only thing standing between the bundle and a silent mangle was a manual sweep proving that the only differences against `master` were the intended edits. The convention removes the situation instead of relying on the sweep catching it.
+
+Status: this is a policy-class edit under the SHARED-file rule, so it binds nobody until Jason gives an explicit go. Ledger row 467.
+
 ## Area ownership
 | Owner | Files |
 |---|---|
