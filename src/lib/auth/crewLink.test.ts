@@ -23,7 +23,7 @@ describe('crew link tokens', () => {
 
   it('mints a link token that verifies back to its crew member', () => {
     const token = mintCrewToken('link', CREW, NOW);
-    expect(verifyCrewToken('link', token, NOW)).toEqual({ ok: true, crewMemberId: CREW });
+    expect(verifyCrewToken('link', token, NOW)).toEqual({ ok: true, crewMemberId: CREW, binding: null, jti: null });
   });
 
   it('fails CLOSED with no secret configured, minting and verifying alike', () => {
@@ -50,7 +50,12 @@ describe('crew link tokens', () => {
 
   it('expires a link token the millisecond after its window closes', () => {
     const token = mintCrewToken('link', CREW, NOW);
-    expect(verifyCrewToken('link', token, NOW + CREW_LINK_TTL_MS)).toEqual({ ok: true, crewMemberId: CREW });
+    expect(verifyCrewToken('link', token, NOW + CREW_LINK_TTL_MS)).toEqual({
+      ok: true,
+      crewMemberId: CREW,
+      binding: null,
+      jti: null,
+    });
     expect(verifyCrewToken('link', token, NOW + CREW_LINK_TTL_MS + 1)).toEqual({ ok: false, reason: 'expired' });
   });
 
@@ -76,4 +81,25 @@ describe('crew link tokens', () => {
       expect(verifyCrewToken('link', bad, NOW).ok).toBe(false);
     },
   );
+
+  // The binding and the single-use id both ride INSIDE the signature, so
+  // neither can be swapped or stripped by whoever holds the token.
+  it('round-trips the Telegram binding and the single-use id', () => {
+    const token = mintCrewToken('link', CREW, NOW, '900001', 'jti-abc');
+    expect(verifyCrewToken('link', token, NOW)).toEqual({
+      ok: true,
+      crewMemberId: CREW,
+      binding: '900001',
+      jti: 'jti-abc',
+    });
+  });
+
+  it('refuses a token whose binding was edited', () => {
+    const token = mintCrewToken('session', CREW, NOW, '900001');
+    const [prefix, payload, sig] = token.split('.');
+    const decoded = JSON.parse(Buffer.from(payload!, 'base64url').toString('utf8'));
+    decoded.b = '900002';
+    const forged = `${prefix}.${Buffer.from(JSON.stringify(decoded)).toString('base64url')}.${sig}`;
+    expect(verifyCrewToken('session', forged, NOW)).toEqual({ ok: false, reason: 'bad_signature' });
+  });
 });

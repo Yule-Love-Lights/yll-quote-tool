@@ -15,7 +15,7 @@ export const CREW_COOKIE_MAX_AGE_SECONDS = Math.floor(CREW_SESSION_TTL_MS / 1000
 
 export type CrewCaller =
   | { ok: true; member: CrewMember }
-  | { ok: false; reason: 'unauthenticated' | 'no_crew_row' | 'inactive' | 'unlinked' };
+  | { ok: false; reason: 'unauthenticated' | 'no_crew_row' | 'inactive' | 'unlinked' | 'revoked' };
 
 /**
  * Resolve a session cookie value to its crew member, or a named refusal.
@@ -34,6 +34,12 @@ export async function resolveCrewCaller(
   if (!member) return { ok: false, reason: 'no_crew_row' };
   if (!member.active) return { ok: false, reason: 'inactive' };
   if (!member.telegramUserId) return { ok: false, reason: 'unlinked' };
+  // The session is bound to the Telegram account it was minted for, so the
+  // office can end a LEAKED session for one person by unlinking and relinking
+  // that account. Without this, a stolen cookie is good for its full 30 days
+  // and the only lever is deactivating the real crew member (customer lens,
+  // PR #1094).
+  if (verified.binding !== member.telegramUserId) return { ok: false, reason: 'revoked' };
   return { ok: true, member };
 }
 

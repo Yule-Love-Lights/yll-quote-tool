@@ -665,3 +665,36 @@ export async function linkStaffLogin(id: string, authUserId: string): Promise<St
   }
   return data ? toStaffMember(data as StaffRow) : null;
 }
+
+/**
+ * Stamp a fresh single-use id for a crew entry link, replacing whatever was
+ * there. Minting a new link therefore REVOKES the previous one, which is the
+ * lever an office staffer already reaches for when someone says "resend it".
+ */
+export async function stampCrewLinkJti(crewMemberId: string, jti: string): Promise<void> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const { error } = await db
+    .from('crew_members')
+    .update({ last_link_jti: jti, updated_at: new Date().toISOString() })
+    .eq('id', crewMemberId);
+  if (error) throw new Error(`stampCrewLinkJti: ${error.message}`);
+}
+
+/**
+ * Consume a crew entry link's single-use id: a compare-and-set, so two taps on
+ * the same link race and exactly one wins. Returns false when the id has
+ * already been spent or has been replaced by a newer link.
+ */
+export async function consumeCrewLinkJti(crewMemberId: string, jti: string): Promise<boolean> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ last_link_jti: null, updated_at: new Date().toISOString() })
+    .eq('id', crewMemberId)
+    .eq('last_link_jti', jti)
+    .select('id');
+  if (error) throw new Error(`consumeCrewLinkJti: ${error.message}`);
+  return ((data as unknown as { id: string }[] | null) ?? []).length > 0;
+}

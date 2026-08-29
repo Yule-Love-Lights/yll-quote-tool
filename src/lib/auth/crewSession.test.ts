@@ -44,7 +44,7 @@ describe('resolveCrewCaller', () => {
   });
 
   it('resolves a valid session cookie to its crew member', async () => {
-    const cookie = mintCrewToken('session', CREW, NOW);
+    const cookie = mintCrewToken('session', CREW, NOW, '900001');
     await expect(resolveCrewCaller(cookie, NOW)).resolves.toEqual({ ok: true, member: state.member });
   });
 
@@ -60,20 +60,35 @@ describe('resolveCrewCaller', () => {
   // Revocation is the whole reason the crew row is re-read on every request
   // rather than trusted from the signed payload.
   it('ends the session the moment the crew member is deactivated', async () => {
-    const cookie = mintCrewToken('session', CREW, NOW);
+    const cookie = mintCrewToken('session', CREW, NOW, '900001');
     state.member = member({ active: false });
     await expect(resolveCrewCaller(cookie, NOW)).resolves.toEqual({ ok: false, reason: 'inactive' });
   });
 
   it('ends the session the moment the Telegram account is unlinked', async () => {
-    const cookie = mintCrewToken('session', CREW, NOW);
+    const cookie = mintCrewToken('session', CREW, NOW, '900001');
     state.member = member({ telegramUserId: null });
     await expect(resolveCrewCaller(cookie, NOW)).resolves.toEqual({ ok: false, reason: 'unlinked' });
   });
 
   it('refuses a cookie whose crew row is gone entirely', async () => {
-    const cookie = mintCrewToken('session', CREW, NOW);
+    const cookie = mintCrewToken('session', CREW, NOW, '900001');
     state.member = null;
     await expect(resolveCrewCaller(cookie, NOW)).resolves.toEqual({ ok: false, reason: 'no_crew_row' });
+  });
+
+  // Sign-out-everywhere for one person, with no schema change: the session is
+  // bound to the Telegram account it was minted for, so unlinking and
+  // relinking kills every session issued before, including a stolen one
+  // (customer lens, PR #1094).
+  it('refuses a session bound to a Telegram account the crew row no longer has', async () => {
+    const cookie = mintCrewToken('session', CREW, NOW, '900001');
+    state.member = member({ telegramUserId: '900002' });
+    await expect(resolveCrewCaller(cookie, NOW)).resolves.toEqual({ ok: false, reason: 'revoked' });
+  });
+
+  it('refuses an unbound session cookie, so a pre-binding token cannot linger', async () => {
+    const cookie = mintCrewToken('session', CREW, NOW);
+    await expect(resolveCrewCaller(cookie, NOW)).resolves.toEqual({ ok: false, reason: 'revoked' });
   });
 });

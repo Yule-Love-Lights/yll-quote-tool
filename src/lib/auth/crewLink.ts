@@ -29,10 +29,18 @@ export const CREW_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PREFIX = 'c1';
 
 export type CrewTokenResult =
-  | { ok: true; crewMemberId: string }
+  | { ok: true; crewMemberId: string; binding: string | null; jti: string | null }
   | { ok: false; reason: 'unconfigured' | 'malformed' | 'bad_signature' | 'expired' | 'wrong_purpose' };
 
-type Payload = { v: 1; p: CrewTokenPurpose; c: string; e: number };
+/**
+ * `b` is the BINDING: the crew member's Telegram account id at the moment the
+ * token was minted. A session whose binding no longer matches the crew row is
+ * refused, which is what makes unlink-then-relink a working "sign out
+ * everywhere" for one person, without a schema change and without touching
+ * anybody else's session. Absent on older tokens, which then simply fail the
+ * comparison and force a fresh link.
+ */
+type Payload = { v: 1; p: CrewTokenPurpose; c: string; e: number; b?: string; j?: string };
 
 function secret(): string | null {
   const s = process.env.CREW_LINK_SECRET?.trim();
@@ -49,10 +57,21 @@ function ttlFor(purpose: CrewTokenPurpose): number {
 
 /** Mint a token for one crew member. Throws if the secret is missing, because a
  * caller that silently got no token would look like a caller that got one. */
-export function mintCrewToken(purpose: CrewTokenPurpose, crewMemberId: string, nowMs: number): string {
+export function mintCrewToken(
+  purpose: CrewTokenPurpose,
+  crewMemberId: string,
+  nowMs: number,
+  binding?: string | null,
+  jti?: string | null,
+): string {
   const key = secret();
   if (!key) throw new Error('CREW_LINK_SECRET is not set: the crew door is closed');
   const payload: Payload = { v: 1, p: purpose, c: crewMemberId, e: nowMs + ttlFor(purpose) };
+  if (binding) payload.b = binding;
+  // `j` makes a LINK single use: the mint stamps this id on the crew row and
+  // the entry route consumes it, so redeeming the same link twice fails on the
+  // second attempt (review round on PR #1094).
+  if (jti) payload.j = jti;
   const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   return `${PREFIX}.${payloadB64}.${sign(payloadB64, key)}`;
 }
@@ -91,5 +110,10 @@ export function verifyCrewToken(
   if (payload.p !== purpose) return { ok: false, reason: 'wrong_purpose' };
   if (nowMs > payload.e) return { ok: false, reason: 'expired' };
 
-  return { ok: true, crewMemberId: payload.c };
+  return {
+    ok: true,
+    crewMemberId: payload.c,
+    binding: typeof payload.b === 'string' ? payload.b : null,
+    jti: typeof payload.j === 'string' ? payload.j : null,
+  };
 }

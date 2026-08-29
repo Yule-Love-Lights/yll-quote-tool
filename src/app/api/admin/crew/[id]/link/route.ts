@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 
+import { randomUUID } from 'node:crypto';
+
 import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { mintCrewToken, CREW_LINK_TTL_MS } from '@/lib/auth/crewLink';
-import { getCrewMember } from '@/lib/crewMembers';
+import { getCrewMember, stampCrewLinkJti } from '@/lib/crewMembers';
+import { logCrewAccess } from '@/lib/crew/accessEvents';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 
 export const dynamic = 'force-dynamic';
@@ -29,12 +32,23 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     );
   }
 
+  // Single use: the id below is stamped on the crew row and spent by the entry
+  // route, so this link can be redeemed once and minting a new one revokes any
+  // link still in someone's chat history.
+  const jti = randomUUID();
   let token: string;
   try {
-    token = mintCrewToken('link', member.id, Date.now());
+    token = mintCrewToken('link', member.id, Date.now(), member.telegramUserId, jti);
   } catch {
     return NextResponse.json({ error: 'CREW_LINK_SECRET is not set: the crew door is closed' }, { status: 503 });
   }
+  await stampCrewLinkJti(member.id, jti);
+  await logCrewAccess({
+    crewMemberId: member.id,
+    actor: auth.operator.id,
+    action: 'link_minted',
+    detail: { expiresInMinutes: Math.round(CREW_LINK_TTL_MS / 60000) },
+  });
 
   return NextResponse.json({
     url: `${appBaseUrl()}/crew/enter?t=${encodeURIComponent(token)}`,

@@ -4,13 +4,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextResponse } from 'next/server';
 
-const { requireAdmin, getCrewMember } = vi.hoisted(() => ({
+const { requireAdmin, getCrewMember, stampCrewLinkJti, logCrewAccess } = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   getCrewMember: vi.fn(),
+  stampCrewLinkJti: vi.fn(),
+  logCrewAccess: vi.fn(),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireAdmin }));
-vi.mock('@/lib/crewMembers', () => ({ getCrewMember }));
+vi.mock('@/lib/crewMembers', () => ({ getCrewMember, stampCrewLinkJti }));
+vi.mock('@/lib/crew/accessEvents', () => ({ logCrewAccess }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({ appBaseUrl: () => 'https://quote.example.com' }));
 
 import { POST } from './route';
@@ -32,6 +35,8 @@ beforeEach(() => {
   process.env.CREW_LINK_SECRET = 'test-secret-value-for-crew-links';
   requireAdmin.mockResolvedValue({ operator: { id: 'admin-1', role: 'admin' } });
   getCrewMember.mockResolvedValue(member());
+  stampCrewLinkJti.mockResolvedValue(undefined);
+  logCrewAccess.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -45,7 +50,7 @@ describe('POST /api/admin/crew/[id]/link', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     const token = new URL(body.url).searchParams.get('t');
-    expect(verifyCrewToken('link', token, Date.now())).toEqual({ ok: true, crewMemberId: 'crew-1' });
+    expect(verifyCrewToken('link', token, Date.now())).toMatchObject({ ok: true, crewMemberId: 'crew-1' });
     expect(body.expiresInMinutes).toBe(15);
   });
 
@@ -84,5 +89,32 @@ describe('POST /api/admin/crew/[id]/link', () => {
     delete process.env.CREW_LINK_SECRET;
     const res = await call();
     expect(res.status).toBe(503);
+  });
+
+  // Single use: the id in the link must be the id stamped on the crew row, or
+  // the entry route would consume something that was never issued.
+  it('stamps the SAME single-use id it puts in the link', async () => {
+    const token = new URL((await (await call()).json()).url).searchParams.get('t');
+    const verified = verifyCrewToken('link', token, Date.now());
+    expect(verified.ok && verified.jti).toBeTruthy();
+    expect(stampCrewLinkJti).toHaveBeenCalledWith('crew-1', verified.ok ? verified.jti : null);
+  });
+
+  it('binds the link to the crew member Telegram account', async () => {
+    const token = new URL((await (await call()).json()).url).searchParams.get('t');
+    expect(verifyCrewToken('link', token, Date.now())).toMatchObject({ binding: '900001' });
+  });
+
+  it('records who minted it', async () => {
+    await call();
+    expect(logCrewAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'link_minted', crewMemberId: 'crew-1', actor: 'admin-1' }),
+    );
+  });
+
+  it('stamps nothing when the door secret is missing', async () => {
+    delete process.env.CREW_LINK_SECRET;
+    await call();
+    expect(stampCrewLinkJti).not.toHaveBeenCalled();
   });
 });
