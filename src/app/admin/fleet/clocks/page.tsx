@@ -91,7 +91,13 @@ export default async function FleetClocksPage({
               </>
             )}
           </form>
-          {daysWithData.length > 0 && (
+          {daysWithData === null && (
+            <p className="text-sm text-red-700 mt-2">
+              The list of days with data could not be loaded. Other days may still have data;
+              type a date above to look at one.
+            </p>
+          )}
+          {daysWithData !== null && daysWithData.length > 0 && (
             <p className="text-sm text-gray-500 mt-2">
               Days with data:{' '}
               {daysWithData.map((d, i) => (

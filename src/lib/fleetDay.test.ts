@@ -185,4 +185,33 @@ describe('listFleetDays', () => {
     const days = await listFleetDays();
     expect(days).toEqual(['2026-08-25']);
   });
+
+  // null means the day list could NOT be read. An empty array here reads as
+  // "no other day has data", which is the same lie the crew dropdown told in
+  // row 455 — the page would offer no way back to a day that does have data
+  // and say nothing about why (row 457d).
+  it('returns null when the visits query fails', async () => {
+    queue('vehicle_visits', { data: null, error: { message: 'db down' } });
+    queue('shifts', { data: [], error: null });
+
+    await expect(listFleetDays()).resolves.toBeNull();
+  });
+
+  it('returns null when the shifts query fails', async () => {
+    queue('vehicle_visits', { data: [], error: null });
+    queue('shifts', { data: null, error: { message: 'db down' } });
+
+    await expect(listFleetDays()).resolves.toBeNull();
+  });
+
+  it('still returns the days when only the office-filter lookup fails (fails open)', async () => {
+    queue('vehicle_visits', { data: [], error: null });
+    queue('shifts', {
+      data: [{ crew_member_id: 'c-field', clock_in_at: '2026-08-26T12:00:00Z' }],
+      error: null,
+    });
+    queue('crew_members', { data: null, error: { message: 'db down' } });
+
+    await expect(listFleetDays()).resolves.toEqual(['2026-08-26']);
+  });
 });

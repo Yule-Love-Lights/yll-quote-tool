@@ -254,10 +254,17 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
  * page, so listing it is a dead link (staff lens finding, PR #1040). The
  * office filter fails OPEN: if the crew lookup errors, every shift day counts.
  * Window: the last 45 days, capped to maxDays.
+ *
+ * Returns null when the day list could NOT be read — either source query
+ * failing makes the list incomplete, and an incomplete list silently hides
+ * days that DO have data while looking exactly like a quiet stretch (row
+ * 457d, the silent-empty family of row 455). The office filter keeps failing
+ * open: a missing crew lookup over-lists rather than under-lists, which is
+ * the safe direction for navigation.
  */
-export async function listFleetDays(maxDays = 21): Promise<string[]> {
+export async function listFleetDays(maxDays = 21): Promise<string[] | null> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return [];
+  if (!sb) return null;
   const since = new Date(Date.now() - 45 * 24 * 3600_000).toISOString();
   const [visitsRes, shiftsRes] = await Promise.all([
     sb.from('vehicle_visits').select('entered_at').gte('entered_at', since).returns<{ entered_at: string }[]>(),
@@ -267,6 +274,13 @@ export async function listFleetDays(maxDays = 21): Promise<string[]> {
       .gte('clock_in_at', since)
       .returns<{ crew_member_id: string; clock_in_at: string }[]>(),
   ]);
+  if (visitsRes.error || shiftsRes.error) {
+    console.error(
+      'listFleetDays: day list read failed:',
+      visitsRes.error?.message ?? shiftsRes.error?.message,
+    );
+    return null;
+  }
   const shiftRows = shiftsRes.data ?? [];
   const officeIds = new Set<string>();
   const crewIds = [...new Set(shiftRows.map((s) => s.crew_member_id))];
