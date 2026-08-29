@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAdvertisingPath, isCrewPath, isPublicPath } from './operatorGate';
+import { isAdvertisingPath, isPublicPath } from './operatorGate';
 
 describe('isPublicPath — customer-facing allowlist', () => {
   it('treats the customer portal + its assets as public', () => {
@@ -49,6 +49,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest)
       '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping)
       '/api/referrals/sweep', // Vercel Cron (CRON_SECRET-guarded, naldo/referral-link-sweep)
+      '/api/ops/installment-run', // The installment runner (row 448) — CRON_SECRET or operator session
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
@@ -308,54 +309,11 @@ describe('isPublicPath — customer-facing allowlist', () => {
   });
 });
 
-describe('isCrewPath — the crew-only surface (row 279)', () => {
-  it('claims the whole /api/ops/v1 namespace', () => {
-    expect(isCrewPath('/api/ops/v1')).toBe(true);
-    expect(isCrewPath('/api/ops/v1/jobs/abc/arrive')).toBe(true);
-    expect(isCrewPath('/api/ops/v1/jobs/abc/depart')).toBe(true);
-    expect(isCrewPath('/api/ops/v1/jobs/abc/complete')).toBe(true);
-    // Not yet built, but the prefix must already cover it so adding it needs no
-    // change here.
-    expect(isCrewPath('/api/ops/v1/breaks/start')).toBe(true);
-  });
-
-  it('tolerates a trailing slash', () => {
-    expect(isCrewPath('/api/ops/v1/')).toBe(true);
-  });
-
-  it('does NOT claim /api/ops paths outside v1 — the crons are not crew', () => {
-    expect(isCrewPath('/api/ops/digest')).toBe(false);
-    expect(isCrewPath('/api/ops/midnight-close')).toBe(false);
-    expect(isCrewPath('/api/ops')).toBe(false);
-  });
-
-  it('does not claim the operator surface, which is the whole point', () => {
-    // A crew session reaching any of these would be reaching customer PII.
-    expect(isCrewPath('/customers')).toBe(false);
-    expect(isCrewPath('/api/customers')).toBe(false);
-    expect(isCrewPath('/admin/jobs')).toBe(false);
-    expect(isCrewPath('/api/jobs')).toBe(false);
-    expect(isCrewPath('/')).toBe(false);
-  });
-
-  it('is not fooled by a lookalike prefix', () => {
-    expect(isCrewPath('/api/ops/v1x/jobs')).toBe(false);
-    expect(isCrewPath('/api/ops/v10/jobs')).toBe(false);
-  });
-});
-
-describe('the crew API is NOT public — it needs a session, just a crew one', () => {
-  it('keeps every crew path out of the public allowlist', () => {
-    for (const p of [
-      '/api/ops/v1',
-      '/api/ops/v1/jobs/abc/arrive',
-      '/api/ops/v1/jobs/abc/depart',
-      '/api/ops/v1/jobs/abc/complete',
-    ]) {
-      expect(isPublicPath(p, 'POST')).toBe(false);
-      expect(isPublicPath(p, 'GET')).toBe(false);
-    }
-  });
+describe('the retired crew namespace, and the cron that is not it', () => {
+  // `/api/ops/v1/**` was deleted with the Operations Hub (row 433) and crew
+  // logins retired with it (row 438), so there is no longer a crew surface to
+  // assert about. What still matters is the neighbouring cron, which is public
+  // BY DESIGN and must not be swept up by anything that trims `/api/ops`.
 
   it('DOES allowlist the midnight-close cron, which carries no session at all', () => {
     // Without this the perimeter 401s the cron before its own CRON_SECRET check
@@ -373,12 +331,6 @@ describe('the office web clock is operator-only, not public and not crew', () =>
     for (const method of ['GET', 'POST', 'OPTIONS']) {
       expect(isPublicPath('/api/office/clock', method), method).toBe(false);
     }
-  });
-
-  it('is NOT the crew surface — office time is the separate source:office lane', () => {
-    // If it were crew-classified, the perimeter would 403 the operator sessions
-    // (Naldo/Kelly/Ann/Khaye) that are the whole point of this route.
-    expect(isCrewPath('/api/office/clock')).toBe(false);
   });
 })
 
@@ -409,9 +361,11 @@ describe('isAdvertisingPath — the advertising-only surface (advertising role h
     expect(isAdvertisingPath('/')).toBe(false);
   });
 
-  it('does not claim the crew surface, and vice versa', () => {
+  it('does not claim the RETIRED ops/v1 namespace either', () => {
+    // /api/ops/v1 went with the Operations Hub (row 433) and crew logins were
+    // retired (row 438), so there is no crew predicate left to cross-check
+    // against. The advertising prefix must still not creep onto that path.
     expect(isAdvertisingPath('/api/ops/v1/jobs/abc/arrive')).toBe(false);
-    expect(isCrewPath('/api/advertising/campaigns')).toBe(false);
   });
 
   it('is not fooled by a lookalike prefix', () => {

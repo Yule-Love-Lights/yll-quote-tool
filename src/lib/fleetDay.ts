@@ -7,8 +7,9 @@
 // comparing is the entire point, and a disagreement between them is information
 // to investigate, not an error to reconcile automatically.
 //
-// OFFICE ONLY (Naldo, 2026-08-27). The page that renders this sits behind the
-// operator session like the rest of /admin; crew do not see it.
+// WHO SEES WHAT (Naldo, 2026-08-28): the live fleet view (/admin/fleet) is for
+// every office operator; the two-clocks comparison (/admin/fleet/clocks) is
+// ADMIN ONLY — Naldo and Jason. Crew see neither, like the rest of /admin.
 //
 // THE VAN IS NOT THE PERSON, and every consumer of this data needs that
 // sentence. A crew member can be working after the van leaves; a van can sit
@@ -19,6 +20,16 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { MIN_DWELL_MINUTES, STALE_POSITION_MINUTES } from '@/lib/integrations/vehicleProximity';
 import { etMidnightAfter, addDays } from '@/lib/opsMidnightClose';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+
+/** Shared ET time formatter for the fleet pages, so the two never drift. */
+export function fmtFleetTime(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
 export type FleetOpenVisit = {
   kind: 'job' | 'depot';
@@ -58,9 +69,14 @@ export type FleetVisit = {
 };
 
 export type FleetShift = {
+  id: string;
   crewName: string;
   clockInAt: string;
   clockOutAt: string | null;
+  /** Who made a manual admin entry or the last manual edit; null = the crew
+   * member's own clock actions only. Rendered on the row so a corrected shift
+   * never looks like an original punch. */
+  manualBy: string | null;
 };
 
 export type FleetDay = {
@@ -190,11 +206,11 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
   // The manual clock, same day window. Read-only; this is the payroll record.
   const shiftsRes = await sb
     .from('shifts')
-    .select('crew_member_id, clock_in_at, clock_out_at')
+    .select('id, crew_member_id, clock_in_at, clock_out_at, manual_by')
     .gte('clock_in_at', start)
     .lt('clock_in_at', endDate)
     .order('clock_in_at')
-    .returns<{ crew_member_id: string; clock_in_at: string; clock_out_at: string | null }[]>();
+    .returns<{ id: string; crew_member_id: string; clock_in_at: string; clock_out_at: string | null; manual_by: string | null }[]>();
   if (shiftsRes.error) out.errors.push(`shifts: ${shiftsRes.error.message}`);
   const shiftRows = shiftsRes.data ?? [];
   const crewIds = [...new Set(shiftRows.map((s) => s.crew_member_id))];
@@ -220,9 +236,11 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
     // failed lookup is the silent-empty class this repo keeps getting bitten by.
     if (officeIds.has(s.crew_member_id)) continue;
     out.shifts.push({
+      id: s.id,
       crewName: crewName.get(s.crew_member_id) ?? '(unknown)',
       clockInAt: s.clock_in_at,
       clockOutAt: s.clock_out_at,
+      manualBy: s.manual_by ?? null,
     });
   }
 

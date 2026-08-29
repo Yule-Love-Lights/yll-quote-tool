@@ -407,10 +407,11 @@ export async function linkOfficeStaff(input: {
 }
 
 /**
- * Create a FIELD crew pay row. Its login is created and linked separately by the
- * route (a crew auth user), so a row can legitimately exist with no login yet:
- * that is what "No login yet" means in the Staff panel, and it is also the state
- * every hand-seeded crew row was already in.
+ * Create a FIELD crew pay row. Since crew logins were retired (row 438) a field
+ * row has NO login at all, permanently and by design: they clock in through the
+ * Telegram bot on `telegram_user_id`. The Staff panel shows that as a neutral
+ * "No login — texts the bot"; the amber "No login yet" is office-only now,
+ * because office staff do need a login for the dashboard clock.
  */
 export async function createFieldCrewMember(input: {
   displayName: string;
@@ -590,8 +591,8 @@ export async function deleteStaffMember(id: string): Promise<StaffMember | null>
  * replacement because it only tests the column for truthiness, never whether the
  * id still resolves. The person was locked out until someone ran SQL by hand.
  *
- * Clearing first turns that into an ordinary state: the row shows "No login yet"
- * and can be linked again through the normal flow. Returns the detached row, or
+ * Clearing first turns that into an ordinary state: the row shows as having no
+ * login and can be linked again through the normal flow. Returns the detached row, or
  * null when no row pointed at that login (the common case).
  */
 export async function clearStaffLoginByAuthUserId(authUserId: string): Promise<StaffMember | null> {

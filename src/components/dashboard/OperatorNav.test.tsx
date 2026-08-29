@@ -71,6 +71,49 @@ describe('OperatorNav — Schedule nav item (Naldo, 2026-08-27)', () => {
   });
 });
 
+describe('OperatorNav — admin View-as control (ops hub workstream A slice 2)', () => {
+  it('does not render the View-as control before the session check resolves (unknown is not admin)', () => {
+    // The role arrives from GET /api/auth/session in an effect this static
+    // render never runs, so this pins the safe default: a plain operator, a
+    // signed-out browser, and the pre-fetch state all see no View-as control.
+    // The admin-positive branch is covered at component level in
+    // ViewAsControl.test.tsx (same reason the Sign-out flip is not asserted
+    // here: no DOM environment to resolve the effect in).
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).not.toContain('View as');
+  });
+
+  it('keeps the View-as slot out of the h-12 header row entirely (its own block row, zero width added at 1024px)', () => {
+    // The 1024px fit has ~12px of margin (see the lg:px-1.5 comment in
+    // OperatorNav.tsx). The control therefore must never be a child of the
+    // header row ul. Rendered markup for a non-admin contains no trace of it,
+    // which this and the test above pin together.
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).not.toContain('aria-label="View as"');
+  });
+});
+
+describe('OperatorNav — advertising view (View-as wiring, 2026-08-29)', () => {
+  it('renders the advertising nav items, with Review highlighted on its own page, when the provider seeds the advertising view', async () => {
+    const { OperatorViewProvider } = await import('./OperatorViewContext');
+    const html = renderToStaticMarkup(
+      <OperatorViewProvider initialView="advertising">
+        <OperatorNav active="advertising" />
+      </OperatorViewProvider>
+    );
+    expect(html).toContain('href="/admin/advertising"');
+    expect(html).toContain('href="/admin/advertising/pay"');
+    expect(html).toContain('href="/admin/advertising/people"');
+    // Office items are gone in this view.
+    expect(html).not.toContain('href="/inbox"');
+    // Review lights alone (one area per page; the Jobs/Fleet co-lighting class).
+    const review = html.match(/<a[^>]*href="\/admin\/advertising"[^>]*>/);
+    expect(review![0]).toContain('background:var(--brand-evergreen)');
+    const pay = html.match(/<a[^>]*href="\/admin\/advertising\/pay"[^>]*>/);
+    expect(pay![0]).not.toContain('background:var(--brand-evergreen)');
+  });
+});
+
 describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-role-hardening fix round)', () => {
   // Adding the 11th top-level item (Schedule) measured a real 45px page-level
   // horizontal overflow at 1024px in headless Chromium (the #56/S22 class),

@@ -9,6 +9,7 @@ const inst = (over: Partial<Installment> & { seq: number }): Installment => ({
   dueOnCompletion: false,
   paidAt: null,
   paidSource: null,
+  valorTxnId: null,
   note: null,
   ...over,
 });
@@ -27,6 +28,10 @@ const plan = (installments: Installment[], over: Partial<InstallmentPlan> = {}):
   planOutstanding: 1359.36,
   initialDeposit: 2733.75,
   hasCardOnFile: false,
+  quoteStatus: 'booked',
+  isNce: false,
+  amendmentBlocksSettlement: false,
+  autoChargeConsentAt: null,
   ...over,
 });
 

@@ -9,6 +9,8 @@ import {
   reconcilePlan,
   type InstallmentPlan,
 } from '@/lib/installments';
+import { describeChargeSlot } from '@/lib/integrations/valorBalance';
+import { isAmbiguousTimeoutMarker, AMBIGUOUS_TIMEOUT_PREFIX } from '@/lib/installmentRunner';
 
 // Payment plans (Homeworks migration, 2026-08-28). Three customers pay their
 // 2026 job monthly. This page is READ-ONLY: it shows what is owed and when.
@@ -17,6 +19,37 @@ import {
 
 const money = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+/**
+ * An unpaid installment whose charge slot is not empty needs a person, not a
+ * status. Returns null for the ordinary empty slot so the normal
+ * Overdue/Scheduled rendering is untouched.
+ */
+export function chargeSlotLabel(valorTxnId: string | null): string | null {
+  const slot = describeChargeSlot(valorTxnId);
+  if (slot.kind === 'none') return null;
+  if (isAmbiguousTimeoutMarker(valorTxnId)) return 'Charge outcome unknown';
+  return slot.kind === 'charged' ? 'Charged — not recorded' : 'Charge claimed — check Valor';
+}
+
+export function chargeSlotTitle(valorTxnId: string | null): string {
+  const slot = describeChargeSlot(valorTxnId);
+  // The ambiguous-timeout marker is NOT a Valor reference, and must never be
+  // shown as one: searching Valor for it finds nothing, which reads as "the
+  // charge never happened" and invites collecting the money a second time.
+  // (Adversarial delta-verify on the PR #1051 fix round.)
+  if (isAmbiguousTimeoutMarker(valorTxnId)) {
+    const when = (valorTxnId ?? '').slice(AMBIGUOUS_TIMEOUT_PREFIX.length);
+    return `A charge for this payment timed out on ${when || 'an unknown date'} and we never saw Valor's answer. It may or may not have gone through. Search Valor by this customer, the amount and that date before collecting it again — do not assume it failed. Nothing will re-charge it automatically.`;
+  }
+  if (slot.kind === 'charged') {
+    return `Valor reference ${slot.txnId} is on this payment but it is not marked paid. The money may already have been taken — reconcile in Valor. The runner will never re-charge it.`;
+  }
+  if (slot.kind === 'in-flight') {
+    return `A charge was claimed at ${slot.sinceIso} and never completed. Check Valor for this payment before clearing it; the runner will not retry it on its own.`;
+  }
+  return '';
+}
 
 /** "5 Sep 2026" — short, unambiguous, and not locale-surprising. */
 function fmtDate(iso: string | null): string {
@@ -28,6 +61,7 @@ function fmtDate(iso: string | null): string {
 
 export default function InstallmentsPage() {
   const [plans, setPlans] = useState<InstallmentPlan[] | null>(null);
+  const [autoCharge, setAutoCharge] = useState<{ runnerArmed: boolean; valorArmed: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const now = new Date();
 
@@ -36,10 +70,17 @@ export default function InstallmentsPage() {
     (async () => {
       try {
         const res = await fetch('/api/admin/installments');
-        const json = (await res.json()) as { plans?: InstallmentPlan[]; error?: string };
+        const json = (await res.json()) as {
+          plans?: InstallmentPlan[];
+          autoCharge?: { runnerArmed: boolean; valorArmed: boolean };
+          error?: string;
+        };
         if (cancelled) return;
         if (!res.ok) setError(json.error ?? 'Could not load payment plans');
-        else setPlans(json.plans ?? []);
+        else {
+          setPlans(json.plans ?? []);
+          setAutoCharge(json.autoCharge ?? null);
+        }
       } catch {
         if (!cancelled) setError("Couldn't reach the server — try reloading.");
       }
@@ -62,6 +103,24 @@ export default function InstallmentsPage() {
             Customers paying their job in monthly installments. Read-only — collecting a
             payment is a separate step, and nothing here contacts the customer.
           </p>
+          {/* Row 448 premerge (admin lens MED): the automation's on/off state
+              lived only in Vercel's env-var screen, so nobody looking at the app
+              could tell whether cards were being charged. It says so here. */}
+          {autoCharge && (
+            <p className="text-sm mt-2" style={{ color: 'var(--op-text-2)' }}>
+              {autoCharge.runnerArmed && autoCharge.valorArmed ? (
+                <span style={{ color: '#b45309' }}>
+                  Automatic charging is <strong>ON</strong> — scheduled payments are charged to the
+                  saved card of any customer who has agreed to it.
+                </span>
+              ) : (
+                <>
+                  Automatic charging is <strong>off</strong>. Every payment here is collected by
+                  hand.
+                </>
+              )}
+            </p>
+          )}
         </header>
 
         {error && (
@@ -178,6 +237,17 @@ export default function InstallmentsPage() {
                               <span style={{ color: 'var(--op-text-2)' }}>
                                 Paid {fmtDate(i.paidAt.slice(0, 10))}
                                 {i.paidSource ? ` · ${i.paidSource}` : ''}
+                              </span>
+                            ) : chargeSlotLabel(i.valorTxnId) ? (
+                              // Row 448 premerge (staff + technical lenses): a
+                              // payment whose card WAS charged but whose
+                              // recording failed used to render as a plain red
+                              // "Overdue", identical to one nobody had touched —
+                              // so staff could chase a customer for money already
+                              // taken. The charge slot is the only thing that
+                              // knows, so it says so here.
+                              <span style={{ color: '#b45309' }} title={chargeSlotTitle(i.valorTxnId)}>
+                                {chargeSlotLabel(i.valorTxnId)}
                               </span>
                             ) : isOverdue(i, now) ? (
                               <span style={{ color: '#dc2626' }}>Overdue</span>

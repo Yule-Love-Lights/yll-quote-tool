@@ -14,7 +14,10 @@ const { rateLimitResponseMock, signInWithPassword, createRouteSupabaseMock } = v
 }));
 
 vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: rateLimitResponseMock }));
-vi.mock('@/lib/auth/supabaseServer', () => ({ createRouteSupabase: createRouteSupabaseMock }));
+vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/auth/supabaseServer')>();
+  return { ...actual, createRouteSupabase: createRouteSupabaseMock };
+});
 
 import { POST } from './route';
 
@@ -103,5 +106,21 @@ describe('POST /api/login', () => {
   it('trims the email but not the password before sign-in', async () => {
     await POST(makeReq({ email: '  a@b.com  ', password: 'secret' }));
     expect(signInWithPassword).toHaveBeenCalledWith({ email: 'a@b.com', password: 'secret' });
+  });
+
+  it('names /advertising as home for an advertising login, and no home for an operator', async () => {
+    signInWithPassword.mockResolvedValueOnce({
+      data: { user: { app_metadata: { role: 'advertising' } } },
+      error: null,
+    });
+    const res1 = await POST(makeReq({ email: 'signs@x.com', password: 'secret' }));
+    expect((await res1.json()).home).toBe('/advertising');
+
+    signInWithPassword.mockResolvedValueOnce({
+      data: { user: { app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    const res2 = await POST(makeReq({ email: 'office@x.com', password: 'secret' }));
+    expect((await res2.json()).home).toBeUndefined();
   });
 });
