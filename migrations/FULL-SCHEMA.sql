@@ -2938,6 +2938,397 @@ create trigger installments_updated_at
   before update on public.installments
   for each row execute function dashboard_set_updated_at();
 
+-- ─── office_tasks / office_task_events ──────────────────────────────────────
+-- Office Tasks, the single task list (calls merge plan S1, ledger row TBD —
+-- see docs/context/calls_merge_plan_2026-08.md). Ported from yll-call-copilot
+-- (its ops_tasks / ops_task_events); full porting notes live in
+-- migrations/2026-08-28-office-tasks.sql, extracted here verbatim. UNAPPLIED
+-- to prod as of this PR (creates functions/triggers — off the migration
+-- self-apply allowlist; Naldo applies it separately).
+create table if not exists public.office_tasks (
+  id uuid primary key default gen_random_uuid(),
+  source_system text not null default 'manual'
+    check (source_system in ('manual', 'call_commitment', 'quote_tool')),
+  source_event_id text
+    check (source_event_id is null or char_length(source_event_id) <= 256),
+  title text not null
+    check (
+      nullif(btrim(title), '') is not null
+      and char_length(title) <= 200
+    ),
+  detail text
+    check (detail is null or char_length(detail) <= 2000),
+  status text not null default 'open'
+    check (status in ('open', 'blocked', 'completed', 'dismissed')),
+  due_at timestamptz not null default (now() + interval '24 hours'),
+  -- Operator auth user ids (auth.users.id) — NO FK (no employees table).
+  created_by uuid not null,
+  assigned_to uuid,
+  completed_at timestamptz,
+  dismissed_at timestamptz,
+  blocked_at timestamptz,
+  blocked_reason text
+    check (blocked_reason is null or char_length(blocked_reason) <= 500),
+  dismissal_reason text
+    check (dismissal_reason is null or char_length(dismissal_reason) <= 500),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint office_tasks_source_event_presence check (
+    (source_system = 'manual' and source_event_id is null)
+    or (source_system <> 'manual' and nullif(btrim(source_event_id), '') is not null)
+  ),
+  constraint office_tasks_status_fields_check check (
+    (
+      status = 'open'
+      and completed_at is null
+      and dismissed_at is null
+      and blocked_at is null
+      and blocked_reason is null
+      and dismissal_reason is null
+    )
+    or (
+      status = 'blocked'
+      and completed_at is null
+      and dismissed_at is null
+      and blocked_at is not null
+      and nullif(btrim(blocked_reason), '') is not null
+      and dismissal_reason is null
+    )
+    or (
+      status = 'completed'
+      and completed_at is not null
+      and dismissed_at is null
+      and blocked_at is null
+      and blocked_reason is null
+      and dismissal_reason is null
+    )
+    or (
+      status = 'dismissed'
+      and completed_at is null
+      and dismissed_at is not null
+      and blocked_at is null
+      and blocked_reason is null
+      and nullif(btrim(dismissal_reason), '') is not null
+    )
+  )
+);
+
+create unique index if not exists office_tasks_source_event_unique
+  on public.office_tasks (source_system, source_event_id)
+  where source_event_id is not null;
+
+create index if not exists office_tasks_creator_due_idx
+  on public.office_tasks (created_by, due_at, id);
+
+create index if not exists office_tasks_assignee_due_idx
+  on public.office_tasks (assigned_to, due_at, id);
+
+create index if not exists office_tasks_status_updated_idx
+  on public.office_tasks (status, updated_at desc, id);
+
+create table if not exists public.office_task_events (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references public.office_tasks(id),
+  event_type text not null
+    check (event_type in ('created', 'assigned', 'blocked', 'completed', 'dismissed')),
+  actor uuid not null,
+  idempotency_key uuid not null,
+  detail jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  unique (actor, idempotency_key)
+);
+
+create index if not exists office_task_events_task_created_idx
+  on public.office_task_events (task_id, created_at, id);
+
+alter table public.office_tasks enable row level security;
+alter table public.office_tasks force row level security;
+alter table public.office_task_events enable row level security;
+alter table public.office_task_events force row level security;
+
+revoke all privileges on table public.office_tasks, public.office_task_events
+  from public, anon, authenticated, service_role;
+grant select on table public.office_tasks, public.office_task_events to service_role;
+
+create or replace function public.office_tasks_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists office_tasks_set_updated_at on public.office_tasks;
+create trigger office_tasks_set_updated_at
+  before update on public.office_tasks
+  for each row execute function public.office_tasks_set_updated_at();
+
+create or replace function public.office_tasks_enforce_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $function$
+begin
+  if tg_op = 'DELETE' then
+    raise exception using errcode = '23514', message = 'task rows cannot be deleted';
+  end if;
+
+  if new.id is distinct from old.id
+     or new.source_system is distinct from old.source_system
+     or new.source_event_id is distinct from old.source_event_id
+     or new.created_by is distinct from old.created_by
+     or new.assigned_to is distinct from old.assigned_to
+     or new.created_at is distinct from old.created_at then
+    raise exception using errcode = '23514', message = 'task ownership and provenance are immutable';
+  end if;
+
+  if old.status in ('completed', 'dismissed') and new is distinct from old then
+    raise exception using errcode = '23514', message = 'terminal task cannot change';
+  end if;
+
+  return new;
+end
+$function$;
+
+revoke all on function public.office_tasks_enforce_transition()
+  from public, anon, authenticated, service_role;
+
+drop trigger if exists office_tasks_enforce_transition on public.office_tasks;
+create trigger office_tasks_enforce_transition
+before update or delete on public.office_tasks
+for each row execute function public.office_tasks_enforce_transition();
+
+create or replace function public.office_task_events_reject_mutation()
+returns trigger
+language plpgsql
+set search_path = ''
+as $function$
+begin
+  raise exception using errcode = '23514', message = 'task audit events are immutable';
+end
+$function$;
+
+revoke all on function public.office_task_events_reject_mutation()
+  from public, anon, authenticated, service_role;
+
+drop trigger if exists office_task_events_reject_mutation on public.office_task_events;
+create trigger office_task_events_reject_mutation
+before update or delete on public.office_task_events
+for each row execute function public.office_task_events_reject_mutation();
+
+create or replace function public.office_tasks_create_manual(
+  p_title text,
+  p_detail text,
+  p_due_at timestamptz,
+  p_actor uuid,
+  p_idempotency_key uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_task_id uuid;
+  v_existing_event_type text;
+  v_existing_detail jsonb;
+  v_normalized_title text := btrim(p_title);
+  v_normalized_detail text := nullif(btrim(p_detail), '');
+  v_request_detail jsonb;
+begin
+  if p_actor is null then
+    raise exception using errcode = '42501', message = 'an authenticated actor is required';
+  end if;
+  if p_idempotency_key is null then
+    raise exception using errcode = '22023', message = 'idempotency key is required';
+  end if;
+  if nullif(v_normalized_title, '') is null or char_length(v_normalized_title) > 200 then
+    raise exception using errcode = '22023', message = 'task title is invalid';
+  end if;
+  if v_normalized_detail is not null and char_length(v_normalized_detail) > 2000 then
+    raise exception using errcode = '22023', message = 'task detail is too long';
+  end if;
+
+  v_request_detail := jsonb_build_object(
+    'operation', 'create_manual',
+    'title', v_normalized_title,
+    'detail', v_normalized_detail,
+    'due_at', p_due_at
+  );
+
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_actor::text || ':' || p_idempotency_key::text, 0)
+  );
+
+  select task_id, event_type, detail
+  into v_task_id, v_existing_event_type, v_existing_detail
+  from public.office_task_events
+  where actor = p_actor
+    and idempotency_key = p_idempotency_key;
+
+  if found then
+    if v_existing_event_type is distinct from 'created'
+       or v_existing_detail is distinct from v_request_detail then
+      raise exception using errcode = '23505', message = 'idempotency key payload conflicts';
+    end if;
+    return v_task_id;
+  end if;
+
+  if p_due_at is not null and p_due_at <= now() then
+    raise exception using errcode = '22023', message = 'task due time must be in the future';
+  end if;
+
+  insert into public.office_tasks (
+    title,
+    detail,
+    due_at,
+    created_by,
+    assigned_to
+  ) values (
+    v_normalized_title,
+    v_normalized_detail,
+    coalesce(p_due_at, now() + interval '24 hours'),
+    p_actor,
+    p_actor
+  )
+  returning id into v_task_id;
+
+  insert into public.office_task_events (
+    task_id,
+    event_type,
+    actor,
+    idempotency_key,
+    detail
+  ) values (
+    v_task_id,
+    'created',
+    p_actor,
+    p_idempotency_key,
+    v_request_detail
+  );
+
+  return v_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_create_manual(text,text,timestamptz,uuid,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_create_manual(text,text,timestamptz,uuid,uuid)
+  to service_role;
+
+create or replace function public.office_tasks_update_status(
+  p_task_id uuid,
+  p_status text,
+  p_reason text,
+  p_actor uuid,
+  p_idempotency_key uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_task public.office_tasks%rowtype;
+  v_existing_task_id uuid;
+  v_existing_event_type text;
+  v_existing_detail jsonb;
+  v_normalized_reason text := nullif(btrim(p_reason), '');
+  v_request_detail jsonb;
+begin
+  if p_actor is null then
+    raise exception using errcode = '42501', message = 'an authenticated actor is required';
+  end if;
+  if p_idempotency_key is null then
+    raise exception using errcode = '22023', message = 'idempotency key is required';
+  end if;
+  if p_status is null or p_status not in ('blocked', 'completed', 'dismissed') then
+    raise exception using errcode = '22023', message = 'invalid task status action';
+  end if;
+  if p_status in ('blocked', 'dismissed') and v_normalized_reason is null then
+    raise exception using errcode = '22023', message = 'a reason is required';
+  end if;
+  if p_status = 'completed' and v_normalized_reason is not null then
+    raise exception using errcode = '22023', message = 'completed tasks do not accept a reason';
+  end if;
+  if v_normalized_reason is not null and char_length(v_normalized_reason) > 500 then
+    raise exception using errcode = '22023', message = 'task reason is too long';
+  end if;
+
+  v_request_detail := jsonb_build_object(
+    'operation', 'set_status',
+    'status', p_status,
+    'reason', v_normalized_reason
+  );
+
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_actor::text || ':' || p_idempotency_key::text, 0)
+  );
+
+  select task_id, event_type, detail
+  into v_existing_task_id, v_existing_event_type, v_existing_detail
+  from public.office_task_events
+  where actor = p_actor
+    and idempotency_key = p_idempotency_key;
+
+  if found then
+    if v_existing_task_id is distinct from p_task_id
+       or v_existing_event_type is distinct from p_status
+       or v_existing_detail is distinct from v_request_detail then
+      raise exception using errcode = '23505', message = 'idempotency key payload conflicts';
+    end if;
+    return v_existing_task_id;
+  end if;
+
+  select *
+  into v_task
+  from public.office_tasks
+  where id = p_task_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'task does not exist';
+  end if;
+  if p_actor <> v_task.created_by
+     and p_actor is distinct from v_task.assigned_to then
+    raise exception using errcode = '42501', message = 'task is not owned by actor';
+  end if;
+  if v_task.status in ('completed', 'dismissed') then
+    raise exception using errcode = '22023', message = 'terminal task cannot change';
+  end if;
+
+  update public.office_tasks
+  set
+    status = p_status,
+    completed_at = case when p_status = 'completed' then now() else null end,
+    dismissed_at = case when p_status = 'dismissed' then now() else null end,
+    dismissal_reason = case when p_status = 'dismissed' then v_normalized_reason else null end,
+    blocked_at = case when p_status = 'blocked' then now() else null end,
+    blocked_reason = case when p_status = 'blocked' then v_normalized_reason else null end,
+    updated_at = now()
+  where id = p_task_id;
+
+  insert into public.office_task_events (
+    task_id,
+    event_type,
+    actor,
+    idempotency_key,
+    detail
+  ) values (
+    p_task_id,
+    p_status,
+    p_actor,
+    p_idempotency_key,
+    v_request_detail
+  );
+
+  return p_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_update_status(uuid,text,text,uuid,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_update_status(uuid,text,text,uuid,uuid)
+  to service_role;
+
 
 -- ---------------------------------------------------------------------
 -- advertising (2026-08-28, migrations/2026-08-28-advertising-schema.sql) —
