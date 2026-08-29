@@ -326,6 +326,30 @@ export default function CampaignDetailScreen({
                           </div>
                         );
                       })()}
+                      {/* Undo for a wrong accept (bulk-upload mistakes most
+                          of all) is master's VOID, not a second mechanism:
+                          it keeps the row and its stamped rate as history,
+                          records why, and makes the row count for nothing. */}
+                      {mode === 'admin' && !p.voidedAt && p.status === 'accepted' && (
+                        <div className="mt-1">
+                          <button
+                            type="button"
+                            disabled={busy === p.id}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                'Void this photo? It stops counting for pay and keeps this reason as the permanent record of why:',
+                                'uploaded by mistake',
+                              );
+                              if (reason === null || !reason.trim()) return;
+                              void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);
+                            }}
+                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Void (stops the pay)
+                          </button>
+                        </div>
+                      )}
                       {mode === 'admin' && !p.voidedAt && (p.status === 'pending' || p.status === 'resubmitted') && (
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <button

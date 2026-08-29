@@ -243,6 +243,143 @@ export async function submitPlacement(input: {
   return placement;
 }
 
+/** Thrown when the DB's own uniqueness guard refuses a second accepted row
+ * for the same worker, campaign and photo hash. The pre-check above can
+ * lose a race (two admin tabs); this is the authority that cannot. */
+export class DuplicatePlacementError extends Error {
+  constructor() {
+    super('This photo is already uploaded and accepted for this worker and campaign.');
+    this.name = 'DuplicatePlacementError';
+  }
+}
+
+/**
+ * Bulk-upload dedupe (technical lens HIGH, PR #1093): an exact re-upload of
+ * an already-accepted photo must never mint a second paid row. Exact hash
+ * equality only (never the hamming-distance similarity the review flags
+ * use), scoped to the same worker and campaign. Best-effort: a null hash
+ * matches nothing, and a read error reports null rather than blocking the
+ * upload path.
+ */
+export async function findAcceptedByPhotoHash(
+  workerId: string,
+  campaignId: string,
+  photoHash: string | null,
+): Promise<AdvertisingPlacement | null> {
+  if (!photoHash) return null;
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  // limit(1), never maybeSingle: PostgREST answers a multi-row maybeSingle
+  // with PGRST116 and NULL data, which a catch-all null return reads as
+  // "no duplicate" — disarming this guard exactly where duplicates already
+  // exist (delta-verify HIGH, PR #1093).
+  const { data, error } = await db
+    .from('advertising_placements')
+    .select(SELECT)
+    .eq('worker_id', workerId.trim())
+    .eq('campaign_id', campaignId.trim())
+    .eq('status', 'accepted')
+    .eq('photo_hash', photoHash)
+    .limit(1);
+  if (error) {
+    console.error('findAcceptedByPhotoHash error:', error);
+    return null;
+  }
+  const rows = (data ?? []) as Row[];
+  return rows.length > 0 ? toPlacement(rows[0]) : null;
+}
+
+/**
+ * Admin bulk upload (Naldo, 2026-08-29): a photo backfilled for work done
+ * BEFORE the tool existed lands directly ACCEPTED, stamped with the rate
+ * the caller read from the campaign at upload time and reviewed by the
+ * uploading admin. GPS is optional (camera-roll files often carry none)
+ * but never one-sided: a lat without a lng is corrupt, not partial. This
+ * is a pay-creating write, so every guard here is a money guard.
+ */
+export async function submitAcceptedPlacement(input: {
+  campaignId: string;
+  workerId: string;
+  kind: PlacementKind;
+  rateCents: number;
+  reviewedBy: string;
+  lat: number | null;
+  lng: number | null;
+  capturedAt?: string | null;
+  photoPath: string;
+  suggestedAddress?: string | null;
+  photoHash?: string | null;
+  isTest?: boolean;
+}): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const photoPath = input.photoPath.trim();
+  if (!photoPath) throw new Error('submitAcceptedPlacement: a proof photo is required');
+  if (!Number.isInteger(input.rateCents) || input.rateCents < 0) {
+    throw new Error(
+      `submitAcceptedPlacement: invalid rate ${String(input.rateCents)}: must be a non-negative integer number of cents`,
+    );
+  }
+  const reviewedBy = input.reviewedBy.trim();
+  if (!reviewedBy) throw new Error('submitAcceptedPlacement: the reviewing admin is required');
+  if ((input.lat === null) !== (input.lng === null)) {
+    throw new Error('submitAcceptedPlacement: one-sided GPS refused (lat and lng must come together)');
+  }
+  if (input.lat !== null && input.lng !== null) {
+    if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates must be numbers');
+    }
+    if (input.lat < -90 || input.lat > 90 || input.lng < -180 || input.lng > 180) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates out of range');
+    }
+  }
+  if (input.kind !== 'yard_sign' && input.kind !== 'door_hanger') {
+    throw new Error(`submitAcceptedPlacement: unknown kind ${String(input.kind)}`);
+  }
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .insert({
+      campaign_id: input.campaignId.trim(),
+      worker_id: input.workerId.trim(),
+      kind: input.kind,
+      status: 'accepted',
+      lat: input.lat,
+      lng: input.lng,
+      accuracy_m: null,
+      captured_at: input.capturedAt ?? new Date().toISOString(),
+      photo_path: photoPath,
+      suggested_address: input.suggestedAddress?.trim() || null,
+      photo_hash: input.photoHash ?? null,
+      accepted_rate_cents: input.rateCents,
+      reviewed_by: reviewedBy,
+      reviewed_at: new Date().toISOString(),
+      is_test: input.isTest ?? false,
+    })
+    .select(SELECT)
+    .maybeSingle();
+  if (error) {
+    // 23505: the partial unique index on (worker_id, campaign_id,
+    // photo_hash) where status='accepted' refused a second paid row. This
+    // is the guard that survives a lost race, so it reports as a duplicate
+    // rather than a failure.
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`submitAcceptedPlacement: ${error.message}`);
+  }
+  if (!data) throw new Error('submitAcceptedPlacement: no row returned');
+
+  const placement = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: reviewedBy,
+    action: 'accepted',
+    placementId: placement.id,
+    workerId: placement.workerId,
+    detail: { kind: placement.kind, acceptedRateCents: placement.acceptedRateCents, bulkUpload: true },
+  });
+  return placement;
+}
+
 /**
  * Accept a placement, stamping the campaign's CURRENT rate onto it — per
  * accepted PHOTO, any kind (Naldo 2026-08-29; the campaign name says what
@@ -301,7 +438,14 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`acceptPlacement: ${error.message}`);
+  if (error) {
+    // The accepted-photo unique index guards the TRANSITION into accepted,
+    // not just inserts: accepting a second copy of a photo already accepted
+    // for this worker and campaign is refused here. Report it as the
+    // duplicate it is rather than a raw 500 (delta-verify, PR #1093).
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`acceptPlacement: ${error.message}`);
+  }
 
   if (!data) {
     // Lost the CAS race: someone else reviewed it between our read and write.
@@ -553,7 +697,12 @@ export function summarizeEarnings(
     if (p.status === 'accepted') {
       if (p.acceptedRateCents == null) continue; // unstorable by CHECK; belt-and-braces
       earned = p.acceptedRateCents;
-      at = p.reviewedAt ?? p.createdAt;
+      // Bucket by the day the WORK happened (capturedAt), matching the
+      // pending buckets and Naldo's date-taken ruling for backfill (PR
+      // #1093): a photo's pay week no longer jumps when review happens,
+      // and a backfilled batch lands in its historical weeks instead of
+      // spiking the upload day. Totals are unaffected; this is grouping.
+      at = p.capturedAt ?? p.reviewedAt ?? p.createdAt;
     } else if (p.status === 'pending' || p.status === 'resubmitted') {
       estimated = currentRateCentsByCampaign.get(p.campaignId) ?? 0;
       at = p.capturedAt ?? p.createdAt;
