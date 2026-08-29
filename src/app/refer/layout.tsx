@@ -15,6 +15,7 @@
 // interactive-hero / night-sky overrides for InteractiveHero, which the refer
 // page doesn't use — its hero is its own bespoke markup.
 
+import type { Metadata } from 'next';
 import { Playfair_Display, Inter } from 'next/font/google';
 import '../portal/portal-dark.css';
 
@@ -31,6 +32,17 @@ const inter = Inter({
   variable: '--font-portal-sans',
   display: 'swap',
 });
+
+// naldo/mobile-app-branding: the quote tool's web manifest starts at `/`, which
+// is the OPERATOR login for anyone who is not staff. This segment is customer
+// facing, so it drops the manifest rather than inheriting it: a homeowner who
+// adds their page to the home screen gets a shortcut back to the page they were
+// on, not an app that opens our login screen. `null` is Next's remove-this-field
+// value, not merely an absent key. The apple-touch-icon is deliberately left
+// inherited, so they still get the YLL logo instead of the old black square.
+export const metadata: Metadata = {
+  manifest: null,
+};
 
 export default function ReferLayout({
   children,
