@@ -202,13 +202,13 @@ Nothing in this section binds anyone yet. It is written out in full so Jason can
 
 **The proposed rule.** A session owns the lanes it is working, and it does not put another session's open branch inside its own merge to `master`. When two lanes have to land together, each lane's owner lands its own branch, in whatever order the two sessions agree.
 
-**Lane, defined for this rule:** the branch or stack of branches a session is actively working, plus any branch that session opened and still has open. A branch whose session has closed out (PR merged or closed, session wrapped) belongs to nobody and anyone may pick it up.
+**Lane, defined for this rule (still proposed):** the branch or stack of branches a session is actively working, plus any branch that session opened and still has open. A lane does NOT come free just because a session ended. It stays with its dev across sessions, which is the normal pattern here (pause overnight, resume the same lane tomorrow), and it comes free only when its PR merges or closes, or when the owning dev hands it over. If a session died mid-work and left a branch behind, ask its dev before taking it; never infer abandonment from silence.
 
-**What the rule does NOT restrict:**
+**What the proposed rule does NOT restrict:**
 - Reading another lane's branch, at any time.
 - Merging current `master` into your own branch, even when `master` now carries another lane's work. The always-merge-current rule below still requires exactly that.
 - The combined-tree gate in Pitfalls ("Parallel PRs land only after the combined tree gates green as a set"). That integration tree is a local scratch check that is never pushed and never merged, and this rule leaves it alone. What is forbidden is shipping another session's branch inside your own merge, not gating against it locally.
-- Stacking. A PR based on another session's open branch is fine: the base's owner merges the base, then the stack's owner retargets and merges their own.
+- Stacking. A PR based on another session's open branch is fine, and the order is the one the S24 lesson in `CLAUDE.md` already sets, not a new one: the stacked PR retargets to `master` FIRST, and only then does the base's owner merge the base. Merging a base with `--delete-branch` while a PR still points at it hard-closes that PR unrecoverably (#451 had to be recreated as #456).
 
 **Merge authority is unchanged by this.** "Lands its own branch" is about WHICH branch, never about permission. An assistant still merges nothing without its operating dev's explicit go (see "An AI assistant never merges on its own" in the next section).
 
