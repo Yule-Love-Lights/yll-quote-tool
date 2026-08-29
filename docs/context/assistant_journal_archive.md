@@ -2,6 +2,16 @@
 
 ## Archived at S76 close (2026-08-29) — the S74 (Naldo) block, its post-close delta, and the S56 (Jason) block, moved byte-verbatim from CLAUDE.md so the live journal keeps the scorecard + the latest two sessions.
 
+### S75 (Naldo) — 2026-08-28→29 — the calls-to-tasks system: audited, planned, built, four-lens-reviewed, merged in ONE PR, migrations applied, 7 days backfilled, hourly automation armed — close PR naldo/s75-close
+
+- **SHIPPED (6 PRs merged + live):** #1025/#1029/#1042/#1056 (ops-hub plan grounding, the full Ops Hub audit report, the GHL transcript probe with the DEEPGRAM-CAN-BE-DROPPED verdict, the eight-slice calls merge plan) - #1043 advertising role hardening (the population lock before any account exists) - #1066 the calls track S1+S2+S6 in one PR per Naldo's ruling: office tasks + HighLevel call transcripts + commitments-into-assigned-tasks.
+- **PROD, after the single bundled go:** 3 migrations applied via MCP and schema-verified - backfill through the real route handlers: **79 calls -> 22 transcripts -> 19 tasks (9 auto-assigned to reps by email match), zero failures** - Naldo armed CALLS_SYNC_ENABLED/CALLS_EXTRACT_ENABLED (sync :12, extract :27 hourly).
+- **REVIEW RECORD:** every PR lens-reviewed at tier; #1066's technical lens BLOCKED with 2 HIGH proven in a live postgres:16 container (partial-index ON CONFLICT 42P10 - the whole feature dead on arrival behind 9,050 green tests); 2 adversarial delta-verifies; every fix re-proven in the container. Close review: integration + customer lenses.
+- **RULINGS RECORDED:** everything-is-shared tasks (manual badged Personal) - rep assignment by GHL-user-to-operator email match (already 100% for named reps) - inbound ring-all calls stay in the shared pool (option 2, no code) - 13/79 calls have no HL transcript (platform limit, recorded honestly).
+- **CONCURRENT LANES:** Naldo ran the admin View-as mechanism and advertising schema slices in his own sessions off prompts this session wrote; their rows are theirs.
+- **MISTAKES:** stale-tree lens round - hand-typed SHA pin (promotion due) - comment-stripped migration apply - chained poll after fallible merge in background - runner stop-condition read absent fields.
+- Full detail: `docs/context/journal/S75-naldo.md`. Ledger: minted 460-464 (calls slices S3-S8), archived 2 shipped rows, counter -> 465. Gates + master SHA at close: see the close PR body.
+
 ### S74 (Naldo) — 2026-08-28 — fleet page verified, repaired, rebuilt to spec, and proven on a real job day: 3 PRs merged and live — close PR naldo/s74-close
 
 - **NUMBER:** handoff said S72; the referral session held S72 in the machine-local self-assessment and S73 was taken the same way. Yielded to S74 at wrap; the local-file clause promoted to AGENTS.md (second occurrence).
