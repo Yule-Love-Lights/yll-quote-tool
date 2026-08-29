@@ -11,6 +11,14 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 // response so later slices (call commitments, the follow-up strip) need no
 // change to this component's data shape.
 //
+// EVERYTHING IS SHARED (2026-08-29 ruling): every task — manual included —
+// is visible to and actionable by every operator (see officeTasks.ts's
+// listOfficeTasks comment). "My open work" became just "Open work" for
+// that reason. A manual task now carries createdByLabel ('You' / a
+// resolved teammate name / a generic fallback) so people still know whose
+// it was, shown via personalLabel below, next to sourceLabel's "From a
+// call" badge for non-manual tasks.
+//
 // The idempotency-key-per-action pattern (createKeyRef / actionKeysRef) is
 // what makes the server's idempotency contract real end to end: a network
 // failure or a double-tap reuses the SAME key, so the retry either lands
@@ -39,6 +47,7 @@ interface OfficeTask {
   dismissalReason: string | null;
   completedAt: string | null;
   dismissedAt: string | null;
+  createdByLabel: string | null;
 }
 
 interface ActionEditor {
@@ -105,6 +114,19 @@ export function sourceLabel(sourceSystem: TaskSourceSystem): string | null {
   if (sourceSystem === 'manual') return null;
   if (sourceSystem === 'call_commitment') return 'From a call';
   return 'Shared';
+}
+
+/**
+ * RULING (2026-08-29, "everything is shared"): a manual task is no longer
+ * private — every operator can see AND ACT ON it, same as a call_commitment
+ * task always could — so it needs its own small badge saying whose it
+ * originally was ("so people still know whose it was"). null for a
+ * non-manual task (sourceLabel covers those instead — the two badges are
+ * mutually exclusive per task).
+ */
+export function personalLabel(sourceSystem: TaskSourceSystem, createdByLabel: string | null): string | null {
+  if (sourceSystem !== 'manual') return null;
+  return createdByLabel ? `Personal (${createdByLabel})` : 'Personal';
 }
 
 async function requestTasks(view: ViewMode): Promise<TaskLoadResult> {
@@ -325,7 +347,7 @@ export default function OfficeTasksCard() {
             Office Tasks
           </p>
           <h2 id="office-tasks-heading" className="mt-1 text-base font-semibold" style={{ color: 'var(--op-text)' }}>
-            {view === 'history' ? 'Completed & dismissed' : 'My open work'}
+            {view === 'history' ? 'Completed & dismissed' : 'Open work'}
           </h2>
           {view === 'active' && (
             <p className="mt-1 text-sm leading-5" style={{ color: 'var(--op-text-dim)' }}>
@@ -494,6 +516,15 @@ export default function OfficeTasksCard() {
                           title="Visible to every operator. Anyone can pick this up."
                         >
                           {sourceLabel(task.sourceSystem)}
+                        </span>
+                      ) : null}
+                      {personalLabel(task.sourceSystem, task.createdByLabel) ? (
+                        <span
+                          className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                          style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}
+                          title="Visible to every operator. Anyone can pick this up."
+                        >
+                          {personalLabel(task.sourceSystem, task.createdByLabel)}
                         </span>
                       ) : null}
                     </div>

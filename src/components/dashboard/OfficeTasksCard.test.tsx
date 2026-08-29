@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import OfficeTasksCard, { formatDueTime, isAmbiguousMutationFailure, resolvedTimeFor, sourceLabel } from './OfficeTasksCard';
+import OfficeTasksCard, { formatDueTime, isAmbiguousMutationFailure, resolvedTimeFor, sourceLabel, personalLabel } from './OfficeTasksCard';
 
 describe('isAmbiguousMutationFailure', () => {
   it('treats 5xx, 408, 425, and 429 as ambiguous (outcome unknown — keep the key)', () => {
@@ -38,7 +38,7 @@ describe('formatDueTime', () => {
 });
 
 describe('sourceLabel', () => {
-  it('shows no badge for a manual (personal) task', () => {
+  it('shows no source badge for a manual task -- personalLabel covers those instead', () => {
     expect(sourceLabel('manual')).toBeNull();
   });
 
@@ -48,6 +48,22 @@ describe('sourceLabel', () => {
 
   it('falls back to a generic shared label for a future non-manual source', () => {
     expect(sourceLabel('quote_tool')).toBe('Shared');
+  });
+});
+
+describe('personalLabel ("everything is shared" ruling)', () => {
+  it('labels a manual task with no resolved creator as plain "Personal"', () => {
+    expect(personalLabel('manual', null)).toBe('Personal');
+  });
+
+  it('labels a manual task with a resolved creator as "Personal (<label>)"', () => {
+    expect(personalLabel('manual', 'You')).toBe('Personal (You)');
+    expect(personalLabel('manual', 'Jason')).toBe('Personal (Jason)');
+  });
+
+  it('shows no personal badge for a non-manual task -- sourceLabel covers those instead', () => {
+    expect(personalLabel('call_commitment', null)).toBeNull();
+    expect(personalLabel('quote_tool', 'Jason')).toBeNull();
   });
 });
 
@@ -71,7 +87,7 @@ describe('OfficeTasksCard — initial static render', () => {
   it('renders the loading state before any effect has run (no DOM/fetch in this test env)', () => {
     const html = renderToStaticMarkup(<OfficeTasksCard />);
     expect(html).toContain('Office Tasks');
-    expect(html).toContain('My open work');
+    expect(html).toContain('Open work'); // "everything is shared" ruling dropped "My"
     expect(html).toContain('Loading tasks');
     // The create-task form fields exist from first paint.
     expect(html).toContain('office-task-title');
