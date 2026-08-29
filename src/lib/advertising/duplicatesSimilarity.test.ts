@@ -25,6 +25,8 @@ function placement(overrides: Partial<AdvertisingPlacement> = {}): AdvertisingPl
     neighborhood: null,
     propertyId: null,
     rejectionReason: null,
+    workerNote: null,
+    photoHash: null,
     acceptedRateCents: null,
     reviewedBy: null,
     reviewedAt: null,
@@ -37,35 +39,25 @@ function placement(overrides: Partial<AdvertisingPlacement> = {}): AdvertisingPl
 
 describe('photo-similarity duplicate flags', () => {
   it('flags a near-identical photo hash in the same campaign, naming the signal', () => {
-    const target = placement();
-    const similar = placement();
-    const different = placement();
-    const hashes = new Map<string, string>([
-      [target.id, '0f0f0f0f0f0f0f0f'],
-      [similar.id, '0f0f0f0f0f0f0f0e'], // 1 bit off
-      [different.id, 'f0f0f0f0f0f0f0f0'], // 64 bits off
-    ]);
+    const target = placement({ photoHash: '0f0f0f0f0f0f0f0f' });
+    const similar = placement({ photoHash: '0f0f0f0f0f0f0f0e' }); // 1 bit off
+    const different = placement({ photoHash: 'f0f0f0f0f0f0f0f0' }); // 64 bits off
 
-    const candidates = findDuplicateCandidates(target, [target, similar, different], hashes);
+    const candidates = findDuplicateCandidates(target, [target, similar, different]);
     expect(candidates.map((c) => c.placement.id)).toEqual([similar.id]);
     expect(candidates[0].reasons.join(' ')).toMatch(/similar photo/i);
   });
 
-  it('no hashes, no signal — behavior without the map is unchanged', () => {
+  it('no hashes, no signal — null-hash rows behave exactly as before', () => {
     const target = placement();
     const other = placement();
     expect(findDuplicateCandidates(target, [target, other])).toHaveLength(0);
-    expect(findDuplicateCandidates(target, [target, other], new Map())).toHaveLength(0);
   });
 
   it('similarity STACKS with the other reasons on one candidate', () => {
-    const target = placement({ lat: 40.75, lng: -73.42 });
-    const near = placement({ lat: 40.7503, lng: -73.42 });
-    const hashes = new Map<string, string>([
-      [target.id, '0f0f0f0f0f0f0f0f'],
-      [near.id, '0f0f0f0f0f0f0f0f'],
-    ]);
-    const candidates = findDuplicateCandidates(target, [target, near], hashes);
+    const target = placement({ lat: 40.75, lng: -73.42, photoHash: '0f0f0f0f0f0f0f0f' });
+    const near = placement({ lat: 40.7503, lng: -73.42, photoHash: '0f0f0f0f0f0f0f0f' });
+    const candidates = findDuplicateCandidates(target, [target, near]);
     expect(candidates).toHaveLength(1);
     expect(candidates[0].reasons.length).toBeGreaterThanOrEqual(2);
   });

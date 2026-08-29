@@ -27,6 +27,7 @@ function placement(overrides: Partial<AdvertisingPlacement> = {}): AdvertisingPl
     propertyId: null,
     rejectionReason: null,
     workerNote: null,
+    photoHash: null,
     acceptedRateCents: null,
     reviewedBy: null,
     reviewedAt: null,

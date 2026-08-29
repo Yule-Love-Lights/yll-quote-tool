@@ -36,10 +36,6 @@ function normalizeAddress(address: string | null): string | null {
 export function findDuplicateCandidates(
   target: AdvertisingPlacement,
   all: AdvertisingPlacement[],
-  /** Optional perceptual hashes by placement id (photoHash.ts). When both
-   * sides carry one, a near-identical proof photo becomes its own flag
-   * reason — assistance only, the human still decides. */
-  photoHashById?: Map<string, string>,
 ): DuplicateCandidate[] {
   const targetAddress = normalizeAddress(target.suggestedAddress);
   const targetDay = target.capturedAt ? etDayKey(new Date(target.capturedAt)) : null;
@@ -76,10 +72,10 @@ export function findDuplicateCandidates(
       reasons.push('same worker, same day');
     }
 
-    if (
-      photoHashById &&
-      isSimilarPhotoHash(photoHashById.get(target.id) ?? null, photoHashById.get(p.id) ?? null)
-    ) {
+    // Rows carry their own perceptual hash (photoHash.ts, stamped at
+    // capture). When both sides have one and they nearly match, that is its
+    // own flag reason — assistance only, the human still decides.
+    if (isSimilarPhotoHash(target.photoHash, p.photoHash)) {
       reasons.push('very similar photo');
     }
 

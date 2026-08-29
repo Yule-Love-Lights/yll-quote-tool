@@ -11,20 +11,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type AnyRow = Record<string, unknown>;
 
-const { dbRef, stateRef, logAdvertisingActivity } = vi.hoisted(() => ({
+const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker } = vi.hoisted(() => ({
   dbRef: { current: null as unknown },
   stateRef: {
     current: {
       issuances: [] as AnyRow[],
       placementCounts: {} as Record<string, number>, // workerId -> yard-sign count
       onHand: { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 } as AnyRow | null,
+      // When set, the NEXT on-hand read returns this snapshot then clears —
+      // models a stale read racing a concurrent stock writer.
+      staleOnHandReadOnce: null as AnyRow | null,
     },
   },
   logAdvertisingActivity: vi.fn(),
+  getAdvertisingWorker: vi.fn(),
 }));
 
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => dbRef.current }));
 vi.mock('@/lib/advertising/activity', () => ({ logAdvertisingActivity }));
+vi.mock('@/lib/advertising/workers', () => ({ getAdvertisingWorker }));
 
 function makeDb() {
   return {
@@ -65,6 +70,11 @@ function makeDb() {
             eq(col: string, val: unknown) { filters[col] = val; return b; },
             maybeSingle() {
               if (table === 'inventory_on_hand') {
+                if (stateRef.current.staleOnHandReadOnce) {
+                  const stale = stateRef.current.staleOnHandReadOnce;
+                  stateRef.current.staleOnHandReadOnce = null;
+                  return Promise.resolve({ data: stale, error: null });
+                }
                 return Promise.resolve({ data: stateRef.current.onHand, error: null });
               }
               return Promise.resolve({ data: null, error: null });
@@ -100,7 +110,12 @@ beforeEach(() => {
   stateRef.current.issuances = [];
   stateRef.current.placementCounts = {};
   stateRef.current.onHand = { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 };
+  stateRef.current.staleOnHandReadOnce = null;
   dbRef.current = makeDb();
+  getAdvertisingWorker.mockResolvedValue({
+    id: 'worker-1', displayName: 'Joe Signs', authUserId: null, active: true, isTest: false,
+    createdAt: 'x', updatedAt: 'x',
+  });
 });
 
 describe('issueSigns', () => {
@@ -115,7 +130,7 @@ describe('issueSigns', () => {
         actor: 'admin-1',
         action: 'signs_issued',
         workerId: 'worker-1',
-        detail: expect.objectContaining({ qty: 50, warehousePrior: 100, warehouseNew: 50 }),
+        detail: expect.objectContaining({ qty: 50, warehousePrior: 100, warehouseNew: 50, warehouseUpdated: true }),
       }),
     );
   });
@@ -128,6 +143,78 @@ describe('issueSigns', () => {
     expect(logAdvertisingActivity).toHaveBeenCalledWith(
       expect.objectContaining({ detail: expect.objectContaining({ warehousePrior: 30, warehouseNew: 0 }) }),
     );
+  });
+
+  it('a lost warehouse race retries against the fresh count and audits the TRUE numbers', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    // This caller's first read sees 100, but a concurrent stock edit moved
+    // the row to 80 before the CAS lands. The retry re-reads and succeeds.
+    stateRef.current.onHand = { sku: 'YLL-YARD-SIGN', on_hand_qty: 80 };
+    stateRef.current.staleOnHandReadOnce = { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 };
+
+    await issueSigns('worker-1', 50, 'admin-1');
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(30);
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ warehousePrior: 80, warehouseNew: 30, warehouseUpdated: true }),
+      }),
+    );
+  });
+
+  it('when the warehouse write never lands, the audit says so instead of claiming numbers', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    // Every read is stale (the row drifts continuously) so every CAS misses.
+    const db = dbRef.current as { from: (t: string) => Record<string, unknown> };
+    let flips = 0;
+    dbRef.current = {
+      from(table: string) {
+        if (table === 'inventory_on_hand') {
+          stateRef.current.staleOnHandReadOnce = { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 + ++flips };
+        }
+        return db.from(table);
+      },
+    };
+
+    await issueSigns('worker-1', 50, 'admin-1');
+    expect(stateRef.current.issuances).toHaveLength(1); // the hand-out still stands
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ warehouseUpdated: false }),
+      }),
+    );
+    const detail = logAdvertisingActivity.mock.calls[0][0].detail as Record<string, unknown>;
+    expect(detail.warehouseNew).toBeUndefined(); // no claimed transition
+  });
+
+  it('issuing to a TEST worker never touches the real warehouse pile', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    getAdvertisingWorker.mockResolvedValue({
+      id: 'worker-1', displayName: 'E2E Test Worker', authUserId: null, active: true, isTest: true,
+      createdAt: 'x', updatedAt: 'x',
+    });
+    await issueSigns('worker-1', 50, 'admin-1');
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(100);
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ testWorker: true, warehouseUpdated: false }),
+      }),
+    );
+  });
+
+  it('an identical double-submit inside the retry window returns the FIRST issuance instead of doubling', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    const first = await issueSigns('worker-1', 50, 'admin-1');
+    const second = await issueSigns('worker-1', 50, 'admin-1');
+    expect(stateRef.current.issuances).toHaveLength(1);
+    expect(second.issuance.id).toBe(first.issuance.id);
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(50); // drawn once
+  });
+
+  it('refuses an unknown worker before writing anything', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    getAdvertisingWorker.mockResolvedValue(null);
+    await expect(issueSigns('worker-ghost', 50, 'admin-1')).rejects.toThrow(/worker/i);
+    expect(stateRef.current.issuances).toHaveLength(0);
   });
 
   it('refuses zero, negative, and fractional quantities without writing anything', async () => {

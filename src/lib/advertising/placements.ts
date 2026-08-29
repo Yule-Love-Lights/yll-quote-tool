@@ -37,6 +37,8 @@ export type AdvertisingPlacement = {
   propertyId: string | null;
   rejectionReason: string | null;
   workerNote: string | null;
+  /** Perceptual dHash of the proof photo (photoHash.ts); null before hashing shipped. */
+  photoHash: string | null;
   acceptedRateCents: number | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -62,6 +64,7 @@ type Row = {
   property_id: string | null;
   rejection_reason: string | null;
   worker_note: string | null;
+  photo_hash: string | null;
   accepted_rate_cents: number | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -71,7 +74,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
+  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, photo_hash, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
 
 function toPlacement(row: Row): AdvertisingPlacement {
   return {
@@ -91,6 +94,7 @@ function toPlacement(row: Row): AdvertisingPlacement {
     propertyId: row.property_id,
     rejectionReason: row.rejection_reason,
     workerNote: row.worker_note,
+    photoHash: row.photo_hash,
     acceptedRateCents: row.accepted_rate_cents,
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
@@ -173,6 +177,7 @@ export async function submitPlacement(input: {
   neighborhood?: string | null;
   propertyId?: string | null;
   workerNote?: string | null;
+  photoHash?: string | null;
   isTest?: boolean;
 }): Promise<AdvertisingPlacement> {
   const db = getSupabaseServiceClient();
@@ -207,6 +212,7 @@ export async function submitPlacement(input: {
       neighborhood: input.neighborhood?.trim() || null,
       property_id: input.propertyId ?? null,
       worker_note: input.workerNote?.trim() || null,
+      photo_hash: input.photoHash ?? null,
       is_test: input.isTest ?? false,
     })
     .select(SELECT)

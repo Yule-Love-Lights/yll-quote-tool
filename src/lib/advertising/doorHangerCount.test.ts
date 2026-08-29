@@ -23,6 +23,7 @@ const row = (over: Partial<AdvertisingPlacement>): AdvertisingPlacement => ({
   neighborhood: null,
   propertyId: null,
   workerNote: null,
+  photoHash: null,
   acceptedRateCents: null,
   rejectionReason: null,
   reviewedBy: null,

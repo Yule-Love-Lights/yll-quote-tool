@@ -1,6 +1,7 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { logAdvertisingActivity } from '@/lib/advertising/activity';
 import { YARD_SIGN_SKU } from '@/lib/advertising/signStock';
+import { getAdvertisingWorker } from '@/lib/advertising/workers';
 
 // Per-worker sign allotments (Naldo 2026-08-29): "I'll give a team member 50
 // per week, and that's how we know how many they have... every time they
@@ -55,8 +56,17 @@ function toIssuance(row: Row): SignIssuance {
   };
 }
 
-/** Hand a worker a stack of signs. Records the issuance, draws the warehouse
- * pile down (floored at zero), and audits both with prior and new. */
+/** A second identical hand-out (same worker, same qty) inside this window
+ * reads as a double-submitted form, not a second physical hand-out. */
+const DUPLICATE_WINDOW_MS = 15_000;
+
+/**
+ * Hand a worker a stack of signs. Records the issuance, draws the warehouse
+ * pile down (floored at zero, retried under a CAS so the audit never claims
+ * a transition that lost its race — the setSignStockQty posture), and
+ * audits everything with the acting admin. A TEST worker's issuance never
+ * touches the real warehouse pile.
+ */
 export async function issueSigns(
   workerId: string,
   qty: number,
@@ -69,10 +79,31 @@ export async function issueSigns(
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
+  const worker = await getAdvertisingWorker(workerId);
+  if (!worker) throw new Error(`issueSigns: no advertising worker found for id ${workerId.trim()}`);
+
+  // Idempotency window: a retried/double-clicked identical hand-out returns
+  // the row that already landed instead of doubling the ledger and drawing
+  // the warehouse twice for one physical stack.
+  const { data: latestRows } = await db
+    .from('advertising_sign_issuances')
+    .select(SELECT)
+    .eq('worker_id', worker.id)
+    .order('created_at', { ascending: false })
+    .range(0, 0);
+  const latest = ((latestRows ?? []) as Row[])[0];
+  if (
+    latest &&
+    latest.qty === qty &&
+    Date.now() - Date.parse(latest.created_at) < DUPLICATE_WINDOW_MS
+  ) {
+    return { issuance: toIssuance(latest), issuedQty: qty };
+  }
+
   const { data, error } = await db
     .from('advertising_sign_issuances')
     .insert({
-      worker_id: workerId.trim(),
+      worker_id: worker.id,
       qty,
       issued_by: issuedBy,
       note: note?.trim() || null,
@@ -83,39 +114,60 @@ export async function issueSigns(
   if (!data) throw new Error('issueSigns: no row returned');
   const issuance = toIssuance(data as Row);
 
-  // Draw the warehouse down: the signs left the garage. Best-effort CAS on
-  // the current count (the count is manual; a lost race here just means the
-  // other write's number stands and the audit records what THIS write saw).
+  // Draw the warehouse down: the signs left the garage. CAS with retries so
+  // the audit's numbers are TRUE (the admin lens on this PR caught the old
+  // best-effort shape logging a transition that lost its race). A test
+  // worker's signs are not real inventory and never touch the pile. If every
+  // retry loses, the hand-out still stands and the audit says the warehouse
+  // was NOT moved, with no claimed numbers.
   let warehousePrior: number | null = null;
   let warehouseNew: number | null = null;
-  const { data: onHand } = await db
-    .from('inventory_on_hand')
-    .select('sku, on_hand_qty')
-    .eq('sku', YARD_SIGN_SKU)
-    .maybeSingle();
-  if (onHand) {
-    warehousePrior = (onHand as { on_hand_qty: number }).on_hand_qty;
-    warehouseNew = Math.max(0, warehousePrior - qty);
-    const { error: updateError } = await db
-      .from('inventory_on_hand')
-      .update({ on_hand_qty: warehouseNew })
-      .eq('sku', YARD_SIGN_SKU)
-      .eq('on_hand_qty', warehousePrior)
-      .select('sku')
-      .maybeSingle();
-    if (updateError) console.error('issueSigns warehouse update:', updateError.message);
+  let warehouseUpdated = false;
+  if (!worker.isTest) {
+    for (let attempt = 0; attempt < 3 && !warehouseUpdated; attempt++) {
+      const { data: onHand } = await db
+        .from('inventory_on_hand')
+        .select('sku, on_hand_qty')
+        .eq('sku', YARD_SIGN_SKU)
+        .maybeSingle();
+      if (!onHand) break; // no stock row: nothing to draw down
+      const prior = (onHand as { on_hand_qty: number }).on_hand_qty;
+      const next = Math.max(0, prior - qty);
+      const { data: updated, error: updateError } = await db
+        .from('inventory_on_hand')
+        .update({ on_hand_qty: next })
+        .eq('sku', YARD_SIGN_SKU)
+        .eq('on_hand_qty', prior)
+        .select('sku')
+        .maybeSingle();
+      if (updateError) {
+        console.error('issueSigns warehouse update:', updateError.message);
+        break;
+      }
+      if (updated) {
+        warehousePrior = prior;
+        warehouseNew = next;
+        warehouseUpdated = true;
+      }
+    }
+  }
+
+  const detail: Record<string, unknown> = {
+    qty,
+    note: issuance.note,
+    warehouseUpdated,
+  };
+  if (worker.isTest) detail.testWorker = true;
+  if (warehouseUpdated) {
+    detail.warehousePrior = warehousePrior;
+    detail.warehouseNew = warehouseNew;
   }
 
   await logAdvertisingActivity({
     actor: issuedBy,
     action: 'signs_issued',
     workerId: issuance.workerId,
-    detail: {
-      qty,
-      note: issuance.note,
-      warehousePrior,
-      warehouseNew,
-    },
+    detail,
   });
 
   return { issuance, issuedQty: qty };
