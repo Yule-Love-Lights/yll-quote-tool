@@ -125,6 +125,34 @@ export async function claimNoteRow(
   return (data ?? []).length > 0;
 }
 
+/**
+ * Pulls the note id out of whatever HighLevel returned.
+ *
+ * The first cut read `note.id` off the top level, and six real notes posted
+ * to production with a null id before the database showed it: HighLevel
+ * wraps the created note, it does not return it bare. A read-only GET of
+ * /contacts/{id}/notes confirms the note object itself carries `id`, so all
+ * three plausible wrappers are accepted here rather than guessing one.
+ *
+ * The id is not decoration. It is the only thing that makes a bad batch of
+ * notes enumerable, and therefore deletable, without hunting a CRM by hand.
+ *
+ * Exported, like claimNoteRow above, so every shape is directly testable
+ * without driving a whole batch through a mocked HighLevel.
+ */
+export function noteIdFrom(response: unknown): string | null {
+  const r = response as {
+    id?: unknown;
+    note?: { id?: unknown } | null;
+    notes?: { id?: unknown }[] | null;
+  } | null | undefined;
+  if (typeof r?.id === 'string' && r.id) return r.id;
+  if (typeof r?.note?.id === 'string' && r.note.id) return r.note.id;
+  const first = r?.notes?.[0];
+  if (typeof first?.id === 'string' && first.id) return first.id;
+  return null;
+}
+
 async function loadCommitments(
   supabase: SupabaseClient,
   transcriptId: string,
@@ -250,10 +278,17 @@ export async function postPendingCallNotes(
       // written we quarantine the row instead, which stops the retry at the
       // cost of the row reading as un-noted on the admin page. A note the
       // customer's record shows twice is worse than a count that reads low.
+      const noteId = noteIdFrom(note);
+      if (!noteId) {
+        // Not fatal, the note exists either way. Logged loudly because a
+        // null id here means this batch cannot be cleaned up in bulk later,
+        // which is exactly how the first six went out unnoticed.
+        console.warn(`HighLevel returned no note id for call ${row.id}; the note posted but cannot be traced.`);
+      }
       try {
         await patchRow(supabase, row.id, {
           ghl_note_posted_at: new Date().toISOString(),
-          ghl_note_id: typeof note?.id === 'string' ? note.id : null,
+          ghl_note_id: noteId,
           ghl_note_last_failure_code: null,
         });
         result.posted++;
