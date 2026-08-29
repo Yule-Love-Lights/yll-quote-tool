@@ -43,6 +43,33 @@ describe('OperatorNav — Sign-out slot on initial render (before the session ch
   });
 });
 
+describe('OperatorNav — Tasks nav item (Naldo, 2026-08-29)', () => {
+  it('renders a Tasks link pointing at the real /tasks page', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).toContain('href="/tasks"');
+    expect(html).toContain('>Tasks<');
+  });
+
+  it("highlights on its own 'tasks' area, not alongside another tab", () => {
+    const html = renderToStaticMarkup(<OperatorNav active="tasks" />);
+    // The active tab is the one carrying the evergreen background. Exactly
+    // one link may carry it: the Jobs/Fleet co-lighting bug was ruled a
+    // defect, not an accepted cost (Naldo, 2026-08-28).
+    const active = html.match(/background:var\(--brand-evergreen\)/g) ?? [];
+    // Two hits are expected: the active tab and the "+ New quote" CTA, which
+    // is styled as a CTA rather than a tab.
+    expect(active.length).toBe(2);
+    expect(html).toMatch(/background:var\(--brand-evergreen\)[^>]*>Tasks</);
+  });
+
+  it('renders no badge before the count fetch answers, so the row cannot flash a wrong number', () => {
+    // renderToStaticMarkup never runs effects, so this is the pre-fetch
+    // paint: taskCounts is null and the pill must be absent entirely.
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).not.toContain('open task');
+  });
+});
+
 describe('OperatorNav — Schedule nav item (Naldo, 2026-08-27)', () => {
   it('renders a Schedule link between Jobs and Fleet, pointing at /admin/schedule', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
@@ -129,12 +156,30 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
   // IS testable here is that the fix's load-bearing pieces are actually
   // present in the markup, so a future "cleanup" can't silently remove them
   // and reopen either failure mode (the overflow, or the invisible wrap).
-  it('forces the 11 top-level tab links to a single line at every breakpoint (lg:px-1.5 xl:px-3)', () => {
+  // RE-MEASURED 2026-08-29 for the 12th item (Tasks) and its badge. With BOTH
+  // badges showing (Inbox and Tasks, the widest the row ever gets) the old
+  // lg:px-1.5 xl:px-3 measured a 22px page overflow at 1024px BEFORE the badge
+  // even rendered, and 6px at 1280px with it. lg:px-0.5 xl:px-2.5 closes both.
+  // Measured in headless Chromium, fonts-ready, uniform element heights
+  // confirmed at every width so nothing hid behind a silent wrap:
+  //   1024px: 0 overflow, 16px margin
+  //   1120px: 0 overflow, 16px margin
+  //   1280px: 0 overflow
+  it('forces the 12 top-level tab links to a single line at every breakpoint (lg:px-0.5 xl:px-2.5)', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     const linkMatch = html.match(/<a[^>]*href="\/admin\/jobs"[^>]*>/);
     expect(linkMatch).not.toBeNull();
-    expect(linkMatch![0]).toContain('lg:px-1.5');
-    expect(linkMatch![0]).toContain('xl:px-3');
+    expect(linkMatch![0]).toContain('lg:px-0.5');
+    expect(linkMatch![0]).toContain('xl:px-2.5');
+    // The tab links carry whitespace-nowrap too now: "+ New quote" and "Sign
+    // out" were not the only multi-word elements once a badge started sitting
+    // beside a label.
+    expect(linkMatch![0]).toContain('whitespace-nowrap');
+  });
+
+  it('keeps the row gap at zero, which is part of what buys the 12th item its space', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).toContain('hidden lg:flex items-center gap-0 text-sm');
   });
 
   it('forces the "+ New quote" CTA and "Sign out" to stay single-line (whitespace-nowrap) so neither can hide behind a silent wrap', () => {

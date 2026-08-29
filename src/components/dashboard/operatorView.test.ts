@@ -18,6 +18,7 @@ describe('navItemsForView', () => {
       'Schedule',
       'Fleet',
       'Invoices',
+      'Tasks',
       'Inventory',
       'Insights',
       'Settings',

@@ -13,6 +13,7 @@ const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
 import {
+  countActiveOfficeTasks,
   createManualOfficeTask,
   databaseErrorCode,
   isOfficeTasksSchemaUnavailable,
@@ -25,7 +26,7 @@ type Row = Record<string, unknown>;
 /** A chainable fake query builder — every filter/order method returns
  * itself, and it resolves like a real Supabase PostgrestFilterBuilder
  * (thenable) to the configured { data, error } once awaited. Also carries a
- * fake auth.admin.getUserById for resolveCreatorLabels — defaults to "not
+ * fake auth.admin.getUserById for resolveUserLabels — defaults to "not
  * found" for any id, override via `getUserById` for a resolution test. */
 function makeListClient(
   result: { data: Row[] | null; error: { code?: string } | null },
@@ -196,6 +197,154 @@ describe('listOfficeTasks', () => {
     if (!result.ok) throw new Error('expected ok');
     expect(result.tasks[0].createdByLabel).toBeNull();
     expect(getUserById).not.toHaveBeenCalled();
+  });
+
+  it('assignedToLabel is null when nothing is assigned', async () => {
+    const { client } = makeListClient({ data: [{ ...ROW, assigned_to: null }], error: null });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].assignedToLabel).toBeNull();
+  });
+
+  it("assignedToLabel: 'You' when the task is assigned to the viewer, no admin lookup needed", async () => {
+    const getUserById = vi.fn();
+    const { client } = makeListClient({ data: [{ ...ROW, assigned_to: 'op-1' }], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].assignedToLabel).toBe('You');
+    expect(getUserById).not.toHaveBeenCalled();
+  });
+
+  it('assignedToLabel resolves on a CALL task, where createdByLabel deliberately does not', async () => {
+    // The whole point of the rep assignment: a call_commitment task carries an
+    // assignee and no meaningful creator. A label helper that only ran for
+    // manual rows would leave every real assigned task blank.
+    const callTask: Row = { ...ROW, id: 't-9', source_system: 'call_commitment', created_by: null, assigned_to: 'op-2' };
+    const getUserById = vi.fn(async () => ({ data: { user: { app_metadata: { name: 'Jason' } } }, error: null }));
+    const { client } = makeListClient({ data: [callTask], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].assignedToLabel).toBe('Jason');
+    expect(result.tasks[0].createdByLabel).toBeNull();
+  });
+
+  it("assignedToLabel falls back to 'a teammate' when the lookup fails, never fails the list read", async () => {
+    const getUserById = vi.fn(async () => ({ data: null, error: { message: 'boom' } }));
+    const { client } = makeListClient({ data: [{ ...ROW, assigned_to: 'op-2' }], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].assignedToLabel).toBe('a teammate');
+  });
+
+  it('one person who both created and is assigned costs ONE lookup, not two', async () => {
+    const getUserById = vi.fn(async () => ({ data: { user: { app_metadata: { name: 'Jason' } } }, error: null }));
+    const { client } = makeListClient(
+      { data: [{ ...ROW, created_by: 'op-2', assigned_to: 'op-2' }], error: null },
+      { getUserById },
+    );
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].createdByLabel).toBe('Jason');
+    expect(result.tasks[0].assignedToLabel).toBe('Jason');
+    expect(getUserById).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects assigned_to, without which every assignedToLabel would be null whatever the row holds', async () => {
+    const { client, calls } = makeListClient({ data: [ROW], error: null });
+    sbRef.current = client;
+
+    await listOfficeTasks('op-1', 'active');
+
+    const select = calls.find((c) => c.method === 'select');
+    expect(String(select?.args[0])).toContain('assigned_to');
+  });
+});
+
+describe('countActiveOfficeTasks', () => {
+  const activeRow = (dueAt: string) => ({ due_at: dueAt });
+
+  it('counts open+blocked rows and how many are past due', async () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const { client, calls } = makeListClient({
+      data: [activeRow(past), activeRow(past), activeRow(future)],
+      error: null,
+    });
+    sbRef.current = client;
+
+    const result = await countActiveOfficeTasks();
+
+    expect(result).toEqual({ ok: true, counts: { open: 3, overdue: 2 } });
+    // The status filter is what makes "open" mean the working list rather
+    // than every task ever created.
+    const statusFilter = calls.find((c) => c.method === 'in');
+    expect(statusFilter?.args).toEqual(['status', ['open', 'blocked']]);
+  });
+
+  it('reads only due_at, so no titles, details or operator ids reach this endpoint', async () => {
+    const { client, calls } = makeListClient({ data: [], error: null });
+    sbRef.current = client;
+
+    await countActiveOfficeTasks();
+
+    const select = calls.find((c) => c.method === 'select');
+    expect(select?.args[0]).toBe('due_at');
+  });
+
+  it('does no auth lookups at all', async () => {
+    const getUserById = vi.fn();
+    const { client } = makeListClient({ data: [activeRow(new Date().toISOString())], error: null }, { getUserById });
+    sbRef.current = client;
+
+    await countActiveOfficeTasks();
+
+    expect(getUserById).not.toHaveBeenCalled();
+  });
+
+  it('does not count an unparseable due_at as overdue, so bad data cannot turn the badge red', async () => {
+    const { client } = makeListClient({ data: [activeRow('not-a-date')], error: null });
+    sbRef.current = client;
+
+    const result = await countActiveOfficeTasks();
+
+    expect(result).toEqual({ ok: true, counts: { open: 1, overdue: 0 } });
+  });
+
+  it('reports zero as a real answer when nothing is active', async () => {
+    const { client } = makeListClient({ data: [], error: null });
+    sbRef.current = client;
+
+    expect(await countActiveOfficeTasks()).toEqual({ ok: true, counts: { open: 0, overdue: 0 } });
+  });
+
+  it("maps a missing table to 'not_ready' and any other error to 'unavailable'", async () => {
+    const notReady = makeListClient({ data: null, error: { code: '42P01' } });
+    sbRef.current = notReady.client;
+    expect(await countActiveOfficeTasks()).toEqual({ ok: false, reason: 'not_ready' });
+
+    const broken = makeListClient({ data: null, error: { code: '08006' } });
+    sbRef.current = broken.client;
+    expect(await countActiveOfficeTasks()).toEqual({ ok: false, reason: 'unavailable' });
+  });
+
+  it("reports 'unavailable' with no service client configured", async () => {
+    sbRef.current = null;
+    expect(await countActiveOfficeTasks()).toEqual({ ok: false, reason: 'unavailable' });
   });
 
   it('resolves the operator population only once per distinct creator, not once per task', async () => {
