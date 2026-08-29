@@ -1,12 +1,12 @@
 'use client';
 
 // Client-side view state for the operator shell (ops hub workstream A slice
-// 2). Per-tab React state, deliberately nothing more: no cookie, no schema,
-// no persistence. The view is 'office' for every operator today; the admin
-// View-as control is the only writer, and its Crew/Advertising options are
-// disabled until those views are built, so setView never receives anything
-// but 'office' yet. The provider lives in OperatorShell so both the nav and
-// (later) page content read the same value.
+// 2; Advertising wired 2026-08-29). Per-tab React state, deliberately
+// nothing more: no cookie, no schema, no persistence. The admin View-as
+// control is the only writer; a switch survives navigation because
+// OperatorShell re-seeds initialView from the destination page's own area,
+// not because anything persists client-side. The provider lives in
+// OperatorShell so both the nav and (later) page content read one value.
 
 import { createContext, useContext, useMemo, useState } from 'react';
 import type { OperatorView } from './operatorView';

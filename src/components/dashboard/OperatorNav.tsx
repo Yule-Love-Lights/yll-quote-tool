@@ -266,15 +266,17 @@ export function OperatorNav({
           for admins only, at every viewport width, and no width for anyone.
           Renders nothing until the session check above resolves an admin.
 
-          KNOWN RESIDUAL (staff lens on PR #1055, deferred): because this nav
-          remounts on every page and the role arrives by fetch, the strip pops
-          in after each navigation and shifts admin page content down ~29px,
-          the vertical twin of the #347 Sign-out flash fixed above. Reserving
-          the space here would show a permanent blank band to every non-admin
-          operator, so it is deliberately NOT reserve-space fixed. The real
-          fix is server-rendering the role into the shell; that belongs to
-          the first real view build (Crew My Day), which needs server-side
-          view plumbing anyway. Affects only the two admin accounts. */}
+          KNOWN RESIDUAL (staff lens on PR #1055, deferred; reach widened by
+          the advertising view's pages, staff lens on the one-merge round):
+          because this nav remounts on every page and the role arrives by
+          fetch, the strip pops in after each navigation and shifts admin
+          page content down ~29px, the vertical twin of the #347 Sign-out
+          flash fixed above. Reserving the space here would show a permanent
+          blank band to every non-admin operator, so it is deliberately NOT
+          reserve-space fixed. The real fix is server-rendering the role into
+          OperatorShell (one getOperator read in the shell, role passed as a
+          prop); top of the ops suggestions list from the 2026-08-29 close.
+          Affects only the two admin accounts. */}
       <ViewAsControl role={role} />
 
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}

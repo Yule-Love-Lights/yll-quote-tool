@@ -86,11 +86,15 @@ async function main(): Promise<void> {
     return count ?? 0;
   };
 
-  // ---- before-state ----
+  // ---- before-state (activity included: the audit table has no is_test
+  // column and its placement FK nulls on delete, so a run that skipped it
+  // would permanently accrete audit rows about nonexistent test placements
+  // — the admin lens caught the first version doing exactly that) ----
   const before = {
     campaigns: await countRows('advertising_campaigns'),
     workers: await countRows('advertising_workers'),
     placements: await countRows('advertising_placements'),
+    activity: await countRows('advertising_activity'),
   };
   console.log('BEFORE:', JSON.stringify(before));
 
@@ -247,6 +251,22 @@ async function main(): Promise<void> {
       pureDups.some((d) => d.reasons.includes('same suggested address')));
   } finally {
     // ---- cleanup: everything this run created, then re-count ----
+    // Activity FIRST, while the placements still exist: the FK nulls on
+    // placement delete, and a nulled row can no longer be attributed to this
+    // run. Captured by placement id, so a real audit row is untouchable.
+    if (cleanup.placementIds.length) {
+      const { data: actRows, error: actListErr } = await db
+        .from('advertising_activity')
+        .select('id')
+        .in('placement_id', cleanup.placementIds);
+      if (actListErr) {
+        console.error(`cleanup activity list: ${actListErr.message}`);
+      } else if (actRows && actRows.length) {
+        const { error } = await db.from('advertising_activity').delete().in('id', actRows.map((r) => r.id));
+        if (error) console.error(`cleanup activity: ${error.message}`);
+        else console.log(`cleanup: removed ${actRows.length} activity rows from this run`);
+      }
+    }
     for (const id of cleanup.placementIds) {
       const { error } = await db.from('advertising_placements').delete().eq('id', id);
       if (error) console.error(`cleanup placement ${id}: ${error.message}`);
@@ -254,6 +274,10 @@ async function main(): Promise<void> {
     if (cleanup.photoPaths.length) {
       const { error } = await db.storage.from(BUCKET).remove(cleanup.photoPaths);
       if (error) console.error(`cleanup photos: ${error.message}`);
+      // Asserted, not just logged (admin lens LOW): a photo that survives
+      // cleanup is billable storage accreting per run.
+      const { data: leftover } = await db.storage.from(BUCKET).list(`placements/${cleanup.workerId}`);
+      check('proof photos are gone from the bucket', (leftover ?? []).length === 0);
     }
     if (cleanup.workerId) {
       const { error } = await db.from('advertising_workers').delete().eq('id', cleanup.workerId);
@@ -267,6 +291,7 @@ async function main(): Promise<void> {
       campaigns: await countRows('advertising_campaigns'),
       workers: await countRows('advertising_workers'),
       placements: await countRows('advertising_placements'),
+      activity: await countRows('advertising_activity'),
     };
     console.log('AFTER:', JSON.stringify(after));
     check('cleanup returned every table to its before-state', JSON.stringify(after) === JSON.stringify(before));
