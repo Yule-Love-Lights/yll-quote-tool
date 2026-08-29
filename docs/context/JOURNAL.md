@@ -3357,8 +3357,9 @@ poll after a fallible merge and left a conflicted tree sitting 40 minutes;
 the backfill runner's stop condition read fields that didn't exist.
 
 Gates at close: see close PR (run on fresh master in a clean worktree).
-Master at close: `9a78becc`+. Next free ledger #: 465 after this close
-(S75 minted 460-464).
+Master at close: `9a78becc`+. Next free ledger #: 466 after this close
+(S75 minted 460-464 for the remaining calls slices, plus 465 at close for
+the grant-hardening advisory).
 
 Close review outcome: integration lens PASS (composition clean, prod schema matches the fully-amended files, backfill figures consistent, zero orphans) with one advisory deferred to row 465 (call-table grant hardening); customer lens PASS on live prod (clean cron denials, perimeter composition intact; a real-device 375px pass on /estimate and /login remains a human nicety, low risk).
 
