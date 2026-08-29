@@ -1,6 +1,7 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
-import { closeOpenBreakForShift } from '@/lib/shiftBreaks';
-import { closeOpenSegmentForShift } from '@/lib/jobSegments';
+import { closeOpenBreakForShift, getOpenBreak } from '@/lib/shiftBreaks';
+import { closeOpenSegmentForShift, getOpenSegment } from '@/lib/jobSegments';
+import { sendTelegramMessage } from '@/lib/integrations/telegram';
 
 export type ShiftSource = 'pwa' | 'telegram' | 'office' | 'system';
 
@@ -188,11 +189,68 @@ export async function clockOut(
 /** A typed refusal, so the route can answer with the real reason. */
 export class ManualShiftRefusedError extends Error {
   constructor(
-    public code: 'invalid-times' | 'overlap' | 'not-found' | 'edit-race',
+    public code: 'invalid-times' | 'overlap' | 'not-found' | 'edit-race' | 'not-field-crew',
     message: string,
   ) {
     super(message);
     this.name = 'ManualShiftRefusedError';
+  }
+}
+
+/** Best-effort transparency side effects after a manual write (staff + admin
+ * lenses on PR #1062): an append-only audit row with the before/after values,
+ * and a Telegram note to the crew member whose pay record was touched. Both
+ * log-not-throw — the payroll write already landed, and the audit/notify
+ * failing must not make a retry double-write it. */
+async function afterManualWrite(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  entry: {
+    action: 'shift-manual-create' | 'shift-manual-edit';
+    actor: string;
+    shift: Row;
+    before: { clock_in_at: string; clock_out_at: string | null } | null;
+  },
+): Promise<void> {
+  try {
+    await db.from('dashboard_activity').insert({
+      actor: entry.actor,
+      action: entry.action,
+      detail: {
+        shiftId: entry.shift.id,
+        crewMemberId: entry.shift.crew_member_id,
+        before: entry.before,
+        after: { clock_in_at: entry.shift.clock_in_at, clock_out_at: entry.shift.clock_out_at },
+      },
+    });
+  } catch (auditError) {
+    console.error('afterManualWrite: audit insert failed:', auditError);
+  }
+  try {
+    const { data } = await db
+      .from('crew_members')
+      .select('telegram_user_id')
+      .eq('id', entry.shift.crew_member_id)
+      .maybeSingle();
+    const chatId = (data as { telegram_user_id: string | null } | null)?.telegram_user_id;
+    if (chatId) {
+      const fmt = (iso: string | null) =>
+        iso
+          ? new Date(iso).toLocaleString('en-US', {
+              timeZone: 'America/New_York',
+              month: 'short',
+              day: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+            })
+          : 'still open';
+      const verb = entry.action === 'shift-manual-create' ? 'added a shift to' : 'corrected a shift on';
+      await sendTelegramMessage(
+        chatId,
+        `${entry.actor} ${verb} your time record: ${fmt(entry.shift.clock_in_at)} to ${fmt(entry.shift.clock_out_at)}. Reply here or ask the office if that looks wrong.`,
+      );
+    }
+  } catch (notifyError) {
+    console.error('afterManualWrite: crew Telegram notify failed:', notifyError);
   }
 }
 
@@ -217,14 +275,18 @@ async function assertNoOverlap(
   db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   crewMemberId: string,
   clockInAt: string,
-  clockOutAt: string,
+  clockOutAt: string | null,
   excludeShiftId: string | null,
 ): Promise<void> {
-  const { data, error } = await db
+  // A null clockOutAt means the edited shift stays OPEN — it occupies all
+  // time from clockInAt onward, so every other shift of this member is a
+  // candidate and only the end-side filter is skipped.
+  let query = db
     .from('shifts')
     .select('id, clock_in_at, clock_out_at')
-    .eq('crew_member_id', crewMemberId)
-    .lt('clock_in_at', clockOutAt);
+    .eq('crew_member_id', crewMemberId);
+  if (clockOutAt !== null) query = query.lt('clock_in_at', clockOutAt);
+  const { data, error } = await query;
   if (error) {
     throw new ManualShiftRefusedError(
       'overlap',
@@ -253,6 +315,25 @@ export async function adminCreateShift(input: {
   if (!db) throw new Error('Supabase service role not configured');
   const crewMemberId = input.crewMemberId.trim();
   assertValidInterval(input.clockInAt, input.clockOutAt);
+
+  // Gate at the WRITE, not just the dropdown (the repo's promoted pitfall,
+  // caught recurring here by the PR #1062 admin lens): the target must be a
+  // real, ACTIVE, FIELD crew member. An office row would also be invisible on
+  // the review page afterward, which is what made this worth refusing.
+  const { data: crewData, error: crewError } = await db
+    .from('crew_members')
+    .select('id, active, is_office')
+    .eq('id', crewMemberId)
+    .maybeSingle();
+  if (crewError) throw new Error(`adminCreateShift: crew lookup: ${crewError.message}`);
+  const crew = crewData as { id: string; active: boolean; is_office: boolean } | null;
+  if (!crew || !crew.active || crew.is_office) {
+    throw new ManualShiftRefusedError(
+      'not-field-crew',
+      'Manual shifts can only be created for active field crew.',
+    );
+  }
+
   await assertNoOverlap(db, crewMemberId, input.clockInAt, input.clockOutAt, null);
 
   const { data, error } = await db
@@ -269,23 +350,66 @@ export async function adminCreateShift(input: {
     .maybeSingle();
   if (error) throw new Error(`adminCreateShift: ${error.message}`);
   if (!data) throw new Error('adminCreateShift: no row returned');
+  await afterManualWrite(db, {
+    action: 'shift-manual-create',
+    actor: input.actor,
+    shift: data as Row,
+    before: null,
+  });
   return toShift(data as Row);
 }
 
 export async function adminUpdateShiftTimes(input: {
   shiftId: string;
+  /** null = keep the shift OPEN (valid only while it IS open — a crew member
+   * still working keeps working; PR #1062 staff lens: force-closing here made
+   * their bot say "not clocked in" mid-shift and lost the rest of the day). */
+  clockOutAt: string | null;
   clockInAt: string;
-  clockOutAt: string;
   actor: string;
 }): Promise<Shift> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
   const shiftId = input.shiftId.trim();
-  assertValidInterval(input.clockInAt, input.clockOutAt);
+  if (input.clockOutAt !== null) {
+    assertValidInterval(input.clockInAt, input.clockOutAt);
+  } else if (!Number.isFinite(Date.parse(input.clockInAt))) {
+    throw new ManualShiftRefusedError('invalid-times', 'Times must be valid timestamps.');
+  }
 
   const row = await getShiftRowById(db, shiftId);
   if (!row) throw new ManualShiftRefusedError('not-found', 'No shift with that id.');
+  if (input.clockOutAt === null && row.clock_out_at !== null) {
+    throw new ManualShiftRefusedError(
+      'invalid-times',
+      'A closed shift needs a clock-out time; clearing it would reopen the shift.',
+    );
+  }
   await assertNoOverlap(db, row.crew_member_id, input.clockInAt, input.clockOutAt, shiftId);
+
+  const closingOpenShift = row.clock_out_at === null && input.clockOutAt !== null;
+  if (closingOpenShift) {
+    // A typed clock-out EARLIER than a still-running break or job segment
+    // would auto-close that child backwards; the payroll math then silently
+    // drops the negative interval and the break is never subtracted (PR #1062
+    // technical lens). Refuse with the time so the admin can decide.
+    const [openBreak, openSegment] = await Promise.all([
+      getOpenBreak(shiftId),
+      getOpenSegment(shiftId),
+    ]);
+    if (openBreak && (input.clockOutAt as string) <= openBreak.startedAt) {
+      throw new ManualShiftRefusedError(
+        'invalid-times',
+        `This shift has a break still running that started at ${openBreak.startedAt}; the clock-out must be after that.`,
+      );
+    }
+    if (openSegment && (input.clockOutAt as string) <= openSegment.arrivedAt) {
+      throw new ManualShiftRefusedError(
+        'invalid-times',
+        `This shift has a job segment still running that started at ${openSegment.arrivedAt}; the clock-out must be after that.`,
+      );
+    }
+  }
 
   const payload: Record<string, unknown> = {
     clock_in_at: input.clockInAt,
@@ -294,7 +418,7 @@ export async function adminUpdateShiftTimes(input: {
   };
   // Closing a shift that was open records the office as the closer, same as a
   // header clock-out would.
-  if (row.clock_out_at === null) payload.close_source = 'office';
+  if (closingOpenShift) payload.close_source = 'office';
 
   // CAS on updated_at: if anything touched the row between our read and this
   // write (the crew member clocking out, another admin editing), the update
@@ -316,18 +440,25 @@ export async function adminUpdateShiftTimes(input: {
   // Sibling parity with clockOut(): closing a shift that was OPEN must also
   // close any break or job segment still running on it, at the typed end
   // time, with the same log-not-throw posture (the shift is already closed;
-  // the exception queues catch what slips).
-  if (row.clock_out_at === null) {
+  // the exception queues catch what slips). The pre-close guard above already
+  // proved the typed time is after each child's start.
+  if (closingOpenShift) {
     try {
-      await closeOpenBreakForShift(shiftId, input.clockOutAt, 'office');
+      await closeOpenBreakForShift(shiftId, input.clockOutAt as string, 'office');
     } catch (breakError) {
       console.error('adminUpdateShiftTimes: failed to auto-close the open break:', breakError);
     }
     try {
-      await closeOpenSegmentForShift(shiftId, input.clockOutAt, 'office');
+      await closeOpenSegmentForShift(shiftId, input.clockOutAt as string, 'office');
     } catch (segmentError) {
       console.error('adminUpdateShiftTimes: failed to auto-close the open job segment:', segmentError);
     }
   }
+  await afterManualWrite(db, {
+    action: 'shift-manual-edit',
+    actor: input.actor,
+    shift: data as Row,
+    before: { clock_in_at: row.clock_in_at, clock_out_at: row.clock_out_at },
+  });
   return toShift(data as Row);
 }

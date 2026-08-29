@@ -2,28 +2,21 @@
 
 // Manual payroll entry (2026-08-29, Naldo's ruling): an admin reconstructs a
 // forgotten shift by reading the GPS timeline BESIDE this form and typing the
-// times. Nothing here reads GPS data — that separation is the point, and the
-// server refuses overlaps, backwards times, and stale edits with plain
-// reasons. Every save is stamped with who did it.
+// times. Nothing here reads GPS data — that separation is the point. The
+// server refuses overlaps, backwards times, office staffers, stale edits, and
+// a clock-out earlier than a running break, each with a plain reason. Every
+// save is stamped, logged to the activity trail, and the crew member gets a
+// Telegram note when their account is linked.
+//
+// All times are ET regardless of the device's timezone (etClock), because
+// payroll means Eastern time even when an admin is traveling.
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { etInputToIso, isoToEtInput } from '@/lib/etClock';
+
 type CrewOption = { id: string; displayName: string };
-
-/** ISO → the datetime-local input format, in the admin's local time (ET). */
-function toLocalInput(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function toIsoOrNull(local: string): string | null {
-  if (!local) return null;
-  const ms = Date.parse(local);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
 
 async function postManual(body: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
   try {
@@ -40,6 +33,22 @@ async function postManual(body: Record<string, unknown>): Promise<{ ok: boolean;
   }
 }
 
+/** A duration a human probably did not mean gets one plain question before it
+ * becomes payroll (staff lens: a PM/AM slip makes a silent 20-hour shift). */
+function confirmSanity(clockInIso: string, clockOutIso: string | null): boolean {
+  if (!clockOutIso) return true;
+  const hours = (Date.parse(clockOutIso) - Date.parse(clockInIso)) / 3_600_000;
+  if (hours > 12) {
+    return window.confirm(`That shift is ${hours.toFixed(1)} hours long. Save anyway?`);
+  }
+  if (hours < 0.25) {
+    return window.confirm(
+      `That shift is only ${Math.round(hours * 60)} minutes long. Save anyway?`,
+    );
+  }
+  return true;
+}
+
 /** The "Add a shift" form under the crew clock, admins only. */
 export function AddShiftForm({ crew, defaultDate }: { crew: CrewOption[]; defaultDate: string }) {
   const router = useRouter();
@@ -51,12 +60,13 @@ export function AddShiftForm({ crew, defaultDate }: { crew: CrewOption[]; defaul
 
   async function submit() {
     if (busy) return;
-    const clockInAt = toIsoOrNull(inAt);
-    const clockOutAt = toIsoOrNull(outAt);
+    const clockInAt = etInputToIso(inAt);
+    const clockOutAt = etInputToIso(outAt);
     if (!crewMemberId || !clockInAt || !clockOutAt) {
       setError('Pick a crew member and both times.');
       return;
     }
+    if (!confirmSanity(clockInAt, clockOutAt)) return;
     setBusy(true);
     setError(null);
     const res = await postManual({ crewMemberId, clockInAt, clockOutAt });
@@ -109,15 +119,17 @@ export function AddShiftForm({ crew, defaultDate }: { crew: CrewOption[]; defaul
         </button>
       </div>
       <p className="text-xs text-gray-400 mt-2">
-        Read the GPS timeline on the right, then type the times. The entry is stamped with your
-        name.
+        Times are Eastern. Read the GPS timeline on the right, then type the times. The entry is
+        stamped with your name, logged, and the crew member gets a Telegram note when linked.
       </p>
       {error && <p className="text-xs text-red-700 mt-1">{error}</p>}
     </div>
   );
 }
 
-/** Inline time editor on one shift row, admins only. */
+/** Inline time editor on one shift row, admins only. An OPEN shift can have
+ * its clock-in corrected while STAYING open — closing someone's running shift
+ * from the office would flip their bot to "not clocked in" mid-workday. */
 export function EditShiftTimes({
   shiftId,
   clockInAt,
@@ -128,20 +140,32 @@ export function EditShiftTimes({
   clockOutAt: string | null;
 }) {
   const router = useRouter();
+  const wasOpen = clockOutAt === null;
   const [open, setOpen] = useState(false);
-  const [inAt, setInAt] = useState(toLocalInput(clockInAt));
-  const [outAt, setOutAt] = useState(toLocalInput(clockOutAt));
+  const [inAt, setInAt] = useState(isoToEtInput(clockInAt));
+  const [outAt, setOutAt] = useState(clockOutAt ? isoToEtInput(clockOutAt) : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
     if (busy) return;
-    const nextIn = toIsoOrNull(inAt);
-    const nextOut = toIsoOrNull(outAt);
-    if (!nextIn || !nextOut) {
-      setError('Both times are required (a manual correction always closes the shift).');
+    const nextIn = etInputToIso(inAt);
+    if (!nextIn) {
+      setError('The clock-in time is required.');
       return;
     }
+    let nextOut: string | null = null;
+    if (outAt) {
+      nextOut = etInputToIso(outAt);
+      if (!nextOut) {
+        setError('The clock-out time is not a valid time.');
+        return;
+      }
+    } else if (!wasOpen) {
+      setError('A closed shift needs a clock-out time.');
+      return;
+    }
+    if (!confirmSanity(nextIn, nextOut)) return;
     setBusy(true);
     setError(null);
     const res = await postManual({ shiftId, clockInAt: nextIn, clockOutAt: nextOut });
@@ -181,6 +205,9 @@ export function EditShiftTimes({
         onChange={(e) => setOutAt(e.target.value)}
         className="rounded border border-gray-300 px-1 py-0.5"
       />
+      {wasOpen && (
+        <span className="text-gray-400">(leave the second time empty to keep it open)</span>
+      )}
       <button
         type="button"
         onClick={submit}

@@ -69,8 +69,9 @@ const CLOSED_SHIFT: ShiftRow = {
   updated_at: '2026-08-10T10:00:00.000Z',
 };
 
-const { dbRef, stateRef } = vi.hoisted(() => ({
+const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
   dbRef: { current: null as unknown },
+  sendTelegramMock: vi.fn(async (_chatId: number | string, _text: string) => undefined),
   stateRef: {
     current: {
       rows: [] as ShiftRow[],
@@ -84,12 +85,18 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       breakUpdates: [] as Record<string, unknown>[],
       segments: [] as Record<string, unknown>[],
       segmentUpdates: [] as Record<string, unknown>[],
+      crewMembers: [] as { id: string; active: boolean; is_office: boolean; telegram_user_id: string | null }[],
+      activityInserts: [] as Record<string, unknown>[],
     },
   },
 }));
 
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => dbRef.current,
+}));
+
+vi.mock('@/lib/integrations/telegram', () => ({
+  sendTelegramMessage: sendTelegramMock,
 }));
 
 function makeInsertedRow(payload: Record<string, unknown>): ShiftRow {
@@ -127,6 +134,23 @@ function makeChildBuilder(
   log: () => Array<Record<string, unknown>>,
 ) {
   const childBuilder = {
+    // Read path: getOpenBreak/getOpenSegment do select().eq().is(null).maybeSingle().
+    select: () => {
+      let filtered = [...rows()];
+      const readBuilder = {
+        eq: (col: string, val: unknown) => {
+          filtered = filtered.filter((row) => row[col] === val);
+          return readBuilder;
+        },
+        is: (col: string, val: unknown) => {
+          if (val === null) filtered = filtered.filter((row) => row[col] === null);
+          return readBuilder;
+        },
+        maybeSingle: () =>
+          Promise.resolve({ data: filtered[0] ? { ...filtered[0] } : null, error: null }),
+      };
+      return readBuilder;
+    },
     update: (payload: Record<string, unknown>) => {
       const filters: Record<string, unknown> = {};
       const updateBuilder = {
@@ -172,6 +196,26 @@ function makeDb() {
           () => stateRef.current.segments,
           () => stateRef.current.segmentUpdates,
         ) as never;
+      }
+      if (table === 'crew_members') {
+        let list = [...stateRef.current.crewMembers];
+        const crewBuilder = {
+          select: () => crewBuilder,
+          eq: (col: string, val: unknown) => {
+            list = list.filter((row) => (row as unknown as Record<string, unknown>)[col] === val);
+            return crewBuilder;
+          },
+          maybeSingle: () => Promise.resolve({ data: list[0] ? { ...list[0] } : null, error: null }),
+        };
+        return crewBuilder as never;
+      }
+      if (table === 'dashboard_activity') {
+        return {
+          insert: (payload: Record<string, unknown>) => {
+            stateRef.current.activityInserts.push(payload);
+            return Promise.resolve({ error: null });
+          },
+        } as never;
       }
       if (table !== 'shifts') {
         throw new Error(`shifts.test.ts: unexpected table ${table}`);
@@ -309,6 +353,12 @@ beforeEach(() => {
     breakUpdates: [],
     segments: [],
     segmentUpdates: [],
+    crewMembers: [
+      { id: 'crew-1', active: true, is_office: false, telegram_user_id: null },
+      { id: 'crew-2', active: true, is_office: false, telegram_user_id: null },
+      { id: 'crew-3', active: true, is_office: false, telegram_user_id: null },
+    ],
+    activityInserts: [],
   };
   dbRef.current = makeDb();
 });
@@ -494,6 +544,98 @@ describe('adminUpdateShiftTimes', () => {
       }),
       'overlap',
     );
+  });
+
+  it("refuses to create for an office staffer (not-field-crew) — gate at the WRITE, not the dropdown", async () => {
+    stateRef.current.crewMembers.push({ id: 'crew-office', active: true, is_office: true, telegram_user_id: null });
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-office',
+        clockInAt: '2026-08-10T11:00:00.000Z',
+        clockOutAt: '2026-08-10T13:00:00.000Z',
+        actor: 'Naldo',
+      }),
+      'not-field-crew',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('writes an audit row and notifies a linked crew member after a create', async () => {
+    stateRef.current.crewMembers = [
+      { id: 'crew-2', active: true, is_office: false, telegram_user_id: '999' },
+    ];
+    await adminCreateShift({
+      crewMemberId: 'crew-2',
+      clockInAt: '2026-08-10T11:00:00.000Z',
+      clockOutAt: '2026-08-10T13:00:00.000Z',
+      actor: 'Naldo',
+    });
+    expect(stateRef.current.activityInserts).toHaveLength(1);
+    expect(stateRef.current.activityInserts[0]).toMatchObject({
+      actor: 'Naldo',
+      action: 'shift-manual-create',
+    });
+    expect(sendTelegramMock).toHaveBeenCalledTimes(1);
+    expect(sendTelegramMock.mock.calls[0][0]).toBe('999');
+  });
+
+  it('keeps an OPEN shift open when clockOutAt is null (edits the clock-in only)', async () => {
+    const got = await adminUpdateShiftTimes({
+      shiftId: 'shift-open-1',
+      clockInAt: '2026-08-10T11:30:00.000Z',
+      clockOutAt: null,
+      actor: 'Jason',
+    });
+    expect(got.clockOutAt).toBeNull();
+    expect(stateRef.current.updated).toEqual([
+      {
+        clock_in_at: '2026-08-10T11:30:00.000Z',
+        clock_out_at: null,
+        manual_by: 'Jason',
+      },
+    ]);
+  });
+
+  it('refuses to REOPEN a closed shift by clearing its clock-out', async () => {
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-closed-1',
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: null,
+        actor: 'Jason',
+      }),
+      'invalid-times',
+    );
+  });
+
+  it('refuses a typed clock-out earlier than a still-running break (silent-overpay guard)', async () => {
+    stateRef.current.breaks = [{ ...OPEN_BREAK }]; // started 14:00 on shift-open-1
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-open-1',
+        clockInAt: '2026-08-10T12:00:00.000Z',
+        clockOutAt: '2026-08-10T13:00:00.000Z',
+        actor: 'Jason',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.updated).toEqual([]);
+  });
+
+  it('records before and after values in the audit row on an edit', async () => {
+    await adminUpdateShiftTimes({
+      shiftId: 'shift-closed-1',
+      clockInAt: '2026-08-10T08:30:00.000Z',
+      clockOutAt: '2026-08-10T10:30:00.000Z',
+      actor: 'Jason',
+    });
+    expect(stateRef.current.activityInserts).toHaveLength(1);
+    const detail = stateRef.current.activityInserts[0].detail as {
+      before: { clock_in_at: string };
+      after: { clock_in_at: string };
+    };
+    expect(detail.before.clock_in_at).toBe('2026-08-10T08:00:00.000Z');
+    expect(detail.after.clock_in_at).toBe('2026-08-10T08:30:00.000Z');
   });
 
   it('closing an OPEN shift also closes its running break, like clockOut does', async () => {

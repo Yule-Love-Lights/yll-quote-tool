@@ -99,15 +99,27 @@ describe('validation', () => {
 });
 
 describe('the actor stamp', () => {
-  it('passes the admin display name to a create', async () => {
+  it('passes name plus email to a create (two admins can share a name)', async () => {
     const res = await POST(makeReq({ crewMemberId: 'c1', clockInAt: 'a', clockOutAt: 'b' }));
     expect(res.status).toBe(200);
     expect(createMock).toHaveBeenCalledWith({
       crewMemberId: 'c1',
       clockInAt: 'a',
       clockOutAt: 'b',
-      actor: 'Naldo',
+      actor: 'Naldo (naldo@x.com)',
     });
+  });
+
+  it('an edit may pass clockOutAt null (keep the shift open); a create may not', async () => {
+    await POST(makeReq({ shiftId: 's1', clockInAt: 'a', clockOutAt: null }));
+    expect(updateMock).toHaveBeenCalledWith({
+      shiftId: 's1',
+      clockInAt: 'a',
+      clockOutAt: null,
+      actor: 'Naldo (naldo@x.com)',
+    });
+    const res = await POST(makeReq({ crewMemberId: 'c1', clockInAt: 'a', clockOutAt: null }));
+    expect(res.status).toBe(400);
   });
 
   it('falls back to the email when the name is missing', async () => {

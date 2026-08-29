@@ -30,9 +30,14 @@ listen, it does not record video, and it is not your time clock.
 
 **Your pay.** You clock in and out the same way you do now, and THAT is your
 pay record. Nothing about your pay comes from the GPS. If the GPS and your
-clock ever look different, that starts a conversation, not a deduction —
-there are plenty of honest reasons they differ, like finishing work inside
+clock ever look different, that starts a conversation, not a deduction.
+There are plenty of honest reasons they differ, like finishing work inside
 after the van is loaded.
+
+**If you forget to clock in.** The office can add or fix a shift for you by
+hand. When that happens, the record shows who fixed it, and you get a
+Telegram message with the times so you can say if they look wrong. Nobody
+can quietly change your hours.
 
 **After hours.** The van that goes home at night is tracked around the clock,
 because the tracker doesn't have an off switch tied to work hours. I want you
@@ -40,4 +45,4 @@ to know that plainly rather than find it out later.
 
 Questions, ask me directly.
 
-— Naldo
+Naldo

@@ -26,6 +26,7 @@ const REFUSAL_STATUS: Record<ManualShiftRefusedError['code'], number> = {
   'not-found': 404,
   overlap: 409,
   'edit-race': 409,
+  'not-field-crew': 409,
 };
 
 export async function POST(req: NextRequest) {
@@ -51,13 +52,16 @@ export async function POST(req: NextRequest) {
     clockOutAt?: unknown;
   } | null) ?? {};
 
-  if (typeof clockInAt !== 'string' || typeof clockOutAt !== 'string') {
+  const isEdit = shiftId !== undefined;
+  // clockOutAt may be null ONLY on an edit (it means "leave the shift open",
+  // valid only while the shift IS open — the lib enforces that half).
+  const outOk = typeof clockOutAt === 'string' || (isEdit && clockOutAt === null);
+  if (typeof clockInAt !== 'string' || !outOk) {
     return NextResponse.json(
       { error: 'clockInAt and clockOutAt are required timestamps', code: 'invalid-body' },
       { status: 400 },
     );
   }
-  const isEdit = shiftId !== undefined;
   if (isEdit && typeof shiftId !== 'string') {
     return NextResponse.json({ error: 'shiftId must be a string', code: 'invalid-body' }, { status: 400 });
   }
@@ -75,7 +79,12 @@ export async function POST(req: NextRequest) {
   try {
     const shift = isEdit
       ? await adminUpdateShiftTimes({ shiftId: shiftId as string, clockInAt, clockOutAt, actor })
-      : await adminCreateShift({ crewMemberId: crewMemberId as string, clockInAt, clockOutAt, actor });
+      : await adminCreateShift({
+          crewMemberId: crewMemberId as string,
+          clockInAt,
+          clockOutAt: clockOutAt as string,
+          actor,
+        });
     return NextResponse.json({ ok: true, shift });
   } catch (err) {
     if (err instanceof ManualShiftRefusedError) {
@@ -86,6 +95,12 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// Name plus email: two admins could share a display name, and a renamed
+// account would orphan a name-only trail (PR #1062 admin lens). The email is
+// the auth identity, so the stamp stays resolvable.
 function gateActor(operator: { name: string | null; email: string | null }): string {
-  return operator.name?.trim() || operator.email?.trim() || 'admin';
+  const name = operator.name?.trim();
+  const email = operator.email?.trim();
+  if (name && email) return `${name} (${email})`;
+  return name || email || 'admin';
 }
