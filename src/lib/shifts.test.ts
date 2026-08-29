@@ -563,6 +563,33 @@ describe('adminUpdateShiftTimes', () => {
     );
   });
 
+  it('refuses a FUTURE-dated entry (an admin typo would silently block that person from ever clocking in)', async () => {
+    // Fake clock is 2026-08-10T15:30Z; this entry is tomorrow.
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-2',
+        clockInAt: '2026-08-11T07:00:00.000Z',
+        clockOutAt: '2026-08-11T15:00:00.000Z',
+        actor: 'Naldo',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('refuses a future clock-in on a keep-open edit too', async () => {
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-open-1',
+        clockInAt: '2026-08-11T07:00:00.000Z',
+        clockOutAt: null,
+        actor: 'Jason',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.updated).toEqual([]);
+  });
+
   it("maps the DB exclusion constraint (23P01) to the same 'overlap' refusal", async () => {
     stateRef.current.insertError = {
       code: '23P01',
