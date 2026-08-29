@@ -78,7 +78,7 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
 
   const markers = placements
     .filter((p) => p.lat !== null && p.lng !== null)
-    .map((p) => ({ id: p.id, lat: p.lat!, lng: p.lng!, status: p.status, label: p.suggestedAddress ?? undefined }));
+    .map((p) => ({ id: p.id, lat: p.lat!, lng: p.lng!, status: p.voidedAt ? 'voided' : p.status, label: p.suggestedAddress ?? undefined }));
 
   return (
     <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>

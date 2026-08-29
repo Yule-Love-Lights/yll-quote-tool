@@ -622,6 +622,50 @@ describe('voidPlacement (Naldo 2026-08-29: the duplicate-overcount fix)', () => 
   });
 });
 
+describe('voided rows leave every counter (delta-verify: these had no tests)', () => {
+  it('doorHangerCountsByWorker skips voided hangers', async () => {
+    const { doorHangerCountsByWorker } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const base = { campaign_id: campaign.id, worker_id: worker.id, kind: 'door_hanger' };
+    seedPlacement({ ...base, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:00:00.000Z' });
+    seedPlacement({ ...base, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: '2026-08-24T16:00:00.000Z',
+      voided_at: '2026-08-29T18:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup' });
+
+    const counts = await doorHangerCountsByWorker();
+    expect(counts.get(String(worker.id))).toBe(1);
+  });
+
+  it('campaignActivitySummary counts and the review badge skip voided rows', async () => {
+    const { campaignActivitySummary } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const base = { campaign_id: campaign.id, worker_id: worker.id };
+    seedPlacement({ ...base, status: 'pending' });
+    seedPlacement({ ...base, status: 'pending', voided_at: '2026-08-29T18:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup' });
+
+    const summary = await campaignActivitySummary([String(campaign.id)]);
+    const activity = summary.get(String(campaign.id));
+    expect(activity?.photoCount).toBe(1);
+    expect(activity?.pendingCount).toBe(1);
+  });
+
+  it('an accept that loses its race to a VOID says so instead of reporting a wrong state', async () => {
+    const { acceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id, worker_id: worker.id,
+      voided_at: '2026-08-29T18:00:00.000Z', voided_by: 'admin-1', void_reason: 'dup',
+    });
+    // This reviewer's read predates the void: they still see a live pending row.
+    stateRef.current.staleReadOnce = { ...p, voided_at: null, voided_by: null, void_reason: null };
+
+    await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toThrow(/voided/i);
+    expect(placementUpdates()).toHaveLength(0);
+  });
+});
+
 describe('submitPlacement', () => {
   it('requires GPS coordinates and a proof photo path', async () => {
     const { submitPlacement } = await import('./placements');

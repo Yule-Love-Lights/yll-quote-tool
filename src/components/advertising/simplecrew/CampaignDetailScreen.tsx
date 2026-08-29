@@ -147,7 +147,7 @@ export default function CampaignDetailScreen({
       id: p.id,
       lat: p.lat!,
       lng: p.lng!,
-      status: p.status,
+      status: p.voidedAt ? 'voided' : p.status,
       label: p.suggestedAddress ?? undefined,
     }));
 
