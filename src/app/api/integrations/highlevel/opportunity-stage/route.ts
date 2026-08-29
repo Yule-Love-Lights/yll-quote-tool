@@ -13,11 +13,22 @@
 // Common GHL merge-field spellings for the contact are also read (contact_id,
 // id, contact.id), so a workflow built from the stock template still works.
 //
-// What it does: every LIVE quote linked to that contact goes terminal
-// (declined or abandoned) AND view_only. The customer keeps their portal link
-// and can still look at the design and the prices; approving, declining, and
-// paying are all refused. Staff reverse it with the view-only toggle plus the
-// existing revive on /send (canRevive covers both terminal statuses).
+// What it does: every LIVE quote linked to that contact goes terminal (declined
+// or abandoned). That status ALONE is the archive Naldo asked for: the customer
+// keeps their portal link and can still open it, look at the design, and play
+// with the colours, while /approve, /pay, /decline and /request-changes each
+// independently 409 a terminal quote, and StickyBottomBar swaps the approve
+// controls for a browse strip with a "want to reopen this?" ask (ledger row
+// 236). Staff revive it with the existing revive on /send (canRevive covers
+// both terminal statuses).
+//
+// It deliberately does NOT also set view_only, which the first cut did. The
+// premerge customer lens caught why: StickyBottomBar checks view_only BEFORE
+// isTerminalBrowseStatus, so setting both would have shown every archived
+// customer the unrelated #176 "Just browsing, text us your favourite look"
+// copy and made the reopen-ask button unreachable for exactly the population
+// most likely to want it. The terminal status on its own gives the intended
+// behaviour and the better screen.
 //
 // What it will NOT do, by Naldo's explicit rule: touch a quote with money on
 // it. An approved, booked, or deposit-paid quote is REFUSED and reported, never
@@ -194,11 +205,15 @@ export async function POST(req: NextRequest) {
     // Guarded write. The money columns are re-checked IN the write, not only in
     // decideArchive above, so an approval or deposit that lands between the read
     // and here loses the race instead of being archived on stale state.
-    // view_only is pinned false for the same reason (NOT NULL, so a plain .eq
-    // is safe), mirroring staff-abandon's own TOCTOU guard.
+    // view_only is pinned false as a read-side guard (NOT NULL, so a plain .eq
+    // is safe), mirroring staff-abandon's own TOCTOU guard: a quote staff have
+    // parked browse-only is left to them.
+    //
+    // The status is the ONLY thing written. Setting view_only as well was the
+    // first cut and was wrong — see the archive doc at the top of this file.
     const { data: claimed, error: updErr } = await sb
       .from('quotes')
-      .update({ status: outcome satisfies QuoteStatus, view_only: true, approval_snapshot: snapshot })
+      .update({ status: outcome satisfies QuoteStatus, approval_snapshot: snapshot })
       .eq('id', q.id)
       .eq('view_only', false)
       .is('customer_approved_at', null)

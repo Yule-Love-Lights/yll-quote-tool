@@ -226,19 +226,31 @@ describe('the money guard', () => {
 });
 
 describe('the archive write', () => {
-  it('sets the terminal status, flips view-only, and records what did it', async () => {
+  it('sets the terminal status and records what did it', async () => {
     const sb = makeSb([liveQuote()]);
     sbRef.current = sb;
     await POST(req({ contactId: 'c1', outcome: 'declined' }));
     expect(sb.updates).toHaveLength(1);
-    const payload = sb.updates[0] as { status: string; view_only: boolean; approval_snapshot: Record<string, unknown> };
+    const payload = sb.updates[0] as { status: string; approval_snapshot: Record<string, unknown> };
     expect(payload.status).toBe('declined');
-    expect(payload.view_only).toBe(true);
     const marker = payload.approval_snapshot.ghlArchived as Record<string, unknown>;
     expect(marker.outcome).toBe('declined');
     expect(marker.contactId).toBe('c1');
     expect(marker.priorStatus).toBe('sent');
     expect(marker.source).toBe('ghl-opportunity-stage-webhook');
+  });
+
+  // Premerge customer lens (HIGH, fixed here): the first cut also set
+  // view_only. StickyBottomBar checks view_only BEFORE isTerminalBrowseStatus,
+  // so that combination showed an archived customer the unrelated "Just
+  // browsing" copy and made the reopen-ask button unreachable. The terminal
+  // status alone is what closes the quote; this pins that it stays that way.
+  it('never writes view_only, so the portal shows the reopen ask and not the browsing strip', async () => {
+    const sb = makeSb([liveQuote()]);
+    sbRef.current = sb;
+    await POST(req({ contactId: 'c1', outcome: 'abandoned' }));
+    expect(sb.updates[0]).not.toHaveProperty('view_only');
+    expect(Object.keys(sb.updates[0]).sort()).toEqual(['approval_snapshot', 'status']);
   });
 
   it('preserves an existing approval snapshot instead of replacing it', async () => {
