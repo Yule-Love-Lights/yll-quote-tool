@@ -32,12 +32,12 @@
 -- outcome labeling is a LOCAL quotes-table query per the plan's decision 2,
 -- landing in S4, not here.
 --
--- rep_email is nullable and NOT populated by this slice: the quote tool's
--- src/lib/integrations/highlevel.ts has no user-id -> email lookup helper
--- (the copilot's getGhlUserEmail has no equivalent here), so inventing one
--- inline or stuffing a raw GHL user id into rep_email would be silently
--- wrong. rep_ghl_user_id stores the ground-truth id from the call message
--- instead (S4 can add the email lookup and backfill from this column).
+-- rep_email/rep_name (rep_name ADDED by the rep-assignment amendment below)
+-- are resolved by src/lib/calls/pipeline.ts via the new
+-- src/lib/integrations/highlevel.ts getGhlUser helper, best-effort (a
+-- lookup failure leaves both null, never fails the recording).
+-- rep_ghl_user_id stores the ground-truth id from the call message
+-- regardless of whether the lookup succeeded.
 --
 -- The eight commitment-extraction tracking columns + the partial pending-
 -- extraction index are ported from the copilot's migration 0024 now, so S6
@@ -71,6 +71,20 @@
 -- the WHERE predicate. Multiple call_recordings rows with a NULL
 -- ghl_message_id remain permitted (same NULL-distinctness argument, now
 -- correctly connected to why it matters).
+--
+-- AMENDED AGAIN 2026-08-29, same day, rep-assignment ruling (still
+-- unapplied, so amended in place): call_transcripts gains a nullable
+-- rep_name column. The header comment above claiming "rep_email is nullable
+-- and NOT populated by this slice" is now WRONG and has been corrected in
+-- place -- src/lib/calls/pipeline.ts now resolves rep_email AND rep_name
+-- via a new src/lib/integrations/highlevel.ts getGhlUser lookup
+-- (GET /users/{userId}, cached per batch run), best-effort. rep_name is a
+-- SEPARATE column from rep_email rather than folded into it, because
+-- migrations/2026-08-29-call-commitments.sql's producer needs a real
+-- display name for its "Call taken by <name>" task detail line, and
+-- collapsing name into the email column would make that unrecoverable for
+-- calls where a name was resolved but happens to differ from the email's
+-- local part.
 -- =====================================================================
 
 create table if not exists public.call_recordings (
@@ -135,6 +149,9 @@ create table if not exists public.call_transcripts (
   utterances            jsonb,
 
   rep_email             text,
+  -- Added by the rep-assignment amendment above -- resolved alongside
+  -- rep_email via the same GHL user lookup.
+  rep_name              text,
   rep_ghl_user_id       text,
   direction             text,
   duration_seconds      int,

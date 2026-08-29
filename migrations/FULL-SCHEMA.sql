@@ -3306,9 +3306,12 @@ grant execute on function public.office_tasks_create_manual(text,text,timestampt
 --   - v_task.created_by_employee_id -> v_task.created_by,
 --     v_task.assigned_employee_id -> v_task.assigned_to.
 --   - Everything else (the advisory-xact-lock, the payload-aware
---     idempotency replay, the creator-or-assignee ownership check raising
---     42501, the terminal-status guard, the per-status reason
---     requirement/prohibition, the row lock via `for update`) is unchanged.
+--     idempotency replay, the terminal-status guard, the per-status reason
+--     requirement/prohibition, the row lock via `for update`) is unchanged
+--     from the port. The creator-or-assignee ownership check the original
+--     port carried here was REMOVED by the 2026-08-29 "everything is
+--     shared" amendment (see this file's header) -- not part of the
+--     original copilot port, noted here so this comment stays accurate.
 create or replace function public.office_tasks_update_status(
   p_task_id uuid,
   p_status text,
@@ -3381,10 +3384,11 @@ begin
   if not found then
     raise exception using errcode = '23503', message = 'task does not exist';
   end if;
-  if p_actor <> v_task.created_by
-     and p_actor is distinct from v_task.assigned_to then
-    raise exception using errcode = '42501', message = 'task is not owned by actor';
-  end if;
+  -- EVERYTHING IS SHARED (2026-08-29 amendment, see this file's header):
+  -- the creator-or-assignee ownership check that used to live here is
+  -- REMOVED -- any authenticated operator (p_actor is not null, checked
+  -- above) may act on any task. created_by/assigned_to are no longer
+  -- consulted for authorization anywhere in this function.
   if v_task.status in ('completed', 'dismissed') then
     raise exception using errcode = '22023', message = 'terminal task cannot change';
   end if;
@@ -3393,10 +3397,10 @@ begin
   -- idempotency key) already returned above via the replay check and never
   -- reaches this line -- this only fires for a genuinely different action
   -- (a different actor, or a fresh idempotency key) hitting a task someone
-  -- else already blocked. Matters most for a SHARED (non-manual, S6)
-  -- task, where more than one operator can act on the same row: without
-  -- this, a second block silently replaces the first block's reason with
-  -- no signal to the first actor that their reason is gone.
+  -- else already blocked. Matters for ANY shared task now that everything
+  -- is shared: without this, a second block silently replaces the first
+  -- block's reason with no signal to the first actor that their reason is
+  -- gone.
   if p_status = 'blocked' and v_task.status = 'blocked' then
     raise exception using errcode = '22023', message = 'task is already blocked; refresh to see the current reason';
   end if;
@@ -3731,12 +3735,12 @@ on conflict (id) do nothing;
 -- outcome labeling is a LOCAL quotes-table query per the plan's decision 2,
 -- landing in S4, not here.
 --
--- rep_email is nullable and NOT populated by this slice: the quote tool's
--- src/lib/integrations/highlevel.ts has no user-id -> email lookup helper
--- (the copilot's getGhlUserEmail has no equivalent here), so inventing one
--- inline or stuffing a raw GHL user id into rep_email would be silently
--- wrong. rep_ghl_user_id stores the ground-truth id from the call message
--- instead (S4 can add the email lookup and backfill from this column).
+-- rep_email/rep_name (rep_name ADDED by the rep-assignment amendment below)
+-- are resolved by src/lib/calls/pipeline.ts via the new
+-- src/lib/integrations/highlevel.ts getGhlUser helper, best-effort (a
+-- lookup failure leaves both null, never fails the recording).
+-- rep_ghl_user_id stores the ground-truth id from the call message
+-- regardless of whether the lookup succeeded.
 --
 -- The eight commitment-extraction tracking columns + the partial pending-
 -- extraction index are ported from the copilot's migration 0024 now, so S6
@@ -3770,6 +3774,20 @@ on conflict (id) do nothing;
 -- the WHERE predicate. Multiple call_recordings rows with a NULL
 -- ghl_message_id remain permitted (same NULL-distinctness argument, now
 -- correctly connected to why it matters).
+--
+-- AMENDED AGAIN 2026-08-29, same day, rep-assignment ruling (still
+-- unapplied, so amended in place): call_transcripts gains a nullable
+-- rep_name column. The header comment above claiming "rep_email is nullable
+-- and NOT populated by this slice" is now WRONG and has been corrected in
+-- place -- src/lib/calls/pipeline.ts now resolves rep_email AND rep_name
+-- via a new src/lib/integrations/highlevel.ts getGhlUser lookup
+-- (GET /users/{userId}, cached per batch run), best-effort. rep_name is a
+-- SEPARATE column from rep_email rather than folded into it, because
+-- migrations/2026-08-29-call-commitments.sql's producer needs a real
+-- display name for its "Call taken by <name>" task detail line, and
+-- collapsing name into the email column would make that unrecoverable for
+-- calls where a name was resolved but happens to differ from the email's
+-- local part.
 -- =====================================================================
 
 create table if not exists public.call_recordings (
@@ -3834,6 +3852,9 @@ create table if not exists public.call_transcripts (
   utterances            jsonb,
 
   rep_email             text,
+  -- Added by the rep-assignment amendment above -- resolved alongside
+  -- rep_email via the same GHL user lookup.
+  rep_name              text,
   rep_ghl_user_id       text,
   direction             text,
   duration_seconds      int,
@@ -4070,7 +4091,8 @@ grant select, insert, update, delete on table public.call_commitments
 -- bottom in call order.
 -- ---------------------------------------------------------------------
 create or replace function public.office_tasks_create_from_commitment(
-  p_commitment_id uuid
+  p_commitment_id uuid,
+  p_assigned_to uuid
 ) returns uuid
 language plpgsql
 security definer
@@ -4080,6 +4102,8 @@ declare
   v_commitment public.call_commitments%rowtype;
   v_customer_name text;
   v_customer_phone text;
+  v_rep_name text;
+  v_rep_label text;
   v_customer_line text;
   v_title text;
   v_detail text;
@@ -4101,8 +4125,8 @@ begin
     return null;
   end if;
 
-  select transcript_record.customer_name, transcript_record.customer_phone
-  into v_customer_name, v_customer_phone
+  select transcript_record.customer_name, transcript_record.customer_phone, transcript_record.rep_name
+  into v_customer_name, v_customer_phone, v_rep_name
   from public.call_transcripts as transcript_record
   where transcript_record.id = v_commitment.transcript_id;
 
@@ -4128,9 +4152,17 @@ begin
     ),
     ''
   );
+  -- rep-assignment ruling: name preferred, the commitment's own
+  -- (already-denormalized) rep_email as fallback -- either tells whoever
+  -- picks up a SHARED task who originally took the call.
+  v_rep_label := coalesce(nullif(btrim(v_rep_name), ''), v_commitment.rep_email);
+
   v_detail := v_commitment.detail;
   if v_customer_line is not null then
     v_detail := v_detail || E'\n\n' || v_customer_line;
+  end if;
+  if v_rep_label is not null then
+    v_detail := v_detail || E'\n\n' || 'Call taken by ' || v_rep_label;
   end if;
   v_detail := left(v_detail, 2000);
 
@@ -4139,7 +4171,7 @@ begin
   insert into public.office_tasks (
     source_system, source_event_id, title, detail, due_at, created_by, assigned_to
   ) values (
-    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
+    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, p_assigned_to
   )
   on conflict (source_system, source_event_id) do nothing
   returning id into v_task_id;
@@ -4175,9 +4207,9 @@ begin
 end
 $function$;
 
-revoke all on function public.office_tasks_create_from_commitment(uuid)
+revoke all on function public.office_tasks_create_from_commitment(uuid, uuid)
   from public, anon, authenticated, service_role;
-grant execute on function public.office_tasks_create_from_commitment(uuid)
+grant execute on function public.office_tasks_create_from_commitment(uuid, uuid)
   to service_role;
 
 -- ---------------------------------------------------------------------
@@ -4192,7 +4224,8 @@ grant execute on function public.office_tasks_create_from_commitment(uuid)
 create or replace function public.call_commitments_finalize_extraction(
   p_transcript_id uuid,
   p_rows jsonb,
-  p_extractor_version text
+  p_extractor_version text,
+  p_assigned_to uuid
 ) returns text
 language plpgsql
 security definer
@@ -4278,7 +4311,7 @@ begin
   for v_new_commitment_id in
     select id from public.call_commitments where transcript_id = p_transcript_id
   loop
-    perform public.office_tasks_create_from_commitment(v_new_commitment_id);
+    perform public.office_tasks_create_from_commitment(v_new_commitment_id, p_assigned_to);
   end loop;
 
   update public.call_transcripts
@@ -4293,9 +4326,9 @@ begin
 end
 $function$;
 
-revoke all on function public.call_commitments_finalize_extraction(uuid, jsonb, text)
+revoke all on function public.call_commitments_finalize_extraction(uuid, jsonb, text, uuid)
   from public, anon, authenticated, service_role;
-grant execute on function public.call_commitments_finalize_extraction(uuid, jsonb, text)
+grant execute on function public.call_commitments_finalize_extraction(uuid, jsonb, text, uuid)
   to service_role;
 
 -- ---------------------------------------------------------------------

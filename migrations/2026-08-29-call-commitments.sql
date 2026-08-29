@@ -136,6 +136,35 @@
 --      commitment can never write a duplicate event. Requires
 --      office_task_events.actor to be nullable -- see that migration's own
 --      amendment note for the CHECK constraint that gates it.
+--
+-- AMENDED AGAIN 2026-08-29, same day, rep-assignment ruling (still
+-- unapplied, so amended in place, not a third migration): the "nobody
+-- claims to know which operator corresponds to which GHL user yet" line
+-- above is now WRONG and superseded. Both functions below gain a new
+-- p_assigned_to uuid parameter (SIGNATURE CHANGE -- the revoke/grant lines
+-- for both functions are updated to match):
+--   - office_tasks_create_from_commitment(p_commitment_id uuid,
+--     p_assigned_to uuid): the office_tasks INSERT now sets assigned_to =
+--     p_assigned_to instead of a hardcoded null.
+--   - call_commitments_finalize_extraction(p_transcript_id uuid, p_rows
+--     jsonb, p_extractor_version text, p_assigned_to uuid): passes
+--     p_assigned_to straight through to every office_tasks_create_from_
+--     commitment call in its loop -- every commitment from ONE call shares
+--     the SAME rep, so one resolved operator id covers the whole batch.
+-- The MAPPING itself (a rep's email -> a real operator account) happens in
+-- TypeScript, BEFORE this RPC is ever called (src/lib/auth/adminUsers.ts's
+-- findOperatorByEmail, case-insensitive, crew/advertising excluded) -- this
+-- SQL layer only ever receives an already-resolved operator id or null, it
+-- does no lookup itself. created_by stays NULL (still no operator "created"
+-- a machine-detected commitment); only assigned_to changes.
+--
+-- THE DETAIL LINE: office_tasks_create_from_commitment's transcript join
+-- (previously customer_name/customer_phone only) now also selects rep_name
+-- (migrations/2026-08-29-call-ingest.sql's own amendment), and appends
+-- "Call taken by <name or email>" to the task detail when either is known
+-- (name preferred, call_commitments.rep_email as fallback -- that column is
+-- already denormalized onto the commitment row itself at extraction time,
+-- no second transcript column needed for it).
 -- =====================================================================
 
 create table public.call_commitments (
@@ -207,7 +236,8 @@ grant select, insert, update, delete on table public.call_commitments
 -- bottom in call order.
 -- ---------------------------------------------------------------------
 create function public.office_tasks_create_from_commitment(
-  p_commitment_id uuid
+  p_commitment_id uuid,
+  p_assigned_to uuid
 ) returns uuid
 language plpgsql
 security definer
@@ -217,6 +247,8 @@ declare
   v_commitment public.call_commitments%rowtype;
   v_customer_name text;
   v_customer_phone text;
+  v_rep_name text;
+  v_rep_label text;
   v_customer_line text;
   v_title text;
   v_detail text;
@@ -238,8 +270,8 @@ begin
     return null;
   end if;
 
-  select transcript_record.customer_name, transcript_record.customer_phone
-  into v_customer_name, v_customer_phone
+  select transcript_record.customer_name, transcript_record.customer_phone, transcript_record.rep_name
+  into v_customer_name, v_customer_phone, v_rep_name
   from public.call_transcripts as transcript_record
   where transcript_record.id = v_commitment.transcript_id;
 
@@ -265,9 +297,17 @@ begin
     ),
     ''
   );
+  -- rep-assignment ruling: name preferred, the commitment's own
+  -- (already-denormalized) rep_email as fallback -- either tells whoever
+  -- picks up a SHARED task who originally took the call.
+  v_rep_label := coalesce(nullif(btrim(v_rep_name), ''), v_commitment.rep_email);
+
   v_detail := v_commitment.detail;
   if v_customer_line is not null then
     v_detail := v_detail || E'\n\n' || v_customer_line;
+  end if;
+  if v_rep_label is not null then
+    v_detail := v_detail || E'\n\n' || 'Call taken by ' || v_rep_label;
   end if;
   v_detail := left(v_detail, 2000);
 
@@ -276,7 +316,7 @@ begin
   insert into public.office_tasks (
     source_system, source_event_id, title, detail, due_at, created_by, assigned_to
   ) values (
-    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
+    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, p_assigned_to
   )
   on conflict (source_system, source_event_id) do nothing
   returning id into v_task_id;
@@ -312,9 +352,9 @@ begin
 end
 $function$;
 
-revoke all on function public.office_tasks_create_from_commitment(uuid)
+revoke all on function public.office_tasks_create_from_commitment(uuid, uuid)
   from public, anon, authenticated, service_role;
-grant execute on function public.office_tasks_create_from_commitment(uuid)
+grant execute on function public.office_tasks_create_from_commitment(uuid, uuid)
   to service_role;
 
 -- ---------------------------------------------------------------------
@@ -329,7 +369,8 @@ grant execute on function public.office_tasks_create_from_commitment(uuid)
 create function public.call_commitments_finalize_extraction(
   p_transcript_id uuid,
   p_rows jsonb,
-  p_extractor_version text
+  p_extractor_version text,
+  p_assigned_to uuid
 ) returns text
 language plpgsql
 security definer
@@ -415,7 +456,7 @@ begin
   for v_new_commitment_id in
     select id from public.call_commitments where transcript_id = p_transcript_id
   loop
-    perform public.office_tasks_create_from_commitment(v_new_commitment_id);
+    perform public.office_tasks_create_from_commitment(v_new_commitment_id, p_assigned_to);
   end loop;
 
   update public.call_transcripts
@@ -430,9 +471,9 @@ begin
 end
 $function$;
 
-revoke all on function public.call_commitments_finalize_extraction(uuid, jsonb, text)
+revoke all on function public.call_commitments_finalize_extraction(uuid, jsonb, text, uuid)
   from public, anon, authenticated, service_role;
-grant execute on function public.call_commitments_finalize_extraction(uuid, jsonb, text)
+grant execute on function public.call_commitments_finalize_extraction(uuid, jsonb, text, uuid)
   to service_role;
 
 -- ---------------------------------------------------------------------

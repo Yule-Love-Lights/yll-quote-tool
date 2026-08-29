@@ -22,10 +22,13 @@
 --
 -- Everything else is a FAITHFUL port: the twice-guarded design (an
 -- advisory-xact-lock + payload-aware idempotency replay on top of a normal
--- unique-index CAS), the immutability triggers (no deletes; provenance
--- columns immutable; terminal rows frozen; events table fully immutable),
--- and the creator-or-assignee update authorization. See the RPC bodies
--- below for a line-by-line porting note against the copilot original.
+-- unique-index CAS) and the immutability triggers (no deletes; provenance
+-- columns immutable; terminal rows frozen; events table fully immutable).
+-- The originally-ported creator-or-assignee update authorization was
+-- REMOVED by the 2026-08-29 "everything is shared" amendment below -- see
+-- that note, not this paragraph, for the live authorization model. See the
+-- RPC bodies below for a line-by-line porting note against the copilot
+-- original.
 --
 -- S1 SCOPE: no producers besides manual entry yet (source_system stays
 -- 'manual' for every row created here — call_commitment and quote_tool
@@ -110,6 +113,34 @@
 --      path the existing completed/dismissed terminal guard already uses
 --      (src/app/api/tasks/[id]/route.ts), so no client/route change was
 --      needed for this to surface correctly.
+--
+-- AMENDED A THIRD TIME 2026-08-29, same day, Naldo's own ruling (still
+-- unapplied): EVERYTHING IS SHARED. Every earlier amendment above treated
+-- "shared" as a property of NON-manual (call_commitment/quote_tool) tasks
+-- only, with manual tasks staying creator-or-assignee-scoped. That
+-- distinction is gone: a manual task is now visible to and actionable by
+-- EVERY operator too, same as a call_commitment task always was.
+--
+-- office_tasks_update_status's ownership check --
+--   if p_actor <> v_task.created_by and p_actor is distinct from v_task.assigned_to
+--     then raise 42501 'task is not owned by actor'
+-- -- is REMOVED entirely (not just widened): with every task shared, there
+-- is no ownership left to check. The only actor requirement that survives
+-- is the pre-existing "p_actor is not null" check earlier in the function
+-- (still real: it is what proves the caller passed a genuinely
+-- authenticated operator id, not a null). Everything else in the function
+-- is UNCHANGED by this amendment: the advisory-lock idempotency replay, the
+-- terminal-status guard, and the fix-round reblock guard (item 3 above) all
+-- still apply to every task exactly as before -- this amendment removes WHO
+-- may act, not what counts as a valid action.
+--
+-- Consequence for src/lib/officeTasks.ts's listOfficeTasks: the
+-- creator-or-assignee `.or(...)` filter is dropped entirely too (see that
+-- file's own comment) -- the list query is now scoped by status/view only.
+-- created_by/assigned_to still exist and are still stamped on every write
+-- (provenance, and RULING 2's rep-assignment for call_commitment tasks) --
+-- they no longer GATE anything, but they still say who created a task and,
+-- for a commitment task, who it's assigned to.
 -- =====================================================================
 
 create table public.office_tasks (
@@ -451,9 +482,12 @@ grant execute on function public.office_tasks_create_manual(text,text,timestampt
 --   - v_task.created_by_employee_id -> v_task.created_by,
 --     v_task.assigned_employee_id -> v_task.assigned_to.
 --   - Everything else (the advisory-xact-lock, the payload-aware
---     idempotency replay, the creator-or-assignee ownership check raising
---     42501, the terminal-status guard, the per-status reason
---     requirement/prohibition, the row lock via `for update`) is unchanged.
+--     idempotency replay, the terminal-status guard, the per-status reason
+--     requirement/prohibition, the row lock via `for update`) is unchanged
+--     from the port. The creator-or-assignee ownership check the original
+--     port carried here was REMOVED by the 2026-08-29 "everything is
+--     shared" amendment (see this file's header) -- not part of the
+--     original copilot port, noted here so this comment stays accurate.
 create function public.office_tasks_update_status(
   p_task_id uuid,
   p_status text,
@@ -526,10 +560,11 @@ begin
   if not found then
     raise exception using errcode = '23503', message = 'task does not exist';
   end if;
-  if p_actor <> v_task.created_by
-     and p_actor is distinct from v_task.assigned_to then
-    raise exception using errcode = '42501', message = 'task is not owned by actor';
-  end if;
+  -- EVERYTHING IS SHARED (2026-08-29 amendment, see this file's header):
+  -- the creator-or-assignee ownership check that used to live here is
+  -- REMOVED -- any authenticated operator (p_actor is not null, checked
+  -- above) may act on any task. created_by/assigned_to are no longer
+  -- consulted for authorization anywhere in this function.
   if v_task.status in ('completed', 'dismissed') then
     raise exception using errcode = '22023', message = 'terminal task cannot change';
   end if;
@@ -538,10 +573,10 @@ begin
   -- idempotency key) already returned above via the replay check and never
   -- reaches this line -- this only fires for a genuinely different action
   -- (a different actor, or a fresh idempotency key) hitting a task someone
-  -- else already blocked. Matters most for a SHARED (non-manual, S6)
-  -- task, where more than one operator can act on the same row: without
-  -- this, a second block silently replaces the first block's reason with
-  -- no signal to the first actor that their reason is gone.
+  -- else already blocked. Matters for ANY shared task now that everything
+  -- is shared: without this, a second block silently replaces the first
+  -- block's reason with no signal to the first actor that their reason is
+  -- gone.
   if p_status = 'blocked' and v_task.status = 'blocked' then
     raise exception using errcode = '22023', message = 'task is already blocked; refresh to see the current reason';
   end if;
