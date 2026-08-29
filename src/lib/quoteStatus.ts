@@ -322,3 +322,28 @@ export function statusMatchesFilter(code: QuoteStatus, filter: QuoteStatus): boo
   if (code === filter) return true;
   return code === 'approved' && filter === 'sent';
 }
+
+/**
+ * True when this quote's money came from the retired home.works CRM rather than
+ * from our pricing engine (the #1049 migration stamps `approval_snapshot.
+ * homeworks`).
+ *
+ * This matters because those figures are the customer's ACTUAL agreed and paid
+ * amounts, copied verbatim, and the engine provably cannot reproduce them: it
+ * disagrees with the charged tax on 8 of the 14 Homeworks invoices (per-line
+ * rounding, two rates on one invoice, one rate absent from the document). So a
+ * recompute is not a refresh, it is a silent replacement of what somebody paid.
+ * Ledger row 444.
+ *
+ * It lives in THIS module, which imports nothing, because `QuoteBuilder` is a
+ * client component and needs it at mount to warn a staffer BEFORE they type.
+ * Reaching for the copy in `src/lib/quotes.ts` would drag that file's Supabase
+ * server chain into the browser bundle — the client/server import-boundary break
+ * this repo has shipped before. `quotes.ts` re-exports it for server callers, so
+ * there is still exactly one implementation.
+ */
+export function isMigratedQuote(
+  approvalSnapshot: { [key: string]: unknown } | null | undefined,
+): boolean {
+  return !!approvalSnapshot && approvalSnapshot.homeworks != null;
+}

@@ -43,7 +43,7 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, isMigratedQuote, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -824,6 +824,11 @@ export default function QuoteBuilder({
   // finding 4's predicate-mismatch case (a staff-decline-after-approval quote
   // whose savedStatus/approvedAt read stale in THIS tab).
   const [staleApprovalFrozen, setStaleApprovalFrozen] = useState(false);
+  // Row 444 (premerge staff lens HIGH): this quote's money came from home.works
+  // and cannot be re-priced. Known at MOUNT from the snapshot the page already
+  // passes, so the warning is on screen before a staffer types — the first cut
+  // only told them after the server refused a save they had already made.
+  const isMigrated = isMigratedQuote((initialQuote?.approvalSnapshot ?? null) as { [k: string]: unknown } | null);
   // Row 331+341: post-approval freeze for the three click-to-edit override
   // surfaces that auto-persist with no separate Calculate/confirm step and no
   // "already approved" warning of their own — EditablePrice (#104),
@@ -848,7 +853,7 @@ export default function QuoteBuilder({
   // for its actual path (decline → revive → edit → re-send).
   const bookedAmendEligible = savedStatus === 'booked';
   const postApprovalFrozen =
-    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen;
+    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen || isMigrated;
   // Premerge finding 2 fix: this copy only ever shows when postApprovalFrozen
   // is true, which (per the carve-out above) now excludes the booked-amend
   // case entirely — so this is always the "re-approval needed" path, never
@@ -878,10 +883,21 @@ export default function QuoteBuilder({
   // Row 367: the DESIGN's own lock copy. Separate from the money reason above
   // because the remedy sentence differs — nothing here needs re-pricing, the
   // customer simply agreed to a picture.
-  const POST_APPROVAL_DESIGN_LOCK_REASON =
-    'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
-  const POST_APPROVAL_LOCK_REASON =
-    "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
+  // Row 444 (premerge staff lens HIGH + technical lens MED): for a migrated
+  // order BOTH of the standard remedies below are dead ends. Decline/revive/
+  // re-send reopens the customer approval flow on an already-booked historical
+  // record and does not clear `approval_snapshot.homeworks`, so the very next
+  // save refuses again; and the amend flow needs a fresh Calculate result to
+  // compute its delta, which the guard makes impossible. Staff who missed the
+  // one-time red banner were being steered at two remedies that cannot work.
+  const MIGRATED_LOCK_REASON =
+    'This order came from home.works. Its figures and design are a record of what the customer agreed and paid — this tool did not calculate them and cannot re-price them. To change this order, agree the new figures with Jason and record them directly.';
+  const POST_APPROVAL_DESIGN_LOCK_REASON = isMigrated
+    ? MIGRATED_LOCK_REASON
+    : 'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
+  const POST_APPROVAL_LOCK_REASON = isMigrated
+    ? MIGRATED_LOCK_REASON
+    : "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -5336,7 +5352,19 @@ Send anyway?`,
         // adding it read as a self-correction that could not fire. The design
         // routes that DO return it self-correct through noteDesignLocked()
         // below instead.
-        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        // Row 444 joins this set for the same reason the other three are in it:
+        // setResult(null) has already nulled the breakdown, and every pricing
+        // control lives inside `{result && (...)}`, so without the restore below
+        // a staffer who clicks Calculate on a migrated quote is left staring at
+        // a red banner with no way back short of a reload. The tab self-corrects
+        // to server truth - which for a migrated order is "these figures are not
+        // ours to recompute" - instead of staying editable and re-erroring.
+        const LOCK_CODES = new Set([
+          'price-override-locked',
+          'label-override-locked',
+          'bistro-footage-locked',
+          'migrated-quote-locked',
+        ]);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
           setBaselineResult(prevBaseline);
@@ -6163,24 +6191,33 @@ Send anyway?`,
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Row 444 (premerge staff lens HIGH): these four were the only
+                  editable fields left on a migrated quote, and the save that
+                  would persist them is refused — so a staffer could type a
+                  corrected phone number, see it sit there as if accepted, and
+                  lose it. Read-only, with the reason on the field itself. */}
               <div>
                 <label className={lbl} htmlFor="customer-name">Name</label>
                 <input id="customer-name" className={inp} placeholder="Jane Smith (optional)"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.name} onChange={e => setCustomer('name', e.target.value)} />
               </div>
               <div>
                 <label className={lbl} htmlFor="customer-phone">Phone</label>
                 <input id="customer-phone" className={inp} placeholder="(516) 555-0123"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.phone} onChange={e => setCustomer('phone', e.target.value)} />
               </div>
               <div>
                 <label className={lbl} htmlFor="customer-email">Email</label>
                 <input id="customer-email" className={inp} type="email" placeholder="jane@example.com"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.email} onChange={e => setCustomer('email', e.target.value)} />
               </div>
               <div>
                 <label className={lbl} htmlFor="customer-address">Property Address</label>
                 <input id="customer-address" className={inp} placeholder="123 Main St, Smithtown, NY 11787"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
             </div>

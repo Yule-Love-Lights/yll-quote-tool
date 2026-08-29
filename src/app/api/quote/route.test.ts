@@ -87,17 +87,27 @@ const {
           consent?: { status?: string | null } | null;
         }>;
         pricing?: unknown;
+        // Row 444: the #1049 migration's stamp — its presence is what makes a
+        // quote unre-priceable, so the fixture shape has to be able to carry it.
+        homeworks?: unknown;
       } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
 }));
 
-vi.mock('@/lib/quotes', () => ({
-  saveQuote: save,
-  updateQuote: update,
-  getQuoteRaw: getRaw,
-}));
+vi.mock('@/lib/quotes', async () => {
+  // isMigratedQuote is a pure predicate over approval_snapshot (row 444) and
+  // stays REAL — mocking it would let the guard pass a test it could never pass
+  // in production.
+  const actual = await vi.importActual<typeof import('@/lib/quotes')>('@/lib/quotes');
+  return {
+    isMigratedQuote: actual.isMigratedQuote,
+    saveQuote: save,
+    updateQuote: update,
+    getQuoteRaw: getRaw,
+  };
+});
 
 vi.mock('@/lib/quoteBuildTiming', () => ({
   completeQuoteBuildSession,
@@ -1636,6 +1646,72 @@ describe('POST /api/quote — design-projection money path (W1-010)', () => {
     expect(res.status).toBe(200);
     expect(getDesignMock).not.toHaveBeenCalled();
     expect(wreathLine(savedResult())).toBeUndefined();
+  });
+});
+
+describe('POST /api/quote — home.works migrated quotes never re-price (row 444)', () => {
+  // The 20 quotes the #1049 migration brought over carry the figures the
+  // customer actually agreed and paid, copied verbatim. The pricing engine
+  // cannot reproduce them — it disagrees with the charged tax on 8 of the 14
+  // Homeworks invoices — so a re-price does not refresh those numbers, it
+  // silently replaces them. All 20 are status='booked', and the builder sends
+  // `amendReprice: true` on every save of a booked quote, which is precisely
+  // what unlocks the sibling gate below. This was live in production.
+  const MIGRATED = {
+    quote_sent_at: '2026-05-01T00:00:00Z',
+    customer_approved_at: '2026-05-10T00:00:00Z',
+    deposit_paid_at: '2026-05-11T12:00:00Z',
+    viewed_at: '2026-05-01T00:00:00Z',
+    status: 'booked',
+    approval_snapshot: { homeworks: { invoiceNumber: 'HW-1162' } },
+  };
+
+  it('refuses a plain Calculate on a migrated quote and writes nothing', async () => {
+    rawRef.current = { ...MIGRATED };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('migrated-quote-locked');
+    expect(body.error).toContain('home.works');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('refuses even WITH amendReprice, which is what the builder always sends on a booked quote', async () => {
+    rawRef.current = { ...MIGRATED };
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, amendReprice: true }),
+    );
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code?: string }).code).toBe('migrated-quote-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('refuses before the booked gate, so the reason a staffer reads is the true one', async () => {
+    rawRef.current = { ...MIGRATED };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    // Not 'quote-locked' — that message tells them to use the amend flow, which
+    // would re-price this order through the engine and destroy its figures.
+    expect(((await res.json()) as { code?: string }).code).not.toBe('quote-locked');
+  });
+
+  it('leaves an ordinary booked quote on its existing gate', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: '2026-01-03T00:00:00Z',
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'booked',
+      approval_snapshot: { customerSelection: { currentTotalUsd: 100 } },
+    };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(((await res.json()) as { code?: string }).code).toBe('quote-locked');
+  });
+
+  it('does not touch a normal draft', async () => {
+    // rawRef defaults to a plain draft in beforeEach.
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 });
 
