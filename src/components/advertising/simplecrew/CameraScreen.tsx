@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
+import { chipStateFor, GPS_TICK_MS, isFixFresh, type GpsPermission } from './cameraGps';
 import { CloseIcon, FlashOffIcon, FlipCameraIcon, SearchIcon } from './icons';
 import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
 
@@ -123,8 +124,74 @@ export default function CameraScreen({
     };
   }, [facing]);
 
-  const getGps = () =>
-    new Promise<{ lat: number; lng: number; accuracyM: number | null } | null>((resolve) => {
+  // GPS. The browser only shows its location permission prompt when the
+  // geolocation API is actually CALLED — a message telling the worker to
+  // "allow location" with no call behind it prompts nothing (Naldo's device
+  // round: shots failed and no prompt ever appeared). So a watchPosition
+  // starts the moment the camera opens: the prompt fires before the first
+  // shot, and the warm watch means the fix is already in hand at the
+  // shutter. The status chip above the shutter shows which state we're in.
+  const [gpsStatus, setGpsStatus] = useState<GpsPermission>('starting');
+  const lastFixRef = useRef<{ lat: number; lng: number; accuracyM: number | null; at: number } | null>(null);
+  // The chip must not claim "ready" on a fix the shutter would refuse
+  // (staff lens + delta-verify on PR #1090): the tick re-checks the last
+  // fix's age with the SAME isFixFresh rule getGps() uses, so a green
+  // chip always means the warm fix will actually be reused.
+  const [fixFresh, setFixFresh] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => {
+      setFixFresh(isFixFresh(lastFixRef.current?.at ?? null, Date.now()));
+    }, GPS_TICK_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    let id: number | null = null;
+    let cancelled = false;
+    (async () => {
+      if (cancelled) return;
+      if (!navigator.geolocation) {
+        setGpsStatus('unsupported');
+        return;
+      }
+      id = navigator.geolocation.watchPosition(
+        (pos) => {
+          lastFixRef.current = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracyM: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
+            at: Date.now(),
+          };
+          setGpsStatus('ready');
+          setFixFresh(true);
+        },
+        (err) => {
+          // PERMISSION_DENIED (1) is sticky until the worker changes the site
+          // setting; 2/3 are transient and the watch keeps trying, so only
+          // downgrade to no_signal when we have no fix at all yet.
+          if (err.code === 1) setGpsStatus('denied');
+          else setGpsStatus((s) => (s === 'ready' ? s : 'no_signal'));
+        },
+        { enableHighAccuracy: true, maximumAge: 0 },
+      );
+    })();
+    return () => {
+      cancelled = true;
+      if (id !== null) navigator.geolocation?.clearWatch(id);
+    };
+  }, []);
+
+  // Both lenses converged here: at 25s a canvassing worker walks to the
+  // NEXT house before the warm fix expires, so the shot inherits the
+  // previous house's GPS. GPS_FRESH_MS (5s, in cameraGps.ts, shared with
+  // the chip) keeps the drift inside ordinary GPS noise at walking pace
+  // while still skipping the one-shot wait when the watch is streaming.
+  const getGps = (): Promise<{ lat: number; lng: number; accuracyM: number | null } | null> => {
+    const warm = lastFixRef.current;
+    if (warm && isFixFresh(warm.at, Date.now())) {
+      return Promise.resolve({ lat: warm.lat, lng: warm.lng, accuracyM: warm.accuracyM });
+    }
+    return new Promise((resolve) => {
       if (!navigator.geolocation) return resolve(null);
       navigator.geolocation.getCurrentPosition(
         (pos) =>
@@ -137,6 +204,22 @@ export default function CameraScreen({
         { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 },
       );
     });
+  };
+
+  // Read the status through a ref so the message inside shoot()'s stale
+  // closure still reflects the CURRENT permission state.
+  const gpsStatusRef = useRef(gpsStatus);
+  useEffect(() => {
+    gpsStatusRef.current = gpsStatus;
+  }, [gpsStatus]);
+
+  const gpsFailMessage = useCallback(
+    () =>
+      gpsStatusRef.current === 'denied'
+        ? 'Location is blocked for this site. In your phone: browser settings, site settings, Location, Allow. Then reload this page.'
+        : 'No GPS fix yet. Step outside or wait a few seconds for the signal, then retry.',
+    [],
+  );
 
   const shoot = useCallback(async () => {
     if (!campaign) {
@@ -164,7 +247,7 @@ export default function CameraScreen({
         setQueue((q) => q.map((it) => (it.key === key ? { ...it, status: 'failed', error: message } : it)));
       try {
         const gps = await getGps();
-        if (!gps) return fail('No GPS fix. Allow location access and retry.');
+        if (!gps) return fail(gpsFailMessage());
         const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' });
         const { blob: sized } = await downscaleForUploadAsBlob(file);
         if (sized.size > MULTIPART_SIZE_LIMIT_BYTES) return fail('Photo too large even after compression.');
@@ -192,7 +275,7 @@ export default function CameraScreen({
         fail('Upload failed. Check your connection and retry.');
       }
     })();
-  }, [campaign, submitUrl]);
+  }, [campaign, submitUrl, gpsFailMessage]);
 
   const retry = (item: QueueItem) => {
     // A failed shot never made a placement; drop it and let the worker
@@ -317,6 +400,34 @@ export default function CameraScreen({
         )}
       </div>
 
+      {/* GPS status — the worker sees the location state BEFORE shooting */}
+      <div className="flex justify-center px-6 pt-2">
+        {(() => {
+          const chip = chipStateFor(gpsStatus, fixFresh);
+          if (chip === 'ready') {
+            return (
+              <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
+                <span className="h-2 w-2 rounded-full" style={{ background: '#4ADE80' }} /> GPS ready
+              </span>
+            );
+          }
+          if (chip === 'locating') {
+            return (
+              <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-white/70" /> Getting your location…
+              </span>
+            );
+          }
+          return (
+            <span className="rounded-full px-3 py-1 text-xs text-white" style={{ background: SC.danger }}>
+              {chip === 'blocked'
+                ? 'Location blocked. Allow it for this site in your browser settings, then reload'
+                : 'This browser has no location support'}
+            </span>
+          );
+        })()}
+      </div>
+
       {/* bottom controls */}
       <div className="flex items-center justify-between px-8 pb-[max(env(safe-area-inset-bottom),18px)] pt-4">
         <span className="h-14 w-14" aria-hidden />
@@ -369,7 +480,7 @@ export default function CameraScreen({
       {/* campaign picker */}
       <Sheet open={pickerOpen} onClose={() => setPickerOpen(false)}>
         <div style={{ color: SC.text }}>
-          <div className="flex items-center gap-2 rounded-full border px-4 py-3" style={{ borderColor: '#DFE3DE' }}>
+          <div className="flex items-center gap-2 rounded-full border px-4 py-3" style={{ borderColor: '#DCD4BE' }}>
             <SearchIcon size={20} className="opacity-50" />
             <input
               value={search}
@@ -397,7 +508,7 @@ export default function CameraScreen({
                   style={
                     pickerChoice === c.id
                       ? { borderColor: SC.primary, background: SC.primary, boxShadow: 'inset 0 0 0 4px #fff' }
-                      : { borderColor: '#C9CFC9' }
+                      : { borderColor: '#C9C0A6' }
                   }
                 />
               </button>

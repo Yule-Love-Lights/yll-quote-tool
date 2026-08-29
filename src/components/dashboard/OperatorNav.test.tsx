@@ -133,14 +133,14 @@ describe('OperatorNav — advertising view (View-as wiring, 2026-08-29)', () => 
       </OperatorViewProvider>
     );
     expect(html).toContain('href="/admin/advertising"');
-    expect(html).toContain('href="/admin/advertising/pay"');
+    expect(html).toContain('href="/admin/advertising/settings"');
     expect(html).toContain('href="/admin/advertising/crew"');
     // Office items are gone in this view.
     expect(html).not.toContain('href="/inbox"');
     // Review lights alone (one area per page; the Jobs/Fleet co-lighting class).
     const review = html.match(/<a[^>]*href="\/admin\/advertising"[^>]*>/);
     expect(review![0]).toContain('background:var(--brand-evergreen)');
-    const pay = html.match(/<a[^>]*href="\/admin\/advertising\/pay"[^>]*>/);
+    const pay = html.match(/<a[^>]*href="\/admin\/advertising\/settings"[^>]*>/);
     expect(pay![0]).not.toContain('background:var(--brand-evergreen)');
   });
 });
