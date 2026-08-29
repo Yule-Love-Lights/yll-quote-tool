@@ -98,6 +98,26 @@ export function assignStampOrdinals(scene: Scene): Scene {
   };
 }
 
+// Second fix round HIGH: a locked (customer-approved) scene must never be
+// the reason a write is ATTEMPTED — editor.ts's scheduleSave() correctly
+// refuses to persist a locked scene, but merely being CALLED also pops the
+// permanent "your changes are NOT saved" banner as a side effect, and
+// `stampOrdinal`/`stampOrdinalCounters` are brand-new fields no existing
+// scene has, so every pre-existing (including every already-APPROVED)
+// design backfills on its very first sidebar render. Wrapping the
+// backfill-vs-save policy here as ONE decision (rather than leaving
+// editor.ts's stampLabel() to remember an `if (!locked)` check at its own
+// call site) is what makes it a fact instead of a habit. Safe to still
+// backfill IN MEMORY on a locked scene (so the picker renders correctly —
+// staff still need to read numbers on an approved quote) specifically
+// BECAUSE a locked scene is frozen: nothing can add or delete an item under
+// it, so recomputing fresh on every locked-scene view is exactly as stable
+// as persisting would have been.
+export function backfillStampOrdinals(scene: Scene, locked: boolean): { scene: Scene; shouldSave: boolean } {
+  const withOrdinals = assignStampOrdinals(scene);
+  return { scene: withOrdinals, shouldSave: withOrdinals !== scene && !locked };
+}
+
 // Render the label for every displayable item — a lone item in its bucket
 // stays unnumbered (mirrors pricingEngine's numberDuplicateLabels rule); a
 // bucket with 2+ items appends each item's OWN persisted `stampOrdinal`, so
@@ -126,3 +146,4 @@ export function numberStampLabels(items: SceneItem[]): Map<string, string> {
   }
   return labels;
 }
+

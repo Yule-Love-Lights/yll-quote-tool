@@ -6,7 +6,7 @@ import Konva from "konva";
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
-import { assignStampOrdinals, baseStampLabel, numberStampLabels } from "@/lib/design/stampLabels";
+import { backfillStampOrdinals, baseStampLabel, numberStampLabels } from "@/lib/design/stampLabels";
 import { itemThumbnailBBox } from "@/lib/design/stampThumbnails";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
@@ -296,21 +296,34 @@ export async function renderEditor(
   // Fix-round item 2a (Jason's ruling): the number is STABLE — a persisted
   // per-item `stampOrdinal`, assigned once and never reassigned, so deleting
   // a sibling can never make an existing item's number point at a different
-  // physical thing. assignStampOrdinals lazily backfills any item that
-  // doesn't have one yet (a freshly drawn item, or one from a scene saved
-  // before this field existed) and PERSISTS the assignment — this is the one
-  // place that happens, since both UI consumers (the picker + the
-  // billing-link dropdown) call stampLabel(). It's a real (if small) write,
-  // not just a read: if anything was actually missing, autosave the result
-  // so the assignment survives a reload. Idempotent — a scene where every
-  // displayable item already has an ordinal is a no-op (same `scene`
-  // reference back), so this costs nothing on the common case.
+  // physical thing. backfillStampOrdinals lazily assigns one to any item
+  // that doesn't have one yet (a freshly drawn item, or one from a scene
+  // saved before this field existed) and reports whether the result should
+  // be PERSISTED — this is the one place that happens, since both UI
+  // consumers (the picker + the billing-link dropdown) call stampLabel().
+  // Idempotent — a scene where every displayable item already has an
+  // ordinal is a no-op (same `scene` reference back), so this costs nothing
+  // on the common case.
+  //
+  // Second fix round, HIGH: `stampOrdinal`/`stampOrdinalCounters` are BRAND
+  // NEW fields no existing scene has, so every pre-existing design backfills
+  // on its very first sidebar render — merely OPENING an already-APPROVED
+  // design (locked=true, set synchronously at mount) hit the OLD unconditional
+  // scheduleSave() here with zero staff action taken. scheduleSave() itself
+  // correctly refuses to PERSIST a locked scene, but merely being CALLED
+  // also pops the permanent "your changes are NOT saved" banner as a side
+  // effect — so opening the whole existing approved-design population
+  // showed a false alarm the instant the sidebar first rendered.
+  // backfillStampOrdinals now carries the locked-vs-save POLICY itself
+  // (stampLabels.ts, tested + mutation-probed there) rather than leaving it
+  // to an `if (!locked)` a caller here could forget: it always backfills IN
+  // MEMORY (so the picker still renders correctly — staff still need to
+  // read numbers on an approved quote) but reports `shouldSave: false`
+  // whenever the scene is locked.
   const stampLabel = (i: SceneItem): string => {
-    const withOrdinals = assignStampOrdinals(scene);
-    if (withOrdinals !== scene) {
-      scene = withOrdinals;
-      scheduleSave();
-    }
+    const { scene: withOrdinals, shouldSave } = backfillStampOrdinals(scene, locked);
+    scene = withOrdinals;
+    if (shouldSave) scheduleSave();
     return numberStampLabels(scene.items).get(i.id) ?? baseStampLabel(i);
   };
   // Fix-round item 2b (Jason's ruling — the real answer to "which 'column

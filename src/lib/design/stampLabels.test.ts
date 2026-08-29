@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignStampOrdinals, baseStampLabel, numberStampLabels } from './stampLabels';
+import { assignStampOrdinals, backfillStampOrdinals, baseStampLabel, numberStampLabels } from './stampLabels';
 import type { GarlandItem, MiniAreaItem, MiniGroupItem, Scene, SceneItem, StrandItem, WreathItem } from './sceneTypes';
 
 function strand(id: string, over: Partial<StrandItem> = {}): StrandItem {
@@ -303,3 +303,55 @@ describe('assignStampOrdinals', () => {
     expect(m1.stampOrdinal).toBeUndefined();
   });
 });
+
+// Second fix round HIGH: opening an already-APPROVED (locked) design must
+// never attempt a save just because the backfill assigned an ordinal in
+// memory — editor.ts's scheduleSave() correctly refuses to PERSIST a
+// locked scene, but merely calling it also pops the permanent "your
+// changes are NOT saved" banner, and stampOrdinal/stampOrdinalCounters are
+// brand-new fields no pre-existing scene has, so EVERY existing approved
+// design would backfill (and therefore falsely alarm) on its very first
+// render. This is the exact decision editor.ts's stampLabel() delegates to
+// — the probe the coordinator asked for.
+describe('backfillStampOrdinals', () => {
+  it('backfills a LOCKED scene IN MEMORY (the picker still renders correctly) but reports shouldSave: false', () => {
+    const before = scene([
+      strand('s1', { surface: 'column' }),
+      strand('s2', { surface: 'column' }),
+    ]);
+    const result = backfillStampOrdinals(before, /* locked */ true);
+
+    // No save should be scheduled for a locked scene — simulated here by
+    // asserting the CALLER'S contract (shouldSave) rather than a real
+    // scheduleSave(), since editor.ts itself can't be imported in this
+    // test environment (it needs Konva's Node canvas binding).
+    expect(result.shouldSave).toBe(false);
+
+    // The picker must still render correctly: both items get real,
+    // correctly-numbered labels, backfilled in memory even though nothing
+    // will be persisted.
+    const labels = numberStampLabels(result.scene.items);
+    expect(labels.get('s1')).toBe('column wrap 1');
+    expect(labels.get('s2')).toBe('column wrap 2');
+  });
+
+  it('schedules a save for the identical UNLOCKED scene (unchanged prior behavior)', () => {
+    const before = scene([
+      strand('s1', { surface: 'column' }),
+      strand('s2', { surface: 'column' }),
+    ]);
+    const result = backfillStampOrdinals(before, /* locked */ false);
+    expect(result.shouldSave).toBe(true);
+    const labels = numberStampLabels(result.scene.items);
+    expect(labels.get('s1')).toBe('column wrap 1');
+    expect(labels.get('s2')).toBe('column wrap 2');
+  });
+
+  it('never schedules a save for a locked scene that needed NO backfill either (nothing changed, nothing to save)', () => {
+    const already = assignStampOrdinals(scene([strand('s1', { surface: 'column' })]));
+    const result = backfillStampOrdinals(already, /* locked */ true);
+    expect(result.shouldSave).toBe(false);
+    expect(result.scene).toBe(already); // same reference — a true no-op
+  });
+});
+
