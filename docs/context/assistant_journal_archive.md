@@ -481,3 +481,14 @@
 - DID RIGHT: verified the arrive/depart/complete feature survived BEFORE deleting its routes (the Telegram bot is the real consumer) · respawned a lens that died mid-run rather than merging on one review · abandoned the portal revert the moment its true cost surfaced, instead of pressing on · negative-controlled the new send guard.
 - REVIEW: technical + process lenses on #1027 (1 HIGH, fixed), the #1020 round before merge, and a post-close integration pass. Gates at close: tsc 0 · lint 0 errors (19 warnings) · vitest **8254 / 455 files**.
 
+## Archived at S75 close (2026-08-29) — the S73 (Naldo) block, moved byte-verbatim from CLAUDE.md so the live journal keeps the scorecard + the latest two sessions.
+
+### S73 (Naldo) — 2026-08-28 — PostHog stopped being a data graveyard: a morning review robot, a PR reviewer robot, and merge-by-text. 3 PRs merged and live — close PR naldo/s73-close
+
+- **NUMBER:** stamped S72, then yielded. Every repo-side check left 72 free; the concurrent referral session already held it in the machine-local self-assessment, which git cannot see. Collision recorded rather than taken. S71 went to the fleet-GPS session mid-conversation.
+- **SHIPPED:** #1032 the pipeline record · #1039 staff-device super property + lead-form per-field drop-off events · #1044 merge-by-text. Plus five live PostHog settings and three cloud routines, all enabled and verified.
+- **THE RESULT:** the reviewer robot found real defects in both PRs it has ever seen, including one of mine that three green gates hid (an httpOnly cookie read that could never fire).
+- **MEASURED:** 5 distinct errors all time · 82 rage clicks on /quote/new from 10 staff · lead form 886 views → 165 starts → 23 submits (14% of starters finish) · the top "page" was the office · a live marketing-site error surfaced within an hour of enabling capture.
+- **REVIEW AT CLOSE (full four; three returned BLOCK):** ADMIN 3 HIGH, all fixed here — the runbook said the pipeline was never set up while it was running (updates orphaned on an already-merged branch), the two merge-capable routines' prompts were unrecorded, the staff filter was implicitly overcredited. CUSTOMER 1 HIGH → measured: 1004 events in 180 days carry a price in autocapture element text, pre-existing, this session added 7 → row 442, Naldo's call. STAFF 1 HIGH in ANOTHER session's merged #916 (Clear-all with no confirm) → row 443. TECHNICAL 0 HIGH.
+- **MISTAKES:** the orphaned-branch doc commits · gated the talking branch not the acting one · blamed the classifier while holding the real cause constant · a BOM from PowerShell `Set-Content -Encoding utf8`.
+- Full detail: `docs/context/journal/S73-naldo.md`. Gates at close: tsc 0 · lint 0 errors (21 warnings) · vitest **8484 / 465 files**. Master: `3efc00f2`. Next free ledger #: **444**.
