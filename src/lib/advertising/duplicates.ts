@@ -1,5 +1,6 @@
 import type { AdvertisingPlacement } from '@/lib/advertising/placements';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { isSimilarPhotoHash } from '@/lib/advertising/photoHash';
 
 // Review-time duplicate detection (Naldo's ruling, audit doc 8B): FLAG
 // candidates for the human, never auto-block — several signs can
@@ -35,6 +36,10 @@ function normalizeAddress(address: string | null): string | null {
 export function findDuplicateCandidates(
   target: AdvertisingPlacement,
   all: AdvertisingPlacement[],
+  /** Optional perceptual hashes by placement id (photoHash.ts). When both
+   * sides carry one, a near-identical proof photo becomes its own flag
+   * reason — assistance only, the human still decides. */
+  photoHashById?: Map<string, string>,
 ): DuplicateCandidate[] {
   const targetAddress = normalizeAddress(target.suggestedAddress);
   const targetDay = target.capturedAt ? etDayKey(new Date(target.capturedAt)) : null;
@@ -69,6 +74,13 @@ export function findDuplicateCandidates(
       etDayKey(new Date(p.capturedAt)) === targetDay
     ) {
       reasons.push('same worker, same day');
+    }
+
+    if (
+      photoHashById &&
+      isSimilarPhotoHash(photoHashById.get(target.id) ?? null, photoHashById.get(p.id) ?? null)
+    ) {
+      reasons.push('very similar photo');
     }
 
     if (reasons.length > 0) out.push({ placement: p, reasons });

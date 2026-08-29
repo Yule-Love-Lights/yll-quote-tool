@@ -1,0 +1,166 @@
+// Sign allotments (Naldo 2026-08-29): "I'll give a team member 50 per week,
+// and that's how we know how many they have... every time they take a photo,
+// we take it out of the stock we give them." Remaining is DERIVED: signs
+// issued minus yard-sign photos taken (any status — a placed sign is a used
+// sign, and a resubmission is the same sign, not a new one). Door hangers
+// never draw the sign allotment down. Issuing also draws the warehouse pile
+// down (the signs physically leave the garage), floored at zero, audited
+// with prior and new.
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+type AnyRow = Record<string, unknown>;
+
+const { dbRef, stateRef, logAdvertisingActivity } = vi.hoisted(() => ({
+  dbRef: { current: null as unknown },
+  stateRef: {
+    current: {
+      issuances: [] as AnyRow[],
+      placementCounts: {} as Record<string, number>, // workerId -> yard-sign count
+      onHand: { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 } as AnyRow | null,
+    },
+  },
+  logAdvertisingActivity: vi.fn(),
+}));
+
+vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => dbRef.current }));
+vi.mock('@/lib/advertising/activity', () => ({ logAdvertisingActivity }));
+
+function makeDb() {
+  return {
+    from(table: string) {
+      return {
+        insert(payload: AnyRow) {
+          if (table === 'advertising_sign_issuances') {
+            const row = { id: `iss-${stateRef.current.issuances.length + 1}`, created_at: new Date().toISOString(), ...payload };
+            stateRef.current.issuances.push(row);
+            return {
+              select: () => ({ maybeSingle: () => Promise.resolve({ data: row, error: null }) }),
+            };
+          }
+          return { select: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: { message: 'unexpected table' } }) }) };
+        },
+        update(payload: AnyRow) {
+          const filters: Record<string, unknown> = {};
+          const ub = {
+            eq(col: string, val: unknown) { filters[col] = val; return ub; },
+            select() {
+              return {
+                maybeSingle: () => {
+                  const row = stateRef.current.onHand;
+                  if (table !== 'inventory_on_hand' || !row || Object.entries(filters).some(([k, v]) => row[k] !== v)) {
+                    return Promise.resolve({ data: null, error: null });
+                  }
+                  Object.assign(row, payload);
+                  return Promise.resolve({ data: { sku: row.sku, on_hand_qty: row.on_hand_qty }, error: null });
+                },
+              };
+            },
+          };
+          return ub;
+        },
+        select(_cols?: string, opts?: { count?: string; head?: boolean }) {
+          const filters: Record<string, unknown> = {};
+          const b = {
+            eq(col: string, val: unknown) { filters[col] = val; return b; },
+            maybeSingle() {
+              if (table === 'inventory_on_hand') {
+                return Promise.resolve({ data: stateRef.current.onHand, error: null });
+              }
+              return Promise.resolve({ data: null, error: null });
+            },
+            order() {
+              return {
+                range: () => Promise.resolve({
+                  data: stateRef.current.issuances.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v)),
+                  error: null,
+                }),
+              };
+            },
+            then(resolve: (v: { count: number | null; error: null }) => void, reject?: (e: unknown) => void) {
+              if (table === 'advertising_placements' && opts?.head) {
+                const workerId = String(filters.worker_id ?? '');
+                return Promise.resolve({ count: stateRef.current.placementCounts[workerId] ?? 0, error: null }).then(resolve, reject);
+              }
+              if (table === 'advertising_sign_issuances' && opts?.head) {
+                return Promise.resolve({ count: null, error: null }).then(resolve, reject);
+              }
+              return Promise.resolve({ count: null, error: null }).then(resolve, reject);
+            },
+          };
+          return b;
+        },
+      };
+    },
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  stateRef.current.issuances = [];
+  stateRef.current.placementCounts = {};
+  stateRef.current.onHand = { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 };
+  dbRef.current = makeDb();
+});
+
+describe('issueSigns', () => {
+  it('records the issuance, draws the warehouse down, and audits prior/new with the admin', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    const result = await issueSigns('worker-1', 50, 'admin-1');
+    expect(result.issuedQty).toBe(50);
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(50);
+    expect(stateRef.current.issuances).toHaveLength(1);
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'admin-1',
+        action: 'signs_issued',
+        workerId: 'worker-1',
+        detail: expect.objectContaining({ qty: 50, warehousePrior: 100, warehouseNew: 50 }),
+      }),
+    );
+  });
+
+  it('floors the warehouse at zero when issuing more than the counted pile (the count is manual and can be stale)', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    stateRef.current.onHand = { sku: 'YLL-YARD-SIGN', on_hand_qty: 30 };
+    await issueSigns('worker-1', 50, 'admin-1');
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(0);
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: expect.objectContaining({ warehousePrior: 30, warehouseNew: 0 }) }),
+    );
+  });
+
+  it('refuses zero, negative, and fractional quantities without writing anything', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    for (const bad of [0, -5, 12.5]) {
+      await expect(issueSigns('worker-1', bad, 'admin-1')).rejects.toThrow(/quantity/i);
+    }
+    expect(stateRef.current.issuances).toHaveLength(0);
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(100);
+    expect(logAdvertisingActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe('getWorkerSignBalance', () => {
+  it('remaining = issued minus yard-sign photos taken (any status)', async () => {
+    const { issueSigns, getWorkerSignBalance } = await import('./signIssuances');
+    await issueSigns('worker-1', 50, 'admin-1');
+    await issueSigns('worker-1', 20, 'admin-1');
+    stateRef.current.placementCounts['worker-1'] = 12;
+
+    const balance = await getWorkerSignBalance('worker-1');
+    expect(balance).toEqual({ workerId: 'worker-1', issuedTotal: 70, signsUsed: 12, remaining: 58 });
+  });
+
+  it('a worker who was never issued anything reads as zeros, and overuse clamps remaining at 0', async () => {
+    const { getWorkerSignBalance, issueSigns } = await import('./signIssuances');
+    expect(await getWorkerSignBalance('worker-9')).toEqual({
+      workerId: 'worker-9', issuedTotal: 0, signsUsed: 0, remaining: 0,
+    });
+    await issueSigns('worker-1', 10, 'admin-1');
+    stateRef.current.placementCounts['worker-1'] = 14; // used more than issued (pre-tracking history)
+    const balance = await getWorkerSignBalance('worker-1');
+    expect(balance.remaining).toBe(0);
+    expect(balance.signsUsed).toBe(14);
+  });
+});
