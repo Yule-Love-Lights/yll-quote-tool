@@ -188,7 +188,7 @@ describe('listFleetDays', () => {
 
   // null means the day list could NOT be read. An empty array here reads as
   // "no other day has data", which is the same lie the crew dropdown told in
-  // row 455 — the page would offer no way back to a day that does have data
+  // row 455: the page would offer no way back to a day that does have data
   // and say nothing about why (row 457d).
   it('returns null when the visits query fails', async () => {
     queue('vehicle_visits', { data: null, error: { message: 'db down' } });

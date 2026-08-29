@@ -255,7 +255,7 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
  * office filter fails OPEN: if the crew lookup errors, every shift day counts.
  * Window: the last 45 days, capped to maxDays.
  *
- * Returns null when the day list could NOT be read — either source query
+ * Returns null when the day list could NOT be read. Either source query
  * failing makes the list incomplete, and an incomplete list silently hides
  * days that DO have data while looking exactly like a quiet stretch (row
  * 457d, the silent-empty family of row 455). The office filter keeps failing

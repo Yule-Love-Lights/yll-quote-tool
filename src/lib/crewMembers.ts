@@ -214,7 +214,7 @@ export async function listActiveCrewMembers(): Promise<CrewMember[]> {
  * from payroll.
  *
  * Returns null when the roster could NOT be read (no service client, or the
- * query failed) — never an empty array, which a caller cannot tell apart from
+ * query failed), never an empty array, which a caller cannot tell apart from
  * a company with no field crew. The pages that render this list say so out
  * loud instead of showing an empty dropdown over a broken query (row 455,
  * the failure shape PR #1036 fixed on the geocoding fix-list).
