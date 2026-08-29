@@ -10,8 +10,10 @@ import { loadFleetDay, listFleetDays, fmtFleetTime, MIN_DWELL_MINUTES } from '@/
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { addDays } from '@/lib/opsMidnightClose';
 import { getSessionRole } from '@/lib/auth/sessionRole';
+import { listActiveFieldCrew } from '@/lib/crewMembers';
 import { MinutesSince } from '@/components/admin/MinutesSince';
 import { AutoRefresh } from '@/components/admin/AutoRefresh';
+import { AddShiftForm, EditShiftTimes } from '@/components/admin/ManualShiftEditor';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,8 +29,13 @@ export default async function FleetClocksPage({
   const raw = Array.isArray(params.date) ? params.date[0] : params.date;
   const today = etDayKey(new Date());
   const date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : today;
-  const [day, daysWithData] = await Promise.all([loadFleetDay(date), listFleetDays()]);
+  const [day, daysWithData, fieldCrew] = await Promise.all([
+    loadFleetDay(date),
+    listFleetDays(),
+    listActiveFieldCrew(),
+  ]);
   const isToday = date === today;
+  const crewOptions = fieldCrew.map((c) => ({ id: c.id, displayName: c.displayName }));
 
   return (
     <OperatorShell active="fleet">
@@ -128,17 +135,26 @@ export default async function FleetClocksPage({
               <p className="text-sm text-gray-500">No shifts recorded this day.</p>
             ) : (
               <ul className="space-y-2">
-                {day.shifts.map((s, i) => (
-                  <li key={i} className="rounded-lg border border-gray-200 p-3 text-sm">
+                {day.shifts.map((s) => (
+                  <li key={s.id} className="rounded-lg border border-gray-200 p-3 text-sm">
                     <span className="font-medium text-gray-900">{s.crewName}</span>
                     <span className="text-gray-600">
                       {' '}
-                      · in {fmtFleetTime(s.clockInAt)} · out {fmtFleetTime(s.clockOutAt)}
+                      · in {fmtFleetTime(s.clockInAt)} · out {fmtFleetTime(s.clockOutAt)}{' '}
                     </span>
+                    <EditShiftTimes
+                      shiftId={s.id}
+                      clockInAt={s.clockInAt}
+                      clockOutAt={s.clockOutAt}
+                    />
+                    {s.manualBy && (
+                      <p className="text-xs text-amber-700 mt-1">Manual entry by {s.manualBy}</p>
+                    )}
                   </li>
                 ))}
               </ul>
             )}
+            <AddShiftForm crew={crewOptions} defaultDate={date} />
           </section>
 
           <section>
