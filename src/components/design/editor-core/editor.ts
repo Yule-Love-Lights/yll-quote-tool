@@ -6,6 +6,7 @@ import Konva from "konva";
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
+import { baseStampLabel, numberStampLabels } from "@/lib/design/stampLabels";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -285,16 +286,16 @@ export async function renderEditor(
     const idx = extras.findIndex((p) => p.id === pid);
     return extras[idx]?.title || `Photo ${idx + 2}`;
   };
+  // The human-facing name for a canonical item — numbered against every OTHER
+  // canonical item sharing the same base label on the same source photo (a
+  // house with 7 wrapped columns reads "column minis 1" … "column minis 7"
+  // instead of 7 identical rows), so staff can tell which twin picker/
+  // billing-link row maps to which drawn item. Recomputed from the live scene
+  // on every call (cheap at this scene size) so it's never stale after an
+  // edit; the numbering rule itself lives in stampLabels.ts (unit-testable
+  // without a Konva stage).
   const stampLabel = (i: SceneItem): string =>
-    isWreath(i) ? `${i.sizeIn}" wreath`
-      : isBow(i) ? `${i.sizeIn}" bow`
-        : isGarland(i) ? "garland run"
-          : isSpritzer(i) ? `${i.sizeIn}" spritzer`
-            : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
-              : isMiniGroup(i) ? `${i.surface ?? "bush"} minis`
-                : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
-                  : isStrand(i) ? `${i.surface ?? "mini"} wrap`
-                    : "item";
+    numberStampLabels(scene.items).get(i.id) ?? baseStampLabel(i);
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
