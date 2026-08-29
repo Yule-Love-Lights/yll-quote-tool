@@ -147,6 +147,54 @@ describe('loadFleetDay open visit', () => {
   });
 });
 
+// Only a shift the OFFICE typed can be removed (row 458). A crew member's own
+// punch that an admin later corrected also carries a manual_by stamp, so the
+// stamp alone is not the test: the page would otherwise offer a Remove button
+// the server always refuses.
+describe('officeEntry, the flag the Remove button reads', () => {
+  it('is true only for an office-sourced row that carries a manual stamp', async () => {
+    queue('vehicles', { data: [], error: null });
+    queue('vehicle_visits', { data: [], error: null });
+    queue('shifts', {
+      data: [
+        {
+          id: 'typed',
+          crew_member_id: 'c-field',
+          clock_in_at: '2026-08-28T12:00:00Z',
+          clock_out_at: '2026-08-28T20:00:00Z',
+          manual_by: 'Naldo',
+          source: 'office',
+        },
+        {
+          id: 'punched-then-corrected',
+          crew_member_id: 'c-field',
+          clock_in_at: '2026-08-28T21:00:00Z',
+          clock_out_at: '2026-08-28T22:00:00Z',
+          manual_by: 'Naldo',
+          source: 'pwa',
+        },
+        {
+          id: 'punched',
+          crew_member_id: 'c-field',
+          clock_in_at: '2026-08-28T23:00:00Z',
+          clock_out_at: null,
+          manual_by: null,
+          source: 'pwa',
+        },
+      ],
+      error: null,
+    });
+    queue('crew_members', { data: [{ id: 'c-field', display_name: 'Field', is_office: false }], error: null });
+
+    const day = await loadFleetDay(DAY);
+    expect(day.shifts.map((s) => [s.id, s.officeEntry])).toEqual([
+      ['typed', true],
+      ['punched-then-corrected', false],
+      ['punched', false],
+    ]);
+  });
+});
+
 describe('listFleetDays', () => {
   it('returns distinct ET days from both clocks, newest first', async () => {
     // 2026-08-28T01:30Z is Aug 27 ET (21:30 the previous evening), so it
@@ -184,5 +232,34 @@ describe('listFleetDays', () => {
 
     const days = await listFleetDays();
     expect(days).toEqual(['2026-08-25']);
+  });
+
+  // null means the day list could NOT be read. An empty array here reads as
+  // "no other day has data", which is the same lie the crew dropdown told in
+  // row 455: the page would offer no way back to a day that does have data
+  // and say nothing about why (row 457d).
+  it('returns null when the visits query fails', async () => {
+    queue('vehicle_visits', { data: null, error: { message: 'db down' } });
+    queue('shifts', { data: [], error: null });
+
+    await expect(listFleetDays()).resolves.toBeNull();
+  });
+
+  it('returns null when the shifts query fails', async () => {
+    queue('vehicle_visits', { data: [], error: null });
+    queue('shifts', { data: null, error: { message: 'db down' } });
+
+    await expect(listFleetDays()).resolves.toBeNull();
+  });
+
+  it('still returns the days when only the office-filter lookup fails (fails open)', async () => {
+    queue('vehicle_visits', { data: [], error: null });
+    queue('shifts', {
+      data: [{ crew_member_id: 'c-field', clock_in_at: '2026-08-26T12:00:00Z' }],
+      error: null,
+    });
+    queue('crew_members', { data: null, error: { message: 'db down' } });
+
+    await expect(listFleetDays()).resolves.toEqual(['2026-08-26']);
   });
 });

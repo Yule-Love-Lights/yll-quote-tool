@@ -16,8 +16,20 @@ import { DEPOT } from '@/lib/integrations/vehicleProximity';
 
 export const dynamic = 'force-dynamic';
 
-export default async function FleetPage() {
+export default async function FleetPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const today = etDayKey(new Date());
+  // A ?date= bookmark from before the two pages split lands here and silently
+  // shows TODAY, so a day someone meant to look at reads as an ordinary quiet
+  // day (row 457b). The param no longer belongs to this page; say where it
+  // went rather than answering a different question than the one asked.
+  const params = (await searchParams) ?? {};
+  const rawDate = Array.isArray(params.date) ? params.date[0] : params.date;
+  const askedDate =
+    rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) && rawDate !== today ? rawDate : null;
   const [day, role] = await Promise.all([loadFleetDay(today), getSessionRole()]);
 
   const pins: FleetMapPin[] = day.vehicles
@@ -57,6 +69,20 @@ export default async function FleetPage() {
           )}
         </div>
 
+        {askedDate && (
+          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            You asked for {askedDate}, and this page only shows today. The day view moved to the
+            two clocks page.{' '}
+            {role === 'admin' ? (
+              <a href={`/admin/fleet/clocks?date=${askedDate}`} className="underline">
+                Open {askedDate} there
+              </a>
+            ) : (
+              <>That page is admin only, so ask Naldo or Jason for that day.</>
+            )}
+          </div>
+        )}
+
         {day.errors.length > 0 && (
           <div className="mb-6 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800">
             Some of this page could not load: {day.errors.join('; ')}
@@ -64,6 +90,16 @@ export default async function FleetPage() {
         )}
 
         <AutoRefresh seconds={120} />
+
+        {/* The same caveat the admin clocks page carries (row 457c). This page
+            shows at-place timers to the WHOLE office, so the sentence that
+            stops a timer being read as a person's hours belongs here too, not
+            only on the page two people open. */}
+        <p className="mb-6 text-sm text-gray-600">
+          <strong className="text-gray-800">The van is not the person.</strong> Crew can be
+          working after the van leaves, a van can sit somewhere while nobody works, and two
+          people share one van. These timers say where a vehicle is, never who is on the clock.
+        </p>
 
         <section className="mb-8">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">Vehicles now</h2>
