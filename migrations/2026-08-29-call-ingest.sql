@@ -48,6 +48,29 @@
 -- (call_commitments_finalize_extraction, record_commitment_extraction_
 -- failure) are NOT ported here — they reference call_commitments, which
 -- does not exist until S6.
+--
+-- AMENDED 2026-08-29 (fix round, same day, this migration still unapplied):
+-- call_recordings_ghl_message_id_key below was a PARTIAL unique index
+-- (`where ghl_message_id is not null`). This migration's OWN original
+-- comment on that index reasoned "a partial index is equivalent [to a
+-- plain one] here" -- true for what values a plain index would ALLOW
+-- (Postgres already treats every NULL as distinct from every other NULL in
+-- ANY unique index, partial or not), but WRONG about the consequence that
+-- actually matters: PostgREST's `.upsert(payload, { onConflict:
+-- 'ghl_message_id' })` (src/app/api/cron/calls-sync/route.ts) compiles to
+-- `INSERT ... ON CONFLICT (ghl_message_id) DO NOTHING`, and Postgres cannot
+-- infer a PARTIAL index from an ON CONFLICT target that carries no matching
+-- WHERE clause -- every call raised 42P10 ("there is no unique or
+-- exclusion constraint matching the ON CONFLICT specification"),
+-- empirically reproduced against a live postgres:16 container (fix-round
+-- progress log). The whole S2 sync cron could never insert a single row
+-- once enabled. This exact class was already hit and fixed twice before in
+-- this repo (migrations/2026-06-12-training-examples.sql and 2026-07-08-
+-- permanent-training-examples.sql, both carrying the same "NOT a partial
+-- index on purpose" note) -- this migration reintroduced it. Fix: dropped
+-- the WHERE predicate. Multiple call_recordings rows with a NULL
+-- ghl_message_id remain permitted (same NULL-distinctness argument, now
+-- correctly connected to why it matters).
 -- =====================================================================
 
 create table if not exists public.call_recordings (
@@ -72,13 +95,14 @@ create table if not exists public.call_recordings (
 
 -- Idempotency key: a re-run of the sync (or the 24h provider-visibility
 -- overlap window re-scanning the same day) must never double-insert the
--- same call. Partial + unique because a message with no id at all should
--- never happen but the column stays nullable defensively (matches the
--- copilot's plain `unique` on a nullable text column — Postgres treats
--- multiple NULLs as distinct under a plain unique constraint too, so a
--- partial index is equivalent here; written explicitly for clarity).
+-- same call. FULL (non-partial) unique index -- fix-round amendment above:
+-- must be non-partial so PostgREST's ON CONFLICT (ghl_message_id) can find
+-- it. A message with no id at all should never happen but the column
+-- stays nullable defensively; a plain unique index already permits
+-- unlimited NULLs (Postgres treats every NULL as distinct from every other
+-- NULL), so this loses no safety versus the partial form it replaces.
 create unique index if not exists call_recordings_ghl_message_id_key
-  on public.call_recordings (ghl_message_id) where ghl_message_id is not null;
+  on public.call_recordings (ghl_message_id);
 
 -- The batch runner's candidate query: plain-pending rows plus abandoned-
 -- processing rows (processing_at older than the 15-minute staleness

@@ -2980,11 +2980,13 @@ create table if not exists public.office_tasks (
   status text not null default 'open'
     check (status in ('open', 'blocked', 'completed', 'dismissed')),
   due_at timestamptz not null default (now() + interval '24 hours'),
-  -- Operator auth user ids (auth.users.id) — NO FK (no employees table).
-  -- Nullable as of the 2026-08-29 (S6) amendment: a 'manual' row always has
-  -- a real creator (office_tasks_created_by_presence below, matching
-  -- office_tasks_create_manual's own p_actor-required check); a
-  -- machine-sourced row (S6's call_commitment producer) has none.
+  -- Operator auth user ids (auth.users.id) — NO FK per decision 1. There is
+  -- no employees table in the Quote Tool; identity IS the operator.
+  -- Nullable as of the 2026-08-29 (S6) amendment above: a 'manual' row is
+  -- always created by a real, authenticated operator (enforced below by
+  -- office_tasks_created_by_presence, mirroring office_tasks_create_manual's
+  -- own p_actor-required check), but a machine-sourced row (S6's
+  -- call_commitment producer) has no operator to credit.
   created_by uuid,
   assigned_to uuid,
   completed_at timestamptz,
@@ -3000,8 +3002,9 @@ create table if not exists public.office_tasks (
     (source_system = 'manual' and source_event_id is null)
     or (source_system <> 'manual' and nullif(btrim(source_event_id), '') is not null)
   ),
-  -- Added by the 2026-08-29 (S6) amendment: a 'manual' row must always carry
-  -- a real creator; any other source_system may leave it null.
+  -- Added by the 2026-08-29 (S6) amendment above: a 'manual' row must always
+  -- carry a real creator; any other source_system may leave it null (a
+  -- machine-sourced row has no operator to credit).
   constraint office_tasks_created_by_presence check (
     source_system <> 'manual' or created_by is not null
   ),
@@ -3041,9 +3044,14 @@ create table if not exists public.office_tasks (
   )
 );
 
+-- FULL (non-partial) unique index -- fix-round amendment above. Postgres
+-- unique indexes already treat every NULL as distinct from every other
+-- NULL, so 'manual' rows (source_event_id always NULL) are still unlimited;
+-- dropping the `where source_event_id is not null` predicate only changes
+-- whether an ON CONFLICT clause naming these two columns can find the
+-- index (it now can).
 create unique index if not exists office_tasks_source_event_unique
-  on public.office_tasks (source_system, source_event_id)
-  where source_event_id is not null;
+  on public.office_tasks (source_system, source_event_id);
 
 create index if not exists office_tasks_creator_due_idx
   on public.office_tasks (created_by, due_at, id);
@@ -3051,6 +3059,7 @@ create index if not exists office_tasks_creator_due_idx
 create index if not exists office_tasks_assignee_due_idx
   on public.office_tasks (assigned_to, due_at, id);
 
+-- Read by the history view (GET /api/tasks?status=history), newest-activity-first.
 create index if not exists office_tasks_status_updated_idx
   on public.office_tasks (status, updated_at desc, id);
 
@@ -3059,10 +3068,21 @@ create table if not exists public.office_task_events (
   task_id uuid not null references public.office_tasks(id),
   event_type text not null
     check (event_type in ('created', 'assigned', 'blocked', 'completed', 'dismissed')),
-  actor uuid not null,
+  -- Nullable as of the fix-round amendment above: office_tasks_create_from_
+  -- commitment (migrations/2026-08-29-call-commitments.sql) writes a
+  -- 'created' event for a system-produced task with no operator to
+  -- attribute it to. The CHECK below is this table's own backstop (a CHECK
+  -- constraint cannot see office_tasks.source_system) -- in practice a null
+  -- actor only ever appears on that one code path, since every other writer
+  -- (office_tasks_create_manual, every branch of office_tasks_update_status)
+  -- already requires a real p_actor before it can reach an INSERT here.
+  actor uuid,
   idempotency_key uuid not null,
   detail jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
+  constraint office_task_events_actor_presence check (
+    actor is not null or event_type = 'created'
+  ),
   unique (actor, idempotency_key)
 );
 
@@ -3078,6 +3098,11 @@ revoke all privileges on table public.office_tasks, public.office_task_events
   from public, anon, authenticated, service_role;
 grant select on table public.office_tasks, public.office_task_events to service_role;
 
+-- Keep updated_at fresh on every write (mirrors crew_members.sql / shifts.sql).
+-- Runs alongside office_tasks_enforce_transition below (also BEFORE UPDATE);
+-- Postgres fires same-event triggers in name order ('e' < 's'), so the
+-- immutability/terminal check always sees the row as the caller submitted it
+-- before this trigger re-stamps updated_at — no interaction between the two.
 create or replace function public.office_tasks_set_updated_at()
 returns trigger as $$
 begin
@@ -3091,6 +3116,12 @@ create trigger office_tasks_set_updated_at
   before update on public.office_tasks
   for each row execute function public.office_tasks_set_updated_at();
 
+-- Task identity, source provenance, assignment, deletion, and terminal rows
+-- are immutable in this foundation, ported unchanged from the copilot's
+-- enforce_ops_task_transition (only the column names changed:
+-- created_by_employee_id -> created_by, assigned_employee_id -> assigned_to).
+-- A later reviewed assignment workflow can replace this rule without making
+-- direct service-role DML authoritative.
 create or replace function public.office_tasks_enforce_transition()
 returns trigger
 language plpgsql
@@ -3126,6 +3157,7 @@ create trigger office_tasks_enforce_transition
 before update or delete on public.office_tasks
 for each row execute function public.office_tasks_enforce_transition();
 
+-- Fully immutable audit trail, ported unchanged.
 create or replace function public.office_task_events_reject_mutation()
 returns trigger
 language plpgsql
@@ -3144,6 +3176,26 @@ create trigger office_task_events_reject_mutation
 before update or delete on public.office_task_events
 for each row execute function public.office_task_events_reject_mutation();
 
+-- office_tasks_create_manual — port of the copilot's ops_create_manual_task.
+-- Line-by-line porting note against the original:
+--   - p_actor_employee_id -> p_actor (uuid, no employees-table check).
+--   - REMOVED: "if not exists (select 1 from ops_employees where id =
+--     p_actor_employee_id and employee.active) then raise 42501" — no
+--     employees table exists per decision 1; the caller (requireOperator())
+--     already guarantees p_actor is a live, authenticated operator before
+--     this function is ever invoked.
+--   - ADDED a plain "p_actor is not null" check in its place, raising the
+--     SAME 42501 the removed employee-lookup used to raise on a missing/
+--     inactive actor. Without it a null actor would fail later as a bare
+--     NOT NULL violation (23502) on the office_tasks insert, or as a crossed
+--     wire in the advisory-lock hash — 42501 is the clearer, and the route's
+--     existing error-code mapping already expects it.
+--   - Everything else (the advisory-xact-lock keyed on actor+idempotency
+--     key, the payload-aware idempotency replay comparing event_type +
+--     detail jsonb, the future-due-date check, the insert-task-then-insert-
+--     event pair) is unchanged.
+--   - assigned_to is set to p_actor (self-assigned) on manual creation,
+--     matching the copilot's assigned_employee_id := p_actor_employee_id.
 create or replace function public.office_tasks_create_manual(
   p_title text,
   p_detail text,
@@ -3183,6 +3235,8 @@ begin
     'due_at', p_due_at
   );
 
+  -- Serialize first use of one actor/key pair. A concurrent retry waits for
+  -- the first transaction and then returns the same durable result.
   perform pg_advisory_xact_lock(
     hashtextextended(p_actor::text || ':' || p_idempotency_key::text, 0)
   );
@@ -3243,6 +3297,18 @@ revoke all on function public.office_tasks_create_manual(text,text,timestamptz,u
 grant execute on function public.office_tasks_create_manual(text,text,timestamptz,uuid,uuid)
   to service_role;
 
+-- office_tasks_update_status — port of the copilot's ops_update_own_task.
+-- Line-by-line porting note against the original:
+--   - p_actor_employee_id -> p_actor (uuid, no employees-table check);
+--     REMOVED the same "active employee" existence check as above, for the
+--     same reason, and ADDED the same "p_actor is not null" -> 42501 check
+--     in its place.
+--   - v_task.created_by_employee_id -> v_task.created_by,
+--     v_task.assigned_employee_id -> v_task.assigned_to.
+--   - Everything else (the advisory-xact-lock, the payload-aware
+--     idempotency replay, the creator-or-assignee ownership check raising
+--     42501, the terminal-status guard, the per-status reason
+--     requirement/prohibition, the row lock via `for update`) is unchanged.
 create or replace function public.office_tasks_update_status(
   p_task_id uuid,
   p_status text,
@@ -3321,6 +3387,18 @@ begin
   end if;
   if v_task.status in ('completed', 'dismissed') then
     raise exception using errcode = '22023', message = 'terminal task cannot change';
+  end if;
+  -- Fix-round addition: refuse to silently overwrite an ALREADY-blocked
+  -- task's reason. A genuine retry of the SAME action (same actor, same
+  -- idempotency key) already returned above via the replay check and never
+  -- reaches this line -- this only fires for a genuinely different action
+  -- (a different actor, or a fresh idempotency key) hitting a task someone
+  -- else already blocked. Matters most for a SHARED (non-manual, S6)
+  -- task, where more than one operator can act on the same row: without
+  -- this, a second block silently replaces the first block's reason with
+  -- no signal to the first actor that their reason is gone.
+  if p_status = 'blocked' and v_task.status = 'blocked' then
+    raise exception using errcode = '22023', message = 'task is already blocked; refresh to see the current reason';
   end if;
 
   update public.office_tasks
@@ -3669,6 +3747,29 @@ on conflict (id) do nothing;
 -- (call_commitments_finalize_extraction, record_commitment_extraction_
 -- failure) are NOT ported here — they reference call_commitments, which
 -- does not exist until S6.
+--
+-- AMENDED 2026-08-29 (fix round, same day, this migration still unapplied):
+-- call_recordings_ghl_message_id_key below was a PARTIAL unique index
+-- (`where ghl_message_id is not null`). This migration's OWN original
+-- comment on that index reasoned "a partial index is equivalent [to a
+-- plain one] here" -- true for what values a plain index would ALLOW
+-- (Postgres already treats every NULL as distinct from every other NULL in
+-- ANY unique index, partial or not), but WRONG about the consequence that
+-- actually matters: PostgREST's `.upsert(payload, { onConflict:
+-- 'ghl_message_id' })` (src/app/api/cron/calls-sync/route.ts) compiles to
+-- `INSERT ... ON CONFLICT (ghl_message_id) DO NOTHING`, and Postgres cannot
+-- infer a PARTIAL index from an ON CONFLICT target that carries no matching
+-- WHERE clause -- every call raised 42P10 ("there is no unique or
+-- exclusion constraint matching the ON CONFLICT specification"),
+-- empirically reproduced against a live postgres:16 container (fix-round
+-- progress log). The whole S2 sync cron could never insert a single row
+-- once enabled. This exact class was already hit and fixed twice before in
+-- this repo (migrations/2026-06-12-training-examples.sql and 2026-07-08-
+-- permanent-training-examples.sql, both carrying the same "NOT a partial
+-- index on purpose" note) -- this migration reintroduced it. Fix: dropped
+-- the WHERE predicate. Multiple call_recordings rows with a NULL
+-- ghl_message_id remain permitted (same NULL-distinctness argument, now
+-- correctly connected to why it matters).
 -- =====================================================================
 
 create table if not exists public.call_recordings (
@@ -3693,13 +3794,14 @@ create table if not exists public.call_recordings (
 
 -- Idempotency key: a re-run of the sync (or the 24h provider-visibility
 -- overlap window re-scanning the same day) must never double-insert the
--- same call. Partial + unique because a message with no id at all should
--- never happen but the column stays nullable defensively (matches the
--- copilot's plain `unique` on a nullable text column — Postgres treats
--- multiple NULLs as distinct under a plain unique constraint too, so a
--- partial index is equivalent here; written explicitly for clarity).
+-- same call. FULL (non-partial) unique index -- fix-round amendment above:
+-- must be non-partial so PostgREST's ON CONFLICT (ghl_message_id) can find
+-- it. A message with no id at all should never happen but the column
+-- stays nullable defensively; a plain unique index already permits
+-- unlimited NULLs (Postgres treats every NULL as distinct from every other
+-- NULL), so this loses no safety versus the partial form it replaces.
 create unique index if not exists call_recordings_ghl_message_id_key
-  on public.call_recordings (ghl_message_id) where ghl_message_id is not null;
+  on public.call_recordings (ghl_message_id);
 
 -- The batch runner's candidate query: plain-pending rows plus abandoned-
 -- processing rows (processing_at older than the 15-minute staleness
@@ -3889,6 +3991,7 @@ begin
 end;
 $$;
 
+
 -- ---------------------------------------------------------------------
 -- call_commitments (2026-08-29, migrations/2026-08-29-call-commitments.sql)
 -- -- rep commitments extracted from a call transcript + the producer that
@@ -3950,11 +4053,141 @@ grant select, insert, update, delete on table public.call_commitments
   to service_role;
 
 -- ---------------------------------------------------------------------
+-- office_tasks_create_from_commitment -- THE PRODUCER (new code, not a
+-- copilot port -- see this file's header). Turns one OPEN call_commitments
+-- row into an office_tasks row (source_system='call_commitment',
+-- source_event_id=the commitment's own id) plus its office_task_events
+-- 'created' audit row. Idempotent via office_tasks' (source_system,
+-- source_event_id) unique index (S1): a retried call for the same
+-- commitment id is a no-op that returns the same task id and writes no
+-- second event.
+--
+-- Defined BEFORE call_commitments_finalize_extraction below because that
+-- function now calls this one internally, inside its own transaction (see
+-- this file's header, fix-round item 2) -- plpgsql function bodies aren't
+-- validated against each other until they actually EXECUTE, so this
+-- ordering isn't load-bearing for correctness, only for reading top to
+-- bottom in call order.
+-- ---------------------------------------------------------------------
+create or replace function public.office_tasks_create_from_commitment(
+  p_commitment_id uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_commitment public.call_commitments%rowtype;
+  v_customer_name text;
+  v_customer_phone text;
+  v_customer_line text;
+  v_title text;
+  v_detail text;
+  v_due_at timestamptz;
+  v_task_id uuid;
+begin
+  select *
+  into v_commitment
+  from public.call_commitments
+  where id = p_commitment_id
+    and status = 'open';
+
+  if not found then
+    -- Not an error: the commitment may already have been actioned (status
+    -- moved off 'open'), or the id may not exist. The only callers (the
+    -- finalize function's own loop below, and the extraction pipeline
+    -- indirectly through it) only ever pass ids just written as 'open', so
+    -- this is defensive rather than an expected path.
+    return null;
+  end if;
+
+  select transcript_record.customer_name, transcript_record.customer_phone
+  into v_customer_name, v_customer_phone
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = v_commitment.transcript_id;
+
+  v_title := case v_commitment.kind
+    when 'send_quote' then 'Send quote'
+    when 'send_photos' then 'Send photos'
+    when 'callback' then 'Call back'
+    when 'schedule_estimate' then 'Schedule estimate'
+    when 'send_info' then 'Send info'
+    when 'other' then 'Follow up'
+    else 'Follow up'
+  end;
+  if nullif(btrim(v_commitment.detail), '') is not null then
+    v_title := v_title || ': ' || btrim(v_commitment.detail);
+  end if;
+  v_title := left(v_title, 200);
+
+  v_customer_line := nullif(
+    trim(both ' ' from
+      coalesce(v_customer_name, '')
+      || case when v_customer_name is not null and v_customer_phone is not null then ' - ' else '' end
+      || coalesce(v_customer_phone, '')
+    ),
+    ''
+  );
+  v_detail := v_commitment.detail;
+  if v_customer_line is not null then
+    v_detail := v_detail || E'\n\n' || v_customer_line;
+  end if;
+  v_detail := left(v_detail, 2000);
+
+  v_due_at := coalesce(v_commitment.promised_at, now() + interval '24 hours');
+
+  insert into public.office_tasks (
+    source_system, source_event_id, title, detail, due_at, created_by, assigned_to
+  ) values (
+    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
+  )
+  on conflict (source_system, source_event_id) do nothing
+  returning id into v_task_id;
+
+  if v_task_id is not null then
+    -- This INSERT actually created the row (no conflict) -- write the
+    -- audit event now, in the SAME transaction. actor is null (system
+    -- creation, no operator to attribute it to -- office_task_events.actor
+    -- is nullable per that migration's own amendment, CHECK-gated to
+    -- 'created' events only). idempotency_key is the commitment's own id:
+    -- deterministic and stable, so even a hypothetical future direct retry
+    -- of this function for the same commitment cannot double-write this
+    -- event (it would land on the ELSE branch below instead, since the
+    -- office_tasks row -- and therefore this ON CONFLICT check -- already
+    -- exists by then).
+    insert into public.office_task_events (
+      task_id, event_type, actor, idempotency_key, detail
+    ) values (
+      v_task_id,
+      'created',
+      null,
+      p_commitment_id,
+      jsonb_build_object('source_system', 'call_commitment', 'commitment_id', p_commitment_id)
+    );
+  else
+    select office_task.id into v_task_id
+    from public.office_tasks as office_task
+    where office_task.source_system = 'call_commitment'
+      and office_task.source_event_id = p_commitment_id::text;
+  end if;
+
+  return v_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_create_from_commitment(uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_create_from_commitment(uuid)
+  to service_role;
+
+-- ---------------------------------------------------------------------
 -- call_commitments_finalize_extraction -- ported from the copilot's
 -- migration 0024 (final/canonical form -- see this file's header for why
 -- 0022's earlier ON CONFLICT upsert is not ported). Adapted: reads/writes
 -- call_transcripts, not transcripts; every metric_scope check and column
--- reference is dropped (no such column here -- see header).
+-- reference is dropped (no such column here -- see header). Fix-round
+-- addition: calls office_tasks_create_from_commitment for every freshly
+-- inserted commitment, inside this SAME transaction (see header item 2).
 -- ---------------------------------------------------------------------
 create or replace function public.call_commitments_finalize_extraction(
   p_transcript_id uuid,
@@ -3968,6 +4201,7 @@ as $function$
 declare
   v_extracted_at timestamptz;
   v_has_resolved boolean;
+  v_new_commitment_id uuid;
 begin
   if jsonb_typeof(p_rows) is distinct from 'array' then
     raise exception using errcode = '22023', message = 'p_rows must be a JSON array';
@@ -4033,6 +4267,19 @@ begin
     (row_record ->> 'promised_at')::timestamptz,
     (row_record ->> 'extraction_index')::integer
   from jsonb_array_elements(p_rows) as row_record;
+
+  -- THE PRODUCER, folded into this transaction (fix-round item 2): every
+  -- row just inserted above is 'open' by definition (the column default),
+  -- so this turns each one into its office_tasks row atomically with the
+  -- commitment rows themselves -- either both commit together, or (a
+  -- crash/error anywhere in this function) neither does, and this
+  -- transcript's commitments_extracted_at stays unset so it is retried
+  -- cleanly rather than left as an orphaned open commitment with no task.
+  for v_new_commitment_id in
+    select id from public.call_commitments where transcript_id = p_transcript_id
+  loop
+    perform public.office_tasks_create_from_commitment(v_new_commitment_id);
+  end loop;
 
   update public.call_transcripts
   set
@@ -4120,103 +4367,4 @@ $function$;
 revoke all on function public.record_commitment_extraction_failure(uuid, text)
   from public, anon, authenticated, service_role;
 grant execute on function public.record_commitment_extraction_failure(uuid, text)
-  to service_role;
-
--- ---------------------------------------------------------------------
--- office_tasks_create_from_commitment -- THE PRODUCER (new code, not a
--- copilot port -- see this file's header). Turns one OPEN call_commitments
--- row into an office_tasks row (source_system='call_commitment',
--- source_event_id=the commitment's own id). Idempotent via office_tasks'
--- existing (source_system, source_event_id) partial unique index (S1): a
--- retried call for the same commitment id is a no-op that returns the same
--- task id.
--- ---------------------------------------------------------------------
-create or replace function public.office_tasks_create_from_commitment(
-  p_commitment_id uuid
-) returns uuid
-language plpgsql
-security definer
-set search_path = ''
-as $function$
-declare
-  v_commitment public.call_commitments%rowtype;
-  v_customer_name text;
-  v_customer_phone text;
-  v_customer_line text;
-  v_title text;
-  v_detail text;
-  v_due_at timestamptz;
-  v_task_id uuid;
-begin
-  select *
-  into v_commitment
-  from public.call_commitments
-  where id = p_commitment_id
-    and status = 'open';
-
-  if not found then
-    -- Not an error: the commitment may already have been actioned (status
-    -- moved off 'open'), or the id may not exist. The only caller (the
-    -- extraction pipeline) only ever passes ids it just wrote as 'open', so
-    -- this is defensive rather than an expected path.
-    return null;
-  end if;
-
-  select transcript_record.customer_name, transcript_record.customer_phone
-  into v_customer_name, v_customer_phone
-  from public.call_transcripts as transcript_record
-  where transcript_record.id = v_commitment.transcript_id;
-
-  v_title := case v_commitment.kind
-    when 'send_quote' then 'Send quote'
-    when 'send_photos' then 'Send photos'
-    when 'callback' then 'Call back'
-    when 'schedule_estimate' then 'Schedule estimate'
-    when 'send_info' then 'Send info'
-    when 'other' then 'Follow up'
-    else 'Follow up'
-  end;
-  if nullif(btrim(v_commitment.detail), '') is not null then
-    v_title := v_title || ': ' || btrim(v_commitment.detail);
-  end if;
-  v_title := left(v_title, 200);
-
-  v_customer_line := nullif(
-    trim(both ' ' from
-      coalesce(v_customer_name, '')
-      || case when v_customer_name is not null and v_customer_phone is not null then ' - ' else '' end
-      || coalesce(v_customer_phone, '')
-    ),
-    ''
-  );
-  v_detail := v_commitment.detail;
-  if v_customer_line is not null then
-    v_detail := v_detail || E'\n\n' || v_customer_line;
-  end if;
-  v_detail := left(v_detail, 2000);
-
-  v_due_at := coalesce(v_commitment.promised_at, now() + interval '24 hours');
-
-  insert into public.office_tasks (
-    source_system, source_event_id, title, detail, due_at, created_by, assigned_to
-  ) values (
-    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
-  )
-  on conflict (source_system, source_event_id) do nothing
-  returning id into v_task_id;
-
-  if v_task_id is null then
-    select office_task.id into v_task_id
-    from public.office_tasks as office_task
-    where office_task.source_system = 'call_commitment'
-      and office_task.source_event_id = p_commitment_id::text;
-  end if;
-
-  return v_task_id;
-end
-$function$;
-
-revoke all on function public.office_tasks_create_from_commitment(uuid)
-  from public, anon, authenticated, service_role;
-grant execute on function public.office_tasks_create_from_commitment(uuid)
   to service_role;

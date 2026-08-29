@@ -63,6 +63,53 @@
 -- falls out naturally" case, achieved by existing NULL comparison semantics
 -- with zero RPC body changes — see migrations/2026-08-29-call-commitments.sql
 -- for the full reasoning.
+--
+-- AMENDED AGAIN 2026-08-29, a second time, same day, after a four-lens
+-- review of a55e8f88 empirically reproduced two HIGHs against a live
+-- Postgres 16 container (still unapplied, so still amended in place, not a
+-- third migration):
+--
+--   1. office_tasks_source_event_unique below was a PARTIAL unique index
+--      (`where source_event_id is not null`). PostgREST/plpgsql's
+--      `ON CONFLICT (source_system, source_event_id)` cannot infer a
+--      partial index's predicate and Postgres raises 42P10 on every
+--      attempt — reproduced live in a disposable postgres:16 container
+--      (see the fix-round progress log). This repo already hit and fixed
+--      this EXACT class twice before (migrations/2026-06-12-
+--      training-examples.sql and 2026-07-08-permanent-training-
+--      examples.sql, both: "NOT a partial index on purpose... PostgREST's
+--      ON CONFLICT... can't infer a partial unique index"). Fix: dropped
+--      the WHERE predicate — Postgres unique indexes already treat every
+--      NULL as distinct from every other NULL regardless of partial-ness,
+--      so a plain index still lets unlimited 'manual' rows share a NULL
+--      source_event_id; the partial predicate was buying nothing.
+--   2. office_task_events.actor changes from NOT NULL to NULLABLE, gated
+--      by a new CHECK requiring a real actor for every event EXCEPT
+--      'created' (Postgres CHECK constraints see only this table's own
+--      columns, so this can't reference office_tasks.source_system
+--      directly — in practice the only code path that ever passes a null
+--      actor is office_tasks_create_from_commitment's 'created' event;
+--      office_tasks_create_manual and every branch of
+--      office_tasks_update_status below still require a real p_actor
+--      before they ever reach an INSERT). Reason: the S6 producer wrote
+--      ZERO audit-trail rows — the one state change in this whole design
+--      with no office_task_events entry at all (an admin-lens finding).
+--   3. office_tasks_update_status gets one new guard, right before the
+--      UPDATE: re-blocking an ALREADY-blocked task now raises 22023
+--      instead of silently overwriting blocked_reason/blocked_at. A
+--      genuine same-click retry (same actor, same idempotency key) still
+--      returns early via the existing replay check above this guard and
+--      is unaffected; this only fires for a genuinely different action
+--      (a different actor, or a new idempotency key) hitting a task that
+--      is already blocked — exactly the "Staff B silently clobbers Staff
+--      A's block reason with no signal" gap a staff-lens review found,
+--      now made possible for the first time because S6 puts a SHARED
+--      task (visible to and actionable by every operator) in front of
+--      more than one person. Uses the SAME 22023 -> 'state_conflict' ->
+--      HTTP 409 "This task changed before the action could be saved"
+--      path the existing completed/dismissed terminal guard already uses
+--      (src/app/api/tasks/[id]/route.ts), so no client/route change was
+--      needed for this to surface correctly.
 -- =====================================================================
 
 create table public.office_tasks (
@@ -145,9 +192,14 @@ create table public.office_tasks (
   )
 );
 
+-- FULL (non-partial) unique index -- fix-round amendment above. Postgres
+-- unique indexes already treat every NULL as distinct from every other
+-- NULL, so 'manual' rows (source_event_id always NULL) are still unlimited;
+-- dropping the `where source_event_id is not null` predicate only changes
+-- whether an ON CONFLICT clause naming these two columns can find the
+-- index (it now can).
 create unique index office_tasks_source_event_unique
-  on public.office_tasks (source_system, source_event_id)
-  where source_event_id is not null;
+  on public.office_tasks (source_system, source_event_id);
 
 create index office_tasks_creator_due_idx
   on public.office_tasks (created_by, due_at, id);
@@ -164,10 +216,21 @@ create table public.office_task_events (
   task_id uuid not null references public.office_tasks(id),
   event_type text not null
     check (event_type in ('created', 'assigned', 'blocked', 'completed', 'dismissed')),
-  actor uuid not null,
+  -- Nullable as of the fix-round amendment above: office_tasks_create_from_
+  -- commitment (migrations/2026-08-29-call-commitments.sql) writes a
+  -- 'created' event for a system-produced task with no operator to
+  -- attribute it to. The CHECK below is this table's own backstop (a CHECK
+  -- constraint cannot see office_tasks.source_system) -- in practice a null
+  -- actor only ever appears on that one code path, since every other writer
+  -- (office_tasks_create_manual, every branch of office_tasks_update_status)
+  -- already requires a real p_actor before it can reach an INSERT here.
+  actor uuid,
   idempotency_key uuid not null,
   detail jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
+  constraint office_task_events_actor_presence check (
+    actor is not null or event_type = 'created'
+  ),
   unique (actor, idempotency_key)
 );
 
@@ -469,6 +532,18 @@ begin
   end if;
   if v_task.status in ('completed', 'dismissed') then
     raise exception using errcode = '22023', message = 'terminal task cannot change';
+  end if;
+  -- Fix-round addition: refuse to silently overwrite an ALREADY-blocked
+  -- task's reason. A genuine retry of the SAME action (same actor, same
+  -- idempotency key) already returned above via the replay check and never
+  -- reaches this line -- this only fires for a genuinely different action
+  -- (a different actor, or a fresh idempotency key) hitting a task someone
+  -- else already blocked. Matters most for a SHARED (non-manual, S6)
+  -- task, where more than one operator can act on the same row: without
+  -- this, a second block silently replaces the first block's reason with
+  -- no signal to the first actor that their reason is gone.
+  if p_status = 'blocked' and v_task.status = 'blocked' then
+    raise exception using errcode = '22023', message = 'task is already blocked; refresh to see the current reason';
   end if;
 
   update public.office_tasks

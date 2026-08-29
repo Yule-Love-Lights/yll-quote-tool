@@ -51,8 +51,8 @@
 -- THE PRODUCER (office_tasks_create_from_commitment) is NEW code for this
 -- slice -- the copilot never built it (see the merge plan's S6 paragraph:
 -- "the producer that turns each commitment into an office_tasks row").
--- Idempotent via office_tasks' existing (source_system, source_event_id)
--- partial unique index (S1), keyed on the commitment's own id.
+-- Idempotent via office_tasks' (source_system, source_event_id) unique
+-- index (S1), keyed on the commitment's own id.
 --
 -- ACTOR PROBLEM (stated loudly, per the build brief): a commitment-sourced
 -- task has no operator to credit as its creator -- it is machine-generated
@@ -77,12 +77,7 @@
 -- existing, UNCHANGED office_tasks_update_status RPC -- no RPC code change
 -- was needed for this. This is exactly the "assign-to-me falls out
 -- naturally" the plan asked about: nobody is assigned, but everybody can act,
--- matching the plan's "all operators see all coaching data" ruling. No
--- office_task_events row is written by the producer below -- that table's
--- actor-keyed idempotency model is for RPC-mediated ACTOR actions, and a
--- system INSERT has no actor to attribute it to; a normal event row is
--- written the moment a real operator later calls office_tasks_update_status
--- on the task.
+-- matching the plan's "all operators see all coaching data" ruling.
 --
 -- HOW TO APPLY: NOT applied by this PR (creates functions/triggers, off
 -- AGENTS.md's migration self-apply allowlist, same as S1/S2's migrations)
@@ -91,6 +86,56 @@
 -- applying them together is the only sane order: this migration's finalize/
 -- failure functions assume call_transcripts already has S2's tracking
 -- columns, and the producer assumes office_tasks.created_by is nullable).
+--
+-- AMENDED 2026-08-29, same day, fix round after a four-lens review of the
+-- first version empirically reproduced two HIGHs against a live Postgres 16
+-- container (still unapplied, so amended in place, not a second migration):
+--
+--   1. office_tasks_source_event_unique (migrations/2026-08-28-
+--      office-tasks.sql) was a PARTIAL unique index. The producer's own
+--      `insert ... on conflict (source_system, source_event_id) do nothing`
+--      below cannot target a partial index -- Postgres raised 42P10 on
+--      every call, reproduced live inside a plpgsql function matching this
+--      one's exact shape (fix-round progress log), and inside
+--      office_tasks-tasks.sql's own migration, both a bare INSERT and this
+--      function's real form failed identically. The office-tasks migration
+--      was amended to drop that WHERE predicate (see its own amendment
+--      note); no change was needed in THIS function's INSERT statement,
+--      since it already named the right conflict target -- it just needed
+--      the index to actually match it.
+--   2. THE PRODUCER now runs INSIDE call_commitments_finalize_extraction's
+--      own transaction, immediately after the fresh commitment insert,
+--      instead of being called separately afterward from application code
+--      (src/lib/commitments/backfill.ts previously called
+--      produceOfficeTasksFromCommitments as a SECOND, separate round trip
+--      after persistCommitments/finalize). A technical-lens review found
+--      that gap: because backfillCommitments's candidate query permanently
+--      excludes any transcript with commitments_extracted_at set, a crash
+--      or transient failure between "commitments finalized" and "tasks
+--      produced" could orphan an open commitment with no task, forever --
+--      that transcript would never be selected for extraction again. Fixed
+--      by folding task production into the SAME atomic write as the
+--      commitment rows: either both commit together, or (a crash/error)
+--      neither does, and a rolled-back finalize leaves
+--      commitments_extracted_at unset, so the transcript is naturally
+--      retried. This was chosen over the alternative (a periodic re-scan
+--      for open commitments missing a task) because it eliminates the gap
+--      STRUCTURALLY rather than papering over it with a catch-up job that
+--      itself needs to be correct and would still leave a window before it
+--      next runs. src/lib/commitments/produceTasks.ts is repurposed into a
+--      read-only reporting helper (it now only COUNTS the tasks finalize
+--      already created, for the UI's tasksCreated stat) -- see that file's
+--      own header.
+--   3. office_task_events row for the producer's task: ADDED. The producer
+--      previously wrote zero audit-trail rows (an admin-lens finding -- the
+--      one state change in this whole design with no event entry). Fixed by
+--      inserting a 'created' event in the SAME transaction, but ONLY on the
+--      branch where this function's own INSERT actually created the row
+--      (not on the ON CONFLICT branch, which means the row -- and its event
+--      -- already exist), so a retry of this function for the same
+--      commitment can never write a duplicate event. Requires
+--      office_task_events.actor to be nullable -- see that migration's own
+--      amendment note for the CHECK constraint that gates it.
 -- =====================================================================
 
 create table public.call_commitments (
@@ -145,11 +190,141 @@ grant select, insert, update, delete on table public.call_commitments
   to service_role;
 
 -- ---------------------------------------------------------------------
+-- office_tasks_create_from_commitment -- THE PRODUCER (new code, not a
+-- copilot port -- see this file's header). Turns one OPEN call_commitments
+-- row into an office_tasks row (source_system='call_commitment',
+-- source_event_id=the commitment's own id) plus its office_task_events
+-- 'created' audit row. Idempotent via office_tasks' (source_system,
+-- source_event_id) unique index (S1): a retried call for the same
+-- commitment id is a no-op that returns the same task id and writes no
+-- second event.
+--
+-- Defined BEFORE call_commitments_finalize_extraction below because that
+-- function now calls this one internally, inside its own transaction (see
+-- this file's header, fix-round item 2) -- plpgsql function bodies aren't
+-- validated against each other until they actually EXECUTE, so this
+-- ordering isn't load-bearing for correctness, only for reading top to
+-- bottom in call order.
+-- ---------------------------------------------------------------------
+create function public.office_tasks_create_from_commitment(
+  p_commitment_id uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_commitment public.call_commitments%rowtype;
+  v_customer_name text;
+  v_customer_phone text;
+  v_customer_line text;
+  v_title text;
+  v_detail text;
+  v_due_at timestamptz;
+  v_task_id uuid;
+begin
+  select *
+  into v_commitment
+  from public.call_commitments
+  where id = p_commitment_id
+    and status = 'open';
+
+  if not found then
+    -- Not an error: the commitment may already have been actioned (status
+    -- moved off 'open'), or the id may not exist. The only callers (the
+    -- finalize function's own loop below, and the extraction pipeline
+    -- indirectly through it) only ever pass ids just written as 'open', so
+    -- this is defensive rather than an expected path.
+    return null;
+  end if;
+
+  select transcript_record.customer_name, transcript_record.customer_phone
+  into v_customer_name, v_customer_phone
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = v_commitment.transcript_id;
+
+  v_title := case v_commitment.kind
+    when 'send_quote' then 'Send quote'
+    when 'send_photos' then 'Send photos'
+    when 'callback' then 'Call back'
+    when 'schedule_estimate' then 'Schedule estimate'
+    when 'send_info' then 'Send info'
+    when 'other' then 'Follow up'
+    else 'Follow up'
+  end;
+  if nullif(btrim(v_commitment.detail), '') is not null then
+    v_title := v_title || ': ' || btrim(v_commitment.detail);
+  end if;
+  v_title := left(v_title, 200);
+
+  v_customer_line := nullif(
+    trim(both ' ' from
+      coalesce(v_customer_name, '')
+      || case when v_customer_name is not null and v_customer_phone is not null then ' - ' else '' end
+      || coalesce(v_customer_phone, '')
+    ),
+    ''
+  );
+  v_detail := v_commitment.detail;
+  if v_customer_line is not null then
+    v_detail := v_detail || E'\n\n' || v_customer_line;
+  end if;
+  v_detail := left(v_detail, 2000);
+
+  v_due_at := coalesce(v_commitment.promised_at, now() + interval '24 hours');
+
+  insert into public.office_tasks (
+    source_system, source_event_id, title, detail, due_at, created_by, assigned_to
+  ) values (
+    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
+  )
+  on conflict (source_system, source_event_id) do nothing
+  returning id into v_task_id;
+
+  if v_task_id is not null then
+    -- This INSERT actually created the row (no conflict) -- write the
+    -- audit event now, in the SAME transaction. actor is null (system
+    -- creation, no operator to attribute it to -- office_task_events.actor
+    -- is nullable per that migration's own amendment, CHECK-gated to
+    -- 'created' events only). idempotency_key is the commitment's own id:
+    -- deterministic and stable, so even a hypothetical future direct retry
+    -- of this function for the same commitment cannot double-write this
+    -- event (it would land on the ELSE branch below instead, since the
+    -- office_tasks row -- and therefore this ON CONFLICT check -- already
+    -- exists by then).
+    insert into public.office_task_events (
+      task_id, event_type, actor, idempotency_key, detail
+    ) values (
+      v_task_id,
+      'created',
+      null,
+      p_commitment_id,
+      jsonb_build_object('source_system', 'call_commitment', 'commitment_id', p_commitment_id)
+    );
+  else
+    select office_task.id into v_task_id
+    from public.office_tasks as office_task
+    where office_task.source_system = 'call_commitment'
+      and office_task.source_event_id = p_commitment_id::text;
+  end if;
+
+  return v_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_create_from_commitment(uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_create_from_commitment(uuid)
+  to service_role;
+
+-- ---------------------------------------------------------------------
 -- call_commitments_finalize_extraction -- ported from the copilot's
 -- migration 0024 (final/canonical form -- see this file's header for why
 -- 0022's earlier ON CONFLICT upsert is not ported). Adapted: reads/writes
 -- call_transcripts, not transcripts; every metric_scope check and column
--- reference is dropped (no such column here -- see header).
+-- reference is dropped (no such column here -- see header). Fix-round
+-- addition: calls office_tasks_create_from_commitment for every freshly
+-- inserted commitment, inside this SAME transaction (see header item 2).
 -- ---------------------------------------------------------------------
 create function public.call_commitments_finalize_extraction(
   p_transcript_id uuid,
@@ -163,6 +338,7 @@ as $function$
 declare
   v_extracted_at timestamptz;
   v_has_resolved boolean;
+  v_new_commitment_id uuid;
 begin
   if jsonb_typeof(p_rows) is distinct from 'array' then
     raise exception using errcode = '22023', message = 'p_rows must be a JSON array';
@@ -228,6 +404,19 @@ begin
     (row_record ->> 'promised_at')::timestamptz,
     (row_record ->> 'extraction_index')::integer
   from jsonb_array_elements(p_rows) as row_record;
+
+  -- THE PRODUCER, folded into this transaction (fix-round item 2): every
+  -- row just inserted above is 'open' by definition (the column default),
+  -- so this turns each one into its office_tasks row atomically with the
+  -- commitment rows themselves -- either both commit together, or (a
+  -- crash/error anywhere in this function) neither does, and this
+  -- transcript's commitments_extracted_at stays unset so it is retried
+  -- cleanly rather than left as an orphaned open commitment with no task.
+  for v_new_commitment_id in
+    select id from public.call_commitments where transcript_id = p_transcript_id
+  loop
+    perform public.office_tasks_create_from_commitment(v_new_commitment_id);
+  end loop;
 
   update public.call_transcripts
   set
@@ -315,103 +504,4 @@ $function$;
 revoke all on function public.record_commitment_extraction_failure(uuid, text)
   from public, anon, authenticated, service_role;
 grant execute on function public.record_commitment_extraction_failure(uuid, text)
-  to service_role;
-
--- ---------------------------------------------------------------------
--- office_tasks_create_from_commitment -- THE PRODUCER (new code, not a
--- copilot port -- see this file's header). Turns one OPEN call_commitments
--- row into an office_tasks row (source_system='call_commitment',
--- source_event_id=the commitment's own id). Idempotent via office_tasks'
--- existing (source_system, source_event_id) partial unique index (S1): a
--- retried call for the same commitment id is a no-op that returns the same
--- task id.
--- ---------------------------------------------------------------------
-create function public.office_tasks_create_from_commitment(
-  p_commitment_id uuid
-) returns uuid
-language plpgsql
-security definer
-set search_path = ''
-as $function$
-declare
-  v_commitment public.call_commitments%rowtype;
-  v_customer_name text;
-  v_customer_phone text;
-  v_customer_line text;
-  v_title text;
-  v_detail text;
-  v_due_at timestamptz;
-  v_task_id uuid;
-begin
-  select *
-  into v_commitment
-  from public.call_commitments
-  where id = p_commitment_id
-    and status = 'open';
-
-  if not found then
-    -- Not an error: the commitment may already have been actioned (status
-    -- moved off 'open'), or the id may not exist. The only caller (the
-    -- extraction pipeline) only ever passes ids it just wrote as 'open', so
-    -- this is defensive rather than an expected path.
-    return null;
-  end if;
-
-  select transcript_record.customer_name, transcript_record.customer_phone
-  into v_customer_name, v_customer_phone
-  from public.call_transcripts as transcript_record
-  where transcript_record.id = v_commitment.transcript_id;
-
-  v_title := case v_commitment.kind
-    when 'send_quote' then 'Send quote'
-    when 'send_photos' then 'Send photos'
-    when 'callback' then 'Call back'
-    when 'schedule_estimate' then 'Schedule estimate'
-    when 'send_info' then 'Send info'
-    when 'other' then 'Follow up'
-    else 'Follow up'
-  end;
-  if nullif(btrim(v_commitment.detail), '') is not null then
-    v_title := v_title || ': ' || btrim(v_commitment.detail);
-  end if;
-  v_title := left(v_title, 200);
-
-  v_customer_line := nullif(
-    trim(both ' ' from
-      coalesce(v_customer_name, '')
-      || case when v_customer_name is not null and v_customer_phone is not null then ' - ' else '' end
-      || coalesce(v_customer_phone, '')
-    ),
-    ''
-  );
-  v_detail := v_commitment.detail;
-  if v_customer_line is not null then
-    v_detail := v_detail || E'\n\n' || v_customer_line;
-  end if;
-  v_detail := left(v_detail, 2000);
-
-  v_due_at := coalesce(v_commitment.promised_at, now() + interval '24 hours');
-
-  insert into public.office_tasks (
-    source_system, source_event_id, title, detail, due_at, created_by, assigned_to
-  ) values (
-    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
-  )
-  on conflict (source_system, source_event_id) do nothing
-  returning id into v_task_id;
-
-  if v_task_id is null then
-    select office_task.id into v_task_id
-    from public.office_tasks as office_task
-    where office_task.source_system = 'call_commitment'
-      and office_task.source_event_id = p_commitment_id::text;
-  end if;
-
-  return v_task_id;
-end
-$function$;
-
-revoke all on function public.office_tasks_create_from_commitment(uuid)
-  from public, anon, authenticated, service_role;
-grant execute on function public.office_tasks_create_from_commitment(uuid)
   to service_role;
