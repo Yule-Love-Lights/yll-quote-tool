@@ -33,7 +33,13 @@ type Recording = {
 type Counts = { pending: number; processing: number; transcribed: number; skipped: number; failed: number };
 
 type CommitmentCounts = { open: number; cleared: number; done: number; dismissed: number; expired: number };
-type ExtractionProgress = { pending: number; extracted: number; quarantined: number };
+type ExtractionProgress = {
+  pending: number;
+  neverAttempted: number;
+  retrying: number;
+  extracted: number;
+  quarantined: number;
+};
 type CommitmentSummary = { counts: CommitmentCounts; extraction: ExtractionProgress } | null;
 
 type CallsResponse = {
@@ -219,8 +225,9 @@ export function CallsView() {
             <StatTile label="Expired" value={data.commitments.counts.expired} />
           </div>
 
-          <div className="grid grid-cols-3 gap-3 sm:max-w-md">
-            <StatTile label="Extraction pending" value={data.commitments.extraction.pending} />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:max-w-2xl">
+            <StatTile label="Never attempted" value={data.commitments.extraction.neverAttempted} />
+            <StatTile label="Retrying" value={data.commitments.extraction.retrying} />
             <StatTile label="Extracted" value={data.commitments.extraction.extracted} />
             <StatTile label="Quarantined" value={data.commitments.extraction.quarantined} />
           </div>

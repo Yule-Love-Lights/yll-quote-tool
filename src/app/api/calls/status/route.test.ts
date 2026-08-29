@@ -24,7 +24,11 @@ function fakeSupabase(opts: {
   transcriptRows?: { id: string; outcome: string }[];
   commitmentStatusRows?: { status: string }[] | { code: string };
   transcriptExtractionRows?:
-    | { commitments_extracted_at: string | null; commitment_extraction_quarantined_at: string | null }[]
+    | {
+        commitments_extracted_at: string | null;
+        commitment_extraction_quarantined_at: string | null;
+        commitment_extraction_attempts?: number;
+      }[]
     | { code: string };
 } = {}) {
   const from = vi.fn((table: string) => {
@@ -169,7 +173,7 @@ describe('GET /api/calls/status', () => {
     expect(json.recordings[0].lastError).toBeNull();
   });
 
-  it('includes commitment status counts + extraction progress (S6)', async () => {
+  it('includes commitment status counts + extraction progress, split into never-attempted vs retrying (S6, fix-round LOW)', async () => {
     getSupabaseServiceClientMock.mockReturnValue(
       fakeSupabase({
         commitmentStatusRows: [
@@ -183,7 +187,8 @@ describe('GET /api/calls/status', () => {
         transcriptExtractionRows: [
           { commitments_extracted_at: '2026-08-20T00:00:00.000Z', commitment_extraction_quarantined_at: null },
           { commitments_extracted_at: null, commitment_extraction_quarantined_at: '2026-08-20T00:00:00.000Z' },
-          { commitments_extracted_at: null, commitment_extraction_quarantined_at: null },
+          { commitments_extracted_at: null, commitment_extraction_quarantined_at: null, commitment_extraction_attempts: 0 },
+          { commitments_extracted_at: null, commitment_extraction_quarantined_at: null, commitment_extraction_attempts: 2 },
         ],
       }),
     );
@@ -193,7 +198,7 @@ describe('GET /api/calls/status', () => {
 
     expect(json.commitments).toEqual({
       counts: { open: 2, cleared: 1, done: 1, dismissed: 1, expired: 1 },
-      extraction: { pending: 1, extracted: 1, quarantined: 1 },
+      extraction: { pending: 2, neverAttempted: 1, retrying: 1, extracted: 1, quarantined: 1 },
     });
   });
 
