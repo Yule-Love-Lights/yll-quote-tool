@@ -542,6 +542,38 @@ describe('twinMiniGroupAt', () => {
     expect(twinArea.y).toBeCloseTo(135, 5);
   });
 
+  // Fix-round item 3 (LOW from the technical lens): liveMembers' guard
+  // `item.groupId === group.id` had no test distinguishing it from a bare
+  // `group.memberIds.includes(item.id)` check — the lens mutated it to
+  // `true` and every existing test stayed green. A "stale forward
+  // reference" (mirrors resolveMiniGroupSelection's own stale-backref test
+  // above) reproduces exactly the case that guard exists for: g1's own
+  // memberIds array still lists an item that has since been re-grouped
+  // under g2, and the item's OWN groupId is the source of truth for which
+  // group it currently belongs to.
+  it('excludes a member whose groupId no longer points at THIS group (a stale forward reference in memberIds)', () => {
+    const original = scene([
+      strand('m1', { groupId: 'g1', points: [0, 0, 20, 0] }),
+      // 'stale' was moved to g2, but g1's memberIds array was never updated
+      // to drop it (the same stale-backref shape the resolveMiniGroupSelection
+      // tests above cover for SELECTION; this is the same shape for TWINNING).
+      strand('stale', { groupId: 'g2', points: [0, 30, 20, 30] }),
+      group('g1', ['m1', 'stale']),
+      group('g2', ['stale']),
+    ]);
+    const g1 = original.items.find((i): i is MiniGroupItem => i.id === 'g1')!;
+
+    const result = twinMiniGroupAt(original, g1, { x: 100, y: 100 }, {
+      activePhotoId: 'extra-1',
+      idGen: idGen('twin'),
+    });
+
+    expect(result).not.toBeNull();
+    // Only m1 is a live member of g1 — 'stale' belongs to g2 now and must
+    // NOT be twinned as part of g1's re-placement.
+    expect(result!.memberIds).toHaveLength(1);
+  });
+
   it('is a no-op (returns null) when the group has zero live members (#227 fully orphaned)', () => {
     const original = scene([group('g1', ['dead-1', 'dead-2'])]);
     const g1 = original.items[0] as MiniGroupItem;
