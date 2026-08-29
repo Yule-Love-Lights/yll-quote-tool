@@ -582,6 +582,8 @@ export type CampaignActivity = {
   photoCount: number;
   workerCount: number;
   lastPhotoAt: string | null;
+  /** Non-test placements awaiting review (pending + resubmitted). */
+  pendingCount: number;
 };
 
 /**
@@ -606,19 +608,23 @@ export async function campaignActivitySummary(campaignIds: string[]): Promise<Ma
 
       const { data: rows, error: rowsError } = await db
         .from('advertising_placements')
-        .select('worker_id, created_at')
+        .select('worker_id, created_at, status')
         .eq('campaign_id', campaignId)
         .eq('is_test', false)
         .order('created_at', { ascending: false })
         .range(0, 999);
       if (rowsError) console.error('campaignActivitySummary rows error:', rowsError);
-      const list = (rows ?? []) as { worker_id: string; created_at: string }[];
+      const list = (rows ?? []) as { worker_id: string; created_at: string; status: string }[];
 
       out.set(campaignId, {
         campaignId,
         photoCount: count ?? list.length,
         workerCount: new Set(list.map((r) => r.worker_id)).size,
         lastPhotoAt: list[0]?.created_at ?? null,
+        // The cross-campaign "where is review needed" signal (admin lens,
+        // PR #1078): the cards badge this so nobody opens every campaign
+        // hunting for pending photos.
+        pendingCount: list.filter((r) => r.status === 'pending' || r.status === 'resubmitted').length,
       });
     }),
   );

@@ -49,7 +49,6 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
   }
 
   const campaignId = String(form.get('campaignId') ?? '').trim();
-  const kind = String(form.get('kind') ?? '').trim();
   const lat = Number(form.get('lat'));
   const lng = Number(form.get('lng'));
   const accuracyRaw = form.get('accuracyM');
@@ -59,9 +58,6 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
   const neighborhood = String(form.get('neighborhood') ?? '').trim();
   const workerNote = String(form.get('note') ?? '').trim();
 
-  if (kind !== 'yard_sign' && kind !== 'door_hanger') {
-    return NextResponse.json({ error: 'Pick yard sign or door hanger.' }, { status: 400 });
-  }
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
     return NextResponse.json(
       { error: 'No GPS fix. Allow location access and try again.' },
@@ -78,6 +74,11 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
   if (!campaign || !campaign.active) {
     return NextResponse.json({ error: 'That campaign is not open for submissions.' }, { status: 400 });
   }
+  // The KIND comes from the CAMPAIGN, never the body — same treatment as
+  // workerId, because kind gates money: door hangers can never pay, and a
+  // forged kind=yard_sign on a door-hanger campaign would turn unpaid work
+  // into paid work at review time (technical lens HIGH, PR #1078).
+  const kind = campaign.kind;
 
   const photo = form.get('photo');
   if (!(photo instanceof File) || photo.size === 0) {

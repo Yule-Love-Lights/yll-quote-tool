@@ -79,7 +79,7 @@ const VALID_FIELDS = {
 beforeEach(() => {
   vi.clearAllMocks();
   getAdvertisingCaller.mockResolvedValue(CALLER);
-  getAdvertisingCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Fall', rateCents: 250, active: true });
+  getAdvertisingCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Fall', kind: 'yard_sign', rateCents: 250, active: true });
   reverseGeocode.mockResolvedValue('12 Main St, Farmingdale, NY');
   uploadMock.mockResolvedValue({ data: { path: 'x' }, error: null });
   createSignedUrlMock.mockResolvedValue({ data: { signedUrl: 'https://signed.example/x' }, error: null });
@@ -161,17 +161,22 @@ describe('POST /api/advertising/placements — submit', () => {
     let res = await POST(makeFormReq(VALID_FIELDS, photoFile()));
     expect(res.status).toBe(400);
 
-    getAdvertisingCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Old', rateCents: 250, active: false });
+    getAdvertisingCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Old', kind: 'yard_sign', rateCents: 250, active: false });
     res = await POST(makeFormReq(VALID_FIELDS, photoFile()));
     expect(res.status).toBe(400);
     expect(submitPlacement).not.toHaveBeenCalled();
   });
 
-  it('refuses bad GPS and a bad kind', async () => {
-    let res = await POST(makeFormReq({ ...VALID_FIELDS, lat: 'nope' }, photoFile()));
+  it('refuses bad GPS', async () => {
+    const res = await POST(makeFormReq({ ...VALID_FIELDS, lat: 'nope' }, photoFile()));
     expect(res.status).toBe(400);
-    res = await POST(makeFormReq({ ...VALID_FIELDS, kind: 'billboard' }, photoFile()));
-    expect(res.status).toBe(400);
+  });
+
+  it("the placement's kind comes from the CAMPAIGN, never the body — a forged yard_sign on a door-hanger campaign stays unpaid", async () => {
+    getAdvertisingCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Hangers', kind: 'door_hanger', rateCents: 250, active: true });
+    const res = await POST(makeFormReq({ ...VALID_FIELDS, kind: 'yard_sign' }, photoFile()));
+    expect(res.status).toBe(201);
+    expect(submitPlacement.mock.calls[0][0].kind).toBe('door_hanger');
   });
 
   it('uploads the proof, reverse-geocodes, and submits with the stored path', async () => {

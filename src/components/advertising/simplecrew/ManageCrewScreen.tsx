@@ -166,7 +166,16 @@ export default function ManageCrewScreen() {
       <ScreenHeader
         title="Manage Crew"
         toolbar={
-          <ToolbarButton label="Invite crew member" onClick={() => setInviteOpen(true)}>
+          <ToolbarButton
+            label="Invite crew member"
+            onClick={() => {
+              setName('');
+              setEmail('');
+              setPassword('');
+              setInviteError(null);
+              setInviteOpen(true);
+            }}
+          >
             <PersonAddIcon size={22} />
           </ToolbarButton>
         }
@@ -209,7 +218,7 @@ export default function ManageCrewScreen() {
           kind="crew"
           title="No Crew Yet"
           hint="Add sign crew with a login so they can capture placements from their phone."
-          cta={<PrimaryButton onClick={() => setInviteOpen(true)}>Invite Crew Member</PrimaryButton>}
+          cta={<PrimaryButton onClick={() => { setName(''); setEmail(''); setPassword(''); setInviteError(null); setInviteOpen(true); }}>Invite Crew Member</PrimaryButton>}
         />
       )}
 
@@ -243,7 +252,7 @@ export default function ManageCrewScreen() {
                   Reset password
                 </button>
               ) : (
-                <button type="button" className="underline" style={{ color: SC.primary }} onClick={() => { setInviteOpen(true); setName(w.displayName); }}>
+                <button type="button" className="underline" style={{ color: SC.primary }} onClick={() => { setName(w.displayName); setEmail(''); setPassword(''); setInviteError(null); setInviteOpen(true); }}>
                   Create login
                 </button>
               )}

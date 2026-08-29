@@ -51,6 +51,29 @@ export default function CameraScreen({
   const [search, setSearch] = useState('');
 
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const uploading = queue.some((it) => it.status === 'uploading');
+
+  // A navigation aborts in-flight uploads and the photo cannot ride
+  // keepalive (multipart bodies blow its 64KB cap), so the guard is to not
+  // leave silently: warn on tab-close while uploading, and make the X ask.
+  useEffect(() => {
+    if (!uploading) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [uploading]);
+
+  // Object URLs accumulate over a long shooting session; revoke on unmount
+  // (and on dismiss below) so a 50-shot canvass cannot bloat the tab.
+  const urlsRef = useRef<string[]>([]);
+  useEffect(() => {
+    return () => {
+      urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      urlsRef.current = [];
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,7 +134,7 @@ export default function CameraScreen({
             accuracyM: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
           }),
         () => resolve(null),
-        { enableHighAccuracy: true, timeout: 12_000, maximumAge: 15_000 },
+        { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 },
       );
     });
 
@@ -132,6 +155,7 @@ export default function CameraScreen({
 
     const key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const previewUrl = URL.createObjectURL(blob);
+    urlsRef.current.push(previewUrl);
     setQueue((q) => [{ key, previewUrl, status: 'uploading', address: null, placementId: null, note: '', noteSaved: '' }, ...q]);
 
     // Background upload — the shutter stays live.
@@ -146,7 +170,6 @@ export default function CameraScreen({
         if (sized.size > MULTIPART_SIZE_LIMIT_BYTES) return fail('Photo too large even after compression.');
         const fd = new FormData();
         fd.set('campaignId', campaign.id);
-        fd.set('kind', campaign.kind);
         fd.set('lat', String(gps.lat));
         fd.set('lng', String(gps.lng));
         if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
@@ -174,6 +197,8 @@ export default function CameraScreen({
   const retry = (item: QueueItem) => {
     // A failed shot never made a placement; drop it and let the worker
     // reshoot (the sign is right in front of them).
+    URL.revokeObjectURL(item.previewUrl);
+    urlsRef.current = urlsRef.current.filter((u) => u !== item.previewUrl);
     setQueue((q) => q.filter((it) => it.key !== item.key));
   };
 
@@ -202,9 +227,19 @@ export default function CameraScreen({
     <div className="fixed inset-0 z-40 flex flex-col bg-black text-white">
       {/* top bar */}
       <div className="flex items-center justify-between px-4 pb-3 pt-[max(env(safe-area-inset-top),14px)]">
-        <a href={backHref} aria-label="Close camera" className="p-2">
+        <button
+          type="button"
+          aria-label="Close camera"
+          className="p-2"
+          onClick={() => {
+            if (uploading && !window.confirm('A photo is still uploading. Leaving now loses it. Leave anyway?')) {
+              return;
+            }
+            window.location.href = backHref;
+          }}
+        >
           <CloseIcon size={26} />
-        </a>
+        </button>
         <button
           type="button"
           onClick={() => {
@@ -271,7 +306,7 @@ export default function CameraScreen({
                       setQueue((q) => q.map((it) => (it.key === item.key ? { ...it, note: e.target.value } : it)))
                     }
                     onBlur={() => void saveNote(item)}
-                    placeholder="Take a note..."
+                    placeholder={item.placementId ? "Take a note..." : "Note unlocks when the upload finishes"}
                     disabled={!item.placementId}
                     className="mt-1 w-full rounded-full border border-white/60 bg-transparent px-4 py-2.5 text-base placeholder-white/70 outline-none disabled:opacity-60"
                   />

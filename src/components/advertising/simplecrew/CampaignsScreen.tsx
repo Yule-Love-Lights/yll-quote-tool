@@ -19,6 +19,7 @@ export type CampaignCard = {
   photoCount: number;
   workerCount: number;
   lastPhotoAt: string | null;
+  pendingCount?: number;
 };
 
 export default function CampaignsScreen({
@@ -197,6 +198,11 @@ export default function CampaignsScreen({
                 {c.active === false && (
                   <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs" style={{ color: SC.muted }}>
                     closed
+                  </span>
+                )}
+                {mode === 'admin' && (c.pendingCount ?? 0) > 0 && (
+                  <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ background: '#FDF3DF', color: '#8a6d1f' }}>
+                    {c.pendingCount} to review
                   </span>
                 )}
               </span>

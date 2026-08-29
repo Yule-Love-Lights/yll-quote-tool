@@ -101,19 +101,24 @@ export default function CampaignDetailScreen({
         body: JSON.stringify(payload),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) setError(body.error ?? 'Action failed.');
-      else setError(null);
+      if (!res.ok) {
+        setError(body.error ?? 'Action failed.');
+      } else {
+        setError(null);
+        // Clear the draft only when the action LANDED — a transient failure
+        // must not force the admin to retype the reason (staff lens MED).
+        setRejecting((r) => (r === id ? null : r));
+        setReasons((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }
       reload();
     } catch {
       setError('Action failed. Try again.');
     } finally {
       setBusy(null);
-      setRejecting((r) => (r === id ? null : r));
-      setReasons((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
     }
   };
 

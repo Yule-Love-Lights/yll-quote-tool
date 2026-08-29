@@ -165,19 +165,11 @@ export async function ensureWorkerForAuthUser(
   const existing = await getAdvertisingWorkerByAuthUserId(authUserId);
   if (existing) return existing;
 
-  const base = displayName.trim() || 'Admin';
-  try {
-    const created = await createAdvertisingWorker({ displayName: base, authUserId });
-    if (created.authUserId === authUserId) return created;
-    // Name-race recovery handed back someone else's row — do not submit
-    // under it; fall through to the suffixed name.
-  } catch (e) {
-    // createAdvertisingWorker recovers a same-name race by returning the
-    // winner — but that winner may be someone ELSE'S row (unlinked or linked
-    // to a different login). Never submit under it; take a suffixed name.
-    if (e instanceof WorkerLoginTakenError) throw e;
-  }
-  const suffixed = await createAdvertisingWorker({ displayName: `${base} (admin)`, authUserId });
+  // ALWAYS suffixed " (admin)" (admin lens, PR #1078): an owner's
+  // self-captured signs enter REAL pay totals, and their row must be
+  // tellable apart from a hired payee on the Pay screen and in Manage Crew.
+  const base = `${displayName.trim() || 'Admin'} (admin)`;
+  const suffixed = await createAdvertisingWorker({ displayName: base, authUserId });
   if (suffixed.authUserId !== authUserId) {
     throw new Error('ensureWorkerForAuthUser: could not provision a worker row for this login');
   }

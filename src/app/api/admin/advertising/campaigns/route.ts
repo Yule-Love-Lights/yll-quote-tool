@@ -36,6 +36,7 @@ export async function GET() {
         photoCount: a?.photoCount ?? 0,
         workerCount: a?.workerCount ?? 0,
         lastPhotoAt: a?.lastPhotoAt ?? null,
+        pendingCount: a?.pendingCount ?? 0,
       };
     }),
   });
