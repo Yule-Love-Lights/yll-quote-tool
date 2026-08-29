@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Money/state tests for the advertising placements data layer (workstream B
-// slice 1). Written FIRST, against the rulings in ops_hub_audit_2026-08.md:
-// $2.50 per ACCEPTED yard sign stamped at acceptance; rate changes never move
-// history; pending/rejected never pay; reject→resubmit→accept pays exactly
-// once; door hangers are modeled but permanently unpaid.
+// Money/state tests for the advertising placements data layer. Written
+// FIRST, against Naldo's rulings (2026-08-27, pay basis updated
+// 2026-08-29): the campaign rate is paid per ACCEPTED PHOTO of any kind,
+// stamped at acceptance; rate changes never move history; pending/rejected
+// never pay; reject→resubmit→accept pays exactly once.
 
 type AnyRow = Record<string, unknown>;
 type DbError = { code?: string; message: string };

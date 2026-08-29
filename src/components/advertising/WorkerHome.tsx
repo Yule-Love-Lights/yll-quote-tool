@@ -1,10 +1,10 @@
 'use client';
 
 // Advertising worker home — mobile-first capture + earnings + my placements.
-// Money display rule: earned = the STAMPED rates on accepted yard signs;
-// pending = an ESTIMATE at each campaign's current rate. Door hangers are
-// recorded but never priced (Naldo's ruling — pay excluded until he approves
-// a rule), and the UI says so instead of showing $0.00 mysteriously.
+// Money display rule: earned = the STAMPED rates on accepted photos of any
+// kind (Naldo 2026-08-29: pay is per accepted photo; the campaign name says
+// whether it is signs or hangers); pending = an ESTIMATE at each campaign's
+// current rate.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 

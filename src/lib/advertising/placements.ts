@@ -443,8 +443,8 @@ export function summarizeEarnings(
     if (p.isTest) continue;
 
     // Every real placement mints its worker's summary entry, so a worker
-    // whose rows are all door hangers or rejections still shows up with
-    // zeros instead of silently vanishing from their own earnings view.
+    // whose rows are all rejections still shows up with zeros instead of
+    // silently vanishing from their own earnings view.
     let acc = byWorker.get(p.workerId);
     if (!acc) {
       acc = {
