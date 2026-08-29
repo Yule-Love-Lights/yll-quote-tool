@@ -103,7 +103,7 @@ describe('OperatorNav — advertising view (View-as wiring, 2026-08-29)', () => 
     );
     expect(html).toContain('href="/admin/advertising"');
     expect(html).toContain('href="/admin/advertising/pay"');
-    expect(html).toContain('href="/admin/advertising/people"');
+    expect(html).toContain('href="/admin/advertising/crew"');
     // Office items are gone in this view.
     expect(html).not.toContain('href="/inbox"');
     // Review lights alone (one area per page; the Jobs/Fleet co-lighting class).
