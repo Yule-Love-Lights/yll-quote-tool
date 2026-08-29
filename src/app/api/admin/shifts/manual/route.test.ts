@@ -14,10 +14,11 @@ class FakeRefusedError extends Error {
   }
 }
 
-const { requireAdminMock, createMock, updateMock, RefusedRef } = vi.hoisted(() => ({
+const { requireAdminMock, createMock, updateMock, voidMock, RefusedRef } = vi.hoisted(() => ({
   requireAdminMock: vi.fn(),
   createMock: vi.fn(),
   updateMock: vi.fn(),
+  voidMock: vi.fn(),
   RefusedRef: { current: null as unknown },
 }));
 
@@ -38,11 +39,12 @@ vi.mock('@/lib/shifts', () => {
   return {
     adminCreateShift: createMock,
     adminUpdateShiftTimes: updateMock,
+    adminVoidShift: voidMock,
     ManualShiftRefusedError,
   };
 });
 
-import { POST } from './route';
+import { DELETE, POST } from './route';
 
 const ADMIN = { operator: { id: 'u1', email: 'naldo@x.com', role: 'admin', name: 'Naldo' } };
 const SHIFT = { id: 's1', crewMemberId: 'c1', clockInAt: 'a', clockOutAt: 'b', manualBy: 'Naldo' };
@@ -66,6 +68,7 @@ beforeEach(() => {
   requireAdminMock.mockResolvedValue(ADMIN);
   createMock.mockResolvedValue(SHIFT);
   updateMock.mockResolvedValue(SHIFT);
+  voidMock.mockResolvedValue(undefined);
 });
 
 describe('the admin gate', () => {
@@ -161,3 +164,58 @@ describe('refusal mapping', () => {
 
 // Sanity: the local fake refusal class mirrors the real one's shape.
 void FakeRefusedError;
+
+// Voiding a manual entry DELETES a payroll row, so the route's own promises
+// matter as much as the lib's: admins only, an id required, and every typed
+// refusal answered honestly rather than as a generic failure (row 458).
+describe('DELETE, voiding a manual entry', () => {
+  it('refuses a non-admin and never calls the lib', async () => {
+    requireAdminMock.mockResolvedValueOnce({
+      response: NextResponse.json({ error: 'Admin access required' }, { status: 403 }),
+    });
+    const res = await DELETE(makeReq({ shiftId: 's1' }));
+    expect(res.status).toBe(403);
+    expect(voidMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the shift id and the admin actor stamp through', async () => {
+    const res = await DELETE(makeReq({ shiftId: 's1' }));
+    expect(res.status).toBe(200);
+    expect(voidMock).toHaveBeenCalledWith({
+      shiftId: 's1',
+      actor: 'Naldo (naldo@x.com)',
+    });
+  });
+
+  it('rejects a body with no shift id', async () => {
+    const res = await DELETE(makeReq({}));
+    expect(res.status).toBe(400);
+    expect(voidMock).not.toHaveBeenCalled();
+  });
+
+  it('answers a crew-clocked row with 409 not-manual', async () => {
+    voidMock.mockRejectedValueOnce(refused('not-manual'));
+    const res = await DELETE(makeReq({ shiftId: 's1' }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('not-manual');
+  });
+
+  it('answers a shift with breaks or job time with 409 has-children', async () => {
+    voidMock.mockRejectedValueOnce(refused('has-children'));
+    const res = await DELETE(makeReq({ shiftId: 's1' }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('has-children');
+  });
+
+  it('answers an unknown id with 404', async () => {
+    voidMock.mockRejectedValueOnce(refused('not-found'));
+    const res = await DELETE(makeReq({ shiftId: 'nope' }));
+    expect(res.status).toBe(404);
+  });
+
+  it('answers a lost race with 409 edit-race', async () => {
+    voidMock.mockRejectedValueOnce(refused('edit-race'));
+    const res = await DELETE(makeReq({ shiftId: 's1' }));
+    expect(res.status).toBe(409);
+  });
+});

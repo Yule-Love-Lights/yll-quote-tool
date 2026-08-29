@@ -13,7 +13,7 @@ import { getSessionRole } from '@/lib/auth/sessionRole';
 import { listActiveFieldCrew } from '@/lib/crewMembers';
 import { MinutesSince } from '@/components/admin/MinutesSince';
 import { AutoRefresh } from '@/components/admin/AutoRefresh';
-import { AddShiftForm, EditShiftTimes } from '@/components/admin/ManualShiftEditor';
+import { AddShiftForm, EditShiftTimes, VoidShiftButton } from '@/components/admin/ManualShiftEditor';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,7 +35,9 @@ export default async function FleetClocksPage({
     listActiveFieldCrew(),
   ]);
   const isToday = date === today;
-  const crewOptions = fieldCrew.map((c) => ({ id: c.id, displayName: c.displayName }));
+  // null from either loader means the read FAILED, which must never render as
+  // "nobody is on the roster" or "no other days have data" (row 455 / row 457d).
+  const crewOptions = (fieldCrew ?? []).map((c) => ({ id: c.id, displayName: c.displayName }));
 
   return (
     <OperatorShell active="fleet">
@@ -89,7 +91,13 @@ export default async function FleetClocksPage({
               </>
             )}
           </form>
-          {daysWithData.length > 0 && (
+          {daysWithData === null && (
+            <p className="text-sm text-red-700 mt-2">
+              The list of days with data could not be loaded. Other days may still have data;
+              type a date above to look at one.
+            </p>
+          )}
+          {daysWithData !== null && daysWithData.length > 0 && (
             <p className="text-sm text-gray-500 mt-2">
               Days with data:{' '}
               {daysWithData.map((d, i) => (
@@ -147,12 +155,24 @@ export default async function FleetClocksPage({
                       clockInAt={s.clockInAt}
                       clockOutAt={s.clockOutAt}
                     />
+                    {s.officeEntry && (
+                      <>
+                        {' · '}
+                        <VoidShiftButton shiftId={s.id} />
+                      </>
+                    )}
                     {s.manualBy && (
                       <p className="text-xs text-amber-700 mt-1">Manual entry by {s.manualBy}</p>
                     )}
                   </li>
                 ))}
               </ul>
+            )}
+            {fieldCrew === null && (
+              <p className="text-xs text-red-700 mt-3">
+                The crew list could not be loaded, so the picker below is empty even if people
+                are on the roster. Reload before typing a shift.
+              </p>
             )}
             <AddShiftForm crew={crewOptions} defaultDate={date} />
           </section>
