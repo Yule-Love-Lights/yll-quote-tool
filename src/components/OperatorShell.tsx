@@ -1,4 +1,5 @@
 import { OperatorNav } from './dashboard/OperatorNav';
+import { OperatorViewProvider } from './dashboard/OperatorViewContext';
 import { MarkStaffDevice } from './MarkStaffDevice';
 
 export type OperatorArea =
@@ -41,8 +42,14 @@ export function OperatorShell({
       {/* Marks this browser a staff device (S22) so a staff preview of a
           customer's portal link isn't recorded/notified as a customer view. */}
       <MarkStaffDevice />
-      <OperatorNav active={active} inboxOpenLeads={inboxOpenLeads} inboxOverdue={inboxOverdue} />
-      <div className="flex-1 py-8 px-4">{children}</div>
+      {/* One view context per page (ops hub workstream A slice 2): the nav's
+          View-as control writes it, the nav's item list reads it, and later
+          builds can read it from page content too. Client state only; the
+          view is 'office' for every operator today. */}
+      <OperatorViewProvider>
+        <OperatorNav active={active} inboxOpenLeads={inboxOpenLeads} inboxOverdue={inboxOverdue} />
+        <div className="flex-1 py-8 px-4">{children}</div>
+      </OperatorViewProvider>
     </div>
   );
 }

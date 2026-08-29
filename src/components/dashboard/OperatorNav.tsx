@@ -4,37 +4,15 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
+import { navItemsForView, type NavItem } from './operatorView';
+import { useOperatorView } from './OperatorViewContext';
+import { ViewAsControl } from './ViewAsControl';
 
-type NavItem = { label: string; href: string; match: OperatorArea[] };
-
-// Top-level operator areas, in the order Naldo specified. "New quote" lives on
-// the dashboard CTA + the Quotes page (so /quote/* highlights Quotes); Training
-// lives under Settings (so /training/* highlights Settings) — neither is a
-// top-level item.
-const ITEMS: NavItem[] = [
-  { label: 'Home', href: '/', match: ['home'] },
-  { label: 'Inbox', href: '/inbox', match: ['inbox'] },
-  // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
-  // page and everything behind it stay live — reachable by URL and from any
-  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
-  // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
-  // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
-  { label: 'Customers', href: '/customers', match: ['customers'] },
-  { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
-  { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
-  // Schedule shares the jobs area: src/app/admin/schedule/page.tsx and
-  // loading.tsx both render OperatorShell active="jobs" ("Schedule lives under
-  // the Jobs nav item" per loading.tsx's own comment). Naldo approved this nav
-  // item 2026-08-27.
-  { label: 'Schedule', href: '/admin/schedule', match: ['jobs'] },
-  // Fleet is its own area (Naldo, 2026-08-28: Jobs and Fleet lighting up
-  // together was a bug, not an accepted cost).
-  { label: 'Fleet', href: '/admin/fleet', match: ['fleet'] },
-  { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
-  { label: 'Inventory', href: '/inventory', match: ['inventory'] },
-  { label: 'Insights', href: '/insights', match: ['insights'] },
-  { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
-];
+// The item list itself lives in operatorView.ts (ops hub workstream A slice
+// 2): it flows through navItemsForView(view) so the later Crew My Day and
+// Advertising builds add role-filtered nav by extending that data, not by
+// rewriting this component. Today every operator's view is 'office' and the
+// list is unchanged.
 
 // Small numeric pill for the Inbox nav item — red once something's overdue
 // (>4h, matching the /inbox escalation convention), otherwise a neutral tone
@@ -76,6 +54,8 @@ export function OperatorNav({
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const { view } = useOperatorView();
+  const items = navItemsForView(view);
   const isActive = (item: NavItem) => item.match.includes(active);
 
   // This nav is shared chrome rendered on every operator page, several of
@@ -94,6 +74,10 @@ export function OperatorNav({
   // because one fetch blipped, which would silently strand a signed-in
   // staffer with no way to sign out until their next page load.
   const [sessionState, setSessionState] = useState<SessionState>('unknown');
+  // The caller's own role, from the same session answer. Drives the
+  // admin-only View-as control below; null (pre-fetch, signed out, retry
+  // exhausted) renders no control, so the safe default is "not admin".
+  const [role, setRole] = useState<'admin' | 'operator' | null>(null);
   useEffect(() => {
     let cancelled = false;
 
@@ -102,10 +86,13 @@ export function OperatorNav({
         .then(res => {
           if (res.status === 401) return { signedIn: false }; // real answer, not a failure
           if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
-          return res.json() as Promise<{ signedIn?: boolean }>;
+          return res.json() as Promise<{ signedIn?: boolean; role?: string }>;
         })
         .then(body => {
-          if (!cancelled) setSessionState(body.signedIn === true ? 'signedIn' : 'signedOut');
+          if (cancelled) return;
+          const signedIn = body.signedIn === true;
+          setSessionState(signedIn ? 'signedIn' : 'signedOut');
+          setRole(signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null);
         })
         .catch(() => {
           if (cancelled) return;
@@ -201,7 +188,7 @@ export function OperatorNav({
                        the original pre-Schedule design's natural fit)
             */}
         <ul className="hidden lg:flex items-center gap-0.5 text-sm">
-          {ITEMS.map(item => (
+          {items.map(item => (
             <li key={item.href}>
               <Link href={item.href} className="lg:px-1.5 xl:px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
                 {item.label}
@@ -272,6 +259,24 @@ export function OperatorNav({
         </button>
       </div>
 
+      {/* Admin-only View-as strip (ops hub workstream A slice 2). Its own
+          block row UNDER the h-12 header row on purpose: the 1024px header
+          fit has ~12px of margin (see the lg:px-1.5 comment above), so the
+          control must add zero width there. A block row adds ~29px of height
+          for admins only, at every viewport width, and no width for anyone.
+          Renders nothing until the session check above resolves an admin.
+
+          KNOWN RESIDUAL (staff lens on PR #1055, deferred): because this nav
+          remounts on every page and the role arrives by fetch, the strip pops
+          in after each navigation and shifts admin page content down ~29px,
+          the vertical twin of the #347 Sign-out flash fixed above. Reserving
+          the space here would show a permanent blank band to every non-admin
+          operator, so it is deliberately NOT reserve-space fixed. The real
+          fix is server-rendering the role into the shell; that belongs to
+          the first real view build (Crew My Day), which needs server-side
+          view plumbing anyway. Affects only the two admin accounts. */}
+      <ViewAsControl role={role} />
+
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
       {open && (
         <ul
@@ -290,7 +295,7 @@ export function OperatorNav({
               + New quote
             </Link>
           </li>
-          {ITEMS.map(item => (
+          {items.map(item => (
             <li key={item.href}>
               <Link
                 href={item.href}
