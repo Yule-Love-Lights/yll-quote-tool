@@ -325,6 +325,66 @@ describe('OfficeTasksCard — initial static render', () => {
     expect(html).toContain('Open work');
   });
 
+  // These two assert DOM ORDER, which is the whole point of the change: below
+  // the lg breakpoint the grid placement is inert, so the order in the markup
+  // is the order on a phone, and it is what a screen reader follows at every
+  // width. The anchor is the LOADING box rather than the task list, because a
+  // static render never gets past loadState 'loading' and so has no list to
+  // order against. An earlier version of these tests checked only that both
+  // strings were present, which a premerge lens proved would pass with the two
+  // render sites swapped.
+  it('puts the add form AFTER the list on the page, so a phone and a screen reader get tasks first', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    const listArea = html.indexOf('Loading tasks');
+    const form = html.indexOf('office-task-title');
+    expect(listArea).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(listArea);
+    // And the grid lifts it into the right column once there is room.
+    expect(html).toContain('lg:col-start-2');
+  });
+
+  it('keeps the add form BEFORE the list on the card, which is how the dashboard has always read', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    const listArea = html.indexOf('Loading tasks');
+    const form = html.indexOf('office-task-title');
+    expect(listArea).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(-1);
+    expect(form).toBeLessThan(listArea);
+    // No grid placement leaks onto the dashboard.
+    expect(html).not.toContain('lg:col-start-2');
+  });
+
+  it('the page offers a route to the add form that does not need scrolling past the list', () => {
+    // Two premerge staff-lens MEDs: below the lg breakpoint the form sits under
+    // the whole list, and a keyboard user at any width tabs through every row
+    // to reach it. One control answers both, so it must exist as a BUTTON (the
+    // panel's own heading says "Add a task" too, which is not a route anywhere).
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(html).toMatch(/<button[^>]*>Add a task<\/button>/);
+    // Visible below lg, a focus-revealed skip link above it.
+    expect(html).toContain('lg:sr-only');
+    expect(html).toContain('lg:focus:not-sr-only');
+  });
+
+  it('the card offers no such control, because its form is already the first thing in it', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).not.toMatch(/<button[^>]*>Add a task<\/button>/);
+  });
+
+  it('the page does not paint a second "Open work" heading, because the tab already says it', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    // The heading still exists, for the region's accessible name, but hidden.
+    expect(html).toMatch(/id="office-tasks-heading"[^>]*class="sr-only"|class="sr-only"[^>]*id="office-tasks-heading"/);
+  });
+
+  it('the card still paints its own heading and eyebrow', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('Office Tasks');
+    expect(html).toContain('Open work');
+    expect(html).not.toContain('sr-only" id="office-tasks-heading"');
+  });
+
   it('caps the card at a few tasks, which is the whole reason the page exists', () => {
     expect(CARD_TASK_LIMIT).toBeGreaterThan(0);
     expect(CARD_TASK_LIMIT).toBeLessThan(10);

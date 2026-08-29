@@ -13,6 +13,13 @@
 // this module never writes deposit_amount_usd and installments in two places
 // out of step — markInstallmentPaid moves both, or neither.
 //
+// THREE things move together, not two: the installment row, our collected
+// total, and `approval_snapshot.customerSelection.currentDepositUsd` — the
+// frozen figure the customer's own portal card and Quote PDF read from. Nothing
+// customer-facing reads `deposit_amount_usd` at all, so moving only the first
+// two left the customer's Balance Due overstating what they owed by the exact
+// amount they had just paid (S57 wrap customer lens, ledger row 450).
+//
 // NOTHING HERE CONTACTS A CUSTOMER. No email, no SMS, no pay link, no charge.
 // Collecting a payment is a separate, deliberate action.
 
@@ -277,16 +284,47 @@ export async function markInstallmentPaid(input: {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { data: q, error: readErr } = await sb
       .from('quotes')
-      .select('deposit_amount_usd')
+      .select('deposit_amount_usd, approval_snapshot')
       .eq('id', row.quote_id)
       .maybeSingle();
     if (readErr) {
       return { ok: false, error: `Installment recorded, but the quote total could not be read: ${readErr.message}` };
     }
-    const current = Number((q as { deposit_amount_usd: number | string | null } | null)?.deposit_amount_usd ?? 0);
+    const qRow = q as {
+      deposit_amount_usd: number | string | null;
+      approval_snapshot: { customerSelection?: { currentDepositUsd?: unknown } } | null;
+    } | null;
+    const current = Number(qRow?.deposit_amount_usd ?? 0);
+
+    // THE FIGURE THE CUSTOMER ACTUALLY SEES MOVES IN THE SAME WRITE.
+    //
+    // `deposit_amount_usd` is our running collected total, and NOTHING
+    // customer-facing reads it — the portal's own select does not even fetch it.
+    // The portal card and the customer's downloadable Quote PDF both read the
+    // FROZEN `approval_snapshot.customerSelection.currentDepositUsd`
+    // (portal/adapter.ts, and pdf/docModels.ts's `balanceDue = total −
+    // approval.depositUsd`). So recording a payment used to move our number and
+    // leave theirs untouched: their Balance Due would overstate what they owe by
+    // the exact amount they had just paid. Found by the S57 wrap customer lens,
+    // six days before a real $453.13 payment was due (ledger row 450).
+    //
+    // Only quotes WITH an installment plan reach this function, so this cannot
+    // touch an ordinary quote's frozen approval record. The rate is deliberately
+    // NOT touched: it describes the arrangement, not the running total, and
+    // moving it would drift every plan customer toward "100% deposit".
+    const sel = qRow?.approval_snapshot?.customerSelection;
+    const snapshotDeposit = typeof sel?.currentDepositUsd === 'number' ? sel.currentDepositUsd : null;
+    const patch: Record<string, unknown> = { deposit_amount_usd: r2(current + amount) };
+    if (snapshotDeposit !== null && qRow?.approval_snapshot) {
+      patch.approval_snapshot = {
+        ...qRow.approval_snapshot,
+        customerSelection: { ...sel, currentDepositUsd: r2(snapshotDeposit + amount) },
+      };
+    }
+
     const { data: moved, error: qErr } = await sb
       .from('quotes')
-      .update({ deposit_amount_usd: r2(current + amount) })
+      .update(patch)
       .eq('id', row.quote_id)
       .eq('deposit_amount_usd', current)
       .select('id');

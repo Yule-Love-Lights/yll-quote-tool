@@ -348,6 +348,31 @@ export default function OfficeTasksCard({
     return { names: Array.from(names).sort(), hasUnassigned };
   }, [tasks]);
 
+  // How many active tasks are past their due time, for the page toolbar's
+  // amber chip. The SAME rule the server's countActiveOfficeTasks uses for the
+  // nav badge (parse due_at, ignore anything unparseable, strictly before
+  // now), so the two numbers cannot disagree about what "past due" means. It
+  // reads only what is already loaded, so it costs no request.
+  //
+  // In an effect rather than a memo on purpose: this reads the CLOCK, and a
+  // memo runs during render, which react-hooks/purity forbids (a CI error
+  // here, and correctly so — render must not depend on the time). The effect
+  // re-runs whenever the list changes, which covers both a fresh load and a
+  // task being completed in place, so the chip cannot drift from the rows
+  // under it. queueMicrotask is this repo's shape for set-state-in-effect.
+  const [overdueCount, setOverdueCount] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const next =
+      !tasks || view !== 'active'
+        ? 0
+        : tasks.filter((task) => {
+            const due = new Date(task.dueAt).getTime();
+            return !Number.isNaN(due) && due < now;
+          }).length;
+    queueMicrotask(() => setOverdueCount((prev) => (prev === next ? prev : next)));
+  }, [tasks, view]);
+
   // A selection can outlive the list it was made against: pick an assignee in
   // Open work, switch to History, and that person may not appear there. Rather
   // than RESETTING the state in an effect (a cascading render, and the
@@ -543,36 +568,152 @@ export default function OfficeTasksCard({
 
   const canMutate = loadState === 'ready' && view === 'active';
 
+  // ONE definition, placed differently per variant. The card keeps the
+  // form above its three rows, which is how the dashboard has always read.
+  // The page puts it AFTER the list in the DOM and moves it into the right
+  // column with grid placement, so a phone (one column, no grid placement)
+  // and a screen reader both get the tasks first, which is the whole point
+  // of the change. Rendering it twice would be two things to keep in step;
+  // this is one.
+  const addFormBlock =
+    view === 'active' ? (
+      <form
+        className={
+          isPage
+            ? 'grid gap-3 self-start rounded-lg border p-3 lg:col-start-2 lg:row-start-1 lg:row-span-2'
+            : 'mt-4 grid gap-3'
+        }
+        style={isPage ? { borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' } : undefined}
+        onSubmit={createTask}
+        aria-busy={creating}
+      >
+        {/* The panel names itself, and carries the 24-hour rule that used to
+            sit under the page heading. Card keeps neither: there the section
+            header above already says both. */}
+        {isPage ? (
+          <div>
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+              Add a task
+            </h3>
+            <p className="mt-0.5 text-xs leading-5" style={{ color: 'var(--op-text-dim)' }}>
+              Due 24 hours from now unless you choose a time.
+            </p>
+          </div>
+        ) : null}
+        <div>
+          <label htmlFor="office-task-title" className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+            Task title
+          </label>
+          <input
+            id="office-task-title"
+            value={title}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              resetCreateIntent();
+            }}
+            maxLength={200}
+            required
+            disabled={loadState !== 'ready' || creating}
+            autoComplete="off"
+            className="mt-1 min-h-11 w-full rounded-md border px-3 py-2 text-base disabled:opacity-70 sm:text-sm"
+            style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)' }}
+          />
+        </div>
+        <div>
+          <label htmlFor="office-task-detail" className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+            Details <span className="font-normal" style={{ color: 'var(--op-text-dim)' }}>(optional)</span>
+          </label>
+          <textarea
+            id="office-task-detail"
+            value={detail}
+            onChange={(event) => {
+              setDetail(event.target.value);
+              resetCreateIntent();
+            }}
+            maxLength={2000}
+            rows={2}
+            disabled={loadState !== 'ready' || creating}
+            className="mt-1 w-full rounded-md border px-3 py-2 text-base disabled:opacity-70 sm:text-sm"
+            style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)' }}
+          />
+        </div>
+        <div className={isPage ? 'grid gap-3' : 'grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end'}>
+          <div>
+            <label htmlFor="office-task-due-at" className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+              Due time <span className="font-normal" style={{ color: 'var(--op-text-dim)' }}>(optional)</span>
+            </label>
+            <input
+              id="office-task-due-at"
+              type="datetime-local"
+              value={dueAt}
+              onChange={(event) => {
+                setDueAt(event.target.value);
+                resetCreateIntent();
+              }}
+              disabled={loadState !== 'ready' || creating}
+              aria-describedby="office-task-due-help"
+              className="mt-1 min-h-11 w-full rounded-md border px-3 py-2 text-base disabled:opacity-70 sm:text-sm"
+              style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)' }}
+            />
+            <p id="office-task-due-help" className="mt-1 text-xs" style={{ color: 'var(--op-text-dim)' }}>
+              Leave blank to use the 24-hour default.
+            </p>
+          </div>
+          <button
+            type="submit"
+            disabled={loadState !== 'ready' || creating || !title.trim()}
+            className="min-h-11 rounded-md px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+          >
+            {creating ? 'Adding…' : 'Add task'}
+          </button>
+        </div>
+        {createError ? (
+          <p className="text-sm" style={{ color: 'var(--op-danger)' }} role="alert">
+            {createError}
+          </p>
+        ) : null}
+      </form>
+    ) : null;
+
   return (
     <section
       className={isPage ? '' : 'rounded-lg border p-4 mb-8'}
       style={isPage ? undefined : { background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
       aria-labelledby="office-tasks-heading"
     >
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-        <div>
-          {/* The page already carries "Office Tasks" as its own h1, so this
-              eyebrow would just say it twice there. The card needs it: on the
-              dashboard it is the only thing naming the section. */}
-          {!isPage ? (
-            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>
-              Office Tasks
-            </p>
-          ) : null}
-          <h2
-            id="office-tasks-heading"
-            className={isPage ? 'mt-1 text-xl font-semibold' : 'mt-1 text-base font-semibold'}
-            style={{ color: 'var(--op-text)' }}
-          >
+      {/* PAGE HEADER (Naldo's option A, 2026-08-29). One line: the tabs, the
+          counts, and how many rows the filters are showing. The old layout
+          stacked a second "Open work" heading and a paragraph of add-task
+          guidance above the list; the tab already says which view this is, and
+          the guidance moved into the add panel where the form actually is.
+          The heading stays for screen readers, which is what names the region.
+          The CARD keeps its own header untouched: on the dashboard that
+          eyebrow is the only thing naming the section. */}
+      {isPage ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id="office-tasks-heading" className="sr-only">
             {view === 'history' ? 'Completed & dismissed' : 'Open work'}
           </h2>
-          {view === 'active' && (
-            <p className="mt-1 text-sm leading-5" style={{ color: 'var(--op-text-dim)' }}>
-              New tasks are due 24 hours after creation unless you choose another future time.
-            </p>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+          <div className="flex gap-2" role="tablist" aria-label="Task list view">
+            {(['active', 'history'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={view === tab}
+                onClick={() => changeView(tab)}
+                className="min-h-11 rounded-md border px-3 py-2 text-sm font-semibold"
+                style={
+                  view === tab
+                    ? { borderColor: 'var(--brand-evergreen)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
+                    : { borderColor: 'var(--op-border-mid)', color: 'var(--op-text)', background: 'var(--op-bg-raised)' }
+                }
+              >
+                {tab === 'active' ? 'Open work' : 'History'}
+              </button>
+            ))}
+          </div>
           {tasks !== null && loadState === 'ready' && view === 'active' ? (
             <span
               className="w-fit rounded-full px-2.5 py-1 text-xs font-medium"
@@ -581,37 +722,92 @@ export default function OfficeTasksCard({
               {tasks.length} active
             </span>
           ) : null}
-          {/* The card has no history toggle: it links to the page instead
-              (see the footer below), which is the whole point of having a
-              page. The page carries the tabs. */}
-          {isPage ? (
-            <div className="flex gap-2" role="tablist" aria-label="Task list view">
-              {(['active', 'history'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  type="button"
-                  role="tab"
-                  aria-selected={view === tab}
-                  onClick={() => changeView(tab)}
-                  className="min-h-11 rounded-md border px-3 py-2 text-sm font-semibold"
-                  style={
-                    view === tab
-                      ? { borderColor: 'var(--brand-evergreen)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
-                      : { borderColor: 'var(--op-border-mid)', color: 'var(--op-text)', background: 'var(--op-bg-raised)' }
-                  }
-                >
-                  {tab === 'active' ? 'Open work' : 'History'}
-                </button>
-              ))}
-            </div>
+          {overdueCount > 0 ? (
+            <span
+              className="w-fit rounded-full px-2.5 py-1 text-xs font-semibold"
+              style={{ background: '#FBE6DF', color: '#7A2E20' }}
+            >
+              {overdueCount} past due
+            </span>
+          ) : null}
+          {loadState === 'ready' && (tasks?.length ?? 0) > 0 ? (
+            <p className="ml-auto text-sm" style={{ color: 'var(--op-text-dim)' }} aria-live="polite">
+              Showing {visibleTasks?.length ?? 0} of {tasks?.length ?? 0}
+            </p>
           ) : null}
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>
+              Office Tasks
+            </p>
+            <h2 id="office-tasks-heading" className="mt-1 text-base font-semibold" style={{ color: 'var(--op-text)' }}>
+              {view === 'history' ? 'Completed & dismissed' : 'Open work'}
+            </h2>
+            {view === 'active' && (
+              <p className="mt-1 text-sm leading-5" style={{ color: 'var(--op-text-dim)' }}>
+                New tasks are due 24 hours after creation unless you choose another future time.
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {tasks !== null && loadState === 'ready' && view === 'active' ? (
+              <span
+                className="w-fit rounded-full px-2.5 py-1 text-xs font-medium"
+                style={{ background: 'var(--brand-cream)', color: 'var(--brand-evergreen-3)' }}
+              >
+                {tasks.length} active
+              </span>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* TWO COLUMNS on the page: the list owns the width, the add form is a
+          panel beside it. The form comes AFTER the list in the DOM and is
+          lifted into the right column by grid placement, so below the lg
+          breakpoint (one column, placement inert) the tasks come first, and a
+          screen reader reads them first at every width. The wrapper carries no
+          classes on the card, which leaves the dashboard's stacked order
+          exactly as it was. */}
+      {/* A route to the add form that does not depend on scrolling past the
+          list. Two premerge staff-lens MEDs share one cause: the form sits
+          AFTER the list in the DOM, which is what puts the tasks first on a
+          phone, and which also means that below the lg breakpoint the form is
+          under the whole list, and that a keyboard user at ANY width tabs
+          through every filter and every row's three buttons before reaching
+          it.
+
+          One control answers both. Below lg it is an ordinary button, sitting
+          where the old form used to start, costing one row instead of the
+          form's full height. At lg and above, where the panel is already on
+          screen beside the list, it collapses to a skip link that only appears
+          when it receives focus, so it serves the keyboard without adding
+          anything for the mouse. */}
+      {isPage && view === 'active' ? (
+        <button
+          type="button"
+          onClick={() => {
+            const field = document.getElementById('office-task-title');
+            // No smooth behaviour on purpose: an instant jump needs no
+            // prefers-reduced-motion handling.
+            field?.scrollIntoView({ block: 'center' });
+            field?.focus();
+          }}
+          className="min-h-11 w-full rounded-md border px-3 py-2 text-sm font-semibold lg:sr-only lg:focus:not-sr-only"
+          style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+        >
+          Add a task
+        </button>
+      ) : null}
+
+      <div className={isPage ? 'mt-3 grid gap-5 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start' : ''}>
 
       {/* Filter and sort, page only. Rendered once the list is loaded, because
           every option is derived from what the list actually contains. */}
       {isPage && loadState === 'ready' && (tasks?.length ?? 0) > 0 ? (
-        <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3 lg:col-start-1 lg:row-start-1">
           <div>
             <label htmlFor="office-task-source-filter" className="block text-xs font-semibold" style={{ color: 'var(--op-text-dim)' }}>
               Source
@@ -667,90 +863,12 @@ export default function OfficeTasksCard({
               <option value="created">Recently added</option>
             </select>
           </div>
-          <p className="ml-auto text-sm" style={{ color: 'var(--op-text-dim)' }} aria-live="polite">
-            Showing {visibleTasks?.length ?? 0} of {tasks?.length ?? 0}
-          </p>
         </div>
       ) : null}
 
-      {view === 'active' && (
-        <form className="mt-4 grid gap-3" onSubmit={createTask} aria-busy={creating}>
-          <div>
-            <label htmlFor="office-task-title" className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
-              Task title
-            </label>
-            <input
-              id="office-task-title"
-              value={title}
-              onChange={(event) => {
-                setTitle(event.target.value);
-                resetCreateIntent();
-              }}
-              maxLength={200}
-              required
-              disabled={loadState !== 'ready' || creating}
-              autoComplete="off"
-              className="mt-1 min-h-11 w-full rounded-md border px-3 py-2 text-base disabled:opacity-70 sm:text-sm"
-              style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)' }}
-            />
-          </div>
-          <div>
-            <label htmlFor="office-task-detail" className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
-              Details <span className="font-normal" style={{ color: 'var(--op-text-dim)' }}>(optional)</span>
-            </label>
-            <textarea
-              id="office-task-detail"
-              value={detail}
-              onChange={(event) => {
-                setDetail(event.target.value);
-                resetCreateIntent();
-              }}
-              maxLength={2000}
-              rows={2}
-              disabled={loadState !== 'ready' || creating}
-              className="mt-1 w-full rounded-md border px-3 py-2 text-base disabled:opacity-70 sm:text-sm"
-              style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)' }}
-            />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-            <div>
-              <label htmlFor="office-task-due-at" className="text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
-                Due time <span className="font-normal" style={{ color: 'var(--op-text-dim)' }}>(optional)</span>
-              </label>
-              <input
-                id="office-task-due-at"
-                type="datetime-local"
-                value={dueAt}
-                onChange={(event) => {
-                  setDueAt(event.target.value);
-                  resetCreateIntent();
-                }}
-                disabled={loadState !== 'ready' || creating}
-                aria-describedby="office-task-due-help"
-                className="mt-1 min-h-11 w-full rounded-md border px-3 py-2 text-base disabled:opacity-70 sm:text-sm"
-                style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)' }}
-              />
-              <p id="office-task-due-help" className="mt-1 text-xs" style={{ color: 'var(--op-text-dim)' }}>
-                Leave blank to use the 24-hour default.
-              </p>
-            </div>
-            <button
-              type="submit"
-              disabled={loadState !== 'ready' || creating || !title.trim()}
-              className="min-h-11 rounded-md px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
-            >
-              {creating ? 'Adding…' : 'Add task'}
-            </button>
-          </div>
-          {createError ? (
-            <p className="text-sm" style={{ color: 'var(--op-danger)' }} role="alert">
-              {createError}
-            </p>
-          ) : null}
-        </form>
-      )}
+      {!isPage ? addFormBlock : null}
 
+      <div className={isPage ? 'lg:col-start-1 lg:row-start-2' : ''}>
       {loadState !== 'ready' ? (
         <div
           className="mt-4 rounded-md border p-3 text-sm"
@@ -975,6 +1093,11 @@ export default function OfficeTasksCard({
           })}
         </ul>
       )}
+
+      </div>
+
+      {isPage ? addFormBlock : null}
+      </div>
 
       {/* The card's way out to everything it does not show: history, the
           rest of the list, and the filters. Rendered whatever the load state,

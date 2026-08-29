@@ -114,6 +114,11 @@ const PUBLIC_API_EXACT = new Set([
   // carries no operator session, so it must be allowlisted here to reach its
   // own CRON_SECRET check. Also gated by its own CALLS_EXTRACT_ENABLED flag
   // (default off) inside the route, per decision 5.
+  '/api/cron/calls-note', // Vercel Cron (CRON_SECRET-guarded, the post-call HighLevel
+  // note, 2026-08-29), same reason as every other cron above: a scheduled request
+  // carries no operator session, so it must be allowlisted here to reach its own
+  // CRON_SECRET check. Its own CALLS_NOTES_ENABLED flag defaults ON (Naldo asked for
+  // notes to run automatically on merge), so this entry is what the schedule needs.
   '/api/ops/installment-run', // The installment runner (row 448). NOT in vercel.json yet — no
   // cron is armed (Jason's call 2026-08-28, dry-run first) — but the entry lands
   // WITH the route rather than with the schedule, because the failure this list

@@ -3981,6 +3981,32 @@ create index if not exists call_transcripts_pending_commitment_extraction_idx
   where commitments_extracted_at is null
     and commitment_extraction_quarantined_at is null;
 
+-- Post-call HighLevel notes (migrations/2026-08-29-call-notes.sql). Kept as
+-- an alter block rather than folded into the create table above so this
+-- file mirrors the migration that produced it line for line. Deliberately
+-- carries no CHECK constraints: adding one to an already-populated table is
+-- outside AGENTS.md's safe-to-apply allowlist, so the same invariants live
+-- in src/lib/calls/postNotes.ts and its tests instead.
+alter table public.call_transcripts
+  add column if not exists summary                   text,
+  add column if not exists summary_model             text,
+  add column if not exists summary_generated_at      timestamptz,
+  add column if not exists ghl_note_posted_at        timestamptz,
+  add column if not exists ghl_note_id               text,
+  add column if not exists ghl_note_claimed_at       timestamptz,
+  add column if not exists ghl_note_attempts         integer not null default 0,
+  add column if not exists ghl_note_last_attempt_at  timestamptz,
+  add column if not exists ghl_note_last_failure_code text,
+  add column if not exists ghl_note_skip_reason      text,
+  add column if not exists ghl_note_quarantined_at   timestamptz;
+
+-- The note worker's batch picker: calls still owed a note.
+create index if not exists call_transcripts_note_pending_idx
+  on public.call_transcripts (called_at)
+  where ghl_note_posted_at is null
+    and ghl_note_skip_reason is null
+    and ghl_note_quarantined_at is null;
+
 alter table public.call_transcripts enable row level security;
 
 alter table public.call_recordings
@@ -4686,7 +4712,6 @@ alter table public.advertising_placements
 create unique index if not exists advertising_placements_accepted_photo_unique
   on public.advertising_placements (worker_id, campaign_id, photo_hash)
   where status = 'accepted' and photo_hash is not null;
-=======
 -- placement void (2026-08-29, migrations/2026-08-29-placement-void.sql).
 -- Content below is the migration verbatim.
 -- ---------------------------------------------------------------------
