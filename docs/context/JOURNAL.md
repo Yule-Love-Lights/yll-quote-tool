@@ -3006,6 +3006,16 @@ heads-up), the wrap MED (row 356), the wrap LOW (row 357).
 
 - **A SECOND thing row 433 quietly falsified, found while verifying this PR needed no CI run.** `.github/workflows/ci.yml` deliberately ignores `docs/**/*.md` rather than `docs/**`, and its comment marks that glob LOAD-BEARING because `docs/context/ops-contract-schema/` held a real vitest file that a wider glob would have stopped gating — a point the S70 process lens caught before it merged. PR #1027 then deleted that entire directory: `git ls-files` returns 0 there now. The glob is still CORRECT (other non-md files live under `docs/`, and the "check `git ls-files | grep -v '.md$'` before widening" instruction still works), so nothing is broken and nothing was changed here — `.github/workflows/**` is a SHARED path needing Jason's async heads-up, and editing it would also strip this PR's docs-only auto-merge. Recorded so the next reader does not trust a justification pointing at a file that no longer exists. Same class as the lying rows above: my own merge made a true sentence false somewhere I was not looking.
 
+- **ROW 438 SHIPPED (#1045) — crew logins retired on Naldo's ruling, and the design turned on a MEASURED number.** Prod held ZERO crew accounts; all five `crew_members` rows with a login link pointed at operator or admin accounts, i.e. the office linking path. So nothing was stranded and nobody was escalated. Removed the minting path, the email/password form, `crewAuth.ts` and `isCrewPath`. **Kept every guard keyed on `isCrewAccount`, and made the proxy refusal UNCONDITIONAL rather than deleting it** — `roleOf` collapses non-admin roles to 'operator', so deleting the guard would silently PROMOTE any crew account created later by hand. Deleting it would have been the opposite of a cleanup.
+
+- **THE REVIEW EARNED ITS KEEP ON THE ONE FINDING I COULD NOT HAVE SEEN.** Four lenses plus a delta-verify: technical/customer/staff PASS, admin CONCERNS. The admin MED was real and mine: the amber "No login yet" badge and "Give them a login" picker were keyed on `!hasLogin`, which after this PR is the PERMANENT correct state of every field row. Amber reads as "fix me", and the obvious fix — linking an operator — would have quietly re-granted the dashboard access the PR exists to remove. I removed the minting path and left the UI inviting its reversal.
+
+- **THE MERGE WAS THE RISKIEST PART, AND ONLY NALDO ASKING CAUGHT IT.** An hour after I called the PR ready it was silently CONFLICTING: master moved 50 commits and another session shipped an ADVERTISING account role touching the same two security files. Four conflicts. `proxy.ts`'s body auto-merged with only the import conflicting, which is exactly where a wrong result hides, so I read the merged body rather than trusting it (both gates survived, correctly side by side). `time-exceptions` had a NEWER master ruling (operator-only → admin-only) and I took master's substance with my correction applied, not either side wholesale. Then **tsc caught what no conflict marker showed**: master's NEW `advertisingPerimeter.test.ts` imports the function I deleted — a clean merge, a broken build — and the FULL suite caught a second one, master's population matrix asserting the pre-retirement rule. My targeted auth run had passed both. After a hand resolution, run everything, not the suites you think you touched.
+
+- **MISTAKE, twice, caught by my own asserts:** my replacement COMMENT named `isCrewPath`, the very symbol I was deleting — the lying-comment class, committed while sweeping for lying comments. Also removed a block whose trailing `})` closed an enclosing `describe`, and wrote a check that matched `resetPassword` as if it were `setPassword`, which would have deleted a working feature. Every one was stopped before a byte was written, because the pattern is encode → assert the invariant → temp → `os.replace`. The asserts are worth more than the care.
+
+- **Gates at merge:** tsc clean, lint 0 errors (21 warnings, none in a file this touched), **8734 tests / 490 files**. CI green pinned to `e37299fb`. Negative-controlled: disabling the proxy guard fails exactly the three crew-refusal tests and nothing else. Merged as `12af8245`.
+
 - **NEXT:** nothing is blocked. One open question for Naldo: **row 438** — are crew logins still a product concept now that the API they reached is gone? Rows 435/436 and 437 belong to concurrent sessions. Next free ledger #: **439**.
 
 ### S70 (Naldo) — 2026-08-24 — office staff onboarding, then the panel rebuild it turned into: 4 PRs merged and live, 1 open. Close PR naldo/s70-close
@@ -3109,4 +3119,79 @@ Gates at close: tsc 0 · lint 0 errors (19 pre-existing warnings) · vitest **83
 **NEXT:** row 440 (marketing-site sticky-header error, needs a human, WordPress) · row 441 after a week of field data · `/quote/new` rage clicks are unexplained and now have heatmaps and replay pointed at them · the daily robot's first unattended run is 7:00 AM 2026-08-29, and its report should be read as a test of the pipeline as much as of the app.
 
 Gates at close: tsc 0 · lint 0 errors (21 warnings) · vitest **8484 / 465 files**. Master at close: `3efc00f2`.
+
+# S74 (Naldo) — 2026-08-28 — fleet page verified, repaired, rebuilt to spec, and proven on a real job day: 3 PRs merged and live
+
+> Session number note: the handoff said S72, and every repo-side check agreed. S72 was
+> in fact held by the referral session in the machine-local self-assessment, the one
+> place git cannot see, and S73 was taken the same way the day before. This session is
+> S74, claimed at wrap after checking master, the archive, every open PR, AND the local
+> file. That local-file door has now bitten twice (S73 documented it; S74 walked into
+> it), so it was promoted to the AGENTS.md session-number pitfall this close.
+
+## What shipped
+
+- **PR #1036, merged + prod-verified: the /admin/geocoding fix-list had been dead
+  since it shipped.** The page selected `customers(display_name)`; the real column is
+  `name`. PostgREST answered 400 to every request, the error path returned an empty
+  list, and the page told staff "Nothing needs fixing" while 25 unschedulable
+  properties existed. Found by measuring (the page said zero, prod counted 25, the
+  Supabase API log showed the 400), fixed, and the failure mode itself fixed too: a
+  load error now renders a visible error card, never the all-clear. Verified both
+  directions against prod with the real service client before the PR existed.
+- **PR #1040, merged + prod-verified: the fleet page became a real tool.** Leaflet +
+  OpenStreetMap live map (no API key, no customer data in any request), field-only
+  crew clock, at-place timer ("At Depot since 6:50 AM · 43 min"), day list, 2-minute
+  auto-refresh, and honest tracker-asleep wording (an OBD tracker sleeps when the
+  ignition is off, which is most of any real visit; the old copy read that as
+  "position unknown, not parked"). Two review lenses pre-merge (technical PASS; staff
+  0 HIGH / 6 MED, five fixed in the round, one accepted), then a same-day device
+  round with Naldo produced three more fixes shipped in the same PR.
+- **PR #1046, merged (by a concurrent chat, deliberately) + prod-verified: the
+  two-clocks split.** The payroll-versus-GPS comparison moved to /admin/fleet/clocks,
+  ADMIN ONLY via the new `getSessionRole` (fail-closed; crew and advertising logins
+  excluded before the role collapse — the S58 seam, now pinned by tests whose crew
+  branch is mutation-probed). The fleet page is live-only for all office operators.
+  Fleet became its own nav area; Jobs and Fleet no longer co-highlight (Naldo: bug,
+  not an accepted cost). Full four-lens round: customer PASS, technical and admin
+  converged on the untested gate (fixed same hour), staff's real finding is recorded
+  as a decision: non-admin office staff now have NO GPS-history surface, so "when did
+  the van arrive yesterday" requires an admin.
+- **Naldo's staff row moved office → field** (his click, after my direct write was
+  classifier-blocked): he appears on the fleet crew clock and is assignable to jobs.
+
+## The real-world proof
+
+Job #1046 (166 Van Buren St, West Babylon) was assigned for the day on the existing
+schedule page as the test. The tracker then recorded the whole day unattended: depot
+6:50→10:10 AM, job visit 10:24→11:10 AM (47 min), depot 11:41→12:01, second job visit
+12:11→4:36 PM (the double-back captured as two visits, exactly as designed), depot
+arrival 5:19 PM. Beside it the crew clock: Naldo in 7:01→10:15 and 10:15→5:26. That is
+the first real duration data the scheduling design has been waiting on (rows 431/432),
+and the 120 m radius behaved.
+
+## Decisions recorded (do not re-litigate)
+
+- Fleet page access: ALL office operators for the live view (Naldo, over the
+  narrower you-and-Jason idea). The two-clocks comparison: admins only.
+- The scheduling design doc gained a 2026-08-28 addendum from Naldo and Jason's call:
+  manual person-to-vehicle assignment per day (answers the doc's open "crew or
+  vehicle?"), the Staff section is Jason's build (all-staff hours; automatic GPS hours
+  separate; P4P its own tab and own kickoff; marking off PART of a day's hours is a
+  hard requirement), Copilot is dropped this month (bills the 16th), scheduling wanted
+  inside ~2 weeks.
+- Truck-and-trailer tracker activates later (row 454 holds the steps).
+
+## Review at close
+
+Wrap ran one integration lens plus the customer lens (package.json is a SHARED path,
+so the customer lens ran with a live logged-out drive). Findings recorded in the wrap
+block of the journal entry; dispositions in rows 454-457.
+
+## Ending state
+
+Master at close: see close PR. Gates at close: tsc 0 · lint 0 errors (19 warnings) ·
+vitest green (8459 at the last combined-tree run; the suite grew all day as five-plus
+concurrent sessions merged). Ledger: minted 454-457, counter to 458, above Jason's
+open #1052 which holds 450-453.
 

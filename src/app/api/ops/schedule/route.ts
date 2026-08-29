@@ -15,7 +15,8 @@ export const runtime = 'nodejs';
 
 /**
  * Scheduling (P4P Phase 3). OPERATOR-only: the office schedules, crew do not.
- * Deliberately outside /api/ops/v1, which is the crew-confined namespace.
+ * Deliberately outside /api/ops/v1, which WAS the crew-confined namespace
+ * (deleted with the Operations Hub, row 433; crew logins retired, row 438).
  *
  *   GET    ?from=YYYY-MM-DD&to=YYYY-MM-DD  → the schedule + per-day capacity
  *   GET    ?unscheduled=YYYY-MM-DD         → jobs still needing a date

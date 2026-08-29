@@ -7,6 +7,7 @@ import {
   getSchedule,
   isCalendarDate,
   listUnscheduledJobs,
+  propertyArchiveBlock,
   unassignCrewFromJob,
   type ScheduledJob,
 } from './scheduling';
@@ -27,7 +28,7 @@ type Chain = Record<string, (...args: unknown[]) => Chain> & {
 function chain(resp: DbResp): Chain {
   const calls: Array<[string, unknown[]]> = [];
   const p = { calls } as unknown as Chain;
-  for (const m of ['select', 'insert', 'delete', 'eq', 'gte', 'lte', 'in', 'not', 'order']) {
+  for (const m of ['select', 'insert', 'delete', 'eq', 'gte', 'lte', 'in', 'not', 'order', 'limit']) {
     (p as Record<string, unknown>)[m] = (...args: unknown[]) => {
       calls.push([m, args]);
       return p;
@@ -375,5 +376,50 @@ describe('computeDayCapacity — the derivation the plan insists be stated', () 
     const cap = computeDayCapacity('2026-08-18', jobs);
     const assigned = Object.values(cap.perCrew).reduce((s, h) => s + h, 0);
     expect(assigned + cap.unassignedHours).toBe(17);
+  });
+});
+
+// ─── propertyArchiveBlock (PR #1054) — the fix-list Archive guard ───────────
+describe('propertyArchiveBlock', () => {
+  const OWNED: DbResp = { data: { id: 'p1' }, error: null };
+  const NONE: DbResp = { data: [], error: null };
+
+  it("answers 'not-found' for a property the customer does not own", async () => {
+    makeDb({ properties: [chain({ data: null, error: null })] });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('not-found');
+  });
+
+  it("answers 'has-jobs' when a job references the property", async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain({ data: [{ id: 'j1' }], error: null })],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-jobs');
+  });
+
+  it("answers 'has-live-quote' when a sent/viewed/approved/booked quote references it", async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain(NONE)],
+      quotes: [chain({ data: [{ id: 'q1' }], error: null })],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-live-quote');
+  });
+
+  it("answers 'clear' when only draft/dead/abandoned quotes exist (the query filters them out)", async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain(NONE)],
+      quotes: [chain(NONE)],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('clear');
+  });
+
+  it('fails SAFE: a jobs lookup error blocks the archive', async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain({ data: null, error: { message: 'boom' } })],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-jobs');
   });
 });

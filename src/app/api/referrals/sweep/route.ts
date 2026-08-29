@@ -36,11 +36,53 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isHighLevelConfigured } from '@/lib/integrations/highlevel';
-import { runReferralSweep } from '@/lib/referralSweep';
+import { runReferralSweep, type ReferralSweepSummary } from '@/lib/referralSweep';
 import { cronDenial } from '@/lib/auth/cronAuth';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
+
+/** Mirrors src/app/api/ops/vehicle-poll/route.ts's own logging: Vercel Cron
+ *  discards response bodies, so a summary that only lives in the JSON
+ *  response is computed and thrown away on every scheduled run. This is the
+ *  only place a human ever sees what a run actually did.
+ *
+ *  DRY RUN and LIVE are labeled up front so nobody has to squint at a log
+ *  line to tell whether anything was actually written; an errored run logs
+ *  via console.error (with the real error samples attached) instead of
+ *  console.info so it stands out from a routine run.
+ *
+ *  Note: ReferralSweepSummary has no single "would be minted" field. A dry
+ *  run never calls ensureReferralCode, so the closest real number is
+ *  wouldTagNeighbor + wouldTagHasReferralLink: every contact that clears
+ *  the same alreadyDone/suppressed gate a live run uses is one that would
+ *  go on to be minted, stamped, and tagged. That sum is logged below as
+ *  `wouldMint`, a label for this line only, not a field on the type. */
+function logSweepSummary(summary: ReferralSweepSummary): void {
+  const mode = summary.dryRun ? 'DRY RUN' : 'LIVE';
+  const stageId = summary.resolvedDoNotCallStageId ?? '(unresolved)';
+
+  if (!summary.ok) {
+    console.error(
+      `[referral-sweep] ${mode} ABORTED: ${summary.error ?? 'unknown error'} ` +
+        `(scanned ${summary.scanned}, doNotCallStageId ${stageId})`,
+    );
+    return;
+  }
+
+  const mintedPart = summary.dryRun
+    ? `wouldMint ${summary.wouldTagNeighbor + summary.wouldTagHasReferralLink} ` +
+      `(neighbor ${summary.wouldTagNeighbor}, has-referral-link ${summary.wouldTagHasReferralLink})`
+    : `minted ${summary.minted} (neighbor ${summary.taggedNeighbor}, has-referral-link ${summary.taggedHasReferralLink})`;
+
+  const line =
+    `[referral-sweep] ${mode}: scanned ${summary.scanned}, suppressed ${summary.suppressed}, ` +
+    `alreadyDone ${summary.alreadyDone}, ${mintedPart}, errors ${summary.errors}, ` +
+    `doNotCallStageId ${stageId}`;
+
+  if (summary.errors > 0) console.error(line, summary.errorSamples);
+  else console.info(line);
+}
 
 export async function GET(req: NextRequest) {
   // Shared guard: 503 (naming the variable) when CRON_SECRET is unset, 401 when
@@ -49,6 +91,10 @@ export async function GET(req: NextRequest) {
   if (denied) return denied;
 
   if (!isHighLevelConfigured()) {
+    // See logSweepSummary's own comment: Vercel Cron discards response
+    // bodies, so this silent 200 used to be indistinguishable from a live
+    // cron nobody ever finished configuring. Logged so that's no longer true.
+    console.info('[referral-sweep] dormant: HighLevel not configured, nothing scanned');
     return NextResponse.json({ ok: true, skipped: 'highlevel not configured' });
   }
   if (!isSupabaseServiceConfigured()) {
@@ -60,5 +106,6 @@ export async function GET(req: NextRequest) {
   // ways in and why that's still unambiguous (OR, not AND).
   const live = process.env.REFERRAL_SWEEP_LIVE === 'true' || req.nextUrl.searchParams.get('live') === 'true';
   const summary = await runReferralSweep({ dryRun: !live });
+  logSweepSummary(summary);
   return NextResponse.json(summary, { status: summary.ok ? 200 : 500 });
 }

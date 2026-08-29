@@ -8,7 +8,7 @@
 // compose correctly. Complements (does not replace) proxy.test.ts's per-branch
 // coverage and operatorGate.test.ts's pure isXPath() coverage.
 //
-// Modeled on proxy.test.ts's fixture pattern: isPublicPath/isCrewPath/
+// Modeled on proxy.test.ts's fixture pattern: isPublicPath/
 // isAdvertisingPath/isCrewAccount/isAdvertisingAccount/authGateEngaged are all
 // REAL (they are the security seam under test); only createMiddlewareSupabase
 // is mocked, since it's the one piece that talks to actual Supabase.
@@ -84,6 +84,8 @@ function wireSession(kind: SessionKind) {
 // non-public (not in operatorGate.ts's allowlist), so an unauthenticated
 // session always 401s regardless of which surface it targets.
 const OPERATOR_PATH = '/api/customers';
+// The RETIRED crew namespace (row 433 deleted it). Kept as a matrix row so the
+// perimeter is pinned to refuse a crew session here too, not merely elsewhere.
 const CREW_PATH = '/api/ops/v1/jobs/abc/arrive';
 const ADVERTISING_PATH = '/api/advertising/campaigns';
 
@@ -112,9 +114,14 @@ describe('population-by-surface matrix (advertising role hardening)', () => {
     ['operator', 'crew path', CREW_PATH, 'reachedSurface'],
     ['operator', 'advertising path', ADVERTISING_PATH, 'reachedSurface'],
 
-    // crew — confined to exactly the crew surface (row 279, pre-existing).
+    // crew — refused EVERYWHERE since crew logins were retired (row 438).
+    // This block read 'reachedSurface' on the crew path until that landed:
+    // /api/ops/v1 went with the Operations Hub (row 433), so the namespace a
+    // crew session was confined TO no longer exists and the perimeter carries
+    // no exception for it. Nothing mints a crew account any more; the refusal
+    // stays because roleOf would otherwise read one as an operator.
     ['crew', 'operator path', OPERATOR_PATH, 'forbidden403'],
-    ['crew', 'crew path', CREW_PATH, 'reachedSurface'],
+    ['crew', 'crew path', CREW_PATH, 'forbidden403'],
     ['crew', 'advertising path', ADVERTISING_PATH, 'forbidden403'],
 
     // advertising — confined to exactly the advertising surface (this PR).

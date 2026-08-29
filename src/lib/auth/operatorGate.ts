@@ -92,7 +92,7 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
   '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest — same Bearer guard as low-stock-alert; a cron request carries no operator session so it must be allowlisted to reach its own CRON_SECRET check)
-  '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs. Deliberately NOT under /api/ops/v1, so it stays outside the crew surface.
+  '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs.
   '/api/ops/vehicle-poll', // Vercel Cron (CRON_SECRET-guarded, row 403 fleet position poll) — same reason as every cron here: no operator session, so the perimeter must let it reach its own secret check. Writes vehicle positions and visits only; never payroll (constraint (a)).
   '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest — was silently 401'd by this perimeter from #666's merge until the S47 wrap review caught it)
   '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping — same gap, same fix)
@@ -131,28 +131,9 @@ const QUOTE_BY_ID_RE = /^\/api\/quotes\/[^/]+$/;
  * operator-only action and must stay gated.
  */
 /**
- * The crew-only surface: the Flow B time-capture API.
- *
- * These paths are NOT public — they require a crew session — but they are also
- * the ONLY paths a crew session may reach. The perimeter in `src/proxy.ts` uses
- * this to 403 a crew login that wanders onto the operator surface, which matters
- * because that perimeter otherwise admits ANY authenticated user and the
- * operator surface holds customer PII.
- *
- * Prefix-matched deliberately: the whole versioned namespace belongs to crew, so
- * adding `/api/ops/v1/breaks/start` later needs no change here. Note `/api/ops`
- * WITHOUT `/v1` is NOT crew — `/api/ops/digest` is a CRON_SECRET-guarded cron and
- * stays in the public allowlist above.
- */
-export function isCrewPath(pathname: string): boolean {
-  const path =
-    pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-  return path === '/api/ops/v1' || path.startsWith('/api/ops/v1/');
-}
-
-/**
  * The advertising-only surface: `/advertising` (pages) and `/api/advertising`
- * (its APIs). Same shape as `isCrewPath` above, for the same reason — an
+ * (its APIs). Confined at the perimeter for the same reason the retired crew
+ * population was (row 438) — an
  * advertising session must be confined to exactly this surface at the
  * perimeter, which otherwise admits any authenticated user onto the operator
  * surface and its customer PII.
@@ -164,7 +145,7 @@ export function isCrewPath(pathname: string): boolean {
  * marker + the perimeter confinement) before the first advertising surface
  * does, so nothing has to race to land guard and surface in the same PR.
  *
- * Positive allowlist, prefix-matched like isCrewPath: a future
+ * Positive allowlist, prefix-matched: a future
  * `/api/advertising/campaigns` needs no change here.
  */
 export function isAdvertisingPath(pathname: string): boolean {
