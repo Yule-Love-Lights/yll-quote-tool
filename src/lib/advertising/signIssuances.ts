@@ -227,7 +227,8 @@ export async function getWorkerSignBalance(workerId: string): Promise<WorkerSign
     .from('advertising_placements')
     .select('id', { count: 'exact', head: true })
     .eq('worker_id', id)
-    .eq('kind', 'yard_sign');
+    .eq('kind', 'yard_sign')
+    .is('voided_at', null); // a voided placement gives the sign back
   if (error) console.error('getWorkerSignBalance count error:', error);
   const signsUsed = count ?? 0;
 

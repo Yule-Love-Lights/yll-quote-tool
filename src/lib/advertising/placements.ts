@@ -39,6 +39,11 @@ export type AdvertisingPlacement = {
   workerNote: string | null;
   /** Perceptual dHash of the proof photo (photoHash.ts); null before hashing shipped. */
   photoHash: string | null;
+  /** Void overlay (Naldo 2026-08-29): a voided row counts for NOTHING but
+   * its history stays. All three travel together; reason required. */
+  voidedAt: string | null;
+  voidedBy: string | null;
+  voidReason: string | null;
   acceptedRateCents: number | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -65,6 +70,9 @@ type Row = {
   rejection_reason: string | null;
   worker_note: string | null;
   photo_hash: string | null;
+  voided_at: string | null;
+  voided_by: string | null;
+  void_reason: string | null;
   accepted_rate_cents: number | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -74,7 +82,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, photo_hash, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
+  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, photo_hash, voided_at, voided_by, void_reason, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
 
 function toPlacement(row: Row): AdvertisingPlacement {
   return {
@@ -95,6 +103,9 @@ function toPlacement(row: Row): AdvertisingPlacement {
     rejectionReason: row.rejection_reason,
     workerNote: row.worker_note,
     photoHash: row.photo_hash,
+    voidedAt: row.voided_at,
+    voidedBy: row.voided_by,
+    voidReason: row.void_reason,
     acceptedRateCents: row.accepted_rate_cents,
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
@@ -249,6 +260,7 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
   const placementId = id.trim();
   const row = await getPlacementRow(db, placementId);
   if (!row) throw new Error(`acceptPlacement: no placement found for id ${placementId}`);
+  if (row.voided_at) throw new Error('acceptPlacement: placement is voided and cannot be reviewed');
   if (row.status === 'accepted') return toPlacement(row); // idempotent retry
   if (row.status === 'rejected') {
     throw new Error('acceptPlacement: placement is rejected — it must be resubmitted before it can be accepted');
@@ -285,6 +297,7 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     })
     .eq('id', placementId)
     .in('status', ['pending', 'resubmitted'])
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`acceptPlacement: ${error.message}`);
@@ -336,6 +349,7 @@ export async function rejectPlacement(
     })
     .eq('id', placementId)
     .in('status', ['pending', 'resubmitted'])
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`rejectPlacement: ${error.message}`);
@@ -343,6 +357,7 @@ export async function rejectPlacement(
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`rejectPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) throw new Error('rejectPlacement: placement is voided and cannot be reviewed');
     if (current.status === 'rejected') return toPlacement(current); // idempotent retry
     throw new Error(`rejectPlacement: placement ${placementId} is '${current.status}' and cannot be rejected`);
   }
@@ -371,6 +386,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
     .update({ status: 'resubmitted' })
     .eq('id', placementId)
     .eq('status', 'rejected')
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`resubmitPlacement: ${error.message}`);
@@ -378,6 +394,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`resubmitPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) throw new Error('resubmitPlacement: placement is voided and cannot be resubmitted');
     if (current.status === 'resubmitted') return toPlacement(current); // idempotent retry
     throw new Error(`resubmitPlacement: placement ${placementId} is '${current.status}', only rejected placements can be resubmitted`);
   }
@@ -390,6 +407,61 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
     workerId: resubmitted.workerId,
   });
   return resubmitted;
+}
+
+/**
+ * VOID a placement (Naldo 2026-08-29): it stops counting anywhere — pay,
+ * estimates, sign allotments, stock counts, duplicate flags — while the row,
+ * its status history, and its stamped rate remain as the record. There is no
+ * un-void; a wrongly voided sign gets re-submitted. CAS on voided_at IS NULL:
+ * the first void wins and a retry returns it unchanged.
+ */
+export async function voidPlacement(
+  id: string,
+  voidedBy: string,
+  reason: string,
+): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const placementId = id.trim();
+  const voidReason = reason.trim();
+  if (!voidReason) throw new Error('voidPlacement: a reason is required');
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({
+      voided_at: new Date().toISOString(),
+      voided_by: voidedBy,
+      void_reason: voidReason,
+    })
+    .eq('id', placementId)
+    .is('voided_at', null)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`voidPlacement: ${error.message}`);
+
+  if (!data) {
+    const current = await getPlacementRow(db, placementId);
+    if (!current) throw new Error(`voidPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) return toPlacement(current); // idempotent: first void stands
+    throw new Error(`voidPlacement: placement ${placementId} could not be voided`);
+  }
+
+  const voided = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: voidedBy,
+    action: 'placement_voided',
+    placementId: voided.id,
+    workerId: voided.workerId,
+    detail: {
+      reason: voidReason,
+      priorStatus: voided.status,
+      acceptedRateCents: voided.acceptedRateCents,
+      kind: voided.kind,
+    },
+  });
+  return voided;
 }
 
 // --- Earnings -----------------------------------------------------------------
@@ -465,6 +537,10 @@ export function summarizeEarnings(
       };
       byWorker.set(p.workerId, acc);
     }
+
+    // Voided rows count for NOTHING (Naldo 2026-08-29) — but their worker
+    // still shows up with zeros rather than vanishing.
+    if (p.voidedAt) continue;
 
     let earned = 0;
     let estimated = 0;
