@@ -202,7 +202,7 @@ export default function ManageCrewScreen() {
               type="button"
               onClick={() => void setStockCount()}
               className="ml-auto rounded-full border px-4 py-2"
-              style={{ borderColor: '#DFE3DE', color: SC.text }}
+              style={{ borderColor: '#DCD4BE', color: SC.text }}
             >
               Set counted stock…
             </button>
@@ -227,7 +227,7 @@ export default function ManageCrewScreen() {
           <div key={w.id} className="flex flex-wrap items-center gap-3 rounded-2xl bg-white p-4 shadow-sm">
             <span
               className="flex h-12 w-12 items-center justify-center rounded-full text-xl font-semibold"
-              style={{ background: '#EFF1EE', color: SC.muted }}
+              style={{ background: '#F1EAD8', color: SC.muted }}
             >
               {w.displayName.slice(0, 1)}
             </span>
@@ -282,7 +282,7 @@ export default function ManageCrewScreen() {
             onChange={(e) => setName(e.target.value)}
             placeholder="Name"
             className="mt-4 w-full rounded-xl border px-4 py-3 text-lg"
-            style={{ borderColor: '#DFE3DE' }}
+            style={{ borderColor: '#DCD4BE' }}
           />
           <input
             value={email}
@@ -290,7 +290,7 @@ export default function ManageCrewScreen() {
             type="email"
             placeholder="Email for their login (optional)"
             className="mt-3 w-full rounded-xl border px-4 py-3 text-lg"
-            style={{ borderColor: '#DFE3DE' }}
+            style={{ borderColor: '#DCD4BE' }}
           />
           {email.trim() !== '' && (
             <input
@@ -299,7 +299,7 @@ export default function ManageCrewScreen() {
               type="text"
               placeholder="Temporary password (8+ characters)"
               className="mt-3 w-full rounded-xl border px-4 py-3 text-lg"
-              style={{ borderColor: '#DFE3DE' }}
+              style={{ borderColor: '#DCD4BE' }}
             />
           )}
           {inviteError && (
@@ -326,7 +326,7 @@ export default function ManageCrewScreen() {
               type="text"
               placeholder="New password (8+ characters)"
               className="mt-4 w-full rounded-xl border px-4 py-3 text-lg"
-              style={{ borderColor: '#DFE3DE' }}
+              style={{ borderColor: '#DCD4BE' }}
             />
             <div className="mt-5">
               <PrimaryButton

@@ -23,15 +23,16 @@ export function WorkerTabs({ active }: { active: 'campaigns' | 'capture' | 'prof
 export function AdminTabs({
   active,
 }: {
-  active: 'campaigns' | 'crew' | 'capture' | 'pay' | 'settings';
+  active: 'campaigns' | 'crew' | 'capture' | 'settings';
 }) {
+  // Pay lives INSIDE Settings (Naldo's device round, 2026-08-29): one tab,
+  // same screen. /admin/advertising/pay redirects there.
   return (
     <TabBar
       items={[
         { key: 'campaigns', href: '/admin/advertising', icon: <FeedIcon size={26} />, active: active === 'campaigns' },
         { key: 'crew', href: '/admin/advertising/crew', icon: <CrewIcon size={26} />, active: active === 'crew' },
         { key: 'capture', href: '/admin/advertising/capture', icon: <CameraIcon size={26} />, active: active === 'capture' },
-        { key: 'pay', href: '/admin/advertising/pay', icon: <PersonIcon size={26} />, active: active === 'pay' },
         { key: 'settings', href: '/admin/advertising/settings', icon: <GearIcon size={26} />, active: active === 'settings' },
       ]}
     />
