@@ -1,4 +1,6 @@
 import { OperatorNav } from './dashboard/OperatorNav';
+import { OperatorViewProvider } from './dashboard/OperatorViewContext';
+import { viewForArea } from './dashboard/operatorView';
 import { MarkStaffDevice } from './MarkStaffDevice';
 
 export type OperatorArea =
@@ -7,13 +9,24 @@ export type OperatorArea =
   | 'insights'
   | 'quotes'
   | 'jobs'
+  | 'fleet'
   | 'invoices'
   | 'leads'
   | 'customers'
   | 'inventory'
   | 'new'
   | 'training'
-  | 'settings';
+  | 'settings'
+  // 'time' matches no nav item on purpose (the leads precedent in
+  // OperatorNav.tsx: /admin/time-tracking is admin-only, reached from the
+  // Fleet page link, and the 1024px nav row has no room for another slot).
+  | 'time'
+  // The advertising-view areas (#1061 surfaces + the View-as nav wiring).
+  // They match items only in the ADVERTISING view's nav list, so they light
+  // nothing in the office view; one area per page so tabs highlight alone.
+  | 'advertising'
+  | 'advertising-pay'
+  | 'advertising-people';
 
 // Shared chrome for every internal operator page: the branded top nav (links to
 // every area) on the cream operator surface. Wrap a page's content in this so
@@ -40,8 +53,16 @@ export function OperatorShell({
       {/* Marks this browser a staff device (S22) so a staff preview of a
           customer's portal link isn't recorded/notified as a customer view. */}
       <MarkStaffDevice />
-      <OperatorNav active={active} inboxOpenLeads={inboxOpenLeads} inboxOverdue={inboxOverdue} />
-      <div className="flex-1 py-8 px-4">{children}</div>
+      {/* One view context per page (ops hub workstream A slice 2): the nav's
+          View-as control writes it, the nav's item list reads it, and later
+          builds can read it from page content too. Client state, seeded from
+          the page's own area (viewForArea), which is how a switched view
+          survives navigation: an advertising page starts in the advertising
+          view server-side, everything else starts office. */}
+      <OperatorViewProvider initialView={viewForArea(active)}>
+        <OperatorNav active={active} inboxOpenLeads={inboxOpenLeads} inboxOverdue={inboxOverdue} />
+        <div className="flex-1 py-8 px-4">{children}</div>
+      </OperatorViewProvider>
     </div>
   );
 }

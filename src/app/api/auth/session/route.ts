@@ -13,5 +13,10 @@ export const runtime = 'nodejs';
 
 export async function GET() {
   const operator = await getOperator();
-  return NextResponse.json({ signedIn: operator !== null });
+  // The caller's own role rides along when signed in (ops hub workstream A
+  // slice 2): OperatorNav gates its admin-only View-as control on it, and
+  // this route is the session answer it already fetches. Never present when
+  // signed out.
+  if (!operator) return NextResponse.json({ signedIn: false });
+  return NextResponse.json({ signedIn: true, role: operator.role });
 }

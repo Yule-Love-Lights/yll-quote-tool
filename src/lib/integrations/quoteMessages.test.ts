@@ -1061,7 +1061,8 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     });
     expect(html).toContain('$125 in credit');
     expect(html).toContain('any Yule Love Lights service');
-    expect(html).toContain('$170 in free lighting');
+    expect(html).toContain('$170');
+    expect(html).toContain('$150 off');
     expect(html).not.toContain('next YLL job');
     expect(html).not.toContain('—');
   });

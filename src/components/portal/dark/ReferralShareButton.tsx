@@ -22,6 +22,7 @@
 import { useSyncExternalStore } from 'react';
 import { Share2 } from 'lucide-react';
 import { formatUsd } from '@/components/portal/format';
+import { REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 
 // navigator.share's availability never changes during a page's lifetime, so
 // there's nothing to subscribe to — an empty unsubscribe is correct here.
@@ -54,9 +55,9 @@ export function buildReferralShareMessage(
   spritzerSizeInches: number,
   spritzerValueUsd: number,
 ): string {
-  return `Check out Yule Love Lights, they do beautiful outdoor lighting! Use my link and get ${formatUsd(
+  return `Check out Yule Love Lights, they do beautiful outdoor lighting! Use my link and get ${spritzerCount} free ${spritzerSizeInches}" spritzers on your first booked install (worth ${formatUsd(
     spritzerValueUsd,
-  )} in free lighting on your first booked install, ${spritzerCount} staked spotlights for your yard (${spritzerSizeInches}" spritzers): ${link}`;
+  )}), or ${formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead, your choice: ${link}`;
 }
 
 export function ReferralShareButton({
