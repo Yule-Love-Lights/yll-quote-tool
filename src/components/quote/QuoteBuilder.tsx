@@ -2860,6 +2860,45 @@ export default function QuoteBuilder({
     setter(() => []);
   };
 
+  // S75 (Naldo): one control that wipes every traced line at once. The per-
+  // category "Clear all" buttons below only appear at 2+ lines and only clear
+  // their own field, so an auto-trace that came back badly wrong took four
+  // separate clears to undo. Scope is deliberately the four HOLIDAY satellite
+  // line sets — the same geometry the auto-trace writes. It does NOT touch the
+  // permanent per-side draws or the bistro runs (those are hand-drawn, never
+  // auto-traced), the satellite image itself, or its scale, so the operator can
+  // re-trace immediately on the same picture.
+  //
+  // Billed footage is NOT reset here on purpose: the measurement effect above
+  // already zeroes a field whose lines just went from some to none
+  // (reconcileHolidayFootageField's hadLinesPrev && !hasLines branch). Zeroing
+  // it here as well would be a second writer racing the reconcile's baseline.
+  const anyTracedLines =
+    satelliteSantasLines.length > 0 ||
+    satelliteGingerbreadLines.length > 0 ||
+    satelliteC9Lines.length > 0 ||
+    satelliteStakeLines.length > 0;
+
+  const clearAllTracedLines = () => {
+    if (postApprovalFrozen) return;
+    if (!anyTracedLines) return;
+    if (
+      !window.confirm(
+        'Clear every traced line on this satellite image? The footage they measured resets to 0 and you can re-trace from scratch. The photo and its scale stay.',
+      )
+    ) {
+      return;
+    }
+    setSatelliteSantasLines([]);
+    setSatelliteGingerbreadLines([]);
+    setSatelliteC9Lines([]);
+    setSatelliteStakeLines([]);
+    // Leave the trace UI in a clean state rather than mid-draw against
+    // geometry that no longer exists.
+    setAddMode(null);
+    setPendingPoints([]);
+  };
+
   const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
     const setter = getSetter(type);
     setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
@@ -7353,6 +7392,17 @@ Send anyway?`,
                               + Add Stake Run
                             </button>
                           </>
+                        )}
+                        {/* S75: start-over control for a bad auto-trace. Only
+                            rendered when there is something to clear, so it
+                            can't be hit on an empty image. */}
+                        {anyTracedLines && (
+                          <button type="button" onClick={clearAllTracedLines}
+                            disabled={postApprovalFrozen}
+                            title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : 'Wipe every traced line and start over'}
+                            className="ml-auto text-xs font-medium text-gray-600 hover:text-red-700 disabled:text-gray-300 border border-gray-300 hover:border-red-400 disabled:border-gray-200 rounded px-3 py-1.5">
+                            Clear all traced lines
+                          </button>
                         )}
                       </div>
                     )}
