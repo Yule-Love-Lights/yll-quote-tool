@@ -63,6 +63,8 @@ function InvoicesAdminPageContent() {
     n == null ? '—' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const term = search.trim().toLowerCase();
+  // Same derivation the per-row ⚠ and the workflow board use.
+  const staleCount = items.filter((inv) => isStaleInvoiceSnapshot(inv.quoteApprovalSnapshot)).length;
   const visible = items.filter((inv) => {
     if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
     if (staleOnly && !isStaleInvoiceSnapshot(inv.quoteApprovalSnapshot)) return false;
@@ -131,6 +133,32 @@ function InvoicesAdminPageContent() {
                   {s === 'All' ? 'All' : INVOICE_STATUS_LABELS[s]}
                 </button>
               ))}
+              {/* Ops hub workstream A, stale-invoice discoverability: rows
+                  396/414 built the whole chain (board link with ?stale=1, the
+                  per-row ⚠ in the Status cell below, detail markers, Mark
+                  reconciled) but the ONLY door into the filter was the
+                  workflow board's bucket link. This chip is the on-page door.
+                  Its count covers THIS page's list, which includes test
+                  invoices (shown here badged by design), while the board's
+                  bucket count excludes them — so the two numbers can differ
+                  by exactly the stale TEST invoices (admin-lens MED on this
+                  PR; measured 0 stale invoices of any kind in prod at review
+                  time). The chip's number always equals the rows its click
+                  reveals, which is the consistency this page owes the reader.
+                  URL param stays the single source of truth (deep links and
+                  the banner keep working). */}
+              {(staleCount > 0 || staleOnly) && (
+                <Link
+                  href={staleOnly ? '/admin/invoices' : '/admin/invoices?stale=1'}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                    staleOnly
+                      ? 'bg-amber-600 text-white border-amber-600'
+                      : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                  }`}
+                >
+                  ⚠ Unreconciled ({staleCount})
+                </Link>
+              )}
             </div>
             <input
               type="search"

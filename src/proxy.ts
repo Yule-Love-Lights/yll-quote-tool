@@ -60,10 +60,12 @@ export async function proxy(req: NextRequest) {
         return NextResponse.redirect(denied);
       }
       // Same seam as the crew branch above, for the advertising population
-      // (Naldo's 2026-08-27 ruling). No advertising page or API exists yet —
-      // isAdvertisingPath() is empty — so this branch confines every
-      // advertising session to nothing today, and to exactly the advertising
-      // surface once it exists, without ever widening the crew branch above.
+      // (Naldo's 2026-08-27 ruling). The advertising surface is live as of
+      // the workstream B build: isAdvertisingPath() names /advertising and
+      // /api/advertising/**, and this branch confines every advertising
+      // session to exactly that surface, without ever widening the crew
+      // branch above. The reachability matrix is pinned by
+      // src/lib/auth/advertisingPerimeter.test.ts.
       if (isAdvertisingAccount(user.app_metadata) && !isAdvertisingPath(pathname)) {
         if (pathname.startsWith('/api/')) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
