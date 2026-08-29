@@ -28,10 +28,18 @@ const inter = Inter({
   display: 'swap',
 });
 
+// naldo/mobile-app-branding: the quote tool's web manifest starts at `/`, which
+// is the OPERATOR login for anyone who is not staff. This segment is customer
+// facing, so it drops the manifest rather than inheriting it: a homeowner who
+// adds their page to the home screen gets a shortcut back to the page they were
+// on, not an app that opens our login screen. `null` is Next's remove-this-field
+// value, not merely an absent key. The apple-touch-icon is deliberately left
+// inherited, so they still get the YLL logo instead of the old black square.
 export const metadata: Metadata = {
   title: 'Your Yule Love Lights Quote',
   description:
     'Your personalized holiday lighting design — tap to see it light up.',
+  manifest: null,
 };
 
 export default function PortalLayout({
