@@ -27,7 +27,7 @@ export default async function AdvertisingPayPage() {
   const nameById = new Map(workers.map((w) => [w.id, w.displayName]));
 
   return (
-    <OperatorShell active="leads">
+    <OperatorShell active="advertising-pay">
       <main className="max-w-4xl mx-auto">
         <div className="mb-6">
           <p

@@ -32,4 +32,24 @@ describe('GET /api/auth/session', () => {
     const json = await res.json();
     expect(json.signedIn).toBe(false);
   });
+
+  // Ops hub workstream A slice 2: the caller's own role rides along so the
+  // shared nav can gate the admin-only View-as control without a second
+  // request. Role is only ever the caller's own, and only when signed in.
+  it("includes the caller's role when signed in", async () => {
+    getOperatorMock.mockResolvedValue({ id: 'u1', email: 'a@x.com', role: 'admin', name: null });
+    const res = await GET();
+    const json = await res.json();
+    expect(json).toEqual({ signedIn: true, role: 'admin' });
+
+    getOperatorMock.mockResolvedValue({ id: 'u2', email: 'b@x.com', role: 'operator', name: null });
+    const json2 = await (await GET()).json();
+    expect(json2).toEqual({ signedIn: true, role: 'operator' });
+  });
+
+  it('never includes a role when signed out', async () => {
+    getOperatorMock.mockResolvedValue(null);
+    const json = await (await GET()).json();
+    expect(json).toEqual({ signedIn: false });
+  });
 });
