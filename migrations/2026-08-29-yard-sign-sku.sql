@@ -10,8 +10,10 @@
 --     delete it. wholesale_cost stays NULL: signs are not purchased through
 --     the Thunder PO flow, and a NULL cost keeps them out of any cost math.
 --   * inventory_on_hand: the stock row at qty 0. The office counts the real
---     pile and sets the number on /admin/advertising/people (or the
---     existing /inventory/stock page, where this SKU now also appears).
+--     pile and sets the number on the advertising admin surface (and on the
+--     existing /inventory/stock page, where this SKU also appears). The
+--     exact admin route moved with the Simple Crew UI rebuild; the SKU and
+--     the stock row are what this migration pins, not a page path.
 --
 -- NO auto-decrement on placement acceptance — deliberately. Phase 2 is
 -- MANUAL reconciliation: the admin page shows accepted-sign counts beside
