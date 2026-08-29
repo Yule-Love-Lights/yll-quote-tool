@@ -102,10 +102,11 @@ export function resolvedTimeFor(task: Pick<OfficeTask, 'completedAt' | 'dismisse
 }
 
 /**
- * Fix round (staff lens, calls merge S6): a shared, non-manual task
- * (created_by/assigned_to both null — see officeTasks.ts's listOfficeTasks
- * comment) is visible to and actionable by EVERY operator, unlike a manual
- * task's creator-or-assignee scope. Without a visible marker, two staffers
+ * Fix round (staff lens, calls merge S6), updated for Naldo's 2026-08-29
+ * everything-is-shared ruling: ALL tasks (manual included) are visible to
+ * and actionable by every operator. The badge distinguishes ORIGIN, not
+ * access: call-derived tasks carry "From a call", manual tasks carry the
+ * Personal label below. Without a visible marker, two staffers
  * could independently work the same call_commitment task (e.g. both call the
  * same customer back about the same promised quote) with neither aware the
  * other already saw it. null for 'manual' (no badge — the common case).

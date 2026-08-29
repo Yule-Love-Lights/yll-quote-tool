@@ -1,6 +1,7 @@
-// PATCH /api/tasks/[id] — block/complete/dismiss an Office Task the caller
-// created or is assigned (office_tasks_update_status enforces that
-// ownership; see its own comment). Requires x-idempotency-key.
+// PATCH /api/tasks/[id] — block/complete/dismiss an Office Task. Any
+// operator may act on any task (Naldo's 2026-08-29 everything-is-shared
+// ruling; office_tasks_update_status no longer enforces creator-or-assignee
+// ownership). Requires x-idempotency-key.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';

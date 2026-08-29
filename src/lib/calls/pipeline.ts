@@ -30,7 +30,11 @@ import { MIN_RECORDING_SECONDS, PROCESSING_STALE_MS, RECORDING_BATCH_SIZE } from
 
 export { RECORDING_BATCH_SIZE };
 
-/** Per-run cache for resolveRepIdentity below -- one Map per processPendingRecordings call. */
+/** Per-run cache for resolveRepIdentity below -- one Map per
+ * processPendingRecordings call. Accepted tradeoff: a FAILED lookup is
+ * cached like a success, so one transient GHL blip leaves later calls from
+ * that same rep unassigned for the rest of the batch; the next batch
+ * retries fresh. Cheap, bounded, and self-healing on the next run. */
 export type RepIdentityCache = Map<string, GhlUserIdentity>;
 
 /**
