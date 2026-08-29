@@ -77,6 +77,11 @@ export type FleetShift = {
    * member's own clock actions only. Rendered on the row so a corrected shift
    * never looks like an original punch. */
   manualBy: string | null;
+  /** True only for a row the OFFICE typed as a manual entry (source 'office'
+   * WITH a manual stamp). A crew member's own punch that an admin later
+   * corrected also carries a stamp, so the stamp alone would offer a Remove
+   * button the server always refuses (row 458). */
+  officeEntry: boolean;
 };
 
 export type FleetDay = {
@@ -206,11 +211,20 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
   // The manual clock, same day window. Read-only; this is the payroll record.
   const shiftsRes = await sb
     .from('shifts')
-    .select('id, crew_member_id, clock_in_at, clock_out_at, manual_by')
+    .select('id, crew_member_id, clock_in_at, clock_out_at, manual_by, source')
     .gte('clock_in_at', start)
     .lt('clock_in_at', endDate)
     .order('clock_in_at')
-    .returns<{ id: string; crew_member_id: string; clock_in_at: string; clock_out_at: string | null; manual_by: string | null }[]>();
+    .returns<
+      {
+        id: string;
+        crew_member_id: string;
+        clock_in_at: string;
+        clock_out_at: string | null;
+        manual_by: string | null;
+        source: string;
+      }[]
+    >();
   if (shiftsRes.error) out.errors.push(`shifts: ${shiftsRes.error.message}`);
   const shiftRows = shiftsRes.data ?? [];
   const crewIds = [...new Set(shiftRows.map((s) => s.crew_member_id))];
@@ -241,6 +255,7 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
       clockInAt: s.clock_in_at,
       clockOutAt: s.clock_out_at,
       manualBy: s.manual_by ?? null,
+      officeEntry: s.source === 'office' && Boolean(s.manual_by),
     });
   }
 

@@ -13,7 +13,7 @@ import { getSessionRole } from '@/lib/auth/sessionRole';
 import { listActiveFieldCrew } from '@/lib/crewMembers';
 import { MinutesSince } from '@/components/admin/MinutesSince';
 import { AutoRefresh } from '@/components/admin/AutoRefresh';
-import { AddShiftForm, EditShiftTimes } from '@/components/admin/ManualShiftEditor';
+import { AddShiftForm, EditShiftTimes, VoidShiftButton } from '@/components/admin/ManualShiftEditor';
 
 export const dynamic = 'force-dynamic';
 
@@ -155,6 +155,12 @@ export default async function FleetClocksPage({
                       clockInAt={s.clockInAt}
                       clockOutAt={s.clockOutAt}
                     />
+                    {s.officeEntry && (
+                      <>
+                        {' · '}
+                        <VoidShiftButton shiftId={s.id} />
+                      </>
+                    )}
                     {s.manualBy && (
                       <p className="text-xs text-amber-700 mt-1">Manual entry by {s.manualBy}</p>
                     )}
