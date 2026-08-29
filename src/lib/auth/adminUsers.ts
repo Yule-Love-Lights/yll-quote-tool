@@ -130,3 +130,35 @@ export async function listNonCrewOperators(sb: SupabaseClient): Promise<Operator
     .map(toOperatorAccount)
     .sort(byNameThenEmail);
 }
+
+/**
+ * Case-insensitive email match against an already-fetched operator list.
+ * PURE (no Supabase call) so the matching logic itself — case folding, no
+ * match, an empty/null query — is testable without mocking listUsers.
+ * Split out from findOperatorByEmail below so a caller that already has the
+ * population in hand (e.g. matching many rep emails in one batch) doesn't
+ * refetch it per lookup.
+ */
+export function matchOperatorByEmail(operators: OperatorAccount[], email: string | null): OperatorAccount | null {
+  const normalized = email?.trim().toLowerCase();
+  if (!normalized) return null;
+  return operators.find((o) => o.email?.toLowerCase() === normalized) ?? null;
+}
+
+/**
+ * Maps a rep's email (resolved from GHL, see src/lib/calls/pipeline.ts) to a
+ * real operator account, for office_tasks.assigned_to
+ * (calls_merge_plan_2026-08.md slice S6, rep-assignment ruling). Matches
+ * against listNonCrewOperators — crew and advertising logins are excluded
+ * for the same reason the office-onboarding picker excludes them (a rep's
+ * email should never auto-assign a customer-facing crew/advertising account
+ * an internal admin task just because the addresses happen to collide).
+ * null on no match — never throws for a miss, only for a genuine Supabase
+ * error (matching the caller's own single-lookup shape; a caller matching
+ * MANY emails in one batch should call listNonCrewOperators once and reuse
+ * matchOperatorByEmail directly instead of calling this per email).
+ */
+export async function findOperatorByEmail(sb: SupabaseClient, email: string | null): Promise<OperatorAccount | null> {
+  if (!email?.trim()) return null;
+  return matchOperatorByEmail(await listNonCrewOperators(sb), email);
+}

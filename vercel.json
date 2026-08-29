@@ -51,6 +51,14 @@
     {
       "path": "/api/referrals/sweep",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/calls-sync",
+      "schedule": "12 * * * *"
+    },
+    {
+      "path": "/api/cron/calls-extract",
+      "schedule": "27 * * * *"
     }
   ]
 }

@@ -28,7 +28,7 @@ export default async function AdvertisingReviewPage() {
           </p>
           <h1 className="text-xl font-semibold text-gray-900">Yard sign review</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Accepting a yard sign pays the worker its campaign rate, stamped at that moment.
+            Accepting a photo pays the worker its campaign rate, stamped at that moment.
             Duplicate flags are hints, not verdicts: signs legitimately cluster at corners.
           </p>
           <p className="text-sm mt-2 flex gap-4">
