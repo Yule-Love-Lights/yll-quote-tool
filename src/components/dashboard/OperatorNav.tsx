@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
@@ -85,6 +85,15 @@ export function OperatorNav({
   // unrelated screen. null until it answers: no badge, no layout shift beyond
   // the pill itself appearing, same as Inbox's absent-badge case.
   const [taskCounts, setTaskCounts] = useState<{ open: number; overdue: number } | null>(null);
+  // Orders the count reads against each other. Mirrors OfficeTasksCard's own
+  // loadSequenceRef/applyTaskLoad pattern, which is the house idiom for
+  // exactly this: once a component can have two reads of the same endpoint in
+  // flight, "did this component unmount" is a different question from "is this
+  // still the newest answer". Caught by the adversarial delta-verify on the
+  // fix round, and reproduced in a browser before it was fixed: holding the
+  // mount fetch for 4 seconds while completing a task moved the badge to the
+  // right number and then let the stale response drag it back, red.
+  const countSequenceRef = useRef(0);
   // The caller's own role, from the same session answer. Drives the
   // admin-only View-as control below; null (pre-fetch, signed out, retry
   // exhausted) renders no control, so the safe default is "not admin".
@@ -151,10 +160,16 @@ export function OperatorNav({
     let cancelled = false;
 
     const load = () => {
+      const sequence = ++countSequenceRef.current;
       fetch('/api/tasks/count')
         .then(res => (res.ok ? (res.json() as Promise<{ open?: number; overdue?: number }>) : null))
         .then(body => {
-          if (cancelled || !body) return;
+          // Two separate guards, and they answer different questions:
+          // `cancelled` means this component went away, `sequence` means a
+          // newer read has already been issued and this answer is stale. A
+          // slow mount fetch resolving after a fast post-mutation one must
+          // NOT win, or the badge silently goes backwards.
+          if (cancelled || sequence !== countSequenceRef.current || !body) return;
           const open = typeof body.open === 'number' ? body.open : 0;
           const overdue = typeof body.overdue === 'number' ? body.overdue : 0;
           setTaskCounts({ open, overdue });
