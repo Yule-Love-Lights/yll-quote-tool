@@ -771,6 +771,37 @@ export default function OfficeTasksCard({
           screen reader reads them first at every width. The wrapper carries no
           classes on the card, which leaves the dashboard's stacked order
           exactly as it was. */}
+      {/* A route to the add form that does not depend on scrolling past the
+          list. Two premerge staff-lens MEDs share one cause: the form sits
+          AFTER the list in the DOM, which is what puts the tasks first on a
+          phone, and which also means that below the lg breakpoint the form is
+          under the whole list, and that a keyboard user at ANY width tabs
+          through every filter and every row's three buttons before reaching
+          it.
+
+          One control answers both. Below lg it is an ordinary button, sitting
+          where the old form used to start, costing one row instead of the
+          form's full height. At lg and above, where the panel is already on
+          screen beside the list, it collapses to a skip link that only appears
+          when it receives focus, so it serves the keyboard without adding
+          anything for the mouse. */}
+      {isPage && view === 'active' ? (
+        <button
+          type="button"
+          onClick={() => {
+            const field = document.getElementById('office-task-title');
+            // No smooth behaviour on purpose: an instant jump needs no
+            // prefers-reduced-motion handling.
+            field?.scrollIntoView({ block: 'center' });
+            field?.focus();
+          }}
+          className="min-h-11 w-full rounded-md border px-3 py-2 text-sm font-semibold lg:sr-only lg:focus:not-sr-only"
+          style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+        >
+          Add a task
+        </button>
+      ) : null}
+
       <div className={isPage ? 'mt-3 grid gap-5 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start' : ''}>
 
       {/* Filter and sort, page only. Rendered once the list is loaded, because
