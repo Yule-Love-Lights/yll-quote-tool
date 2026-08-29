@@ -79,6 +79,7 @@ import { listFulfillmentCards } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { deriveStatus, isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 import { listOpenItems, listDueFollowUps } from '@/lib/dashboard/inbox/store';
+import { listTimeExceptions } from '@/lib/opsTimeExceptions';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 
@@ -185,6 +186,13 @@ export type OpsDigestData = {
    *  [] when the read succeeded but nothing is due. Uncapped here —
    *  opsDigestMessage caps the render. */
   overdueFollowUps: DigestFollowUpItem[] | null;
+  /** Stuck time records (ops suggestions round, 2026-08-29): shifts, breaks,
+   *  or job segments left open that no automatic path will close — the queue
+   *  on /admin/time-tracking, brought to the morning read so nobody has to
+   *  remember to open the page. null = read failed (line omitted, the
+   *  fail-soft contract every count here shares); the digest renders the
+   *  line only when the count is above zero, so a clean morning stays clean. */
+  timeExceptionsCount: number | null;
 };
 
 /** Current date (YYYY-MM-DD) in the shop's timezone — never the server's. */
@@ -485,6 +493,14 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
       )
     : null;
 
+  // Stuck time records: a partial scan (errors present) reads as null, not a
+  // low count — an undercount would read as "handled" on exactly the morning
+  // something is wrong.
+  const timeExceptionsCount = await safeCount(async () => {
+    const res = await listTimeExceptions(now);
+    return res.errors.length > 0 ? null : res.exceptions.length;
+  }, 'time exceptions');
+
   return {
     dateLabel: nyDateLabel(),
     installsToday: onDate(today),
@@ -500,6 +516,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     inboxFilteredCount,
     inboxFollowUpsDueCount,
     overdueFollowUps,
+    timeExceptionsCount,
   };
 }
 
@@ -622,6 +639,18 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
     );
   }
   lines.push(`→ ${base}/inbox`);
+
+  // Stuck time records: only when there ARE some (a clean morning stays
+  // clean, the #265 texture) and only when the read succeeded (null renders
+  // nothing rather than a lying zero). The queue is the admin-only
+  // time-tracking page.
+  if (data.timeExceptionsCount != null && data.timeExceptionsCount > 0) {
+    lines.push('');
+    lines.push(
+      `⏱️ Stuck time records: ${data.timeExceptionsCount} — a shift, break, or job segment left open that needs a human`,
+    );
+    lines.push(`→ ${base}/admin/time-tracking`);
+  }
 
   lines.push('');
   lines.push(`Dashboard → ${base}/`);

@@ -97,7 +97,27 @@ const emptyData: OpsDigestData = {
   inboxFilteredCount: 0,
   inboxFollowUpsDueCount: 0,
   overdueFollowUps: [],
+  timeExceptionsCount: 0,
 };
+
+describe('opsDigestMessage — stuck time records line (ops suggestions round)', () => {
+  it('renders the line with the count and the time-tracking link when there are exceptions', () => {
+    const msg = opsDigestMessage({ ...emptyData, timeExceptionsCount: 2 }, 'https://x.test');
+    expect(msg).toContain('Stuck time records: 2');
+    expect(msg).toContain('https://x.test/admin/time-tracking');
+  });
+
+  it('stays silent at zero (a clean morning stays clean)', () => {
+    const msg = opsDigestMessage({ ...emptyData, timeExceptionsCount: 0 }, 'https://x.test');
+    expect(msg).not.toContain('Stuck time records');
+    expect(msg).not.toContain('/admin/time-tracking');
+  });
+
+  it('stays silent when the read failed (null must never render as a lying zero)', () => {
+    const msg = opsDigestMessage({ ...emptyData, timeExceptionsCount: null }, 'https://x.test');
+    expect(msg).not.toContain('Stuck time records');
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
