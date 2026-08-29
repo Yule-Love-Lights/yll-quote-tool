@@ -1,20 +1,15 @@
 // Generates the home-screen app icons for the two installable surfaces
 // (the quote tool at / and the advertising capture at /advertising/capture).
 //
-// The only brand asset in the repo is a WIDE wordmark (598x385, roughly 3.2:1
-// once the banner and bow are cropped away), and a wide mark squeezed into a
-// square icon ends up about 20 pixels tall on a phone home screen. So the icon
-// is composed rather than cropped: the wreath-and-houses mark on top, a bold
-// "YLL" underneath, on a flat brand background. The two apps share the mark and
-// differ only by background colour, which is what makes them tellable apart at
-// a glance on the same home screen.
+// The icon is the FULL company logo (Naldo's call), not a crop of it: the wreath
+// arch, the houses, the YULE LOVE LIGHTS banner and the bow, whole, centred on a
+// flat brand background. The logo is about 1.55:1, so fitting it in a square
+// leaves a band above and below, and that is fine: the shape people recognise is
+// the whole badge. The two apps share the logo and differ only by background
+// colour, which is what makes them tellable apart on the same home screen.
 //
 // Output is COMMITTED as static PNGs under public/icons/. This script exists to
-// record how they were made and to regenerate them if the logo changes. It
-// renders the "YLL" text through librsvg, so it depends on a heavy sans font
-// being installed on the machine that runs it (Arial Black on Windows). If the
-// regenerated text looks wrong on another machine, that is why: check the font
-// before assuming the script is broken.
+// record how they were made and to regenerate them if the logo changes.
 //
 // Run: node scripts/generate-app-icons.mjs
 
@@ -25,18 +20,18 @@ import sharp from 'sharp';
 const SRC = 'public/yule-site-logo-2.png';
 const OUT_DIR = 'public/icons';
 
-// The wreath arch plus the two house roofs, stopping just above the red
-// "YULE LOVE LIGHTS" banner. Measured off the source PNG: the banner's first
-// solid-red row is y=194, and the green ground line under the houses runs at
-// y=170, so 2..185 keeps the whole mark and none of the wordmark.
-const MARK = { left: 4, top: 2, width: 592, height: 184 };
+// The whole logo, trimmed to its own ink. Measured off the source PNG by
+// scanning the alpha channel: the art runs x 2..595 and y 2..382, so the file
+// carries only a couple of transparent pixels of slack. Trimming to the measured
+// box rather than to the file's bounds means the logo stays centred even if it
+// is ever re-exported with different padding.
+const LOGO = { left: 2, top: 2, width: 594, height: 381 };
 
 const APPS = [
   {
     slug: 'quote',
     // Matches the app's own themeColor in src/app/layout.tsx.
     background: '#0B140F',
-    textColor: '#FFFFFF',
   },
   {
     slug: 'advertising',
@@ -44,50 +39,36 @@ const APPS = [
     // wreath and red bulbs stay bright, and it is unmistakable next to the
     // near-black quote tool icon.
     background: '#FAF7F0',
-    textColor: '#C8102E',
   },
 ];
 
 // A maskable icon is cropped by the launcher to whatever shape it likes, and
 // only the middle 80% is guaranteed to survive. Shrinking the artwork to 70%
-// keeps the mark and the wordmark inside that safe circle.
+// keeps the whole logo inside that safe circle.
 const MASKABLE_CONTENT_SCALE = 0.7;
 
-async function renderIcon({ size, background, textColor, contentScale = 1 }) {
-  const inner = Math.round(size * contentScale);
+async function renderIcon({ size, background, contentScale = 1 }) {
+  // How much of the icon's width the logo takes. 0.86 rather than edge to edge:
+  // an app icon gets rounded corners, and the banner's red ends sit at the
+  // widest point of the artwork, so they need a margin to not look clipped.
+  const logoWidth = Math.round(size * contentScale * 0.86);
+  const logoHeight = Math.round((logoWidth * LOGO.height) / LOGO.width);
 
-  const markWidth = Math.round(inner * 0.92);
-  const markHeight = Math.round((markWidth * MARK.height) / MARK.width);
-  const mark = await sharp(SRC)
-    .extract(MARK)
-    .resize(markWidth, markHeight)
+  const logo = await sharp(SRC)
+    .extract(LOGO)
+    .resize(logoWidth, logoHeight)
     .png()
     .toBuffer();
-
-  const textBlockHeight = Math.round(inner * 0.38);
-  const fontSize = Math.round(inner * 0.325);
-  const text = Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${inner}" height="${textBlockHeight}">` +
-      `<text x="${inner / 2}" y="${Math.round(textBlockHeight * 0.8)}" ` +
-      `font-family="Arial Black, Arial, sans-serif" font-weight="900" ` +
-      `font-size="${fontSize}" letter-spacing="${Math.round(inner * 0.006)}" ` +
-      `fill="${textColor}" text-anchor="middle">YLL</text></svg>`,
-  );
-
-  // Vertical rhythm inside the content box: mark sits at 17% from its top,
-  // wordmark baseline block starts at 55%. Tuned by eye at 320px and scaled.
-  const offset = Math.round((size - inner) / 2);
 
   return sharp({
     create: { width: size, height: size, channels: 4, background },
   })
     .composite([
       {
-        input: mark,
-        left: offset + Math.round((inner - markWidth) / 2),
-        top: offset + Math.round(inner * 0.17),
+        input: logo,
+        left: Math.round((size - logoWidth) / 2),
+        top: Math.round((size - logoHeight) / 2),
       },
-      { input: text, left: offset, top: offset + Math.round(inner * 0.55) },
     ])
     .png()
     .toBuffer();
@@ -103,12 +84,12 @@ async function main() {
   await mkdir(OUT_DIR, { recursive: true });
 
   for (const app of APPS) {
-    const { slug, background, textColor } = app;
+    const { slug, background } = app;
 
     for (const size of [192, 512]) {
       await write(
         `yll-${slug}-${size}.png`,
-        await renderIcon({ size, background, textColor }),
+        await renderIcon({ size, background }),
       );
     }
 
@@ -117,7 +98,6 @@ async function main() {
       await renderIcon({
         size: 512,
         background,
-        textColor,
         contentScale: MASKABLE_CONTENT_SCALE,
       }),
     );
@@ -125,7 +105,7 @@ async function main() {
     // iOS ignores the manifest icons and uses this one, at 180x180.
     await write(
       `yll-${slug}-apple-touch.png`,
-      await renderIcon({ size: 180, background, textColor }),
+      await renderIcon({ size: 180, background }),
     );
   }
 }
