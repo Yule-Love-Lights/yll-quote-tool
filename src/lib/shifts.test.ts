@@ -90,6 +90,7 @@ const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
       activityInserts: [] as Record<string, unknown>[],
       deleted: [] as ShiftRow[],
       deleteError: null as DbError | null,
+      activityError: null as DbError | null,
       childReadError: null as DbError | null,
     },
   },
@@ -227,7 +228,10 @@ function makeDb() {
         return {
           insert: (payload: Record<string, unknown>) => {
             stateRef.current.activityInserts.push(payload);
-            return Promise.resolve({ error: null });
+            // Supabase returns { error } rather than throwing, so a test that
+            // only models a thrown insert proves nothing about a real DB
+            // failure (the void audit's whole guard rides on this).
+            return Promise.resolve({ error: stateRef.current.activityError });
           },
         } as never;
       }
@@ -410,6 +414,7 @@ beforeEach(() => {
     activityInserts: [],
     deleted: [],
     deleteError: null,
+    activityError: null,
     childReadError: null,
   };
   dbRef.current = makeDb();
@@ -909,6 +914,22 @@ describe('adminVoidShift', () => {
       'edit-race',
     );
     expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('writes the audit row BEFORE the delete, and refuses the void if it cannot be written', async () => {
+    // The audit entry is the only copy of a deleted payroll row, so it cannot
+    // be best-effort: if it fails, the row must survive. Supabase reports a
+    // failed insert as { error }, it does not throw, so the guard has to read
+    // that field rather than rely on a try/catch.
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.activityError = { message: 'activity insert failed' };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'audit-failed',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+    expect(stateRef.current.deleted).toHaveLength(0);
   });
 
   it('refuses when the child lookup fails, rather than deleting blind', async () => {

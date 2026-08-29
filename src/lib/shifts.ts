@@ -196,11 +196,53 @@ export class ManualShiftRefusedError extends Error {
       | 'edit-race'
       | 'not-field-crew'
       | 'not-manual'
-      | 'has-children',
+      | 'has-children'
+      | 'audit-failed',
     message: string,
   ) {
     super(message);
     this.name = 'ManualShiftRefusedError';
+  }
+}
+
+/**
+ * Writes the append-only audit row for a manual payroll write and RETURNS the
+ * failure rather than swallowing it.
+ *
+ * Supabase reports a failed insert as `{ error }` and does not throw, so a
+ * try/catch around it only ever sees a transport fault: an RLS refusal, a
+ * constraint violation or a column mismatch all came back as a quiet success
+ * (S78 wrap, technical lens). Callers decide what a failure means. For create
+ * and edit it stays best-effort, because the shift itself is still on screen
+ * and recoverable. For a VOID it is fatal, because the row is about to stop
+ * existing.
+ */
+async function writeManualAudit(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  entry: {
+    action: 'shift-manual-create' | 'shift-manual-edit' | 'shift-manual-void';
+    actor: string;
+    shift: Row;
+    before: Record<string, unknown> | null;
+    deleted?: boolean;
+  },
+): Promise<{ message: string } | null> {
+  try {
+    const { error } = await db.from('dashboard_activity').insert({
+      actor: entry.actor,
+      action: entry.action,
+      detail: {
+        shiftId: entry.shift.id,
+        crewMemberId: entry.shift.crew_member_id,
+        before: entry.before,
+        after: entry.deleted
+          ? null
+          : { clock_in_at: entry.shift.clock_in_at, clock_out_at: entry.shift.clock_out_at },
+      },
+    });
+    return error ? { message: error.message } : null;
+  } catch (thrown) {
+    return { message: thrown instanceof Error ? thrown.message : String(thrown) };
   }
 }
 
@@ -223,22 +265,24 @@ async function afterManualWrite(
     deleted?: boolean;
   },
 ): Promise<void> {
-  try {
-    await db.from('dashboard_activity').insert({
-      actor: entry.actor,
-      action: entry.action,
-      detail: {
-        shiftId: entry.shift.id,
-        crewMemberId: entry.shift.crew_member_id,
-        before: entry.before,
-        after: entry.deleted
-          ? null
-          : { clock_in_at: entry.shift.clock_in_at, clock_out_at: entry.shift.clock_out_at },
-      },
-    });
-  } catch (auditError) {
+  const auditError = await writeManualAudit(db, entry);
+  if (auditError) {
     console.error('afterManualWrite: audit insert failed:', auditError);
   }
+  await notifyCrewOfManualWrite(db, entry);
+}
+
+/** The crew member's Telegram note about a change to their own pay record.
+ * Log-not-throw: the payroll write has already landed, and a failed notify
+ * must not make a retry double-write it. */
+async function notifyCrewOfManualWrite(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  entry: {
+    action: 'shift-manual-create' | 'shift-manual-edit' | 'shift-manual-void';
+    actor: string;
+    shift: Row;
+  },
+): Promise<void> {
   try {
     const { data } = await db
       .from('crew_members')
@@ -265,7 +309,7 @@ async function afterManualWrite(
             : 'corrected a shift on';
       await sendTelegramMessage(
         chatId,
-        `${entry.actor} ${verb} your time record: ${fmt(entry.shift.clock_in_at)} to ${fmt(entry.shift.clock_out_at)}. Reply here or ask the office if that looks wrong.`,
+        `${entry.actor} ${verb} your time record: ${fmt(entry.shift.clock_in_at)} to ${fmt(entry.shift.clock_out_at)}. Tell the office if that looks wrong. This bot only understands clock commands, so a reply here will not reach anyone.`,
       );
     }
   } catch (notifyError) {
@@ -609,6 +653,27 @@ export async function adminVoidShift(input: { shiftId: string; actor: string }):
 
   await assertNoChildren(db, shiftId);
 
+  // The audit row goes in BEFORE the row is destroyed, and a failure REFUSES
+  // the void (S78 wrap, technical lens). It used to be written afterwards by
+  // the same best-effort helper the create and edit paths use, which meant a
+  // failed insert left a payroll row deleted with no record of it anywhere
+  // while the admin was told it worked. Of the two ways this can lie, an
+  // entry for a removal that did not happen is the recoverable one: the shift
+  // is still on the page. A vanished row with no entry is not.
+  const auditError = await writeManualAudit(db, {
+    action: 'shift-manual-void',
+    actor: input.actor,
+    shift: row,
+    before: { ...(row as unknown as Record<string, unknown>) },
+    deleted: true,
+  });
+  if (auditError) {
+    throw new ManualShiftRefusedError(
+      'audit-failed',
+      'The activity log could not record this removal, so nothing was removed. Try again.',
+    );
+  }
+
   const { data, error } = await db
     .from('shifts')
     .delete()
@@ -624,12 +689,12 @@ export async function adminVoidShift(input: { shiftId: string; actor: string }):
     );
   }
 
-  await afterManualWrite(db, {
+  // The audit row is already written; this only sends the crew member their
+  // note, and stays log-not-throw because the delete has landed.
+  await notifyCrewOfManualWrite(db, {
     action: 'shift-manual-void',
     actor: input.actor,
     shift: data as Row,
-    before: { ...(data as unknown as Record<string, unknown>) },
-    deleted: true,
   });
 }
 
