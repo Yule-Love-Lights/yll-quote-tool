@@ -19,7 +19,7 @@ vi.mock('@/lib/dashboard/inbox/store', () => ({ listOpenItems, listDueFollowUps 
 // real figure set sbRef.current to a fake client (see makeDepositClient).
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
-import { collectOpsDigest, opsDigestMessage, type OpsDigestData } from './opsDigest';
+import { collectOpsDigest, opsDigestMessage, timeExceptionsCountFromScan, type OpsDigestData } from './opsDigest';
 
 /** Fake Supabase client for fetchDepositAmounts' `.from('quotes').select(...).in(...)`
  *  chain — the only shape opsDigest.ts's deposit lookup ever calls. */
@@ -98,7 +98,39 @@ const emptyData: OpsDigestData = {
   inboxFilteredCount: 0,
   inboxFollowUpsDueCount: 0,
   overdueFollowUps: [],
+  timeExceptionsCount: 0,
 };
+
+describe('timeExceptionsCountFromScan — the collector-side null-vs-zero decision', () => {
+  it('a clean scan returns the count, including a real zero', () => {
+    expect(timeExceptionsCountFromScan({ exceptions: [], errors: [] })).toBe(0);
+    expect(timeExceptionsCountFromScan({ exceptions: [{}, {}], errors: [] })).toBe(2);
+  });
+
+  it('ANY scan error returns null, never a low count (an undercount reads as handled)', () => {
+    expect(timeExceptionsCountFromScan({ exceptions: [{}, {}], errors: ['shifts query failed'] })).toBeNull();
+    expect(timeExceptionsCountFromScan({ exceptions: [], errors: ['x'] })).toBeNull();
+  });
+});
+
+describe('opsDigestMessage — stuck time records line (ops suggestions round)', () => {
+  it('renders the line with the count and the time-tracking link when there are exceptions', () => {
+    const msg = opsDigestMessage({ ...emptyData, timeExceptionsCount: 2 }, 'https://x.test');
+    expect(msg).toContain('Stuck time records: 2');
+    expect(msg).toContain('https://x.test/admin/time-tracking');
+  });
+
+  it('stays silent at zero (a clean morning stays clean)', () => {
+    const msg = opsDigestMessage({ ...emptyData, timeExceptionsCount: 0 }, 'https://x.test');
+    expect(msg).not.toContain('Stuck time records');
+    expect(msg).not.toContain('/admin/time-tracking');
+  });
+
+  it('stays silent when the read failed (null must never render as a lying zero)', () => {
+    const msg = opsDigestMessage({ ...emptyData, timeExceptionsCount: null }, 'https://x.test');
+    expect(msg).not.toContain('Stuck time records');
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
