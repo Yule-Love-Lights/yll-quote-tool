@@ -894,3 +894,36 @@ function toCrmContact(
   };
   return opts?.includeRaw ? { ...base, raw: hl } : base;
 }
+
+// ─── Rep identity ───────────────────────────────────────────────────────────
+// Resolves a GHL staff user id (call_recordings.ghl_user_id, straight off the
+// call message -- ground truth, not a guess) to that user's email + display
+// name, for call_transcripts.rep_email/rep_name (calls_merge_plan_2026-08.md,
+// rep-assignment ruling). Pattern donor: the yll-call-copilot repo's
+// getGhlUserEmail (src/lib/ghl/recordings.ts, master fb1bf326) -- same
+// endpoint and same best-effort posture, extended here to also resolve a
+// display name (that repo never needed one) using the same firstName/
+// lastName-join-with-fallback convention toCrmContact already uses above.
+//
+// Endpoint: GET /users/{userId} -- unverified against a live payload, same
+// caveat the copilot's own version carries.
+//
+// Best-effort: ANY failure (network, 404, malformed body) degrades to
+// { email: null, name: null } rather than throwing -- src/lib/calls/
+// pipeline.ts stores null fields rather than failing the whole recording
+// over an identity lookup, matching the existing contact-hydrate posture in
+// that file.
+export type GhlUserIdentity = { email: string | null; name: string | null };
+
+export async function getGhlUser(userId: string): Promise<GhlUserIdentity> {
+  try {
+    const json = await ghlFetch<{ email?: string; firstName?: string; lastName?: string; name?: string }>(
+      `/users/${encodeURIComponent(userId)}`,
+    );
+    const name = json.name ?? ([json.firstName, json.lastName].filter(Boolean).join(' ') || null);
+    return { email: json.email ?? null, name };
+  } catch (err) {
+    console.error(`GHL user lookup failed for ${userId}:`, err);
+    return { email: null, name: null };
+  }
+}
