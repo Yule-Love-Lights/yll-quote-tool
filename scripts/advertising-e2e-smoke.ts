@@ -228,10 +228,17 @@ async function main(): Promise<void> {
     check('pure money math: the door hanger exists in the summary and earns/pends 0 (permanently unpaid)',
       !!door && door.total.acceptedEarnedCents === 0 && door.total.pendingEstimatedCents === 0, JSON.stringify(door?.total));
 
-    // ---- duplicates: excluded live, flagged in the pure check ----
+    // ---- duplicates: same-population rule (the advertising session's own
+    // live E2E moved this from never-for-test to within-population, so test
+    // fixtures demonstrate flags while never crossing into a real review) ----
     const testRows = rows.map((r) => ({ ...r, isTest: true }));
     const liveDups = findDuplicateCandidates(testRows[2], testRows);
-    check('is_test rows never flag as duplicates (live rule)', liveDups.length === 0);
+    check('test rows flag against each other (same-population rule, live shapes)',
+      liveDups.some((d) => d.placement.id === p1.id));
+    const crossRows = [{ ...rows[0], isTest: false }, testRows[2]];
+    check('a test row never flags against a REAL row (population line never crossed)',
+      findDuplicateCandidates(testRows[2], crossRows).length === 0 &&
+      findDuplicateCandidates({ ...rows[2], isTest: false }, [testRows[0], { ...rows[2], isTest: false }]).length === 0);
     // "Same worker, same day" is a designed flagging dimension on its own
     // (audit section 8B), so the door hanger ALSO appears as a candidate with
     // only that reason — the discriminating signal is that the same-corner
