@@ -2,10 +2,11 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
 // Campaign rate config is MONEY: rate_cents is the CURRENT
-// per-accepted-yard-sign rate (default 250 = $2.50, Naldo 2026-08-27). It is
-// read at acceptance time and stamped onto the placement
-// (accepted_rate_cents); changing it here affects FUTURE acceptances only —
-// pay history never moves.
+// per-accepted-PHOTO rate (default 250 = $2.50; per-photo basis is Naldo's
+// 2026-08-29 ruling — the campaign's name says whether the photos are yard
+// signs or door hangers). It is read at acceptance time and stamped onto the
+// placement (accepted_rate_cents); changing it here affects FUTURE
+// acceptances only — pay history never moves.
 
 export type AdvertisingCampaign = {
   id: string;
@@ -31,7 +32,7 @@ type Row = {
 
 const SELECT = 'id, name, notes, rate_cents, active, is_test, created_at, updated_at';
 
-export const DEFAULT_YARD_SIGN_RATE_CENTS = 250;
+export const DEFAULT_PHOTO_RATE_CENTS = 250;
 
 function toCampaign(row: Row): AdvertisingCampaign {
   return {
@@ -63,7 +64,7 @@ export async function createAdvertisingCampaign(input: {
 
   const name = input.name.trim();
   if (!name) throw new Error('createAdvertisingCampaign: name is required');
-  const rateCents = input.rateCents ?? DEFAULT_YARD_SIGN_RATE_CENTS;
+  const rateCents = input.rateCents ?? DEFAULT_PHOTO_RATE_CENTS;
   assertValidRateCents(rateCents);
 
   const { data, error } = await db

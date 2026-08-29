@@ -1,5 +1,5 @@
 // Advertising pay summary — ADMIN ONLY. Server-rendered straight from the
-// data layer: earned = stamped rates on accepted yard signs (history, never
+// data layer: earned = stamped rates on accepted photos (history, never
 // moves); pending = an estimate at each campaign's CURRENT rate, labeled as
 // such so the two numbers are never mistaken for each other.
 
@@ -38,7 +38,7 @@ export default async function AdvertisingPayPage() {
           </p>
           <h1 className="text-xl font-semibold text-gray-900">Advertising pay</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Earned is settled history (the rate stamped when each sign was accepted). Pending is
+            Earned is settled history (the rate stamped when each photo was accepted). Pending is
             an estimate at today&apos;s rates and moves until review happens.
           </p>
           <p className="text-sm mt-2">

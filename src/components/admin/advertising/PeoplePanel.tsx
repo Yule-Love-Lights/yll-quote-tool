@@ -148,7 +148,7 @@ export default function PeoplePanel() {
     e.preventDefault();
     const rateCents = parseRate(newCampaignRate);
     if (rateCents === null) return;
-    if (!window.confirm(`Create "${newCampaignName.trim()}" paying ${dollars(rateCents)} per accepted yard sign?`)) {
+    if (!window.confirm(`Create "${newCampaignName.trim()}" paying ${dollars(rateCents)} per accepted photo?`)) {
       return;
     }
     const ok = await call('/api/admin/advertising/campaigns', 'POST', {
@@ -156,7 +156,7 @@ export default function PeoplePanel() {
       rateCents,
     });
     if (ok) {
-      setNotice(`${newCampaignName.trim()} created at ${dollars(rateCents)} per accepted yard sign.`);
+      setNotice(`${newCampaignName.trim()} created at ${dollars(rateCents)} per accepted photo.`);
       setNewCampaignName('');
       setNewCampaignRate('2.50');
     }
@@ -170,14 +170,14 @@ export default function PeoplePanel() {
     if (raw === null) return;
     const rateCents = parseRate(raw);
     if (rateCents === null) return;
-    if (!window.confirm(`Change "${campaign.name}" from ${dollars(campaign.rateCents)} to ${dollars(rateCents)} per accepted yard sign?`)) {
+    if (!window.confirm(`Change "${campaign.name}" from ${dollars(campaign.rateCents)} to ${dollars(rateCents)} per accepted photo?`)) {
       return;
     }
     const ok = await call('/api/admin/advertising/campaigns', 'PATCH', {
       campaignId: campaign.id,
       rateCents,
     });
-    if (ok) setNotice(`${campaign.name} now pays ${dollars(rateCents)} per accepted yard sign.`);
+    if (ok) setNotice(`${campaign.name} now pays ${dollars(rateCents)} per accepted photo.`);
   };
 
   const mintLogin = async (worker: Worker) => {
@@ -331,7 +331,7 @@ export default function PeoplePanel() {
               {c.isTest && (
                 <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700">test</span>
               )}
-              <span className="text-sm text-gray-500">{dollars(c.rateCents)} per accepted yard sign</span>
+              <span className="text-sm text-gray-500">{dollars(c.rateCents)} per accepted photo</span>
               <span className="ml-auto flex gap-2 text-sm">
                 <button type="button" onClick={() => void editRate(c)} className="underline text-gray-600">
                   Change rate
@@ -355,7 +355,7 @@ export default function PeoplePanel() {
             <input value={newCampaignName} onChange={(e) => setNewCampaignName(e.target.value)} required className="rounded-lg border border-gray-300 px-2 py-1.5" />
           </label>
           <label className="flex flex-col text-sm text-gray-600">
-            Rate per sign ($)
+            Rate per photo ($)
             <input value={newCampaignRate} onChange={(e) => setNewCampaignRate(e.target.value)} className="w-24 rounded-lg border border-gray-300 px-2 py-1.5" />
           </label>
           <button type="submit" className="rounded-full bg-gray-900 px-4 py-2 text-sm font-semibold text-white">

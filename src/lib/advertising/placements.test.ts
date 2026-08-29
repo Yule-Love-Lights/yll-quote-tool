@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Money/state tests for the advertising placements data layer (workstream B
-// slice 1). Written FIRST, against the rulings in ops_hub_audit_2026-08.md:
-// $2.50 per ACCEPTED yard sign stamped at acceptance; rate changes never move
-// history; pending/rejected never pay; reject→resubmit→accept pays exactly
-// once; door hangers are modeled but permanently unpaid.
+// Money/state tests for the advertising placements data layer. Written
+// FIRST, against Naldo's rulings (2026-08-27, pay basis updated
+// 2026-08-29): the campaign rate is paid per ACCEPTED PHOTO of any kind,
+// stamped at acceptance; rate changes never move history; pending/rejected
+// never pay; reject→resubmit→accept pays exactly once.
 
 type AnyRow = Record<string, unknown>;
 type DbError = { code?: string; message: string };
@@ -349,7 +349,7 @@ describe('acceptPlacement', () => {
     expect(mine?.total.pendingEstimatedCents).toBe(0);
   });
 
-  it('an accepted door hanger never gets a rate stamped', async () => {
+  it('an accepted door hanger stamps the campaign rate too — pay is per accepted PHOTO (Naldo 2026-08-29)', async () => {
     const { acceptPlacement } = await import('./placements');
     const campaign = seedCampaign({ rate_cents: 250 });
     const worker = seedWorker();
@@ -358,7 +358,7 @@ describe('acceptPlacement', () => {
     const accepted = await acceptPlacement(String(p.id), REVIEWER);
 
     expect(accepted.status).toBe('accepted');
-    expect(accepted.acceptedRateCents).toBeNull();
+    expect(accepted.acceptedRateCents).toBe(250);
   });
 
   it('refuses to accept a placement with no proof photo (data-layer mirror of the DB CHECK)', async () => {
@@ -654,7 +654,7 @@ describe('earnings math', () => {
     expect(summaries.find((s) => s.workerId === worker.id)?.total.pendingEstimatedCents).toBe(1200);
   });
 
-  it('door hangers never enter payable counts or pending estimates', async () => {
+  it('door hangers earn and estimate exactly like yard signs — the campaign name says what the photo is', async () => {
     const { earningsSummary } = await import('./placements');
     const campaign = seedCampaign({ rate_cents: 250 });
     const worker = seedWorker();
@@ -663,7 +663,7 @@ describe('earnings math', () => {
     seedPlacement({
       ...base,
       status: 'accepted',
-      accepted_rate_cents: null,
+      accepted_rate_cents: 250,
       photo_path: 'proof/dh.jpg',
       reviewed_by: REVIEWER,
       reviewed_at: '2026-08-24T16:00:00.000Z',
@@ -671,8 +671,8 @@ describe('earnings math', () => {
 
     const summaries = await earningsSummary();
     const mine = summaries.find((s) => s.workerId === worker.id);
-    expect(mine?.total.acceptedEarnedCents).toBe(0);
-    expect(mine?.total.pendingEstimatedCents).toBe(0);
+    expect(mine?.total.acceptedEarnedCents).toBe(250);
+    expect(mine?.total.pendingEstimatedCents).toBe(250);
   });
 
   it('groups earned cents by ET day and Monday-start ET week (DST-safe calendar math)', async () => {
