@@ -14,6 +14,7 @@ export type OperatorArea =
   | 'leads'
   | 'customers'
   | 'inventory'
+  | 'tasks'
   | 'new'
   | 'training'
   | 'settings'

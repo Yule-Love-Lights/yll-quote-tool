@@ -46,6 +46,10 @@ function taskResponse(task: OfficeTask) {
     completedAt: task.completedAt,
     dismissedAt: task.dismissedAt,
     createdByLabel: task.createdByLabel,
+    // Who it is assigned to, as a label only. Assignment never gates who may
+    // see or act on a task (the everything-is-shared ruling) — the /tasks
+    // page uses it to show and filter by owner.
+    assignedToLabel: task.assignedToLabel,
   };
 }
 

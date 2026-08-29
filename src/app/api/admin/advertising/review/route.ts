@@ -7,7 +7,7 @@ import {
   DuplicatePlacementError,
   listPlacements,
   rejectPlacement,
-  unacceptPlacement,
+  voidPlacement,
   type AdvertisingPlacement,
 } from '@/lib/advertising/placements';
 import { listAdvertisingWorkers } from '@/lib/advertising/workers';
@@ -46,7 +46,8 @@ export async function GET() {
     listAdvertisingWorkers({ includeInactive: true }),
     listAdvertisingCampaigns({ includeInactive: true }),
   ]);
-  const queue = [...pending, ...resubmitted];
+  // Voided rows are dead: never reviewable, never shown as work.
+  const queue = [...pending, ...resubmitted].filter((p) => !p.voidedAt);
 
   // Duplicate flags compare against the campaign's recent placements (any
   // status — an accepted sign 30m away is exactly what admin wants to see).
@@ -131,21 +132,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ placement });
     }
 
-    if (action === 'unaccept') {
-      // The undo lever for a wrong accept (bulk-upload mistakes most of
-      // all). The stamped rate is cleared and the row lands rejected; the
-      // reason is required because the worker sees it.
+    if (action === 'void') {
+      // Also the undo lever for a wrong accept, including a bulk upload to
+      // the wrong worker or campaign: the row keeps its history and stops
+      // counting for pay.
       const placementId = String(body?.placementId ?? '').trim();
       const reason = String(body?.reason ?? '').trim();
       if (!placementId) return NextResponse.json({ error: 'placementId is required' }, { status: 400 });
       if (!reason) {
         return NextResponse.json(
-          { error: 'A reason is required. The worker sees it.' },
+          { error: 'A void reason is required — it becomes the permanent record of why.' },
           { status: 400 },
         );
       }
-      const { placement, changed } = await unacceptPlacement(placementId, adminId, reason);
-      return NextResponse.json({ placement, changed });
+      const placement = await voidPlacement(placementId, adminId, reason);
+      return NextResponse.json({ placement });
     }
 
     if (action === 'bulk-accept') {
