@@ -58,9 +58,9 @@ const OFFICE_ITEMS: NavItem[] = [
 // highlights alone: Jobs and Fleet lighting up together was ruled a bug
 // (Naldo, 2026-08-28), not an accepted cost.
 const ADVERTISING_ITEMS: NavItem[] = [
-  { label: 'Review', href: '/admin/advertising', match: ['advertising'] },
-  { label: 'Pay', href: '/admin/advertising/pay', match: ['advertising-pay'] },
-  { label: 'People', href: '/admin/advertising/crew', match: ['advertising-people'] },
+  { label: 'Campaigns', href: '/admin/advertising', match: ['advertising'] },
+  { label: 'Settings & pay', href: '/admin/advertising/settings', match: ['advertising-pay'] },
+  { label: 'Crew', href: '/admin/advertising/crew', match: ['advertising-people'] },
 ];
 
 /**

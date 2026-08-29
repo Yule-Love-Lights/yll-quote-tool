@@ -1,13 +1,14 @@
 'use client';
 
-// The admin Profile tab, repurposed as the PAY view (Simple Crew has no pay
-// concept — this is ours): per-worker earned vs pending with weekly rows,
-// in the replica's card language. Earned = the stamped rates (history,
-// never moves); pending = an estimate at today's rates.
+// The PAY section, rendered inside the admin Settings screen (Naldo's
+// device round, 2026-08-29: settings and pay are one place): per-worker
+// earned vs pending with weekly rows, in the replica's card language.
+// Earned = the stamped rates (history, never moves); pending = an estimate
+// at today's rates.
 
 import { useEffect, useState } from 'react';
 
-import { dollars, EmptyState, SC, ScreenHeader } from './ui';
+import { dollars, EmptyState, SC } from './ui';
 
 type WorkerSummary = {
   workerId: string;
@@ -46,9 +47,11 @@ export default function PayScreen() {
   }, []);
 
   return (
-    <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>
-      <ScreenHeader title="Pay" />
-      <p className="-mt-2 px-5 pb-4 text-sm" style={{ color: SC.muted }}>
+    <div className="pb-6">
+      <p className="px-5 pb-2 text-sm font-semibold uppercase tracking-wide" style={{ color: SC.muted }}>
+        Pay
+      </p>
+      <p className="px-5 pb-4 text-sm" style={{ color: SC.muted }}>
         Earned is settled history, the rate stamped when each photo was accepted. Pending is an
         estimate at today&apos;s rates and moves until review happens. Test workers are excluded.
       </p>
@@ -85,7 +88,7 @@ export default function PayScreen() {
               </span>
             </div>
             {w.byWeek.length > 0 && (
-              <div className="mt-3 border-t pt-2" style={{ borderColor: '#F0F2EF' }}>
+              <div className="mt-3 border-t pt-2" style={{ borderColor: '#F1EBDB' }}>
                 {w.byWeek.slice(-6).map((wk) => (
                   <div key={wk.weekStart} className="flex justify-between py-1 text-sm">
                     <span style={{ color: SC.muted }}>Week of {wk.weekStart}</span>

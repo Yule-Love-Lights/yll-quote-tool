@@ -1,21 +1,8 @@
 import { redirect } from 'next/navigation';
 
-import { getSessionRole } from '@/lib/auth/sessionRole';
-import PayScreen from '@/components/advertising/simplecrew/PayScreen';
-import { AdminTabs } from '@/components/advertising/simplecrew/Tabs';
-
-export const dynamic = 'force-dynamic';
-
-// The admin profile tab, repurposed as PAY (our money view in the replica's
-// card language).
-export default async function AdminPayPage() {
-  const role = await getSessionRole();
-  if (role !== 'admin') redirect('/');
-
-  return (
-    <>
-      <PayScreen />
-      <AdminTabs active="pay" />
-    </>
-  );
+// Pay merged into Settings (Naldo's device round, 2026-08-29: "the
+// settings and the pay area should be the same exact thing"). This route
+// stays as a redirect so old links and habits keep working.
+export default function AdminPayPage() {
+  redirect('/admin/advertising/settings');
 }
