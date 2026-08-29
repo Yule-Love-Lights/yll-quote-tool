@@ -29,7 +29,7 @@ vi.mock('../integrations/highlevel', () => ({
   isHighLevelConfigured: () => true,
 }));
 
-import { postPendingCallNotes, CALL_NOTE_MAX_ATTEMPTS } from './postNotes';
+import { postPendingCallNotes, noteIdFrom, CALL_NOTE_MAX_ATTEMPTS } from './postNotes';
 import type { NoteCandidate } from './postNotes';
 
 type Update = { patch: Record<string, unknown>; filters: [string, unknown][] };
@@ -136,6 +136,27 @@ beforeEach(() => {
   createContactNoteMock.mockResolvedValue({ id: 'note-1' });
 });
 
+describe('noteIdFrom', () => {
+  // Six real notes posted to production with a null id because the first cut
+  // only read the bare shape. The id is what makes a bad batch enumerable and
+  // therefore deletable, so every wrapper HighLevel might use is accepted.
+  it('reads the id whether HighLevel returns it bare or wrapped', () => {
+    expect(noteIdFrom({ id: 'bare' })).toBe('bare');
+    expect(noteIdFrom({ note: { id: 'wrapped' } })).toBe('wrapped');
+    expect(noteIdFrom({ notes: [{ id: 'listed' }] })).toBe('listed');
+  });
+
+  it('returns null rather than a wrong value when there is no id to read', () => {
+    expect(noteIdFrom(null)).toBeNull();
+    expect(noteIdFrom(undefined)).toBeNull();
+    expect(noteIdFrom({})).toBeNull();
+    expect(noteIdFrom({ note: {} })).toBeNull();
+    expect(noteIdFrom({ notes: [] })).toBeNull();
+    expect(noteIdFrom({ id: 42 })).toBeNull();
+    expect(noteIdFrom({ id: '' })).toBeNull();
+  });
+});
+
 describe('postPendingCallNotes', () => {
   it('posts one note carrying the summary and the tasks, then marks the row posted', async () => {
     const { supabase, updates } = fakeSupabase([candidate()], {
@@ -156,6 +177,17 @@ describe('postPendingCallNotes', () => {
     const posted = patchesWith(updates, 'ghl_note_posted_at');
     expect(posted).toHaveLength(1);
     expect(posted[0].patch.ghl_note_id).toBe('note-1');
+  });
+
+  it('stores the note id from the shape HighLevel actually returns', async () => {
+    // The live response wraps the created note. Reading the bare shape is
+    // what put six untraceable notes into the CRM.
+    createContactNoteMock.mockResolvedValueOnce({ note: { id: 'ghl-note-99' } });
+    const { supabase, updates } = fakeSupabase([candidate()]);
+
+    await postPendingCallNotes(supabase, 6);
+
+    expect(patchesWith(updates, 'ghl_note_posted_at')[0].patch.ghl_note_id).toBe('ghl-note-99');
   });
 
   it('still posts a note for a call that produced no tasks', async () => {
