@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { sbRef, recordMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
-  recordMock: vi.fn(async () => {}),
+  recordMock: vi.fn(
+    async (
+      _action: string,
+      _values: string[],
+      _ctx?: Record<string, unknown>,
+    ): Promise<void> => {},
+  ),
 }));
 
 vi.mock('@/lib/supabase', () => ({
