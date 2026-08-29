@@ -38,6 +38,9 @@ const REFUSAL_STATUS: Record<ManualShiftRefusedError['code'], number> = {
   // state of the record rather than a bad request.
   'not-manual': 409,
   'has-children': 409,
+  // Not the admin's fault and worth retrying: the activity log refused the
+  // record, so the void was called off with the shift still intact.
+  'audit-failed': 503,
 };
 
 export async function POST(req: NextRequest) {
