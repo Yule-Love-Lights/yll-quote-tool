@@ -197,6 +197,24 @@ purpose** (per-dev merge behavior — see "Skills placement" above), so don't "f
 that as drift; and a pure continuity-doc append — a session-log entry, a ledger row,
 a journal note — was never gated and is not gated now.
 
+## One session per lane (PROPOSED 2026-08-29, NOT IN FORCE, a draft awaiting Jason's go, ledger row 467)
+
+Nothing in this section binds anyone yet. It is written out in full so Jason can react to the actual wording instead of a summary. If he says no, delete the section; if he says yes, delete this paragraph and the PROPOSED marker in the header.
+
+**The proposed rule.** A session owns the lanes it is working, and it does not put another session's open branch inside its own merge to `master`. When two lanes have to land together, each lane's owner lands its own branch, in whatever order the two sessions agree.
+
+**Lane, defined for this rule (still proposed):** the branch or stack of branches a session is actively working, plus any branch that session opened and still has open. A lane does NOT come free just because a session ended. It stays with its dev across sessions, which is the normal pattern here (pause overnight, resume the same lane tomorrow), and it comes free only when its PR merges or closes, or when the owning dev hands it over. If a session died mid-work and left a branch behind, ask its dev before taking it; never infer abandonment from silence.
+
+**What the proposed rule does NOT restrict:**
+- Reading another lane's branch, at any time.
+- Merging current `master` into your own branch, even when `master` now carries another lane's work. The always-merge-current rule below still requires exactly that.
+- The combined-tree gate in Pitfalls ("Parallel PRs land only after the combined tree gates green as a set"). That integration tree is a local scratch check that is never pushed and never merged, and this rule leaves it alone. What is forbidden is shipping another session's branch inside your own merge, not gating against it locally.
+- Stacking. A PR based on another session's open branch is fine, and the order is the one the S24 lesson in `CLAUDE.md` already sets, not a new one: the stacked PR retargets to `master` FIRST, and only then does the base's owner merge the base. Merging a base with `--delete-branch` while a PR still points at it hard-closes that PR unrecoverably (#451 had to be recreated as #456).
+
+**Merge authority is unchanged by this.** "Lands its own branch" is about WHICH branch, never about permission. An assistant still merges nothing without its operating dev's explicit go (see "An AI assistant never merges on its own" in the next section).
+
+**Reason.** On 2026-08-29 `master` moved about twelve times underneath one session while that session's one-merge bundle held an absorbed snapshot of another session's branch. The other session then merged a newer copy of the same work, so re-syncing produced add/add two-way merges (a squash against branch history), which is the class that silently mangles content. Nothing was lost, but the only thing that proved it was a manual sweep asserting that the sole differences against `master` were the intended edits. The rule removes the situation instead of trusting the sweep to catch it.
+
 ## Review / merge
 - **An AI assistant never merges on its own — a human says go.** Assistants may create, push, and open PRs, but must **not** merge to `master` without their operating dev's explicit go-ahead (Jason's assistant ← Jason; Naldo's assistant ← Naldo). `master` auto-deploys to prod, so a human approves every merge. One standing exception (Naldo, 2026-07-02, per-machine): on Naldo's machine the `wrap` skill may auto-merge its OWN close PR when the close is documents-only (every changed path under `docs/context/**` or the `CLAUDE.md` journal — the auto-merge allowlist above), after a re-sync onto fresh master and a collision check; a close that touches ANY non-doc file (code, `AGENTS.md`, `.claude/**`, `.github/workflows/**`, settings), and every code/feature PR, still needs the dev's explicit go. Reason: wrap notes PRs once piled up six deep waiting for manual gos. (Jason's machine keeps the human-gated wrap; the two wrap skill copies differ on purpose.)
 - **Own-area PRs: no cross-review needed** — a PR touching only your own area doesn't need the *other* owner's review (your own dev's go to merge still applies, per above).
