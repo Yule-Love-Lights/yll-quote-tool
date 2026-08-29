@@ -29,6 +29,8 @@ export type DetailPlacement = {
   rejectionReason: string | null;
   workerNote: string | null;
   acceptedRateCents: number | null;
+  voidedAt?: string | null;
+  voidReason?: string | null;
   photoUrl: string | null;
   duplicates?: { id: string; status: string; workerName: string; reasons: string[] }[];
 };
@@ -270,8 +272,15 @@ export default function CampaignDetailScreen({
                           {fmtStamp(p)}
                         </span>
                       </span>
-                      <span className="rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: STATUS_CHIP[p.status].bg, color: STATUS_CHIP[p.status].fg }}>
-                        {STATUS_CHIP[p.status].text}
+                      <span
+                        className="rounded-full px-2.5 py-1 text-xs font-medium"
+                        style={
+                          p.voidedAt
+                            ? { background: '#ECEAE4', color: SC.muted }
+                            : { background: STATUS_CHIP[p.status].bg, color: STATUS_CHIP[p.status].fg }
+                        }
+                      >
+                        {p.voidedAt ? 'Voided' : STATUS_CHIP[p.status].text}
                         {p.status === 'accepted' && p.acceptedRateCents !== null && ` · ${dollars(p.acceptedRateCents)}`}
                       </span>
                       <DotsIcon size={20} className="shrink-0" />
@@ -310,7 +319,7 @@ export default function CampaignDetailScreen({
                           </div>
                         );
                       })()}
-                      {mode === 'admin' && (p.status === 'pending' || p.status === 'resubmitted') && (
+                      {mode === 'admin' && !p.voidedAt && (p.status === 'pending' || p.status === 'resubmitted') && (
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <button
                             type="button"
@@ -320,6 +329,22 @@ export default function CampaignDetailScreen({
                             style={{ background: SC.ok }}
                           >
                             Accept (pays the rate)
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy === p.id}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                'Void this placement? It will stop counting for pay, allotments and stock. Why? (required, permanent record)',
+                              );
+                              if (reason && reason.trim()) {
+                                void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);
+                              }
+                            }}
+                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Void…
                           </button>
                           {rejecting === p.id ? (
                             <>
@@ -355,7 +380,7 @@ export default function CampaignDetailScreen({
                           )}
                         </div>
                       )}
-                      {mode === 'worker' && p.status === 'rejected' && (
+                      {mode === 'worker' && p.status === 'rejected' && !p.voidedAt && (
                         <ResubmitButton placementId={p.id} onDone={reload} />
                       )}
                     </div>

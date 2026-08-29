@@ -15,6 +15,8 @@ type Placement = {
   campaignId: string;
   kind: 'yard_sign' | 'door_hanger';
   status: 'pending' | 'accepted' | 'rejected' | 'resubmitted';
+  voidedAt?: string | null;
+  voidReason?: string | null;
   lat: number | null;
   lng: number | null;
   capturedAt: string | null;
@@ -198,6 +200,11 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
                       {p.rejectionReason}
                     </p>
                   )}
+                  {p.voidedAt && p.voidReason && (
+                    <p className="px-4 pb-3 text-sm" style={{ color: SC.muted }}>
+                      Voided: {p.voidReason}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -209,6 +216,15 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
 }
 
 function StatusChip({ p }: { p: Placement }) {
+  // A voided row counts for nothing (Naldo 2026-08-29) — its chip must never
+  // look like live pay, whatever status history it carries.
+  if (p.voidedAt) {
+    return (
+      <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: '#ECEAE4', color: SC.muted }}>
+        Voided
+      </span>
+    );
+  }
   const map = {
     pending: { text: 'Pending', bg: '#F1EAD8', fg: '#3A423C' },
     resubmitted: { text: 'Resubmitted', bg: '#FDF3DF', fg: '#8a6d1f' },

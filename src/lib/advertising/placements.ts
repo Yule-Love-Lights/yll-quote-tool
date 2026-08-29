@@ -305,6 +305,9 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
   if (!data) {
     // Lost the CAS race: someone else reviewed it between our read and write.
     const current = await getPlacementRow(db, placementId);
+    if (current?.voided_at) {
+      throw new Error('acceptPlacement: placement was voided before this accept landed');
+    }
     if (current?.status === 'accepted') return toPlacement(current);
     throw new Error(
       `acceptPlacement: placement ${placementId} moved to '${current?.status ?? 'missing'}' before this accept landed`,
@@ -614,6 +617,7 @@ export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
       .select('worker_id')
       .eq('kind', 'door_hanger')
       .eq('is_test', false)
+      .is('voided_at', null)
       .order('created_at', { ascending: true })
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
@@ -731,7 +735,8 @@ export async function campaignActivitySummary(campaignIds: string[]): Promise<Ma
         .from('advertising_placements')
         .select('id', { count: 'exact', head: true })
         .eq('campaign_id', campaignId)
-        .eq('is_test', false);
+        .eq('is_test', false)
+        .is('voided_at', null); // voided rows count for nothing
       if (countError) console.error('campaignActivitySummary count error:', countError);
 
       const { data: rows, error: rowsError } = await db
@@ -739,6 +744,7 @@ export async function campaignActivitySummary(campaignIds: string[]): Promise<Ma
         .select('worker_id, created_at, status')
         .eq('campaign_id', campaignId)
         .eq('is_test', false)
+        .is('voided_at', null)
         .order('created_at', { ascending: false })
         .range(0, 999);
       if (rowsError) console.error('campaignActivitySummary rows error:', rowsError);
