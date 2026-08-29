@@ -109,6 +109,11 @@ const PUBLIC_API_EXACT = new Set([
   // no operator session, so it must be allowlisted here to reach its own
   // CRON_SECRET check. Also gated by its own CALLS_SYNC_ENABLED flag
   // (default off) inside the route, per decision 5.
+  '/api/cron/calls-extract', // Vercel Cron (CRON_SECRET-guarded, calls_merge_plan_2026-08.md
+  // slice S6) — same reason as every other cron above: a scheduled request
+  // carries no operator session, so it must be allowlisted here to reach its
+  // own CRON_SECRET check. Also gated by its own CALLS_EXTRACT_ENABLED flag
+  // (default off) inside the route, per decision 5.
 ]);
 
 // Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
