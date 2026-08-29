@@ -35,7 +35,9 @@ export default async function FleetClocksPage({
     listActiveFieldCrew(),
   ]);
   const isToday = date === today;
-  const crewOptions = fieldCrew.map((c) => ({ id: c.id, displayName: c.displayName }));
+  // null from either loader means the read FAILED, which must never render as
+  // "nobody is on the roster" or "no other days have data" (row 455 / row 457d).
+  const crewOptions = (fieldCrew ?? []).map((c) => ({ id: c.id, displayName: c.displayName }));
 
   return (
     <OperatorShell active="fleet">
@@ -153,6 +155,12 @@ export default async function FleetClocksPage({
                   </li>
                 ))}
               </ul>
+            )}
+            {fieldCrew === null && (
+              <p className="text-xs text-red-700 mt-3">
+                The crew list could not be loaded, so the picker below is empty even if people
+                are on the roster. Reload before typing a shift.
+              </p>
             )}
             <AddShiftForm crew={crewOptions} defaultDate={date} />
           </section>

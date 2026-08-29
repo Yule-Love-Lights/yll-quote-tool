@@ -212,10 +212,16 @@ export async function listActiveCrewMembers(): Promise<CrewMember[]> {
  * accrue hours, they just are not dispatchable field crew. Keep the two apart:
  * filtering the shared `listActiveCrewMembers` would silently drop office hours
  * from payroll.
+ *
+ * Returns null when the roster could NOT be read (no service client, or the
+ * query failed) — never an empty array, which a caller cannot tell apart from
+ * a company with no field crew. The pages that render this list say so out
+ * loud instead of showing an empty dropdown over a broken query (row 455,
+ * the failure shape PR #1036 fixed on the geocoding fix-list).
  */
-export async function listActiveFieldCrew(): Promise<CrewMember[]> {
+export async function listActiveFieldCrew(): Promise<CrewMember[] | null> {
   const db = getSupabaseServiceClient();
-  if (!db) return [];
+  if (!db) return null;
   const { data, error } = await db
     .from('crew_members')
     .select(SELECT)
@@ -224,7 +230,7 @@ export async function listActiveFieldCrew(): Promise<CrewMember[]> {
     .order('display_name', { ascending: true });
   if (error) {
     console.error('listActiveFieldCrew error:', error);
-    return [];
+    return null;
   }
   return (data ?? []).map((row) => toCrewMember(row as Row));
 }
