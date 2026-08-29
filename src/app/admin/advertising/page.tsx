@@ -15,10 +15,9 @@ export default async function AdvertisingReviewPage() {
   if (role !== 'admin') redirect('/');
 
   return (
-    // active="leads" deliberately: that OperatorArea matches no nav item, so
-    // no tab highlights (the OperatorNav line-20 convention). Advertising gets
-    // its own nav slot once the #1055 View-as nav mechanism lands.
-    <OperatorShell active="leads">
+    // 'advertising' area: highlights the Review tab in the advertising view's
+    // nav (the View-as wiring), and matches nothing in the office view.
+    <OperatorShell active="advertising">
       <main className="max-w-4xl mx-auto">
         <div className="mb-6">
           <p

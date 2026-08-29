@@ -17,8 +17,17 @@ type OperatorViewState = { view: OperatorView; setView: (view: OperatorView) => 
 // future stray usage) on the office view rather than crashing.
 const OperatorViewContext = createContext<OperatorViewState>({ view: 'office', setView: () => {} });
 
-export function OperatorViewProvider({ children }: { children: React.ReactNode }) {
-  const [view, setView] = useState<OperatorView>('office');
+export function OperatorViewProvider({
+  initialView = 'office',
+  children,
+}: {
+  // Seeded by OperatorShell from the page's own area (viewForArea), which is
+  // how a switched view survives navigation with no client persistence: an
+  // advertising page starts in the advertising view, everything else office.
+  initialView?: OperatorView;
+  children: React.ReactNode;
+}) {
+  const [view, setView] = useState<OperatorView>(initialView);
   const value = useMemo(() => ({ view, setView }), [view]);
   return <OperatorViewContext.Provider value={value}>{children}</OperatorViewContext.Provider>;
 }

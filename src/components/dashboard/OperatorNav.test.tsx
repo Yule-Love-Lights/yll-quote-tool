@@ -93,6 +93,27 @@ describe('OperatorNav — admin View-as control (ops hub workstream A slice 2)',
   });
 });
 
+describe('OperatorNav — advertising view (View-as wiring, 2026-08-29)', () => {
+  it('renders the advertising nav items, with Review highlighted on its own page, when the provider seeds the advertising view', async () => {
+    const { OperatorViewProvider } = await import('./OperatorViewContext');
+    const html = renderToStaticMarkup(
+      <OperatorViewProvider initialView="advertising">
+        <OperatorNav active="advertising" />
+      </OperatorViewProvider>
+    );
+    expect(html).toContain('href="/admin/advertising"');
+    expect(html).toContain('href="/admin/advertising/pay"');
+    expect(html).toContain('href="/admin/advertising/people"');
+    // Office items are gone in this view.
+    expect(html).not.toContain('href="/inbox"');
+    // Review lights alone (one area per page; the Jobs/Fleet co-lighting class).
+    const review = html.match(/<a[^>]*href="\/admin\/advertising"[^>]*>/);
+    expect(review![0]).toContain('background:var(--brand-evergreen)');
+    const pay = html.match(/<a[^>]*href="\/admin\/advertising\/pay"[^>]*>/);
+    expect(pay![0]).not.toContain('background:var(--brand-evergreen)');
+  });
+});
+
 describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-role-hardening fix round)', () => {
   // Adding the 11th top-level item (Schedule) measured a real 45px page-level
   // horizontal overflow at 1024px in headless Chromium (the #56/S22 class),

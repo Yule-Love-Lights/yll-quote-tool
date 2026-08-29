@@ -17,7 +17,10 @@ export type OperatorView = 'office' | 'crew' | 'advertising';
 export const OPERATOR_VIEWS: ReadonlyArray<{ id: OperatorView; label: string; built: boolean }> = [
   { id: 'office', label: 'Office', built: true },
   { id: 'crew', label: 'Crew', built: false },
-  { id: 'advertising', label: 'Advertising', built: false },
+  // Wired 2026-08-29 when the #1061 advertising surfaces landed. The view is
+  // the ADMIN side (review/pay/people): /advertising (the worker home)
+  // redirects any admin back to the dashboard by its own design.
+  { id: 'advertising', label: 'Advertising', built: true },
 ];
 
 export type NavItem = { label: string; href: string; match: OperatorArea[] };
@@ -51,12 +54,46 @@ const OFFICE_ITEMS: NavItem[] = [
   { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
 ];
 
+// The admin advertising surfaces (#1061). Distinct match areas so each tab
+// highlights alone: Jobs and Fleet lighting up together was ruled a bug
+// (Naldo, 2026-08-28), not an accepted cost.
+const ADVERTISING_ITEMS: NavItem[] = [
+  { label: 'Review', href: '/admin/advertising', match: ['advertising'] },
+  { label: 'Pay', href: '/admin/advertising/pay', match: ['advertising-pay'] },
+  { label: 'People', href: '/admin/advertising/people', match: ['advertising-people'] },
+];
+
 /**
- * The nav items for a view. Positive-match on 'office' (the seam-gate
- * convention from AGENTS.md Pitfalls: a negative gate would silently hand
- * every future view the office nav). Crew and Advertising return no items
- * until those builds define their own lists.
+ * The nav items for a view. The Record is the positive seam gate (the
+ * AGENTS.md convention: a negative gate would silently hand every future
+ * view the office nav) and exhaustive by type, so adding an OperatorView
+ * without deciding its nav list is a compile error. Crew stays empty until
+ * the Crew My Day build defines its list.
  */
+const ITEMS_BY_VIEW: Record<OperatorView, NavItem[]> = {
+  office: OFFICE_ITEMS,
+  crew: [],
+  advertising: ADVERTISING_ITEMS,
+};
+
 export function navItemsForView(view: OperatorView): NavItem[] {
-  return view === 'office' ? OFFICE_ITEMS : [];
+  return ITEMS_BY_VIEW[view];
+}
+
+// Areas that belong to the advertising view. Positive list on purpose (the
+// seam-gate convention): an area not named here is office.
+const ADVERTISING_AREAS: ReadonlyArray<OperatorArea> = [
+  'advertising',
+  'advertising-pay',
+  'advertising-people',
+];
+
+/**
+ * The view a page's own area implies, used by OperatorShell to seed the
+ * provider. This is what makes the switched view SURVIVE navigation without
+ * any client persistence: landing on an advertising page renders the
+ * advertising nav server-side, every other page renders office.
+ */
+export function viewForArea(area: OperatorArea): OperatorView {
+  return ADVERTISING_AREAS.includes(area) ? 'advertising' : 'office';
 }

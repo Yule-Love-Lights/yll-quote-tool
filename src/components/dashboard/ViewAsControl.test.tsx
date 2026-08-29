@@ -6,8 +6,10 @@
 // The admin gate (role !== 'admin' renders nothing) is negative-controlled:
 // removing the gate makes "renders nothing for a plain operator" fail alone.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {} }) }));
 
 import { ViewAsControl } from './ViewAsControl';
 
@@ -44,13 +46,18 @@ describe('ViewAsControl — contents for an admin', () => {
     expect(officeBtn![0]).not.toContain('disabled=""');
   });
 
-  it('renders Crew and Advertising disabled, with honest not-built copy', () => {
-    for (const label of ['Crew', 'Advertising']) {
-      const btn = html.match(new RegExp(`<button[^>]*>${label}</button>`));
-      expect(btn).not.toBeNull();
-      expect(btn![0]).toContain('disabled=""');
-      expect(btn![0]).toContain('aria-pressed="false"');
-    }
-    expect(html).toContain('Crew and Advertising views are not built yet.');
+  it('renders Advertising enabled (wired to the #1061 admin surfaces) and Crew disabled with honest copy', () => {
+    const adBtn = html.match(/<button[^>]*>Advertising<\/button>/);
+    expect(adBtn).not.toBeNull();
+    expect(adBtn![0]).not.toContain('disabled=""');
+    expect(adBtn![0]).toContain('aria-pressed="false"');
+
+    const crewBtn = html.match(/<button[^>]*>Crew<\/button>/);
+    expect(crewBtn).not.toBeNull();
+    expect(crewBtn![0]).toContain('disabled=""');
+    expect(crewBtn![0]).toContain('aria-pressed="false"');
+
+    expect(html).toContain('Crew view is not built yet.');
+    expect(html).not.toContain('Crew and Advertising views are not built yet.');
   });
 });
