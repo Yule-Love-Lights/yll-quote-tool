@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notifyOfficeTasksChanged } from './officeTasksEvents';
 
@@ -60,6 +61,21 @@ type SortMode = 'due' | 'created' | 'resolved';
 const UNASSIGNED = '\u0000unassigned';
 /** How many tasks the dashboard card shows before sending you to /tasks. */
 export const CARD_TASK_LIMIT = 3;
+
+/**
+ * Each view's natural order: the working list reads soonest-due, History reads
+ * most-recently-finished.
+ *
+ * Exported and used in all THREE places that need it (the first render, a tab
+ * click, and a URL that changed underneath us) precisely so they cannot drift.
+ * The premerge technical lens's central question was whether landing on
+ * History by link sorts the same as clicking through to it; with one function
+ * answering for every path, that is true by construction rather than by
+ * three copies happening to agree.
+ */
+export function sortDefaultFor(view: ViewMode): SortMode {
+  return view === 'history' ? 'resolved' : 'due';
+}
 type LoadState = 'loading' | 'ready' | 'error' | 'unavailable';
 
 interface OfficeTask {
@@ -253,12 +269,13 @@ export default function OfficeTasksCard({
   // initialView lets /tasks?view=history open straight on History, which is
   // what the dashboard card's History link uses. The card itself never has a
   // history view, so it ignores anything but 'active'.
-  const [view, setView] = useState<ViewMode>(isPage ? initialView : 'active');
+  const router = useRouter();
+  const pathname = usePathname();
+  const startingView: ViewMode = isPage ? initialView : 'active';
+  const [view, setView] = useState<ViewMode>(startingView);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
-  // Same defaulting rule changeView applies, so landing on History directly
-  // reads in the same order as clicking through to it.
-  const [sort, setSort] = useState<SortMode>(isPage && initialView === 'history' ? 'resolved' : 'due');
+  const [sort, setSort] = useState<SortMode>(sortDefaultFor(startingView));
   const [tasks, setTasks] = useState<OfficeTask[] | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [loadMessage, setLoadMessage] = useState('Loading tasks…');
@@ -360,11 +377,36 @@ export default function OfficeTasksCard({
 
   function changeView(next: ViewMode) {
     setView(next);
-    // History's natural order is most-recently-finished; the working list's
-    // is soonest-due. Switching tabs moves the sort to that tab's default
-    // rather than leaving a mode that reads as arbitrary there.
-    setSort(next === 'history' ? 'resolved' : 'due');
+    // Switching tabs moves the sort to that tab's default rather than leaving
+    // a mode that reads as arbitrary there.
+    setSort(sortDefaultFor(next));
+    // Premerge staff-lens LOW: the tabs used to change the screen and leave
+    // the URL behind, so refreshing after switching away from a ?view=history
+    // link snapped back to History. replace, not push, so tab clicks do not
+    // pile up in the browser's back history.
+    if (isPage && pathname) {
+      router.replace(next === 'history' ? `${pathname}?view=history` : pathname, { scroll: false });
+    }
   }
+
+  // Premerge technical-lens MED. The nav's own "Tasks" link points at plain
+  // /tasks, so clicking it FROM /tasks?view=history is a same-route client
+  // transition: React keeps this component instance, useState's initial value
+  // is never re-read, and the screen sat on History while the URL said
+  // otherwise. The server passes a fresh initialView on every such
+  // navigation, so following it here is what keeps the two honest.
+  //
+  // Guarded on an actual difference, which is what stops changeView's own
+  // router.replace from bouncing back through here. queueMicrotask is this
+  // repo's established shape for the react-hooks/set-state-in-effect rule
+  // (see OperatorNav's role hint) — a CI error, not a warning.
+  useEffect(() => {
+    if (!isPage || initialView === view) return;
+    queueMicrotask(() => {
+      setView(initialView);
+      setSort(sortDefaultFor(initialView));
+    });
+  }, [isPage, initialView, view]);
 
   function resetCreateIntent() {
     createKeyRef.current = null;
