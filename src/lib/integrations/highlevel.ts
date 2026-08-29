@@ -855,7 +855,17 @@ export async function upsertContact(
 // POST /contacts/{contactId}/notes — attaches a free-text note to the
 // contact's timeline (e.g. the website lead's raw notes / UTM / landing-page
 // context, which don't fit any existing custom field).
-type ContactNoteResult = { id?: string; body?: string; [k: string]: unknown };
+// HighLevel WRAPS the created note rather than returning it bare: six real
+// notes were written with a null id before the database showed it (see
+// noteIdFrom in src/lib/calls/postNotes.ts). The type says so now, so the
+// next caller that wants the id does not inherit the same wrong assumption.
+type ContactNoteResult = {
+  id?: string;
+  note?: { id?: string; body?: string } | null;
+  notes?: { id?: string; body?: string }[] | null;
+  body?: string;
+  [k: string]: unknown;
+};
 
 export async function createContactNote(contactId: string, body: string): Promise<ContactNoteResult> {
   return ghlFetch<ContactNoteResult>(`/contacts/${encodeURIComponent(contactId)}/notes`, {

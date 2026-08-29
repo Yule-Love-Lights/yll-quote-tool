@@ -136,6 +136,9 @@ export async function claimNoteRow(
  *
  * The id is not decoration. It is the only thing that makes a bad batch of
  * notes enumerable, and therefore deletable, without hunting a CRM by hand.
+ *
+ * Exported, like claimNoteRow above, so every shape is directly testable
+ * without driving a whole batch through a mocked HighLevel.
  */
 export function noteIdFrom(response: unknown): string | null {
   const r = response as {
