@@ -84,6 +84,13 @@ describe('GET /api/advertising/earnings', () => {
     expect(listRateChangeEvents).not.toHaveBeenCalled();
   });
 
+  it('flags a rate change on a pending DOOR HANGER too — every kind estimates at the current rate (pay per photo, 2026-08-29)', async () => {
+    listPlacements.mockResolvedValue([pendingRow({ kind: 'door_hanger' })]);
+    listRateChangeEvents.mockResolvedValue([{ campaignId: 'c1', createdAt: '2026-08-27T10:00:00Z' }]);
+    const body = await (await GET()).json();
+    expect(body.rateChangedSincePending).toBe(true);
+  });
+
   it('does not flag a change on a campaign the pending rows do not belong to', async () => {
     listPlacements.mockResolvedValue([pendingRow()]);
     listRateChangeEvents.mockResolvedValue([{ campaignId: 'other', createdAt: '2026-08-27T10:00:00Z' }]);

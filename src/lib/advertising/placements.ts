@@ -36,6 +36,7 @@ export type AdvertisingPlacement = {
   neighborhood: string | null;
   propertyId: string | null;
   rejectionReason: string | null;
+  workerNote: string | null;
   acceptedRateCents: number | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -60,6 +61,7 @@ type Row = {
   neighborhood: string | null;
   property_id: string | null;
   rejection_reason: string | null;
+  worker_note: string | null;
   accepted_rate_cents: number | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -69,7 +71,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
+  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
 
 function toPlacement(row: Row): AdvertisingPlacement {
   return {
@@ -88,6 +90,7 @@ function toPlacement(row: Row): AdvertisingPlacement {
     neighborhood: row.neighborhood,
     propertyId: row.property_id,
     rejectionReason: row.rejection_reason,
+    workerNote: row.worker_note,
     acceptedRateCents: row.accepted_rate_cents,
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
@@ -169,6 +172,7 @@ export async function submitPlacement(input: {
   route?: string | null;
   neighborhood?: string | null;
   propertyId?: string | null;
+  workerNote?: string | null;
   isTest?: boolean;
 }): Promise<AdvertisingPlacement> {
   const db = getSupabaseServiceClient();
@@ -202,6 +206,7 @@ export async function submitPlacement(input: {
       route: input.route?.trim() || null,
       neighborhood: input.neighborhood?.trim() || null,
       property_id: input.propertyId ?? null,
+      worker_note: input.workerNote?.trim() || null,
       is_test: input.isTest ?? false,
     })
     .select(SELECT)
@@ -496,10 +501,11 @@ export function summarizeEarnings(
     }));
 }
 
-/** PURE: door hangers placed per worker (ops suggestions round). Door
- * hangers are permanently unpaid, so they appear in no money figure — this
- * count is how the admin pay page shows the hustle anyway, and whether
- * workers bother logging them at all. Test rows count for nothing, same as
+/** PURE: door hangers placed per worker (ops suggestions round; written
+ * under the old never-pays rule, kept under pay-per-photo 2026-08-29
+ * because the visibility question survives the rule change: the count shows
+ * whether workers log door hangers at all, independent of the money
+ * figures they now also appear in). Test rows count for nothing, same as
  * everywhere else. */
 export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Map<string, number> {
   const out = new Map<string, number>();
@@ -588,4 +594,85 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   }
 
   return summarizeEarnings(placements, rateByCampaign);
+}
+
+// --- Simple Crew replica additions (Naldo, 2026-08-29) ------------------------
+
+/**
+ * The worker's own per-photo note ("Take a note..." in the capture queue).
+ * Ownership is enforced IN the write (`worker_id` filter), so a forged id
+ * for someone else's placement matches nothing and returns null. Any status:
+ * a note is commentary, never money. Pass null to clear.
+ */
+export async function updatePlacementNote(
+  id: string,
+  workerId: string,
+  note: string | null,
+): Promise<AdvertisingPlacement | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const trimmed = note?.trim() || null;
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({ worker_note: trimmed })
+    .eq('id', id.trim())
+    .eq('worker_id', workerId)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`updatePlacementNote: ${error.message}`);
+  return data ? toPlacement(data as Row) : null;
+}
+
+export type CampaignActivity = {
+  campaignId: string;
+  photoCount: number;
+  workerCount: number;
+  lastPhotoAt: string | null;
+  /** Non-test placements awaiting review (pending + resubmitted). */
+  pendingCount: number;
+};
+
+/**
+ * Per-campaign activity for the Campaigns cards ("Last photo 19 minutes
+ * ago", photo count, distinct-worker count). Non-test placements only, so
+ * fixtures never inflate the cards. Campaigns are few; placements per
+ * campaign are read shallowly (newest first) just for the header numbers.
+ */
+export async function campaignActivitySummary(campaignIds: string[]): Promise<Map<string, CampaignActivity>> {
+  const out = new Map<string, CampaignActivity>();
+  const db = getSupabaseServiceClient();
+  if (!db) return out;
+
+  await Promise.all(
+    campaignIds.map(async (campaignId) => {
+      const { count, error: countError } = await db
+        .from('advertising_placements')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId)
+        .eq('is_test', false);
+      if (countError) console.error('campaignActivitySummary count error:', countError);
+
+      const { data: rows, error: rowsError } = await db
+        .from('advertising_placements')
+        .select('worker_id, created_at, status')
+        .eq('campaign_id', campaignId)
+        .eq('is_test', false)
+        .order('created_at', { ascending: false })
+        .range(0, 999);
+      if (rowsError) console.error('campaignActivitySummary rows error:', rowsError);
+      const list = (rows ?? []) as { worker_id: string; created_at: string; status: string }[];
+
+      out.set(campaignId, {
+        campaignId,
+        photoCount: count ?? list.length,
+        workerCount: new Set(list.map((r) => r.worker_id)).size,
+        lastPhotoAt: list[0]?.created_at ?? null,
+        // The cross-campaign "where is review needed" signal (admin lens,
+        // PR #1078): the cards badge this so nobody opens every campaign
+        // hunting for pending photos.
+        pendingCount: list.filter((r) => r.status === 'pending' || r.status === 'resubmitted').length,
+      });
+    }),
+  );
+  return out;
 }

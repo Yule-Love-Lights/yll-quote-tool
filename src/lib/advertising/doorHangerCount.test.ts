@@ -1,7 +1,8 @@
-// Ops suggestions round: door hangers are permanently unpaid, so they show
-// in no money figure — the admin pay page counts them anyway (did the work
-// happen, do workers bother logging it). Same is_test posture as the money
-// math: test rows count for nothing.
+// Ops suggestions round: the admin pay page counts door hangers per worker
+// (did the work happen, do workers bother logging it). Written under the
+// old never-pays rule; the count survives pay-per-photo (2026-08-29)
+// because it answers logging volume, not money. Same is_test posture as
+// the money math: test rows count for nothing.
 
 import { describe, it, expect } from 'vitest';
 import { countDoorHangersByWorker, type AdvertisingPlacement } from './placements';
@@ -21,6 +22,7 @@ const row = (over: Partial<AdvertisingPlacement>): AdvertisingPlacement => ({
   route: null,
   neighborhood: null,
   propertyId: null,
+  workerNote: null,
   acceptedRateCents: null,
   rejectionReason: null,
   reviewedBy: null,
