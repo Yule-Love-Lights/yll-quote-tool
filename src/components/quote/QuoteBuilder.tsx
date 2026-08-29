@@ -44,6 +44,7 @@ import {
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
 import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, isMigratedQuote, type QuoteStatus } from '@/lib/quoteStatus';
+import { MigratedBadge } from '@/components/admin/MigratedBadge';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -5931,13 +5932,26 @@ Send anyway?`,
             amendment (reason, balance re-sync, audit trail, customer notice).
             That control lives only on the job page, which the builder
             otherwise never links to — this closes that dead end. */}
-        {savedStatus === 'booked' && savedJobId && (
+        {savedStatus === 'booked' && savedJobId && !isMigrated && (
           <div className="mb-6 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
             This order is booked. Calculate here to re-price, then{' '}
             <Link href={`/admin/jobs/${savedJobId}`} className="font-semibold underline hover:no-underline">
               open the job to record the amendment
             </Link>{' '}
             — that is what updates the balance, audit trail, and customer notice.
+          </div>
+        )}
+        {/* Row 444, browser-check residual: the banner above invites a
+            Calculate, which /api/quote refuses outright on a migrated order —
+            and the amend flow it points at derives its delta from a fresh
+            result, so it can never compute one either. Both halves of that
+            instruction are dead here, so the banner is replaced rather than
+            shown alongside a lock that contradicts it. */}
+        {isMigrated && (
+          <div className="mb-6 rounded-md border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+            <strong>This order came from home.works.</strong> Its figures are a record of what the customer agreed
+            and paid — this tool did not calculate them and cannot re-price them, so Calculate and the amend flow
+            are both closed here. To change this order, agree the new figures with Jason and record them directly.
           </div>
         )}
 
@@ -5953,6 +5967,12 @@ Send anyway?`,
                 Test
               </span>
             )}
+            {/* Row 444, browser-check residual: the badge was wired into the
+                quotes LIST and the read-only detail page but never into the
+                builder — and the job page, the invoice page and the customer
+                page all link straight here. A staffer arriving from any of them
+                saw a locked screen with nothing on it saying why. */}
+            {isMigrated && <MigratedBadge />}
             {/* View-only portal (#176) — mirrors the admin detail page's pill. */}
             {viewOnly && (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
@@ -6088,11 +6108,19 @@ Send anyway?`,
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
               Editing saved quote <span className="font-mono">{quoteNumber != null ? `#${quoteNumber}` : initialQuote?.quoteId.slice(0, 8)}</span> —
-              Calculate updates this quote in place{initialQuote?.approvedAt
+              {/* Row 444, browser-check residual: "Calculate updates this quote
+                  in place" is false for a migrated order, where Calculate is
+                  refused. Same class as the banner and the design-lock copy
+                  above: a sentence written for the ordinary case, left standing
+                  in a case where it is now a lie. */}
+              {' '}
+              {isMigrated
+                ? 'its figures came from home.works and cannot be re-priced here.'
+                : <>Calculate updates this quote in place{initialQuote?.approvedAt
                 ? '. ⚠️ The customer already APPROVED this quote; edits change what their portal shows.'
                 : initialQuote?.sentAt
                   ? '. ⚠️ This quote was already sent; edits change what the customer sees on their portal.'
-                  : '.'}
+                  : '.'}</>}
             </p>
           )}
         </div>
@@ -6407,12 +6435,26 @@ Send anyway?`,
                 section level it covers every control in the section, and the
                 copy now names them instead of only the camera. */}
             {postApprovalFrozen && (
+              /* Row 444, browser-check residual: this section's copy was written
+                 out longhand rather than reading POST_APPROVAL_DESIGN_LOCK_REASON,
+                 so branching that constant for migrated orders left THIS block
+                 still telling staff to decline, revive and re-send — futile,
+                 since reviving does not clear the migration stamp. */
               <p className="text-xs text-amber-700 mb-3">
-                🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
-                so nothing in this section can change it — analyzing, moving the camera, saving an angle,
-                pulling or uploading a satellite image, and uploading a house photo are all disabled.
-                To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
-                through the amend flow.)
+                {isMigrated ? (
+                  <>
+                    🔒 <strong>Locked — migrated order.</strong> This design and these figures came from
+                    home.works, not from this tool, so nothing in this section can change them.
+                  </>
+                ) : (
+                  <>
+                    🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
+                    so nothing in this section can change it — analyzing, moving the camera, saving an angle,
+                    pulling or uploading a satellite image, and uploading a house photo are all disabled.
+                    To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
+                    through the amend flow.)
+                  </>
+                )}
               </p>
             )}
             <p className="text-xs text-gray-400 mb-3">
