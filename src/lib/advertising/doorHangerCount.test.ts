@@ -56,3 +56,17 @@ describe('countDoorHangersByWorker', () => {
     expect(counts.size).toBe(0);
   });
 });
+
+describe('the pure counter agrees with the paged one about VOID', () => {
+  it('a voided door hanger counts for nothing, same as the DB-level counter', () => {
+    // The paged doorHangerCountsByWorker filters voided rows at the DB.
+    // This pure function claims in its own comment to be the tested pin of
+    // the counting rules, so it has to enforce the same rule or the pin
+    // lies (close integration lens LOW, S81).
+    const counts = countDoorHangersByWorker([
+      row({ workerId: 'w1' }),
+      row({ workerId: 'w1', voidedAt: '2026-08-29T18:00:00.000Z', voidReason: 'wrong worker' }),
+    ]);
+    expect(counts.get('w1')).toBe(1);
+  });
+});
