@@ -22,6 +22,10 @@ const STATUS_COLOR: Record<string, string> = {
   rejected: SC.danger,
   pending: SC.primary,
   resubmitted: SC.gold,
+  // A voided row is dead: never the green "this paid" pin, whatever status
+  // history it carries (delta-verify HIGH on this PR's fix round — the chips
+  // were fixed and the MAP was not).
+  voided: '#9A958A',
 };
 
 export default function PlacementMap({

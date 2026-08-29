@@ -68,6 +68,7 @@ function makeDb() {
           const filters: Record<string, unknown> = {};
           const b = {
             eq(col: string, val: unknown) { filters[col] = val; return b; },
+            is(_col: string, _val: unknown) { return b; }, // voided_at filter: mock rows are never voided
             maybeSingle() {
               if (table === 'inventory_on_hand') {
                 if (stateRef.current.staleOnHandReadOnce) {

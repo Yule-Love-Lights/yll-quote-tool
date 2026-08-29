@@ -454,8 +454,23 @@ describe('listActiveCrewMembers', () => {
 });
 
 describe('listActiveFieldCrew', () => {
-  it('returns [] when Supabase is not configured', async () => {
+  // null means the roster could NOT be read, so a caller can tell a load
+  // failure apart from a genuinely empty crew list. An empty array used to
+  // mean both, which rendered the schedule page's assign-crew dropdown empty
+  // with nothing saying anything had failed (row 455, the same silent-empty
+  // shape PR #1036 fixed on the geocoding fix-list).
+  it('returns null when Supabase is not configured', async () => {
     dbRef.current = null;
+    await expect(listActiveFieldCrew()).resolves.toBeNull();
+  });
+
+  it('returns null when the query fails, never an empty roster', async () => {
+    stateRef.current.error = { message: 'db down' };
+    await expect(listActiveFieldCrew()).resolves.toBeNull();
+  });
+
+  it('returns [] when the roster is genuinely empty', async () => {
+    stateRef.current.rows = [];
     await expect(listActiveFieldCrew()).resolves.toEqual([]);
   });
 
@@ -465,7 +480,7 @@ describe('listActiveFieldCrew', () => {
 
     // Field-crew roster (job assignment): office staff excluded, inactive excluded.
     const field = await listActiveFieldCrew();
-    expect(field.map((c) => c.id)).toEqual(['crew-1', 'crew-2']);
+    expect(field?.map((c) => c.id)).toEqual(['crew-1', 'crew-2']);
 
     // Full roster (payroll): office staff STILL included — the office person must
     // not silently vanish from pay just because they are not dispatchable.
@@ -868,7 +883,7 @@ describe('setStaffType', () => {
     // listActiveFieldCrew is the flag's only functional reader, so the point of
     // the move is that they stop appearing there.
     const field = await listActiveFieldCrew();
-    expect(field.map((c) => c.id)).not.toContain('crew-1');
+    expect(field?.map((c) => c.id)).not.toContain('crew-1');
   });
 
   it('moves an office row to field, the recovery direction this exists for', async () => {
@@ -876,7 +891,7 @@ describe('setStaffType', () => {
     const member = await setStaffType('crew-office', false);
     expect(member?.isOffice).toBe(false);
     const field = await listActiveFieldCrew();
-    expect(field.map((c) => c.id)).toContain('crew-office');
+    expect(field?.map((c) => c.id)).toContain('crew-office');
   });
 
   it('returns null for an id that matches no staff row', async () => {
