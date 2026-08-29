@@ -21,16 +21,20 @@ export default async function CrewLinksPage() {
   const role = await getSessionRole();
   if (role !== 'admin') redirect('/');
 
-  let crew: Awaited<ReturnType<typeof listActiveFieldCrew>> = [];
+  // listActiveFieldCrew returns NULL when the roster could not be read, never
+  // an empty array, precisely so a page cannot render "nobody is set up yet"
+  // over a broken query (row 455). Say which one it is.
+  let crew: Awaited<ReturnType<typeof listActiveFieldCrew>> = null;
   let loadError: string | null = null;
   try {
     crew = await listActiveFieldCrew();
+    if (crew === null) loadError = 'Could not load the crew list. This is a read failure, not an empty roster.';
   } catch {
     loadError = 'Could not load the crew list.';
   }
 
-  const linked = crew.filter((c) => c.telegramUserId);
-  const unlinked = crew.filter((c) => !c.telegramUserId);
+  const linked = (crew ?? []).filter((c) => c.telegramUserId);
+  const unlinked = (crew ?? []).filter((c) => !c.telegramUserId);
 
   return (
     <OperatorShell active="time">
