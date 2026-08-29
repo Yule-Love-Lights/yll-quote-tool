@@ -1,0 +1,177 @@
+'use client';
+
+// The calls-ingest pipeline view (calls_merge_plan_2026-08.md slice S2):
+// last-sync time, counts by status, the last 50 recordings with status/
+// skip_reason/outcome, and a "Process next batch" button. Talks to
+// GET /api/calls/status and POST /api/calls/process. Style follows this
+// repo's other admin debug surfaces (GeocodeFixRow's card/button classes)
+// rather than the copilot's zinc/amber palette.
+
+import { useCallback, useEffect, useState } from 'react';
+
+type Recording = {
+  id: string;
+  ghlContactId: string | null;
+  direction: string | null;
+  calledAt: string | null;
+  durationSeconds: number | null;
+  status: 'pending' | 'processing' | 'transcribed' | 'skipped' | 'failed';
+  skipReason: string | null;
+  transcriptId: string | null;
+  lastError: string | null;
+  outcome: string | null;
+  createdAt: string;
+};
+
+type Counts = { pending: number; processing: number; transcribed: number; skipped: number; failed: number };
+
+type CallsResponse = {
+  configured: boolean;
+  migrated?: boolean;
+  reason?: string;
+  error?: string;
+  lastSyncedAt?: string | null;
+  counts?: Counts;
+  recordings?: Recording[];
+};
+
+const bannerClass = 'rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900';
+const errorBannerClass = 'rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700';
+
+function statusColor(status: Recording['status']): string {
+  if (status === 'transcribed') return 'var(--brand-evergreen-3)';
+  if (status === 'failed') return '#b91c1c';
+  if (status === 'processing') return '#1d4ed8';
+  if (status === 'skipped') return '#6b7280';
+  return '#b45309'; // pending
+}
+
+function formatDuration(seconds: number | null): string {
+  if (seconds == null) return '—';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function StatTile({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-gray-200 p-3 flex flex-col gap-1">
+      <span className="text-xs font-medium uppercase text-gray-500">{label}</span>
+      <span className="text-2xl font-semibold text-gray-900">{value}</span>
+    </div>
+  );
+}
+
+export function CallsView() {
+  const [data, setData] = useState<CallsResponse | null>(null);
+  const [status, setStatus] = useState<'loading' | 'done' | 'error'>('loading');
+  const [processing, setProcessing] = useState(false);
+  const [processMessage, setProcessMessage] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    return fetch('/api/calls/status')
+      .then(res => res.json())
+      .then((json: CallsResponse) => {
+        setData(json);
+        setStatus('done');
+      })
+      .catch(() => setStatus('error'));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onProcessBatch() {
+    setProcessing(true);
+    setProcessMessage(null);
+    try {
+      const res = await fetch('/api/calls/process', { method: 'POST' });
+      const json = await res.json();
+      if (json.error) {
+        setProcessMessage(json.error);
+        return;
+      }
+      if (json.migrated === false || json.configured === false) {
+        setProcessMessage(json.reason ?? 'Could not process the batch.');
+        return;
+      }
+      setProcessMessage(`Processed ${json.done} transcribed, ${json.skipped} skipped, ${json.failed} failed.`);
+      await load();
+    } catch {
+      setProcessMessage('Could not process the batch.');
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  if (status === 'loading') return <p className="text-sm text-gray-500">Loading…</p>;
+  if (status === 'error') return <div className={errorBannerClass}>Could not load calls.</div>;
+
+  if (!data?.migrated) {
+    return <div className={bannerClass}>{data?.reason ?? 'Run migrations/2026-08-29-call-ingest.sql first.'}</div>;
+  }
+  if (data.error) {
+    return <div className={errorBannerClass}>{data.error}</div>;
+  }
+
+  const counts = data.counts ?? { pending: 0, processing: 0, transcribed: 0, skipped: 0, failed: 0 };
+  const recordings = data.recordings ?? [];
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={onProcessBatch}
+          disabled={processing}
+          className="rounded px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          style={{ background: 'var(--brand-evergreen-3)' }}
+        >
+          {processing ? 'Processing…' : 'Process next batch'}
+        </button>
+        <span className="text-sm text-gray-500">
+          {data.lastSyncedAt ? `Last synced ${new Date(data.lastSyncedAt).toLocaleString()}` : 'Never synced yet'}
+        </span>
+        {processMessage && <span className="text-sm text-gray-500">{processMessage}</span>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <StatTile label="Pending" value={counts.pending} />
+        <StatTile label="Processing" value={counts.processing} />
+        <StatTile label="Transcribed" value={counts.transcribed} />
+        <StatTile label="Skipped" value={counts.skipped} />
+        <StatTile label="Failed" value={counts.failed} />
+      </div>
+
+      {recordings.length === 0 ? (
+        <p className="text-sm text-gray-500">No recordings synced yet.</p>
+      ) : (
+        <ul className="divide-y divide-gray-200 rounded-lg border border-gray-200">
+          {recordings.map(r => (
+            <li key={r.id} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold" style={{ color: statusColor(r.status) }}>
+                    {r.status}
+                  </span>
+                  {r.outcome && r.outcome !== 'unknown' && (
+                    <span className="rounded-full border border-gray-300 px-2 py-0.5 text-xs text-gray-600">
+                      {r.outcome}
+                    </span>
+                  )}
+                  {r.skipReason && <span className="text-xs text-gray-400">({r.skipReason})</span>}
+                  {r.lastError && <span className="text-xs text-red-500">({r.lastError})</span>}
+                </div>
+                <span className="text-xs text-gray-400">
+                  {r.calledAt ? new Date(r.calledAt).toLocaleString() : 'no call time'} · {formatDuration(r.durationSeconds)}
+                  {r.direction ? ` · ${r.direction}` : ''}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
