@@ -6,7 +6,8 @@ import Konva from "konva";
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
-import { baseStampLabel, numberStampLabels } from "@/lib/design/stampLabels";
+import { assignStampOrdinals, baseStampLabel, numberStampLabels } from "@/lib/design/stampLabels";
+import { itemThumbnailBBox } from "@/lib/design/stampThumbnails";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -290,12 +291,93 @@ export async function renderEditor(
   // canonical item sharing the same base label on the same source photo (a
   // house with 7 wrapped columns reads "column minis 1" … "column minis 7"
   // instead of 7 identical rows), so staff can tell which twin picker/
-  // billing-link row maps to which drawn item. Recomputed from the live scene
-  // on every call (cheap at this scene size) so it's never stale after an
-  // edit; the numbering rule itself lives in stampLabels.ts (unit-testable
-  // without a Konva stage).
-  const stampLabel = (i: SceneItem): string =>
-    numberStampLabels(scene.items).get(i.id) ?? baseStampLabel(i);
+  // billing-link row maps to which drawn item.
+  //
+  // Fix-round item 2a (Jason's ruling): the number is STABLE — a persisted
+  // per-item `stampOrdinal`, assigned once and never reassigned, so deleting
+  // a sibling can never make an existing item's number point at a different
+  // physical thing. assignStampOrdinals lazily backfills any item that
+  // doesn't have one yet (a freshly drawn item, or one from a scene saved
+  // before this field existed) and PERSISTS the assignment — this is the one
+  // place that happens, since both UI consumers (the picker + the
+  // billing-link dropdown) call stampLabel(). It's a real (if small) write,
+  // not just a read: if anything was actually missing, autosave the result
+  // so the assignment survives a reload. Idempotent — a scene where every
+  // displayable item already has an ordinal is a no-op (same `scene`
+  // reference back), so this costs nothing on the common case.
+  const stampLabel = (i: SceneItem): string => {
+    const withOrdinals = assignStampOrdinals(scene);
+    if (withOrdinals !== scene) {
+      scene = withOrdinals;
+      scheduleSave();
+    }
+    return numberStampLabels(scene.items).get(i.id) ?? baseStampLabel(i);
+  };
+  // Fix-round item 2b (Jason's ruling — the real answer to "which 'column
+  // minis' is the first column in photo 1?"): a small cropped thumbnail of
+  // the item itself, taken from the photo it actually lives on. The source
+  // photo is often NOT the one currently mounted, so its image may not be
+  // loaded at all — cache each distinct photo's Image by URL so re-placing
+  // several items from the same source photo only downloads it once.
+  const stampPhotoImageCache = new Map<string, Promise<HTMLImageElement | null>>();
+  function loadStampPhotoImage(url: string): Promise<HTMLImageElement | null> {
+    let cached = stampPhotoImageCache.get(url);
+    if (!cached) {
+      cached = loadHTMLImage(url).catch(() => null);
+      stampPhotoImageCache.set(url, cached);
+    }
+    return cached;
+  }
+  const STAMP_THUMB_PX = 56;
+  function stampPhotoUrlFor(photoId: string | null | undefined): string | null {
+    if (!photoId) return design.photoUrl;
+    return design.extraPhotos?.find((p) => p.id === photoId)?.url ?? null;
+  }
+  // Crop one item's thumbnail as a data URL, or null if it can't be
+  // produced (no computable bounding box, the source photo has no known
+  // URL, the image failed to load, or the crop itself throws) — every
+  // failure degrades to null so the caller falls back to the plain
+  // numbered text label instead of a broken image. Never throws.
+  async function stampThumbnailDataUrl(item: SceneItem): Promise<string | null> {
+    const box = itemThumbnailBBox(item, scene.items);
+    if (!box || !(box.w > 0) || !(box.h > 0)) return null;
+    const url = stampPhotoUrlFor(item.photoId ?? null);
+    if (!url) return null;
+    const img = await loadStampPhotoImage(url);
+    if (!img) return null;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = STAMP_THUMB_PX;
+      canvas.height = STAMP_THUMB_PX;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      // Letterbox the (usually non-square) crop box into a square thumb,
+      // preserving aspect ratio and centering it — never stretched.
+      const scale = Math.min(STAMP_THUMB_PX / box.w, STAMP_THUMB_PX / box.h);
+      const dw = box.w * scale, dh = box.h * scale;
+      const dx = (STAMP_THUMB_PX - dw) / 2, dy = (STAMP_THUMB_PX - dh) / 2;
+      ctx.drawImage(img, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
+      return canvas.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+  // Kick off (fire-and-forget) an async thumbnail load for every stamp-row
+  // button just rendered, swapping in the cropped image once it resolves.
+  // The sidebar's innerHTML gets fully replaced on the NEXT render (a very
+  // common event — any scene edit, tool change, etc.), so a resolved
+  // thumbnail whose row is no longer in the DOM is silently discarded
+  // rather than applied to a stale/wrong element.
+  function loadStampThumbnails(sb: HTMLElement, items: SceneItem[]) {
+    for (const item of items) {
+      void stampThumbnailDataUrl(item).then((dataUrl) => {
+        if (!dataUrl) return; // stays as the 📌 placeholder — never a broken image
+        const el = sb.querySelector(`.stamp-thumb[data-thumb-id="${item.id}"]`) as HTMLElement | null;
+        if (!el) return; // sidebar re-rendered before this resolved
+        el.innerHTML = `<img src="${dataUrl}" width="${STAMP_THUMB_PX / 2}" height="${STAMP_THUMB_PX / 2}" style="border-radius:3px;vertical-align:middle;object-fit:cover" alt="" />`;
+      });
+    }
+  }
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
@@ -2013,7 +2095,7 @@ export async function renderEditor(
       <section>
         <h3>Re-place from other photos</h3>
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Click one, then click the photo — a linked copy shows here but bills once (via its original).</div>
-        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:block;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}">📌 ${stampLabel(i)} — ${photoLabelOf(i)}</button>`).join("")}
+        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}"><span class="stamp-thumb" data-thumb-id="${i.id}" style="display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:28px;height:28px;font-size:16px">📌</span><span>${stampLabel(i)} — ${photoLabelOf(i)}</span></button>`).join("")}
       </section>`;
       })()}
       ${tool.category === "poles" ? `
@@ -2388,6 +2470,10 @@ export async function renderEditor(
         renderSidebar();
       }),
     );
+    // Fix-round item 2b: fire off thumbnail crops for whatever stamp
+    // candidates just rendered (a no-op call if the section didn't render
+    // at all — stampCandidates() is cheap and pure).
+    loadStampThumbnails(sb, stampCandidates());
 
     sb.querySelectorAll("#categories button").forEach((b) =>
       b.addEventListener("click", () => {

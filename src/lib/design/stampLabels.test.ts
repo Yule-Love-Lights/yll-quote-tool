@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { baseStampLabel, numberStampLabels } from './stampLabels';
-import type { GarlandItem, MiniAreaItem, MiniGroupItem, SceneItem, StrandItem, WreathItem } from './sceneTypes';
+import { assignStampOrdinals, baseStampLabel, numberStampLabels } from './stampLabels';
+import type { GarlandItem, MiniAreaItem, MiniGroupItem, Scene, SceneItem, StrandItem, WreathItem } from './sceneTypes';
 
 function strand(id: string, over: Partial<StrandItem> = {}): StrandItem {
   return {
@@ -53,6 +53,19 @@ function garland(id: string, over: Partial<GarlandItem> = {}): GarlandItem {
   };
 }
 
+function scene(items: SceneItem[], over: Partial<Scene> = {}): Scene {
+  return { yardsticks: [], items, ...over };
+}
+
+// Test helper matching editor.ts's own stampLabel() wiring: assign any
+// missing stampOrdinals first (persisted, stable), THEN read the numbered
+// labels off the result. Every numberStampLabels test below goes through
+// this — numberStampLabels alone only ever READS an item's own
+// stampOrdinal; it never computes one.
+function numbered(items: SceneItem[]): Map<string, string> {
+  return numberStampLabels(assignStampOrdinals(scene(items)).items);
+}
+
 describe('baseStampLabel', () => {
   it('labels a mini GROUP by its surface tag exactly like a scattershot area', () => {
     expect(baseStampLabel(miniGroup('g1', ['m1'], { surface: 'column' }))).toBe('column minis');
@@ -73,7 +86,7 @@ describe('baseStampLabel', () => {
 describe('numberStampLabels', () => {
   it('leaves a lone label on a photo unnumbered', () => {
     const items: SceneItem[] = [strand('s1', { surface: 'column' })];
-    expect(numberStampLabels(items).get('s1')).toBe('column wrap');
+    expect(numbered(items).get('s1')).toBe('column wrap');
   });
 
   it('numbers duplicate labels in DRAW ORDER (array order) when 2+ share one', () => {
@@ -82,7 +95,7 @@ describe('numberStampLabels', () => {
       strand('s2', { surface: 'column' }),
       strand('s3', { surface: 'column' }),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('s1')).toBe('column wrap 1');
     expect(labels.get('s2')).toBe('column wrap 2');
     expect(labels.get('s3')).toBe('column wrap 3');
@@ -96,7 +109,7 @@ describe('numberStampLabels', () => {
       strand('p2-b', { surface: 'column', photoId: 'extra-1' }),
       strand('p2-c', { surface: 'column', photoId: 'extra-1' }),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('p1-a')).toBe('column wrap 1');
     expect(labels.get('p1-b')).toBe('column wrap 2');
     expect(labels.get('p2-a')).toBe('column wrap 1');
@@ -110,7 +123,7 @@ describe('numberStampLabels', () => {
       strand('s2', { surface: 'column' }),
       garland('g1'),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('s1')).toBe('column wrap 1');
     expect(labels.get('s2')).toBe('column wrap 2');
     expect(labels.get('g1')).toBe('garland run');
@@ -124,7 +137,7 @@ describe('numberStampLabels', () => {
       area('a1', { surface: 'column' }),
       miniGroup('g1', ['m1', 'm2'], { surface: 'column' }),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('a1')).toBe('column minis 1');
     expect(labels.get('g1')).toBe('column minis 2');
   });
@@ -135,7 +148,7 @@ describe('numberStampLabels', () => {
       strand('s2', { surface: 'column' }),
       strand('twin', { surface: 'column', linkedToId: 's1', photoId: 'extra-1' }),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('s1')).toBe('column wrap 1');
     expect(labels.get('s2')).toBe('column wrap 2');
     expect(labels.has('twin')).toBe(false);
@@ -146,7 +159,7 @@ describe('numberStampLabels', () => {
       strand('s1', { surface: 'column' }),
       strand('s2', { surface: 'column' }),
     ];
-    expect(numberStampLabels(items)).toEqual(numberStampLabels(items));
+    expect(numbered(items)).toEqual(numbered(items));
   });
 
   // Coordinator-reported defect, reproduced exactly: a mini GROUP whose
@@ -165,7 +178,7 @@ describe('numberStampLabels', () => {
       area('m3', { surface: 'column', groupId: 'g1' }),
       miniGroup('g1', ['m1', 'm2', 'm3'], { surface: 'column' }),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('g1')).toBe('column minis');
     // The members themselves get no entry — neither consumer ever displays
     // one by name, so there is nothing to number them FOR.
@@ -183,12 +196,110 @@ describe('numberStampLabels', () => {
       area('m4', { surface: 'column', groupId: 'g2' }),
       miniGroup('g2', ['m3', 'm4'], { surface: 'column' }),
     ];
-    const labels = numberStampLabels(items);
+    const labels = numbered(items);
     expect(labels.get('g1')).toBe('column minis 1');
     expect(labels.get('g2')).toBe('column minis 2');
     expect(labels.has('m1')).toBe(false);
     expect(labels.has('m2')).toBe(false);
     expect(labels.has('m3')).toBe(false);
     expect(labels.has('m4')).toBe(false);
+  });
+});
+
+// Fix round item 2a (Jason's ruling): STABLE ordinals — an item's number
+// must never change because a sibling was deleted, and gaps are the
+// accepted tradeoff.
+describe('assignStampOrdinals', () => {
+  it('seeds a fresh (back-compat) scene 1..N in draw order, matching what the OLD live-recomputed scheme would have shown', () => {
+    const s = scene([
+      strand('s1', { surface: 'column' }),
+      strand('s2', { surface: 'column' }),
+      strand('s3', { surface: 'column' }),
+    ]);
+    const result = assignStampOrdinals(s);
+    const byId = new Map(result.items.map((i) => [i.id, (i as StrandItem).stampOrdinal]));
+    expect(byId.get('s1')).toBe(1);
+    expect(byId.get('s2')).toBe(2);
+    expect(byId.get('s3')).toBe(3);
+    expect(result.stampOrdinalCounters).toMatchObject({ ' column wrap': 4 });
+  });
+
+  it('is idempotent — a second call on an already-assigned scene returns the SAME reference (a true no-op)', () => {
+    const once = assignStampOrdinals(scene([strand('s1', { surface: 'column' }), strand('s2', { surface: 'column' })]));
+    const twice = assignStampOrdinals(once);
+    expect(twice).toBe(once);
+  });
+
+  it('an item KEEPS its own ordinal after an EARLIER sibling in the same bucket is deleted — the whole point of the fix', () => {
+    const assigned = assignStampOrdinals(scene([
+      strand('s1', { surface: 'column' }),
+      strand('s2', { surface: 'column' }),
+      strand('s3', { surface: 'column' }),
+    ]));
+    // s1 (ordinal 1) is deleted; s2/s3 survive.
+    const afterDelete: Scene = { ...assigned, items: assigned.items.filter((i) => i.id !== 's1') };
+    const reassigned = assignStampOrdinals(afterDelete); // no-op: s2/s3 already have ordinals
+    const s2 = reassigned.items.find((i) => i.id === 's2') as StrandItem;
+    const s3 = reassigned.items.find((i) => i.id === 's3') as StrandItem;
+    expect(s2.stampOrdinal).toBe(2); // NOT renumbered to 1
+    expect(s3.stampOrdinal).toBe(3); // NOT renumbered to 2
+    // And the DISPLAYED labels reflect the gap directly.
+    const labels = numberStampLabels(reassigned.items);
+    expect(labels.get('s2')).toBe('column wrap 2');
+    expect(labels.get('s3')).toBe('column wrap 3');
+  });
+
+  it('a NEW item never reuses a DELETED sibling\'s number — the counter, not the item count, decides the next one', () => {
+    const assigned = assignStampOrdinals(scene([
+      strand('s1', { surface: 'column' }),
+      strand('s2', { surface: 'column' }),
+    ]));
+    // s2 (ordinal 2) is deleted, leaving only s1 (ordinal 1) — an item-COUNT
+    // based scheme would hand the next new item "2" again.
+    const afterDelete: Scene = { ...assigned, items: assigned.items.filter((i) => i.id !== 's2') };
+    const withNewItem: Scene = { ...afterDelete, items: [...afterDelete.items, strand('s4', { surface: 'column' })] };
+    const result = assignStampOrdinals(withNewItem);
+    const s4 = result.items.find((i) => i.id === 's4') as StrandItem;
+    expect(s4.stampOrdinal).toBe(3); // NOT 2 — that number is retired with s2
+  });
+
+  it('a lone SURVIVOR (its bucket shrank to 1) still keeps its persisted ordinal even though it displays unnumbered', () => {
+    const assigned = assignStampOrdinals(scene([
+      strand('s1', { surface: 'column' }),
+      strand('s2', { surface: 'column' }),
+    ]));
+    const afterDelete: Scene = { ...assigned, items: assigned.items.filter((i) => i.id !== 's1') };
+    // s2 is now alone in its bucket — displays unnumbered (no longer
+    // ambiguous, mirrors pricingEngine's own rule) but its stored ordinal
+    // is untouched, so if a sibling reappears later it reads correctly.
+    expect(numberStampLabels(afterDelete.items).get('s2')).toBe('column wrap');
+    const s2 = afterDelete.items.find((i) => i.id === 's2') as StrandItem;
+    expect(s2.stampOrdinal).toBe(2);
+  });
+
+  it('defensively advances the counter past a pre-existing ordinal it did not itself assign', () => {
+    // Simulates data that already carries a stampOrdinal but no matching
+    // counter entry (e.g. hand-edited, or a future import path) — the
+    // counter must never hand out a number <= one already in use.
+    const s = scene([strand('s1', { surface: 'column', stampOrdinal: 5 })]);
+    const result = assignStampOrdinals(s);
+    expect(result.stampOrdinalCounters).toMatchObject({ ' column wrap': 6 });
+    const s2 = assignStampOrdinals({ ...result, items: [...result.items, strand('s2', { surface: 'column' })] });
+    const newItem = s2.items.find((i) => i.id === 's2') as StrandItem;
+    expect(newItem.stampOrdinal).toBe(6); // not 1, not 2 — clear of the existing 5
+  });
+
+  it('never assigns an ordinal to a twin or a grouped member', () => {
+    const s = scene([
+      strand('s1', { surface: 'column' }),
+      strand('twin', { surface: 'column', linkedToId: 's1' }),
+      area('m1', { surface: 'column', groupId: 'g1' }),
+      miniGroup('g1', ['m1'], { surface: 'column' }),
+    ]);
+    const result = assignStampOrdinals(s);
+    const twin = result.items.find((i) => i.id === 'twin') as StrandItem;
+    const m1 = result.items.find((i) => i.id === 'm1') as MiniAreaItem;
+    expect(twin.stampOrdinal).toBeUndefined();
+    expect(m1.stampOrdinal).toBeUndefined();
   });
 });

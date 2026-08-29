@@ -112,6 +112,20 @@ export type ItemBase = {
   // twin-expansion. Deleting the canonical deletes its twins; deleting a twin
   // removes just that depiction. Absent/null = a normal billable item.
   linkedToId?: string | null;
+  // #13 stable stamp ordinals (fix round on twin-group-stamp-and-ordinals,
+  // item 2a — Jason's ruling): the "N" in a duplicate-label picker row
+  // ("column minis 3"), assigned ONCE the first time this item is ever
+  // displayed with a number and never reassigned afterward, so deleting a
+  // sibling can never make a staff note ("re-place column minis 3") point
+  // at a DIFFERENT physical item. Gaps are expected and accepted — see
+  // `stampOrdinalCounters` below for why a deleted item's number is never
+  // reused either. Absent = never assigned yet (every scene saved before
+  // this field existed, or an item created since but not yet displayed
+  // anywhere numbered) — `assignStampOrdinals` (stampLabels.ts) backfills
+  // it lazily and it is IMMUTABLE from then on (only ever set, never
+  // changed once present). Purely a display concern — never read by
+  // projectScene/pricing.
+  stampOrdinal?: number;
 };
 
 export type StrandItem = ItemBase & MiniBilling & {
@@ -311,6 +325,18 @@ export type Scene = {
    * `editor-core/lightScale.ts` for the sizing math and the money-safety rule.
    */
   lightScale?: number;
+  // #13 stable stamp ordinals (fix round on twin-group-stamp-and-ordinals,
+  // item 2a): the NEXT ordinal to hand out per (photoId, base label)
+  // bucket, keyed the same way stampLabels.ts's `numberStampLabels` keys
+  // its counts. Lives on the SCENE (not derived from items currently
+  // present) specifically so a deleted item's number is never reused: an
+  // item-count-based "next number" would forget a deleted item ever
+  // existed and could hand its old number to a brand-new item, silently
+  // making a stale staff note point at the wrong one. Only ever increases.
+  // Absent = every bucket starts at 1 (every scene saved before this field
+  // existed, or one that has never displayed a duplicate label) —
+  // `assignStampOrdinals` (stampLabels.ts) creates it lazily.
+  stampOrdinalCounters?: Record<string, number>;
 };
 
 // One extra street photo as the editor sees it (#13 multi-image): a signed URL
