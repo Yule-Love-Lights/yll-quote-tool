@@ -19,7 +19,7 @@ export const runtime = 'nodejs';
  * resolver's doc block) rather than leaning on the perimeter, which is dormant
  * while `AUTH_GATE_ENABLED` is off.
  *
- * Not public and not under `/api/ops/v1` (the crew surface), so `operatorGate`
+ * Not public, so `operatorGate`
  * treats it as operator-only by default — no allowlist entry needed, and a
  * signed-out request 401s here AND at the perimeter.
  *
