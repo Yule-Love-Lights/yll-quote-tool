@@ -6,6 +6,7 @@ import {
   acceptPlacement,
   listPlacements,
   rejectPlacement,
+  voidPlacement,
   type AdvertisingPlacement,
 } from '@/lib/advertising/placements';
 import { listAdvertisingWorkers } from '@/lib/advertising/workers';
@@ -44,7 +45,8 @@ export async function GET() {
     listAdvertisingWorkers({ includeInactive: true }),
     listAdvertisingCampaigns({ includeInactive: true }),
   ]);
-  const queue = [...pending, ...resubmitted];
+  // Voided rows are dead: never reviewable, never shown as work.
+  const queue = [...pending, ...resubmitted].filter((p) => !p.voidedAt);
 
   // Duplicate flags compare against the campaign's recent placements (any
   // status — an accepted sign 30m away is exactly what admin wants to see).
@@ -126,6 +128,20 @@ export async function POST(req: NextRequest) {
         );
       }
       const placement = await rejectPlacement(placementId, adminId, reason);
+      return NextResponse.json({ placement });
+    }
+
+    if (action === 'void') {
+      const placementId = String(body?.placementId ?? '').trim();
+      const reason = String(body?.reason ?? '').trim();
+      if (!placementId) return NextResponse.json({ error: 'placementId is required' }, { status: 400 });
+      if (!reason) {
+        return NextResponse.json(
+          { error: 'A void reason is required — it becomes the permanent record of why.' },
+          { status: 400 },
+        );
+      }
+      const placement = await voidPlacement(placementId, adminId, reason);
       return NextResponse.json({ placement });
     }
 

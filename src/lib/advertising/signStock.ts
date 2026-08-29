@@ -29,7 +29,8 @@ async function countYardSigns(
     .from('advertising_placements')
     .select('id', { count: 'exact', head: true })
     .eq('kind', 'yard_sign')
-    .eq('is_test', false);
+    .eq('is_test', false)
+    .is('voided_at', null); // voided rows count for nothing
   query = statuses.length === 1 ? query.eq('status', statuses[0]) : query.in('status', statuses);
   const { count, error } = await query;
   if (error) {
