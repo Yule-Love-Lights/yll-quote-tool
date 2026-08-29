@@ -330,22 +330,6 @@ export default function CampaignDetailScreen({
                           >
                             Accept (pays the rate)
                           </button>
-                          <button
-                            type="button"
-                            disabled={busy === p.id}
-                            onClick={() => {
-                              const reason = window.prompt(
-                                'Void this placement? It will stop counting for pay, allotments and stock. Why? (required, permanent record)',
-                              );
-                              if (reason && reason.trim()) {
-                                void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);
-                              }
-                            }}
-                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
-                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
-                          >
-                            Void…
-                          </button>
                           {rejecting === p.id ? (
                             <>
                               <input
@@ -382,6 +366,33 @@ export default function CampaignDetailScreen({
                       )}
                       {mode === 'worker' && p.status === 'rejected' && !p.voidedAt && (
                         <ResubmitButton placementId={p.id} onDone={reload} />
+                      )}
+                      {/* Void is available on EVERY live row, not just the
+                          unreviewed ones: the case it exists for is a
+                          mis-tapped Accept or a duplicate caught after
+                          acceptance (delta-verify caught this button nested
+                          inside the pending-only block). */}
+                      {mode === 'admin' && !p.voidedAt && (
+                        <div className="mt-1">
+                          <button
+                            type="button"
+                            disabled={busy === p.id}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                p.status === 'accepted'
+                                  ? 'Void this ACCEPTED placement? Its pay is reversed and it stops counting for allotments and stock. Why? (required, permanent record)'
+                                  : 'Void this placement? It stops counting for pay, allotments and stock. Why? (required, permanent record)',
+                              );
+                              if (reason && reason.trim()) {
+                                void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);
+                              }
+                            }}
+                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Void…
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
