@@ -80,6 +80,7 @@ const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
       insertRaceRow: null as ShiftRow | null,
+      insertError: null as DbError | null,
       afterSelect: null as (() => void) | null,
       breaks: [] as BreakRow[],
       breakUpdates: [] as Record<string, unknown>[],
@@ -273,6 +274,16 @@ function makeDb() {
         insert: (payload: Record<string, unknown>) => {
           stateRef.current.inserted.push(payload);
 
+          if (stateRef.current.insertError) {
+            const err = stateRef.current.insertError;
+            stateRef.current.insertError = null;
+            return {
+              select: () => ({
+                maybeSingle: () => Promise.resolve({ data: null, error: err }),
+              }),
+            };
+          }
+
           if (stateRef.current.insertRaceRow) {
             const raceWinner = stateRef.current.insertRaceRow;
             stateRef.current.insertRaceRow = null;
@@ -353,6 +364,7 @@ beforeEach(() => {
     inserted: [],
     updated: [],
     insertRaceRow: null,
+    insertError: null,
     afterSelect: null,
     breaks: [],
     breakUpdates: [],
@@ -546,6 +558,22 @@ describe('adminUpdateShiftTimes', () => {
         clockInAt: '2026-08-10T07:00:00.000Z',
         clockOutAt: '2026-08-10T09:00:00.000Z',
         actor,
+      }),
+      'overlap',
+    );
+  });
+
+  it("maps the DB exclusion constraint (23P01) to the same 'overlap' refusal", async () => {
+    stateRef.current.insertError = {
+      code: '23P01',
+      message: 'conflicting key value violates exclusion constraint "shifts_no_overlap"',
+    };
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-2',
+        clockInAt: '2026-08-10T11:00:00.000Z',
+        clockOutAt: '2026-08-10T13:00:00.000Z',
+        actor: 'Naldo',
       }),
       'overlap',
     );

@@ -348,7 +348,17 @@ export async function adminCreateShift(input: {
     })
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`adminCreateShift: ${error.message}`);
+  if (error) {
+    // 23P01: the shifts_no_overlap exclusion constraint — the DB backstop for
+    // the same-instant race the app-level check above cannot see.
+    if ((error as { code?: string }).code === '23P01') {
+      throw new ManualShiftRefusedError(
+        'overlap',
+        'These times overlap another shift for this crew member.',
+      );
+    }
+    throw new Error(`adminCreateShift: ${error.message}`);
+  }
   if (!data) throw new Error('adminCreateShift: no row returned');
   await afterManualWrite(db, {
     action: 'shift-manual-create',
@@ -478,7 +488,15 @@ export async function adminUpdateShiftTimes(input: {
     .eq('updated_at', row.updated_at)
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`adminUpdateShiftTimes: ${error.message}`);
+  if (error) {
+    if ((error as { code?: string }).code === '23P01') {
+      throw new ManualShiftRefusedError(
+        'overlap',
+        'These times overlap another shift for this crew member.',
+      );
+    }
+    throw new Error(`adminUpdateShiftTimes: ${error.message}`);
+  }
   if (!data) {
     throw new ManualShiftRefusedError(
       'edit-race',
