@@ -1266,7 +1266,14 @@ export async function dismissItem(
   }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
-  if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
+  // S75: carry WHO dismissed it and from WHICH item into the audit trail, so
+  // Settings -> Not a lead can say who silenced an address and when. Purely
+  // additive: the suppression write itself is unchanged.
+  if (c)
+    await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null], {
+      actor: operatorId,
+      inboxItemId: itemId,
+    });
   // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
   // a real lead, so any pending nag anchored to it should die with it. Only on
   // the matched (real transition) path above, never the already-dismissed no-op.
@@ -3733,7 +3740,12 @@ export async function reverseItemState(
     const dc = (
       c as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null
     )?.dashboard_contacts;
-    if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
+    if (dc)
+      await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null], {
+        actor: operatorId ?? null,
+        inboxItemId: a.inbox_item_id,
+        note: 'reversed a dismiss',
+      });
   }
 
   // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id
