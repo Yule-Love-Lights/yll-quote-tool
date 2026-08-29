@@ -37,7 +37,9 @@ export default function ReviewQueue() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
-  const [reason, setReason] = useState('');
+  // Per-item drafts (staff lens MED): acting on one row must never wipe the
+  // rejection text an admin is mid-typing on ANOTHER row.
+  const [reasons, setReasons] = useState<Record<string, string>>({});
 
   // Reload by bumping the tick — the effect owns every setState (the
   // ClockCard load-on-mount idiom, which the react lint rule accepts).
@@ -87,8 +89,13 @@ export default function ReviewQueue() {
       setError('Action failed. Try again.');
     } finally {
       setBusy(null);
-      setRejecting(null);
-      setReason('');
+      // Only the acted-on row's draft is cleared; other rows keep theirs.
+      setRejecting((current) => (current === id ? null : current));
+      setReasons((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   };
 
@@ -180,16 +187,19 @@ export default function ReviewQueue() {
                   <span className="flex items-center gap-2">
                     <input
                       autoFocus
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
+                      value={reasons[item.id] ?? ''}
+                      onChange={(e) => setReasons((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       placeholder="Why? The worker sees this."
                       className="rounded-lg border border-gray-300 px-2 py-1 text-sm"
                     />
                     <button
                       type="button"
-                      disabled={busy === item.id || !reason.trim()}
+                      disabled={busy === item.id || !(reasons[item.id] ?? '').trim()}
                       onClick={() =>
-                        void act({ action: 'reject', placementId: item.id, reason: reason.trim() }, item.id)
+                        void act(
+                          { action: 'reject', placementId: item.id, reason: (reasons[item.id] ?? '').trim() },
+                          item.id,
+                        )
                       }
                       className="rounded-full bg-red-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
                     >
@@ -197,10 +207,7 @@ export default function ReviewQueue() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setRejecting(null);
-                        setReason('');
-                      }}
+                      onClick={() => setRejecting(null)}
                       className="text-sm text-gray-500 underline"
                     >
                       cancel

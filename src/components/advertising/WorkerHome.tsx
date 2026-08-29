@@ -8,6 +8,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
+
 type Campaign = { id: string; name: string; rateCents: number };
 
 type Placement = {
@@ -71,7 +73,11 @@ export default function WorkerHome() {
         ]);
         if (cancelled) return;
         if (!cRes.ok || !pRes.ok || !eRes.ok) {
-          setLoadError('Could not load your data. Pull to refresh or try again.');
+          setLoadError(
+            cRes.status === 401 || pRes.status === 401
+              ? 'Your session expired. Reload this page to sign in again.'
+              : 'Could not load your data. Pull to refresh or try again.',
+          );
           return;
         }
         const c = (await cRes.json()) as { campaigns: Campaign[] };
@@ -130,6 +136,14 @@ export default function WorkerHome() {
     }
     setSubmitting(true);
     try {
+      // Downscale on the phone before uploading (the #186 pattern every other
+      // photo path here uses): a raw camera photo is often 4-8MB and would
+      // 413 at Vercel's ~4.5MB body cap before our route could even answer.
+      const { blob, mediaType } = await downscaleForUploadAsBlob(photo);
+      if (blob.size > MULTIPART_SIZE_LIMIT_BYTES) {
+        setSubmitError('That photo is too large even after compression. Retake it at a smaller size.');
+        return;
+      }
       const fd = new FormData();
       fd.set('campaignId', campaignId);
       fd.set('kind', kind);
@@ -137,7 +151,7 @@ export default function WorkerHome() {
       fd.set('lng', String(gps.lng));
       if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
       fd.set('capturedAt', new Date().toISOString());
-      fd.set('photo', photo);
+      fd.set('photo', blob, mediaType === 'image/png' ? 'proof.png' : 'proof.jpg');
       const res = await fetch('/api/advertising/placements', { method: 'POST', body: fd });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
@@ -156,9 +170,25 @@ export default function WorkerHome() {
     }
   };
 
+  const [resubmitting, setResubmitting] = useState<string | null>(null);
+  const [resubmitError, setResubmitError] = useState<{ id: string; message: string } | null>(null);
+
   const resubmit = async (id: string) => {
-    const res = await fetch(`/api/advertising/placements/${id}/resubmit`, { method: 'POST' });
-    if (res.ok) reload();
+    setResubmitting(id);
+    setResubmitError(null);
+    try {
+      const res = await fetch(`/api/advertising/placements/${id}/resubmit`, { method: 'POST' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setResubmitError({ id, message: body.error ?? 'Could not resubmit. Check your connection and try again.' });
+        return;
+      }
+      reload();
+    } catch {
+      setResubmitError({ id, message: 'Could not resubmit. Check your connection and try again.' });
+    } finally {
+      setResubmitting(null);
+    }
   };
 
   const selectedRate = campaigns.find((c) => c.id === campaignId)?.rateCents ?? null;
@@ -302,11 +332,15 @@ export default function WorkerHome() {
                   {p.rejectionReason && <p className="text-sm text-[#E5736F]">{p.rejectionReason}</p>}
                   <button
                     type="button"
+                    disabled={resubmitting === p.id}
                     onClick={() => void resubmit(p.id)}
-                    className="self-start rounded-full border border-white/15 px-3 py-1 text-xs text-[#C9D3CB]"
+                    className="self-start rounded-full border border-white/15 px-3 py-1 text-xs text-[#C9D3CB] disabled:opacity-60"
                   >
-                    Ask for another look
+                    {resubmitting === p.id ? 'Sending…' : 'Ask for another look'}
                   </button>
+                  {resubmitError?.id === p.id && (
+                    <p className="text-xs text-[#E5736F]">{resubmitError.message}</p>
+                  )}
                 </>
               )}
             </div>

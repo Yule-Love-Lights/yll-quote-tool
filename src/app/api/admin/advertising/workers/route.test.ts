@@ -184,3 +184,39 @@ describe('PATCH', () => {
     expect(setAdvertisingWorkerActive).toHaveBeenCalledWith('worker-1', false);
   });
 });
+
+describe('audit trail (admin lens: access grants must be reconstructable)', () => {
+  it('minting a login writes login_minted with the admin as actor', async () => {
+    await PATCH(makeReq({ workerId: 'worker-1', email: 'joe@x.com', password: 'longenough' }));
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: 'admin-1', action: 'login_minted', workerId: 'worker-1' }),
+    );
+  });
+
+  it('a password reset writes password_reset', async () => {
+    getAdvertisingWorker.mockResolvedValue({ ...WORKER, authUserId: 'auth-real' });
+    await PATCH(makeReq({ workerId: 'worker-1', password: 'newpassword' }));
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: 'admin-1', action: 'password_reset', workerId: 'worker-1' }),
+    );
+  });
+
+  it('an active toggle writes worker_active_changed with the new state', async () => {
+    await PATCH(makeReq({ workerId: 'worker-1', active: false }));
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'admin-1',
+        action: 'worker_active_changed',
+        detail: expect.objectContaining({ active: false }),
+      }),
+    );
+  });
+
+  it('a FAILED mint logs nothing', async () => {
+    createUser.mockResolvedValue({ data: null, error: { message: 'already registered' } });
+    await PATCH(makeReq({ workerId: 'worker-1', email: 'joe@x.com', password: 'longenough' }));
+    expect(logAdvertisingActivity).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'login_minted' }),
+    );
+  });
+});

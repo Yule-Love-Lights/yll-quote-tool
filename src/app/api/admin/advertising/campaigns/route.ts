@@ -7,6 +7,7 @@ import {
   listAdvertisingCampaigns,
   updateAdvertisingCampaign,
 } from '@/lib/advertising/campaigns';
+import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
 export const runtime = 'nodejs';
 
@@ -28,6 +29,24 @@ export async function GET() {
   return NextResponse.json({ campaigns });
 }
 
+/**
+ * Read rateCents STRICTLY. A rate that is present but malformed (a string
+ * like "$5.00" or "250", a float, a negative) is a hard refusal — the old
+ * typeof check silently DROPPED it, which created the campaign at the $2.50
+ * default under a success message (the staff lens HIGH on this PR: every
+ * acceptance after that stamps the wrong money).
+ */
+function readRateCents(
+  body: Record<string, unknown> | null,
+): { ok: true; value: number | undefined } | { ok: false } {
+  if (!body || !('rateCents' in body)) return { ok: true, value: undefined };
+  const v = body.rateCents;
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return { ok: true, value: v };
+  return { ok: false };
+}
+
+const BAD_RATE = 'The rate must be sent as a whole number of cents, 0 or more.';
+
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin();
   if ('response' in auth) return auth.response;
@@ -38,12 +57,20 @@ export async function POST(req: NextRequest) {
   const name = String(body?.name ?? '').trim();
   if (!name) return NextResponse.json({ error: 'Give the campaign a name.' }, { status: 400 });
 
+  const rate = readRateCents(body as Record<string, unknown> | null);
+  if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
+
   try {
     const campaign = await createAdvertisingCampaign({
       name,
       notes: typeof body?.notes === 'string' ? body.notes : null,
-      rateCents: typeof body?.rateCents === 'number' ? body.rateCents : undefined,
+      rateCents: rate.value,
       isTest: body?.isTest === true,
+    });
+    await logAdvertisingActivity({
+      actor: auth.operator.id,
+      action: 'campaign_created',
+      detail: { campaignId: campaign.id, name: campaign.name, rateCents: campaign.rateCents },
     });
     return NextResponse.json({ campaign }, { status: 201 });
   } catch (e) {
@@ -67,10 +94,13 @@ export async function PATCH(req: NextRequest) {
   const campaignId = String(body?.campaignId ?? '').trim();
   if (!campaignId) return NextResponse.json({ error: 'Choose a campaign.' }, { status: 400 });
 
+  const rate = readRateCents(body as Record<string, unknown> | null);
+  if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
+
   const patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean } = {};
   if (typeof body?.name === 'string') patch.name = body.name;
   if (typeof body?.notes === 'string' || body?.notes === null) patch.notes = body?.notes as string | null;
-  if (typeof body?.rateCents === 'number') patch.rateCents = body.rateCents;
+  if (rate.value !== undefined) patch.rateCents = rate.value;
   if (typeof body?.active === 'boolean') patch.active = body.active;
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });

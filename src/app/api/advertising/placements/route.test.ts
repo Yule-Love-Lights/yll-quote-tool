@@ -15,6 +15,7 @@ const {
   reverseGeocode,
   uploadMock,
   createSignedUrlMock,
+  removeMock,
 } = vi.hoisted(() => ({
   getAdvertisingCaller: vi.fn(),
   submitPlacement: vi.fn(),
@@ -23,6 +24,7 @@ const {
   reverseGeocode: vi.fn(),
   uploadMock: vi.fn(),
   createSignedUrlMock: vi.fn(),
+  removeMock: vi.fn(),
 }));
 
 vi.mock('@/lib/auth/advertisingAuth', async (importOriginal) => {
@@ -35,7 +37,7 @@ vi.mock('@/lib/advertising/geocode', () => ({ reverseGeocode }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
     storage: {
-      from: () => ({ upload: uploadMock, createSignedUrl: createSignedUrlMock }),
+      from: () => ({ upload: uploadMock, createSignedUrl: createSignedUrlMock, remove: removeMock }),
     },
   }),
 }));
@@ -135,12 +137,23 @@ describe('POST /api/advertising/placements — submit', () => {
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
-  it('refuses an oversized photo before uploading anything', async () => {
-    const big = new Uint8Array(13 * 1024 * 1024);
+  it('refuses a photo over the ~4MB Vercel-safe cap before uploading anything', async () => {
+    // 5MB would 413 at Vercel's ~4.5MB raw-body cap in prod — the route's own
+    // limit must sit UNDER that so the worker gets our error, not a platform
+    // 413 (the repo's #186 bug class; clientImage.ts MULTIPART_SIZE_LIMIT_BYTES).
+    const big = new Uint8Array(5 * 1024 * 1024);
     big.set([0xff, 0xd8, 0xff], 0);
     const res = await POST(makeFormReq(VALID_FIELDS, photoFile(big)));
     expect(res.status).toBe(400);
     expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the uploaded photo when the row insert fails, so no orphan lingers', async () => {
+    submitPlacement.mockRejectedValue(new Error('insert failed'));
+    const res = await POST(makeFormReq(VALID_FIELDS, photoFile()));
+    expect(res.status).toBe(500);
+    expect(removeMock).toHaveBeenCalledTimes(1);
+    expect(String(removeMock.mock.calls[0][0][0])).toMatch(/^placements\/worker-1\//);
   });
 
   it('refuses an unknown or inactive campaign', async () => {

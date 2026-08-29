@@ -70,6 +70,7 @@ export async function GET() {
 
 async function mintLogin(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  actor: string,
   workerId: string,
   displayName: string,
   email: string,
@@ -127,6 +128,14 @@ async function mintLogin(
       error: `${displayName} was saved, but the login could not be attached and was rolled back.`,
     };
   }
+  // Access grants are audit events (admin lens, this PR's review): who gave
+  // whom a way in must be reconstructable later.
+  await logAdvertisingActivity({
+    actor,
+    action: 'login_minted',
+    workerId,
+    detail: { displayName },
+  });
   return { ok: true };
 }
 
@@ -169,7 +178,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (wantsLogin) {
-      const minted = await mintLogin(sb, worker.id, worker.displayName, email, password);
+      const minted = await mintLogin(sb, auth.operator.id, worker.id, worker.displayName, email, password);
       if (!minted.ok) {
         // The worker row stands with no login — visible as "No login yet".
         return NextResponse.json({ worker, error: minted.error }, { status: minted.status });
@@ -227,6 +236,12 @@ export async function PATCH(req: NextRequest) {
         console.error('PATCH advertising workers password:', error.message);
         return NextResponse.json({ error: 'Failed to reset the password' }, { status: 500 });
       }
+      await logAdvertisingActivity({
+        actor: auth.operator.id,
+        action: 'password_reset',
+        workerId: worker.id,
+        detail: { displayName: worker.displayName },
+      });
       return NextResponse.json({ worker });
     }
 
@@ -242,7 +257,7 @@ export async function PATCH(req: NextRequest) {
           { status: 409 },
         );
       }
-      const minted = await mintLogin(sb, worker.id, worker.displayName, email, password);
+      const minted = await mintLogin(sb, auth.operator.id, worker.id, worker.displayName, email, password);
       if (!minted.ok) return NextResponse.json({ error: minted.error }, { status: minted.status });
       const fresh = await getAdvertisingWorker(worker.id);
       return NextResponse.json({ worker: fresh ?? worker });
@@ -251,6 +266,14 @@ export async function PATCH(req: NextRequest) {
     if (typeof body?.active === 'boolean') {
       const updated = await setAdvertisingWorkerActive(workerId, body.active);
       if (!updated) return NextResponse.json({ error: 'That is not an advertising worker.' }, { status: 404 });
+      // Active gates both login use and pay eligibility going forward — an
+      // audit event, same as granting access.
+      await logAdvertisingActivity({
+        actor: auth.operator.id,
+        action: 'worker_active_changed',
+        workerId: updated.id,
+        detail: { displayName: updated.displayName, active: updated.active },
+      });
       return NextResponse.json({ worker: updated });
     }
 

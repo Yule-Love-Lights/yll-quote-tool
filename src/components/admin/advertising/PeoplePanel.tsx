@@ -6,6 +6,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { dollarsToCents } from '@/lib/hourlyRate';
+
 type Worker = {
   id: string;
   displayName: string;
@@ -111,15 +113,34 @@ export default function PeoplePanel() {
     }
   };
 
+  // THE RATE IS MONEY, and it stamps permanently onto every acceptance after
+  // it. Two guards (staff lens HIGH on this PR): dollarsToCents does exact
+  // string parsing ("$2.50", "2.5", "2" all fine; "abc", "2.505" refused —
+  // never a float multiply, never a silent drop), and a confirm dialog echoes
+  // the parsed amount in dollars, so "250" meaning $2.50 dies at "pay $250.00
+  // per sign?" instead of in a worker's pay.
+  const parseRate = (raw: string): number | null => {
+    const cents = dollarsToCents(raw);
+    if (cents === null) {
+      setError('Enter the rate in dollars, like 2.50.');
+      return null;
+    }
+    return cents;
+  };
+
   const addCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
-    const rate = Math.round(Number(newCampaignRate) * 100);
+    const rateCents = parseRate(newCampaignRate);
+    if (rateCents === null) return;
+    if (!window.confirm(`Create "${newCampaignName.trim()}" paying ${dollars(rateCents)} per accepted yard sign?`)) {
+      return;
+    }
     const ok = await call('/api/admin/advertising/campaigns', 'POST', {
       name: newCampaignName,
-      rateCents: Number.isFinite(rate) ? rate : undefined,
+      rateCents,
     });
     if (ok) {
-      setNotice(`${newCampaignName.trim()} created.`);
+      setNotice(`${newCampaignName.trim()} created at ${dollars(rateCents)} per accepted yard sign.`);
       setNewCampaignName('');
       setNewCampaignRate('2.50');
     }
@@ -131,15 +152,16 @@ export default function PeoplePanel() {
       (campaign.rateCents / 100).toFixed(2),
     );
     if (raw === null) return;
-    const rate = Math.round(Number(raw) * 100);
-    if (!Number.isFinite(rate) || rate < 0) {
-      setError('Enter a dollar amount like 2.50.');
+    const rateCents = parseRate(raw);
+    if (rateCents === null) return;
+    if (!window.confirm(`Change "${campaign.name}" from ${dollars(campaign.rateCents)} to ${dollars(rateCents)} per accepted yard sign?`)) {
       return;
     }
-    await call('/api/admin/advertising/campaigns', 'PATCH', {
+    const ok = await call('/api/admin/advertising/campaigns', 'PATCH', {
       campaignId: campaign.id,
-      rateCents: rate,
+      rateCents,
     });
+    if (ok) setNotice(`${campaign.name} now pays ${dollars(rateCents)} per accepted yard sign.`);
   };
 
   const mintLogin = async (worker: Worker) => {
@@ -179,6 +201,9 @@ export default function PeoplePanel() {
               <span className={`font-medium ${w.active ? 'text-gray-900' : 'text-gray-400 line-through'}`}>
                 {w.displayName}
               </span>
+              {w.isTest && (
+                <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700">test</span>
+              )}
               <span className="text-sm text-gray-500">
                 {w.hasLogin ? (w.email ?? 'has a login') : 'No login yet'}
               </span>
@@ -233,6 +258,9 @@ export default function PeoplePanel() {
               <span className={`font-medium ${c.active ? 'text-gray-900' : 'text-gray-400 line-through'}`}>
                 {c.name}
               </span>
+              {c.isTest && (
+                <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700">test</span>
+              )}
               <span className="text-sm text-gray-500">{dollars(c.rateCents)} per accepted yard sign</span>
               <span className="ml-auto flex gap-2 text-sm">
                 <button type="button" onClick={() => void editRate(c)} className="underline text-gray-600">

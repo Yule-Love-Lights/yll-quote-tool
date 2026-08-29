@@ -6,6 +6,7 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getAdvertisingCampaign } from '@/lib/advertising/campaigns';
 import { listPlacements, submitPlacement, type PlacementStatus } from '@/lib/advertising/placements';
 import { reverseGeocode } from '@/lib/advertising/geocode';
+import { MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 
 export const runtime = 'nodejs';
 
@@ -25,7 +26,11 @@ export const runtime = 'nodejs';
  * status; admin review has its own door under /api/admin/advertising).
  */
 
-const PHOTO_MAX_BYTES = 12 * 1024 * 1024;
+// ~4MB, headroom under Vercel's ~4.5MB raw-body cap — a bigger limit here
+// would 413 at the PLATFORM before this route's error message could run (the
+// repo's #186 bug class). The capture UI downscales before uploading, so a
+// real phone photo lands well under this.
+const PHOTO_MAX_BYTES = MULTIPART_SIZE_LIMIT_BYTES;
 const SIGNED_URL_SECONDS = 60 * 60;
 const BUCKET = 'advertising-proof';
 
@@ -102,7 +107,7 @@ export async function POST(req: NextRequest) {
   }
   if (photo.size > PHOTO_MAX_BYTES) {
     return NextResponse.json(
-      { error: 'That photo is too large (12MB max). Use your camera\'s smaller size and retake it.' },
+      { error: 'That photo is too large (4MB max). Retake it with your camera set to a smaller size.' },
       { status: 400 },
     );
   }
@@ -148,6 +153,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ placement }, { status: 201 });
   } catch (e) {
     console.error('POST /api/advertising/placements:', e instanceof Error ? e.message : e);
+    // The row never landed, so the uploaded proof is an orphan — remove it
+    // best-effort rather than letting failed retries pile files into the
+    // bucket that nothing references.
+    try {
+      await sb.storage.from(BUCKET).remove([photoPath]);
+    } catch (cleanupError) {
+      console.error('POST /api/advertising/placements orphan cleanup:', cleanupError);
+    }
     return NextResponse.json({ error: 'The placement could not be saved. Try again.' }, { status: 500 });
   }
 }
