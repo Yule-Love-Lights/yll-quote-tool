@@ -267,6 +267,33 @@ describe('OfficeTasksCard — initial static render', () => {
     expect(html).not.toContain('See all tasks');
   });
 
+  it('the card offers a one-click route to History, which slimming it had cost', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('href="/tasks?view=history"');
+    expect(html).toContain('>History<');
+  });
+
+  it('the page opens on History when asked, and defaults its sort to recently finished', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" initialView="history" />);
+    // The History heading, not the working-list one.
+    expect(html).toContain('Completed &amp; dismissed');
+    expect(html).not.toContain('New tasks are due 24 hours after creation');
+  });
+
+  it('the page still defaults to the working list with no initialView', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(html).toContain('Open work');
+    expect(html).not.toContain('Completed &amp; dismissed');
+  });
+
+  it('the CARD ignores initialView, because it has no history view to open', () => {
+    // Defence against a future caller passing it through by habit: the card
+    // would otherwise render a history heading with no way back.
+    const html = renderToStaticMarkup(<OfficeTasksCard initialView="history" />);
+    expect(html).not.toContain('Completed &amp; dismissed');
+    expect(html).toContain('Open work');
+  });
+
   it('caps the card at a few tasks, which is the whole reason the page exists', () => {
     expect(CARD_TASK_LIMIT).toBeGreaterThan(0);
     expect(CARD_TASK_LIMIT).toBeLessThan(10);

@@ -245,12 +245,20 @@ async function requestTasks(view: ViewMode): Promise<TaskLoadResult> {
   }
 }
 
-export default function OfficeTasksCard({ variant = 'card' }: { variant?: Variant } = {}) {
+export default function OfficeTasksCard({
+  variant = 'card',
+  initialView = 'active',
+}: { variant?: Variant; initialView?: ViewMode } = {}) {
   const isPage = variant === 'page';
-  const [view, setView] = useState<ViewMode>('active');
+  // initialView lets /tasks?view=history open straight on History, which is
+  // what the dashboard card's History link uses. The card itself never has a
+  // history view, so it ignores anything but 'active'.
+  const [view, setView] = useState<ViewMode>(isPage ? initialView : 'active');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
-  const [sort, setSort] = useState<SortMode>('due');
+  // Same defaulting rule changeView applies, so landing on History directly
+  // reads in the same order as clicking through to it.
+  const [sort, setSort] = useState<SortMode>(isPage && initialView === 'history' ? 'resolved' : 'due');
   const [tasks, setTasks] = useState<OfficeTask[] | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [loadMessage, setLoadMessage] = useState('Loading tasks…');
@@ -937,6 +945,18 @@ export default function OfficeTasksCard({ variant = 'card' }: { variant?: Varian
           {(tasks?.length ?? 0) > CARD_TASK_LIMIT ? (
             <span style={{ color: 'var(--op-text-dim)' }}> ({(tasks?.length ?? 0) - CARD_TASK_LIMIT} more not shown)</span>
           ) : null}
+          {/* Premerge staff-lens MED, Naldo's call 2026-08-29: slimming the
+              card moved "what did we already finish" from one click to two
+              plus a page load. This link puts it back at one, landing on the
+              History tab directly rather than on the page's default view. */}
+          <span style={{ color: 'var(--op-text-dim)' }}> &middot; </span>
+          <Link
+            href="/tasks?view=history"
+            className="font-semibold underline"
+            style={{ color: 'var(--brand-evergreen-3)' }}
+          >
+            History
+          </Link>
         </p>
       ) : null}
 
