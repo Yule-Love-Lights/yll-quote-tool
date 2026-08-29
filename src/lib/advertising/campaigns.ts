@@ -11,6 +11,7 @@ import { logAdvertisingActivity } from '@/lib/advertising/activity';
 export type AdvertisingCampaign = {
   id: string;
   name: string;
+  kind: 'yard_sign' | 'door_hanger';
   notes: string | null;
   rateCents: number;
   active: boolean;
@@ -22,6 +23,7 @@ export type AdvertisingCampaign = {
 type Row = {
   id: string;
   name: string;
+  kind: 'yard_sign' | 'door_hanger';
   notes: string | null;
   rate_cents: number;
   active: boolean;
@@ -30,7 +32,7 @@ type Row = {
   updated_at: string;
 };
 
-const SELECT = 'id, name, notes, rate_cents, active, is_test, created_at, updated_at';
+const SELECT = 'id, name, kind, notes, rate_cents, active, is_test, created_at, updated_at';
 
 export const DEFAULT_PHOTO_RATE_CENTS = 250;
 
@@ -38,6 +40,7 @@ function toCampaign(row: Row): AdvertisingCampaign {
   return {
     id: row.id,
     name: row.name,
+    kind: row.kind,
     notes: row.notes,
     rateCents: row.rate_cents,
     active: row.active,
@@ -49,12 +52,13 @@ function toCampaign(row: Row): AdvertisingCampaign {
 
 function assertValidRateCents(rateCents: number): void {
   if (!Number.isInteger(rateCents) || rateCents < 0) {
-    throw new Error(`Invalid rate: ${rateCents} — the per-sign rate must be a non-negative integer number of cents`);
+    throw new Error(`Invalid rate: ${rateCents} — the per-photo rate must be a non-negative integer number of cents`);
   }
 }
 
 export async function createAdvertisingCampaign(input: {
   name: string;
+  kind?: 'yard_sign' | 'door_hanger';
   notes?: string | null;
   rateCents?: number;
   isTest?: boolean;
@@ -71,6 +75,7 @@ export async function createAdvertisingCampaign(input: {
     .from('advertising_campaigns')
     .insert({
       name,
+      kind: input.kind ?? 'yard_sign',
       notes: input.notes?.trim() || null,
       rate_cents: rateCents,
       is_test: input.isTest ?? false,
