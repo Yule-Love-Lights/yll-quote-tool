@@ -30,10 +30,16 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Could not resubmit';
     // The data layer names the state it refused; that is a conflict, not a crash.
-    const conflict = /is '|only rejected/.test(message);
+    const conflict = /is '|only rejected|voided/.test(message);
     console.error('POST /api/advertising/placements/[id]/resubmit:', message);
     return NextResponse.json(
-      { error: conflict ? 'Only a rejected placement can be resubmitted.' : 'Could not resubmit. Try again.' },
+      {
+        error: conflict
+          ? /voided/.test(message)
+            ? 'This placement was voided by the office and cannot be resubmitted. Take a fresh photo if the sign still stands.'
+            : 'Only a rejected placement can be resubmitted.'
+          : 'Could not resubmit. Try again.',
+      },
       { status: conflict ? 409 : 500 },
     );
   }
