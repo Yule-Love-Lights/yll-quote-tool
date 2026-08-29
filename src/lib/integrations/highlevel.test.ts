@@ -20,6 +20,7 @@ import {
   sendSms,
   updateOpportunity,
   getContactInternal,
+  getGhlUser,
   HighLevelError,
 } from './highlevel';
 import type { HighLevelContact, HighLevelOpportunity } from './types';
@@ -60,6 +61,48 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
     // valorVault.test.ts's own afterEach) — guards the new ghlFetch timeout
     // tests below from leaking fake timers into later tests in this file.
     vi.useRealTimers();
+  });
+
+  describe('getGhlUser (rep-assignment ruling, calls_merge_plan_2026-08.md)', () => {
+    it('resolves email + name (firstName/lastName join) from GET /users/{userId}', async () => {
+      const fetchMock = mockFetchCapture({ email: 'rep@x.com', firstName: 'Jane', lastName: 'Rep' });
+      const result = await getGhlUser('ghl-user-1');
+
+      expect(result).toEqual({ email: 'rep@x.com', name: 'Jane Rep' });
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toContain('/users/ghl-user-1');
+    });
+
+    it('prefers an explicit name field over the firstName/lastName join', async () => {
+      mockFetchOnce({ email: 'rep@x.com', firstName: 'Jane', lastName: 'Rep', name: 'J. Rep (Display)' });
+      const result = await getGhlUser('ghl-user-1');
+      expect(result.name).toBe('J. Rep (Display)');
+    });
+
+    it('resolves a null name when neither name nor firstName/lastName is present', async () => {
+      mockFetchOnce({ email: 'rep@x.com' });
+      const result = await getGhlUser('ghl-user-1');
+      expect(result).toEqual({ email: 'rep@x.com', name: null });
+    });
+
+    it('degrades to nulls on a non-OK response rather than throwing', async () => {
+      const fetchMock = vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => { throw new Error('not json'); },
+        text: async () => 'Not Found',
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getGhlUser('missing-user');
+      expect(result).toEqual({ email: null, name: null });
+    });
+
+    it('degrades to nulls when HighLevel is not configured, rather than throwing', async () => {
+      delete process.env.HIGHLEVEL_API_KEY;
+      const result = await getGhlUser('ghl-user-1');
+      expect(result).toEqual({ email: null, name: null });
+    });
   });
 
   describe('findOpportunityForContact', () => {
