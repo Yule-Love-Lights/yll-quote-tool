@@ -4435,11 +4435,16 @@ export async function renderEditor(
       const memberIds = group.memberIds;
       scene = {
         ...scene,
-        items: scene.items
+        // #13 x #240 (fix round): if this group was ever twinned onto
+        // another photo, removing it by id here leaves the twin's
+        // `linkedToId` pointing at nothing — pruneOrphanedMiniGroupsNotify
+        // now also catches THAT (not just an empty-member orphan), so route
+        // through it instead of the bare filter this used to end with.
+        items: pruneOrphanedMiniGroupsNotify(scene.items
           .filter((i) => i.id !== group.id)
           // #240: a member can be a strand OR a scattershot — clear groupId on
           // either kind (mirrors groupSelectedMini's own kind check).
-          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
+          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i))),
       };
       selectedIds = new Set(memberIds); // keep members selected → the right panel returns
       scheduleSave();

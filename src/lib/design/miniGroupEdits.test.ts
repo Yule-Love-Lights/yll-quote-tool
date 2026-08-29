@@ -566,13 +566,17 @@ describe('twinMiniGroupAt', () => {
     expect(twinGroup).not.toHaveProperty('photoId');
   });
 
-  // Build brief constraint 4: a twinned group must not be pruned as orphaned,
-  // and deleting a CANONICAL member's twin-half must not corrupt the OTHER
-  // group. pruneOrphanedMiniGroups counts a group's own memberIds against the
-  // GLOBAL alive-strand/area id set, so the twin group (with its own
-  // memberIds pointing at its own twin members) survives independently of
-  // the canonical group's members.
-  it('survives pruneOrphanedMiniGroups as long as its OWN twinned members are alive', () => {
+  // Build brief constraint 4, UPDATED by the fix-round coordinator: this test
+  // originally asserted the twin group SURVIVES a direct (un-cascaded) removal
+  // of its canonical — that was the row-1 HIGH the fix round closed. A direct
+  // filter-by-id removal of the canonical (mirroring Ungroup / the strand-row
+  // x button / a yardstick-cascade delete, none of which check for twins) now
+  // leaves the twin group's `linkedToId` dangling, and pruneOrphanedMiniGroups
+  // (sceneTypes.ts) has been taught to catch exactly that: it removes any item
+  // whose linkedToId no longer resolves, group or not, and clears groupId on
+  // any surviving member of a removed group so it reads as a plain standalone
+  // item rather than secretly still tagged to a defunct group.
+  it('a TWIN group does not survive when its canonical is removed by a DIRECT (un-cascaded) delete — the row-1 fix', () => {
     const original = scene([
       strand('m1', { groupId: 'g1', points: [0, 0, 20, 0] }),
       strand('m2', { groupId: 'g1', points: [0, 30, 20, 30] }),
@@ -585,16 +589,25 @@ describe('twinMiniGroupAt', () => {
     });
     const stamped = result!.scene;
 
-    // Delete the CANONICAL members (and the canonical group, mirroring
-    // editor.ts's deleteSelected — which the brief says to check but not
-    // necessarily fix if broken independently of this change).
+    // Remove the CANONICAL group by id directly (Ungroup's exact shape) —
+    // no twin-aware cascade, just like Ungroup/strand-row-delete/yardstick-
+    // delete. The canonical MEMBERS are left alive here on purpose: this
+    // isolates "canonical group gone, canonical members untouched" from the
+    // deleteSelected whole-selection case (already covered elsewhere), which
+    // cascades member deletion to twins independently of this rule.
     const afterDelete = pruneOrphanedMiniGroups(
-      stamped.items.filter((i) => i.id !== 'm1' && i.id !== 'm2' && i.id !== 'g1'),
+      stamped.items.filter((i) => i.id !== 'g1'),
     );
 
-    // The twin group is untouched — its own members (result.memberIds) are
-    // still present, so it is not orphaned by the canonical group's deletion.
-    expect(afterDelete.find((i) => i.id === result!.groupId)).toBeDefined();
-    expect(result!.memberIds.every((id) => afterDelete.some((i) => i.id === id))).toBe(true);
+    // The twin group is GONE — its canonical no longer exists.
+    expect(afterDelete.find((i) => i.id === result!.groupId)).toBeUndefined();
+    // Its own members survive (their geometry/photo still matter — they
+    // still render), but standalone: groupId cleared, not left pointing at
+    // a group that no longer exists.
+    for (const id of result!.memberIds) {
+      const member = afterDelete.find((i) => i.id === id) as StrandItem | undefined;
+      expect(member).toBeDefined();
+      expect(member!.groupId).toBeUndefined();
+    }
   });
 });

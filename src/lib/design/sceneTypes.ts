@@ -446,16 +446,62 @@ export function isMiniGroupable(item: SceneItem): item is StrandItem | MiniAreaI
 // `memberIds` (never produced by the editor's own grouping flow, which
 // requires >=2 selected members) is also left alone — this only targets the
 // "used to have members, now has none" case.
+//
+// #13 x #240 (fix round on twin-group-stamp-and-ordinals, item 1): a
+// TWINNED group's canonical can vanish through a path that never touches
+// this group's OWN members at all — Ungroup filters the canonical group out
+// by id directly, a single strand's "x" delete button and both yardstick-
+// cascade deletes remove specific ids with no twin-awareness — so the
+// member-survival check above can never see it (the twin group's own
+// members are still alive; only its CANONICAL died). Left alone, the twin
+// keeps rendering forever with a `linkedToId` pointing at nothing, and is
+// unreachable as a unit (its own geometry-less group entry can never be
+// selected once its canonical is gone). Rather than teach every deletion
+// call site to also check "is this id someone's twin's canonical" (the
+// class of bug AGENTS.md calls "patch the call sites" — every NEW deletion
+// path would need to remember it too), this function is the single
+// choke-point already invoked by every one of those call sites (verified:
+// deleteSelected, the strand-row × button, both yardstick-delete-strands
+// paths, and seedFromAnalysis's re-analyze all call this), so teaching IT
+// the invariant "a linkedToId must resolve to a real item" fixes every
+// consumer for free — the one exception was Ungroup, which called nothing;
+// it now calls this too (editor.ts's Ungroup handler).
+//
+// This applies to ANY twin, not just groups — a single-item twin whose
+// canonical died via one of those same un-cascaded paths was equally
+// orphaned before this fix (just invisible, since #227's own rule only ever
+// inspected miniGroup items). Removing a dangling TWIN GROUP can leave its
+// own members alive with a `groupId` now pointing at nothing; those get
+// `groupId` cleared so they read as ordinary standalone items (mirrors what
+// Ungroup already does for the CANONICAL side) rather than secretly still
+// tagged to a group that no longer exists.
 export function pruneOrphanedMiniGroups(items: SceneItem[]): SceneItem[] {
   // #240: a group's members can be strands AND/OR miniAreas — count both as
   // "still alive" so a mixed group isn't wrongly pruned when only its strand
   // members survive (or vice versa).
   const memberIds = new Set(items.filter((i) => isStrand(i) || isMiniArea(i)).map((i) => i.id));
-  return items.filter((item) => {
+  const afterOrphanPrune = items.filter((item) => {
     if (!isMiniGroup(item)) return true;
     if (item.memberIds.length === 0) return true;
     return item.memberIds.some((id) => memberIds.has(id));
   });
+
+  const idsPresent = new Set(afterOrphanPrune.map((i) => i.id));
+  const danglingIds = new Set(
+    afterOrphanPrune.filter((i) => i.linkedToId && !idsPresent.has(i.linkedToId)).map((i) => i.id),
+  );
+  if (danglingIds.size === 0) return afterOrphanPrune;
+
+  const removedGroupIds = new Set(
+    afterOrphanPrune.filter((i) => danglingIds.has(i.id) && isMiniGroup(i)).map((i) => i.id),
+  );
+  return afterOrphanPrune
+    .filter((i) => !danglingIds.has(i.id))
+    .map((i) =>
+      (isStrand(i) || isMiniArea(i)) && i.groupId && removedGroupIds.has(i.groupId)
+        ? { ...i, groupId: undefined }
+        : i,
+    );
 }
 
 // #741 defect 1 (round 2): drop every item tagged to `photoId` (plus any
