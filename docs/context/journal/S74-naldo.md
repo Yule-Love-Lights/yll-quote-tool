@@ -136,9 +136,10 @@ span including the concurrent #1063 merge. Verdict CONCERNS: 1 MED, 1 LOW, 0
 HIGH. The MED was a real cross-PR find nobody's per-PR round could see: a
 FUTURE-dated manual shift (an admin date typo) would silently block that crew
 member's every organic clock-in (clockIn inserts now-to-infinity, collides
-with the future row on the new constraint, dies as a generic error). Fixed
-same close in PR #1066: manual entries reconstruct the past, so a future
-clock-out now refuses plainly; negative-controlled. The LOW (a backdated
+with the future row on the new constraint, dies as a generic error). The fix shipped
+same close as PR #1069 (manual entries reconstruct the past, so a future
+clock-out or keep-open clock-in refuses plainly; negative-controlled) and
+waits for Naldo's merge-go. The LOW (a backdated
 clock-in can mislabel a forgotten_clock_out exception's hint text) is accepted
 as cosmetic. #1063 itself checked clean against this session's diffs: it
 writes no shifts rows, the classifier never branches on manual_by, and
