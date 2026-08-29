@@ -7,8 +7,15 @@
 // therefore keep the retry key alive) plus the display formatting, and a
 // static-render smoke check on the initial (loading) paint.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+// The page variant syncs the view to the URL, so the component now calls
+// next/navigation hooks. Same mock shape OperatorNav.test.tsx uses.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: () => {}, push: () => {}, refresh: () => {} }),
+  usePathname: () => '/tasks',
+}));
 import OfficeTasksCard, {
   applyTaskViewControls,
   assignedLabel,
@@ -17,6 +24,7 @@ import OfficeTasksCard, {
   isAmbiguousMutationFailure,
   personalLabel,
   resolvedTimeFor,
+  sortDefaultFor,
   sourceFilterLabel,
   sourceLabel,
 } from './OfficeTasksCard';
@@ -96,6 +104,25 @@ describe('personalLabel ("everything is shared" ruling)', () => {
   it('shows no personal badge for a non-manual task -- sourceLabel covers those instead', () => {
     expect(personalLabel('call_commitment', null)).toBeNull();
     expect(personalLabel('quote_tool', 'Jason')).toBeNull();
+  });
+});
+
+describe('sortDefaultFor', () => {
+  // One function answers for all three paths that need a default (first
+  // render, a tab click, and a URL that changed underneath us), so they cannot
+  // drift apart. That equivalence is the premerge technical lens's central
+  // question, and this is what makes it true by construction.
+  it('gives the working list soonest-due', () => {
+    expect(sortDefaultFor('active')).toBe('due');
+  });
+
+  it('gives History most-recently-finished', () => {
+    expect(sortDefaultFor('history')).toBe('resolved');
+  });
+
+  it('is a pure mapping, so landing by link and clicking the tab cannot disagree', () => {
+    expect(sortDefaultFor('history')).toBe(sortDefaultFor('history'));
+    expect(sortDefaultFor('active')).not.toBe(sortDefaultFor('history'));
   });
 });
 
@@ -265,6 +292,37 @@ describe('OfficeTasksCard — initial static render', () => {
     expect(html).toContain('Open work');
     // and does not link to itself
     expect(html).not.toContain('See all tasks');
+  });
+
+  it('the card offers a one-click route to History, which slimming it had cost', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('href="/tasks?view=history"');
+    expect(html).toContain('>History<');
+  });
+
+  it('the page opens on History when asked', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" initialView="history" />);
+    // The History heading, not the working-list one. This says nothing about
+    // the SORT: the static render is still in its loading state, so the sort
+    // control has not rendered yet. sortDefaultFor is tested directly below,
+    // which is what the premerge technical lens caught this test overclaiming
+    // (deleting the sort logic entirely left all 39 tests passing).
+    expect(html).toContain('Completed &amp; dismissed');
+    expect(html).not.toContain('New tasks are due 24 hours after creation');
+  });
+
+  it('the page still defaults to the working list with no initialView', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(html).toContain('Open work');
+    expect(html).not.toContain('Completed &amp; dismissed');
+  });
+
+  it('the CARD ignores initialView, because it has no history view to open', () => {
+    // Defence against a future caller passing it through by habit: the card
+    // would otherwise render a history heading with no way back.
+    const html = renderToStaticMarkup(<OfficeTasksCard initialView="history" />);
+    expect(html).not.toContain('Completed &amp; dismissed');
+    expect(html).toContain('Open work');
   });
 
   it('caps the card at a few tasks, which is the whole reason the page exists', () => {
