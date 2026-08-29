@@ -12,6 +12,12 @@
 -- existing row and every future one; consent is recorded deliberately, per
 -- quote, by a person, and the timestamp is the record of when.
 --
+-- ⛔ JASON'S RULING, 2026-08-29: NOTHING IS PLANNED TO BE WRITTEN HERE. The
+-- runner stays unarmed and he collects the remaining installments by hand, so
+-- this column is expected to stay NULL on every row indefinitely. It is not a
+-- checklist item waiting to be ticked; it is the last gate if the business ever
+-- changes its mind. The two conditions below still bind if that day comes.
+--
 -- ⚠️ TWO THINGS MUST SHIP BEFORE ANY VALUE IS WRITTEN HERE (premerge customer
 -- lens on PR #1051 — both are real and both are recorded in the ledger):
 --   1. The customer's own figures must move when an installment is collected.

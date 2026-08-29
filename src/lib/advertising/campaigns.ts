@@ -2,14 +2,16 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
 // Campaign rate config is MONEY: rate_cents is the CURRENT
-// per-accepted-yard-sign rate (default 250 = $2.50, Naldo 2026-08-27). It is
-// read at acceptance time and stamped onto the placement
-// (accepted_rate_cents); changing it here affects FUTURE acceptances only —
-// pay history never moves.
+// per-accepted-PHOTO rate (default 250 = $2.50; per-photo basis is Naldo's
+// 2026-08-29 ruling — the campaign's name says whether the photos are yard
+// signs or door hangers). It is read at acceptance time and stamped onto the
+// placement (accepted_rate_cents); changing it here affects FUTURE
+// acceptances only — pay history never moves.
 
 export type AdvertisingCampaign = {
   id: string;
   name: string;
+  kind: 'yard_sign' | 'door_hanger';
   notes: string | null;
   rateCents: number;
   active: boolean;
@@ -21,6 +23,7 @@ export type AdvertisingCampaign = {
 type Row = {
   id: string;
   name: string;
+  kind: 'yard_sign' | 'door_hanger';
   notes: string | null;
   rate_cents: number;
   active: boolean;
@@ -29,14 +32,15 @@ type Row = {
   updated_at: string;
 };
 
-const SELECT = 'id, name, notes, rate_cents, active, is_test, created_at, updated_at';
+const SELECT = 'id, name, kind, notes, rate_cents, active, is_test, created_at, updated_at';
 
-export const DEFAULT_YARD_SIGN_RATE_CENTS = 250;
+export const DEFAULT_PHOTO_RATE_CENTS = 250;
 
 function toCampaign(row: Row): AdvertisingCampaign {
   return {
     id: row.id,
     name: row.name,
+    kind: row.kind,
     notes: row.notes,
     rateCents: row.rate_cents,
     active: row.active,
@@ -48,12 +52,13 @@ function toCampaign(row: Row): AdvertisingCampaign {
 
 function assertValidRateCents(rateCents: number): void {
   if (!Number.isInteger(rateCents) || rateCents < 0) {
-    throw new Error(`Invalid rate: ${rateCents} — the per-sign rate must be a non-negative integer number of cents`);
+    throw new Error(`Invalid rate: ${rateCents} — the per-photo rate must be a non-negative integer number of cents`);
   }
 }
 
 export async function createAdvertisingCampaign(input: {
   name: string;
+  kind?: 'yard_sign' | 'door_hanger';
   notes?: string | null;
   rateCents?: number;
   isTest?: boolean;
@@ -63,13 +68,14 @@ export async function createAdvertisingCampaign(input: {
 
   const name = input.name.trim();
   if (!name) throw new Error('createAdvertisingCampaign: name is required');
-  const rateCents = input.rateCents ?? DEFAULT_YARD_SIGN_RATE_CENTS;
+  const rateCents = input.rateCents ?? DEFAULT_PHOTO_RATE_CENTS;
   assertValidRateCents(rateCents);
 
   const { data, error } = await db
     .from('advertising_campaigns')
     .insert({
       name,
+      kind: input.kind ?? 'yard_sign',
       notes: input.notes?.trim() || null,
       rate_cents: rateCents,
       is_test: input.isTest ?? false,

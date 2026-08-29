@@ -27,13 +27,25 @@
 //   3. An explicit `dryRun: false` on an operator-triggered run. A cron run
 //      carries no body, so for a cron the flag in (2) is the whole switch.
 // And one more, outside this file: NOTHING IS SCHEDULED. `vercel.json` has no
-// entry for this route on purpose (Jason's call 2026-08-28 — dry-run first, no
-// cron armed until he says so). Arming it is one line there plus flag (2).
+// entry for this route, on purpose.
 //
-// DO NOT ARM UNTIL LEDGER ROW 446 SHIPS. When a charge lands but recording it
-// fails, the payment has to be recorded by hand — and `markInstallmentPaid` has
-// no caller anywhere in the app yet, so today the recovery is a developer
-// editing the database. Premerge staff lens, PR #1051.
+// ⛔ JASON'S RULING, 2026-08-29: THIS STAYS UNARMED. Not "until we are ready" —
+// he keeps collecting the remaining installments BY HAND, and this exists for
+// whenever the business wants it later. Do not add the cron, do not set the
+// flags, and do not write a consent timestamp, without him saying so in those
+// words. Three customers are on plans and he sends each a pay link himself on
+// the day it falls due.
+//
+// IF THAT EVER CHANGES, these are the preconditions, and they are real:
+//   • Ledger row 450 — collecting an installment moves `quotes.deposit_amount_usd`
+//     and NOT the frozen `approval_snapshot.customerSelection.currentDepositUsd`,
+//     so the customer's portal card and Quote PDF keep showing the pre-payment
+//     balance for ever.
+//   • Ledger row 451 — a charged customer is told NOTHING. No email, no SMS, no
+//     portal change; Valor's `receiptUrl` is read and discarded. Their first
+//     signal would be their bank statement.
+// Both are dormant only because nothing charges automatically. Arming this
+// without them turns two latent bugs into live ones on real customers.
 //
 // WHY THE ORDER REF IS `inst_` AND NOT `bal_`: the Valor webhook matches
 // `bal_<quoteId>` and settles the WHOLE linked invoice as paid. Tagging a $453

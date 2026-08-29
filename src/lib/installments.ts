@@ -58,7 +58,17 @@ export type InstallmentPlan = {
   planTotal: number;
   planPaid: number;
   planOutstanding: number;
-  /** collected − planPaid: what was taken up front, before the schedule began. */
+  /** collected − planPaid: what was taken up front, before the schedule began.
+   *
+   *  KNOWN AND ACCEPTED (Jason, 2026-08-29): this is DERIVED, so anything the
+   *  customer paid that is not one of the scheduled amounts lands here. Jane
+   *  Laguerre reads $2,733.75 where she actually paid a $2,718.75 deposit — the
+   *  extra $15.00 is the late fee that rode inside her second installment
+   *  payment ($468.13 for a $453.13 instalment) and has nowhere else to live.
+   *  Her COLLECTED total and everything derived from it are exactly right; only
+   *  the split between "deposit" and "instalments" is off by that fee. Left
+   *  alone deliberately rather than modelling fees, which would be a schema
+   *  change for one $15 line. */
   initialDeposit: number;
   /** Whether the customer has a card on file to charge. The TOKEN itself is
    *  deliberately not carried here — this shape is returned verbatim by

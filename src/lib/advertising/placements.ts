@@ -2,15 +2,18 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
-// Placements: one row per yard sign (or door hanger) placed, plus the review
-// transitions and the earnings math. The money rules (Naldo 2026-08-27, do
-// not reopen): $2.50 per ACCEPTED yard sign, stamped onto the placement at
-// acceptance (accepted_rate_cents) so later rate changes never move history;
-// pending and rejected placements never count for pay; a
-// rejected-then-resubmitted-then-accepted placement pays exactly once; door
-// hangers are modeled but pay for them is PERMANENTLY EXCLUDED until Naldo
-// approves a rule. The same rules exist as CHECK constraints in
-// migrations/2026-08-28-advertising-schema.sql; the guards here are the
+// Placements: one row per yard sign (or door hanger batch) placed, plus the
+// review transitions and the earnings math. The money rules (Naldo
+// 2026-08-27, pay basis updated by Naldo 2026-08-29): the campaign rate is
+// paid PER ACCEPTED PHOTO, whatever the kind — the campaign's NAME says
+// whether it is a yard-sign or door-hanger campaign, and the kind on the row
+// records which it was. The rate is stamped at acceptance
+// (accepted_rate_cents) so later rate changes never move history; pending
+// and rejected placements never count for pay; a
+// rejected-then-resubmitted-then-accepted placement pays exactly once.
+// (The original door-hangers-never-pay exclusion was SUPERSEDED by the
+// 2026-08-29 per-photo ruling.) The same rules exist as CHECK constraints
+// (migrations/2026-08-29-pay-per-photo.sql); the guards here are the
 // data-layer mirror so a bad call fails with a named message instead of a
 // raw 23514.
 
@@ -33,6 +36,7 @@ export type AdvertisingPlacement = {
   neighborhood: string | null;
   propertyId: string | null;
   rejectionReason: string | null;
+  workerNote: string | null;
   acceptedRateCents: number | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -57,6 +61,7 @@ type Row = {
   neighborhood: string | null;
   property_id: string | null;
   rejection_reason: string | null;
+  worker_note: string | null;
   accepted_rate_cents: number | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -66,7 +71,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
+  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
 
 function toPlacement(row: Row): AdvertisingPlacement {
   return {
@@ -85,6 +90,7 @@ function toPlacement(row: Row): AdvertisingPlacement {
     neighborhood: row.neighborhood,
     propertyId: row.property_id,
     rejectionReason: row.rejection_reason,
+    workerNote: row.worker_note,
     acceptedRateCents: row.accepted_rate_cents,
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
@@ -166,6 +172,7 @@ export async function submitPlacement(input: {
   route?: string | null;
   neighborhood?: string | null;
   propertyId?: string | null;
+  workerNote?: string | null;
   isTest?: boolean;
 }): Promise<AdvertisingPlacement> {
   const db = getSupabaseServiceClient();
@@ -199,6 +206,7 @@ export async function submitPlacement(input: {
       route: input.route?.trim() || null,
       neighborhood: input.neighborhood?.trim() || null,
       property_id: input.propertyId ?? null,
+      worker_note: input.workerNote?.trim() || null,
       is_test: input.isTest ?? false,
     })
     .select(SELECT)
@@ -218,8 +226,9 @@ export async function submitPlacement(input: {
 }
 
 /**
- * Accept a placement, stamping the campaign's CURRENT rate onto it (yard
- * signs only — door hangers accept with no rate, permanently unpaid).
+ * Accept a placement, stamping the campaign's CURRENT rate onto it — per
+ * accepted PHOTO, any kind (Naldo 2026-08-29; the campaign name says what
+ * the photo is).
  *
  * The status filter (`in ('pending','resubmitted')`) is a compare-and-swap:
  * a concurrent or retried accept matches no row, and the recovery path
@@ -244,22 +253,21 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     throw new Error('acceptPlacement: placement has no proof photo, so it cannot be accepted');
   }
 
-  let acceptedRateCents: number | null = null;
-  if (row.kind === 'yard_sign') {
-    const { data: campaign, error: campaignError } = await db
-      .from('advertising_campaigns')
-      .select('id, rate_cents')
-      .eq('id', row.campaign_id)
-      .maybeSingle();
-    if (campaignError || !campaign) {
-      throw new Error(`acceptPlacement: could not read campaign rate: ${campaignError?.message ?? 'campaign missing'}`);
-    }
-    const rate = (campaign as { rate_cents: number }).rate_cents;
-    if (!Number.isInteger(rate) || rate < 0) {
-      throw new Error(`acceptPlacement: campaign rate ${String(rate)} is not a valid cent amount`);
-    }
-    acceptedRateCents = rate;
+  // Per accepted PHOTO, any kind (Naldo 2026-08-29): every acceptance stamps
+  // the campaign's current rate.
+  const { data: campaign, error: campaignError } = await db
+    .from('advertising_campaigns')
+    .select('id, rate_cents')
+    .eq('id', row.campaign_id)
+    .maybeSingle();
+  if (campaignError || !campaign) {
+    throw new Error(`acceptPlacement: could not read campaign rate: ${campaignError?.message ?? 'campaign missing'}`);
   }
+  const rate = (campaign as { rate_cents: number }).rate_cents;
+  if (!Number.isInteger(rate) || rate < 0) {
+    throw new Error(`acceptPlacement: campaign rate ${String(rate)} is not a valid cent amount`);
+  }
+  const acceptedRateCents = rate;
 
   const { data, error } = await db
     .from('advertising_placements')
@@ -409,12 +417,12 @@ export function etWeekStartKey(d: Date): string {
  * Pure earnings math over placement rows — exported so the money rules are
  * testable with no database in the loop.
  *
- * Earned: accepted YARD SIGNS only, at the STAMPED accepted_rate_cents,
- * bucketed by the ET day/week of reviewed_at (pay accrues at acceptance).
- * Pending estimate: pending + resubmitted yard signs at the campaign's
- * CURRENT rate, bucketed by captured_at (falling back to created_at).
- * Nothing else ever counts: rejected rows, door hangers (permanently
- * unpaid), and is_test rows all contribute zero.
+ * Earned: ACCEPTED placements of any kind (per accepted photo, Naldo
+ * 2026-08-29), at the STAMPED accepted_rate_cents, bucketed by the ET
+ * day/week of reviewed_at (pay accrues at acceptance). Pending estimate:
+ * pending + resubmitted placements at the campaign's CURRENT rate, bucketed
+ * by captured_at (falling back to created_at). Rejected rows and is_test
+ * rows contribute zero.
  */
 export function summarizeEarnings(
   placements: AdvertisingPlacement[],
@@ -440,8 +448,8 @@ export function summarizeEarnings(
     if (p.isTest) continue;
 
     // Every real placement mints its worker's summary entry, so a worker
-    // whose rows are all door hangers or rejections still shows up with
-    // zeros instead of silently vanishing from their own earnings view.
+    // whose rows are all rejections still shows up with zeros instead of
+    // silently vanishing from their own earnings view.
     let acc = byWorker.get(p.workerId);
     if (!acc) {
       acc = {
@@ -451,8 +459,6 @@ export function summarizeEarnings(
       };
       byWorker.set(p.workerId, acc);
     }
-
-    if (p.kind !== 'yard_sign') continue; // door hangers: permanently unpaid
 
     let earned = 0;
     let estimated = 0;
@@ -493,6 +499,51 @@ export function summarizeEarnings(
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([weekStart, b]) => ({ weekStart, ...b })),
     }));
+}
+
+/** PURE: door hangers placed per worker (ops suggestions round; written
+ * under the old never-pays rule, kept under pay-per-photo 2026-08-29
+ * because the visibility question survives the rule change: the count shows
+ * whether workers log door hangers at all, independent of the money
+ * figures they now also appear in). Test rows count for nothing, same as
+ * everywhere else. */
+export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const p of placements) {
+    if (p.isTest || p.kind !== 'door_hanger') continue;
+    out.set(p.workerId, (out.get(p.workerId) ?? 0) + 1);
+  }
+  return out;
+}
+
+/** Door hangers placed per worker, PAGED to completeness — both premerge
+ * lenses on the ops-polish PR caught the first cut riding listPlacements'
+ * bounded newest-first 500, where the count silently drifts (even DOWN) as
+ * other workers submit. Reads only worker_id with the predicates pushed to
+ * the server; the pure countDoorHangersByWorker above stays as the tested
+ * pin of the counting rules (door hangers only, test rows never count). */
+export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
+  const db = getSupabaseServiceClient();
+  if (!db) return new Map();
+  const out = new Map<string, number>();
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await db
+      .from('advertising_placements')
+      .select('worker_id')
+      .eq('kind', 'door_hanger')
+      .eq('is_test', false)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) {
+      console.error('doorHangerCountsByWorker error:', error);
+      return new Map(); // fail empty, never a partial count dressed as truth
+    }
+    const rows = (data ?? []) as { worker_id: string }[];
+    for (const r of rows) out.set(r.worker_id, (out.get(r.worker_id) ?? 0) + 1);
+    if (rows.length < PAGE_SIZE) break;
+  }
+  return out;
 }
 
 /** Per-worker earnings: pending estimated cents and accepted earned cents,
@@ -543,4 +594,85 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   }
 
   return summarizeEarnings(placements, rateByCampaign);
+}
+
+// --- Simple Crew replica additions (Naldo, 2026-08-29) ------------------------
+
+/**
+ * The worker's own per-photo note ("Take a note..." in the capture queue).
+ * Ownership is enforced IN the write (`worker_id` filter), so a forged id
+ * for someone else's placement matches nothing and returns null. Any status:
+ * a note is commentary, never money. Pass null to clear.
+ */
+export async function updatePlacementNote(
+  id: string,
+  workerId: string,
+  note: string | null,
+): Promise<AdvertisingPlacement | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const trimmed = note?.trim() || null;
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({ worker_note: trimmed })
+    .eq('id', id.trim())
+    .eq('worker_id', workerId)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`updatePlacementNote: ${error.message}`);
+  return data ? toPlacement(data as Row) : null;
+}
+
+export type CampaignActivity = {
+  campaignId: string;
+  photoCount: number;
+  workerCount: number;
+  lastPhotoAt: string | null;
+  /** Non-test placements awaiting review (pending + resubmitted). */
+  pendingCount: number;
+};
+
+/**
+ * Per-campaign activity for the Campaigns cards ("Last photo 19 minutes
+ * ago", photo count, distinct-worker count). Non-test placements only, so
+ * fixtures never inflate the cards. Campaigns are few; placements per
+ * campaign are read shallowly (newest first) just for the header numbers.
+ */
+export async function campaignActivitySummary(campaignIds: string[]): Promise<Map<string, CampaignActivity>> {
+  const out = new Map<string, CampaignActivity>();
+  const db = getSupabaseServiceClient();
+  if (!db) return out;
+
+  await Promise.all(
+    campaignIds.map(async (campaignId) => {
+      const { count, error: countError } = await db
+        .from('advertising_placements')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId)
+        .eq('is_test', false);
+      if (countError) console.error('campaignActivitySummary count error:', countError);
+
+      const { data: rows, error: rowsError } = await db
+        .from('advertising_placements')
+        .select('worker_id, created_at, status')
+        .eq('campaign_id', campaignId)
+        .eq('is_test', false)
+        .order('created_at', { ascending: false })
+        .range(0, 999);
+      if (rowsError) console.error('campaignActivitySummary rows error:', rowsError);
+      const list = (rows ?? []) as { worker_id: string; created_at: string; status: string }[];
+
+      out.set(campaignId, {
+        campaignId,
+        photoCount: count ?? list.length,
+        workerCount: new Set(list.map((r) => r.worker_id)).size,
+        lastPhotoAt: list[0]?.created_at ?? null,
+        // The cross-campaign "where is review needed" signal (admin lens,
+        // PR #1078): the cards badge this so nobody opens every campaign
+        // hunting for pending photos.
+        pendingCount: list.filter((r) => r.status === 'pending' || r.status === 'resubmitted').length,
+      });
+    }),
+  );
+  return out;
 }

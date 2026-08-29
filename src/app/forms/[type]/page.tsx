@@ -41,19 +41,27 @@ export default async function FormEmbedPage({
   const compact = (sp.compact === '1' || sp.compact === 'true') && formType === 'newsletter';
 
   return (
-    <main
-      style={{
-        margin: 0,
-        // No padding: the reported height measures the FORM, so any padding on
-        // this wrapper is height the parent frame never accounts for, and the
-        // form ends up with its own scrollbar inside the embed (the nomination
-        // form overflowed by exactly this 8px). Spacing around the form belongs
-        // to the page doing the embedding, not to the embed.
-        padding: 0,
-        background: 'transparent',
-      }}
-    >
-      <SiteForm formType={formType} formVariant={formVariant} theme={theme} compact={compact} />
-    </main>
+    <>
+      {/* These routes exist to be iframed. The root layout paints the operator
+          surface's cream background onto <body>, and that cream showed through
+          the embed, so the dark theme's white text sat on a near-white field
+          and the email placeholder was invisible in the site footer. The host
+          page's background is the background. */}
+      <style>{'body.operator-surface { background: transparent; }'}</style>
+      <main
+        style={{
+          margin: 0,
+          // No padding: the reported height measures the FORM, so any padding
+          // on this wrapper is height the parent frame never accounts for, and
+          // the form ends up with its own scrollbar inside the embed (the
+          // nomination form overflowed by exactly this 8px). Spacing around the
+          // form belongs to the page doing the embedding, not to the embed.
+          padding: 0,
+          background: 'transparent',
+        }}
+      >
+        <SiteForm formType={formType} formVariant={formVariant} theme={theme} compact={compact} />
+      </main>
+    </>
   );
 }

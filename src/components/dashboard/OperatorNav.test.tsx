@@ -73,12 +73,16 @@ describe('OperatorNav — Schedule nav item (Naldo, 2026-08-27)', () => {
 
 describe('OperatorNav — admin View-as control (ops hub workstream A slice 2)', () => {
   it('does not render the View-as control before the session check resolves (unknown is not admin)', () => {
-    // The role arrives from GET /api/auth/session in an effect this static
-    // render never runs, so this pins the safe default: a plain operator, a
-    // signed-out browser, and the pre-fetch state all see no View-as control.
-    // The admin-positive branch is covered at component level in
-    // ViewAsControl.test.tsx (same reason the Sign-out flip is not asserted
-    // here: no DOM environment to resolve the effect in).
+    // The role arrives from GET /api/auth/session (or the localStorage hint)
+    // in effects this static render never runs, so this pins the safe
+    // default: a plain operator, a signed-out browser, and the pre-role
+    // state all see no View-as control, only the plain Sign-out button. The
+    // admin-positive branch (the slot swapping to the header menu) is not
+    // statically reachable — it is covered by ViewAsMenu.test.tsx at
+    // component level plus the PR's browser leg, which drives the swap,
+    // the dropdown contents, and the 1024px fit with a stubbed admin
+    // session (same reason the Sign-out flip is not asserted here: no DOM
+    // environment to resolve the effects in).
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     expect(html).not.toContain('View as');
   });
@@ -103,7 +107,7 @@ describe('OperatorNav — advertising view (View-as wiring, 2026-08-29)', () => 
     );
     expect(html).toContain('href="/admin/advertising"');
     expect(html).toContain('href="/admin/advertising/pay"');
-    expect(html).toContain('href="/admin/advertising/people"');
+    expect(html).toContain('href="/admin/advertising/crew"');
     // Office items are gone in this view.
     expect(html).not.toContain('href="/inbox"');
     // Review lights alone (one area per page; the Jobs/Fleet co-lighting class).
