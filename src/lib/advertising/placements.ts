@@ -5,9 +5,10 @@ import { logAdvertisingActivity } from '@/lib/advertising/activity';
 // Placements: one row per yard sign (or door hanger batch) placed, plus the
 // review transitions and the earnings math. The money rules (Naldo
 // 2026-08-27, pay basis updated by Naldo 2026-08-29): the campaign rate is
-// paid PER ACCEPTED PHOTO, whatever the kind — the campaign's NAME says
-// whether it is a yard-sign or door-hanger campaign, and the kind on the row
-// records which it was. The rate is stamped at acceptance
+// paid PER ACCEPTED PHOTO, whatever the kind. The campaign carries its own
+// `kind` column (yard_sign | door_hanger) and the placement takes its kind
+// from THAT, never from the request body; the campaign's name is how a human
+// tells the campaigns apart, not how the code decides. The rate is stamped at acceptance
 // (accepted_rate_cents) so later rate changes never move history; pending
 // and rejected placements never count for pay; a
 // rejected-then-resubmitted-then-accepted placement pays exactly once.

@@ -280,8 +280,15 @@ export default function CampaignDetailScreen({
                             : { background: STATUS_CHIP[p.status].bg, color: STATUS_CHIP[p.status].fg }
                         }
                       >
+                        {/* The money suffix is gated on voidedAt too, not just
+                            the label above it: a voided-accepted row rendered
+                            "Voided · $2.50" because this second conditional
+                            was left untouched when the label was fixed. */}
                         {p.voidedAt ? 'Voided' : STATUS_CHIP[p.status].text}
-                        {p.status === 'accepted' && p.acceptedRateCents !== null && ` · ${dollars(p.acceptedRateCents)}`}
+                        {!p.voidedAt &&
+                          p.status === 'accepted' &&
+                          p.acceptedRateCents !== null &&
+                          ` · ${dollars(p.acceptedRateCents)}`}
                       </span>
                       <DotsIcon size={20} className="shrink-0" />
                     </div>
