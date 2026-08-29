@@ -6,9 +6,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { submitAcceptedPlacement, getAdvertisingCampaign, reverseGeocode, computePhotoHash, uploadMock, removeMock } =
+const { submitAcceptedPlacement, findAcceptedByPhotoHash, getAdvertisingCampaign, reverseGeocode, computePhotoHash, uploadMock, removeMock } =
   vi.hoisted(() => ({
     submitAcceptedPlacement: vi.fn(),
+    findAcceptedByPhotoHash: vi.fn(),
     getAdvertisingCampaign: vi.fn(),
     reverseGeocode: vi.fn(),
     computePhotoHash: vi.fn(),
@@ -18,7 +19,7 @@ const { submitAcceptedPlacement, getAdvertisingCampaign, reverseGeocode, compute
 
 vi.mock('@/lib/advertising/placements', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/advertising/placements')>();
-  return { ...actual, submitAcceptedPlacement };
+  return { ...actual, submitAcceptedPlacement, findAcceptedByPhotoHash };
 });
 vi.mock('@/lib/advertising/campaigns', () => ({ getAdvertisingCampaign }));
 vi.mock('@/lib/advertising/geocode', () => ({ reverseGeocode }));
@@ -67,6 +68,7 @@ beforeEach(() => {
   reverseGeocode.mockResolvedValue('12 Main St, Farmingdale, NY');
   uploadMock.mockResolvedValue({ data: { path: 'x' }, error: null });
   computePhotoHash.mockResolvedValue('0f0f0f0f0f0f0f0f');
+  findAcceptedByPhotoHash.mockResolvedValue(null);
   submitAcceptedPlacement.mockImplementation(async (input: Record<string, unknown>) => ({
     id: 'p1',
     status: 'accepted',
@@ -146,5 +148,23 @@ describe('handleBulkAcceptedSubmit', () => {
   it('a test worker rides is_test through', async () => {
     await handleBulkAcceptedSubmit(makeForm(), { ...WORKER, isTest: true }, ADMIN_ID);
     expect(submitAcceptedPlacement.mock.calls[0][0].isTest).toBe(true);
+  });
+
+  it('an exact re-upload is SKIPPED, not paid twice: same hash already accepted for this worker+campaign returns duplicate, no new row, orphan removed', async () => {
+    findAcceptedByPhotoHash.mockResolvedValue({ id: 'existing-1', status: 'accepted' });
+    const res = await handleBulkAcceptedSubmit(makeForm(), WORKER, ADMIN_ID);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { duplicate?: boolean };
+    expect(body.duplicate).toBe(true);
+    expect(submitAcceptedPlacement).not.toHaveBeenCalled();
+    expect(removeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a photo whose hash could not compute still uploads (dedupe is best-effort, never a blocker)', async () => {
+    computePhotoHash.mockResolvedValue(null);
+    const res = await handleBulkAcceptedSubmit(makeForm(), WORKER, ADMIN_ID);
+    expect(res.status).toBe(201);
+    expect(findAcceptedByPhotoHash).not.toHaveBeenCalled();
+    expect(submitAcceptedPlacement).toHaveBeenCalledTimes(1);
   });
 });

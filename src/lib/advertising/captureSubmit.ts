@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getAdvertisingCampaign } from '@/lib/advertising/campaigns';
-import { submitAcceptedPlacement, submitPlacement } from '@/lib/advertising/placements';
+import { findAcceptedByPhotoHash, submitAcceptedPlacement, submitPlacement } from '@/lib/advertising/placements';
 import { reverseGeocode } from '@/lib/advertising/geocode';
 import { computePhotoHash } from '@/lib/advertising/photoHashCompute';
 import { MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
@@ -230,6 +230,23 @@ export async function handleBulkAcceptedSubmit(
   const intake = await intakeProofPhoto(sb, form, worker.id);
   if (!intake.ok) return intake.res;
   const { photoPath, photoHash } = intake;
+
+  // Dedupe (technical lens HIGH, PR #1093): re-picking a whole folder after
+  // a partial failure is the natural retry gesture, and without this every
+  // already-accepted photo would mint a SECOND paid row. Exact hash match
+  // for this worker+campaign is skipped as a duplicate; the just-uploaded
+  // copy is removed so storage holds one proof per pay row.
+  if (photoHash) {
+    const existing = await findAcceptedByPhotoHash(worker.id, campaignId, photoHash);
+    if (existing) {
+      try {
+        await sb.storage.from(BUCKET).remove([photoPath]);
+      } catch (cleanupError) {
+        console.error('bulk upload duplicate cleanup:', cleanupError);
+      }
+      return NextResponse.json({ duplicate: true, placement: existing }, { status: 200 });
+    }
+  }
 
   const suggestedAddress = lat !== null && lng !== null ? await reverseGeocode(lat, lng) : null;
 

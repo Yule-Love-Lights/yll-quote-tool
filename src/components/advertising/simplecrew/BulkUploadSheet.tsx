@@ -11,13 +11,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { PrimaryButton, SC, Sheet } from './ui';
+import { dollars, PrimaryButton, SC, Sheet } from './ui';
 
-type Campaign = { id: string; name: string; kind: 'yard_sign' | 'door_hanger' };
+type Campaign = { id: string; name: string; kind: 'yard_sign' | 'door_hanger'; rateCents: number };
 
 type FileResult = {
   name: string;
-  status: 'waiting' | 'uploading' | 'done' | 'failed';
+  status: 'waiting' | 'uploading' | 'done' | 'skipped' | 'failed' | 'canceled';
   hasGps: boolean;
   error?: string;
 };
@@ -41,6 +41,18 @@ export default function BulkUploadSheet({
   const [results, setResults] = useState<FileResult[]>([]);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef(false);
+
+  // A mid-batch navigation kills the remaining uploads silently while the
+  // finished ones stay paid; warn, same as the camera does while uploading.
+  useEffect(() => {
+    if (!busy) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [busy]);
 
   useEffect(() => {
     if (!open) return;
@@ -62,7 +74,20 @@ export default function BulkUploadSheet({
 
   const upload = async () => {
     const files = Array.from(fileRef.current?.files ?? []);
-    if (!campaignId || files.length === 0 || busy) return;
+    const campaign = campaigns.find((c) => c.id === campaignId);
+    if (!campaign || files.length === 0 || busy) return;
+    // The money echo (admin lens: one click pays the whole batch): name the
+    // worker, the campaign, the per-photo rate and the total before anything
+    // uploads.
+    const total = dollars(campaign.rateCents * files.length);
+    if (
+      !window.confirm(
+        `Upload ${files.length} photo${files.length === 1 ? '' : 's'} for ${workerName} under "${campaign.name}"? Each pays ${dollars(campaign.rateCents)} right away (${total} total). Exact duplicates are skipped automatically, and a wrong accept can be undone on the campaign page.`,
+      )
+    ) {
+      return;
+    }
+    cancelRef.current = false;
     setBusy(true);
     setResults(files.map((f) => ({ name: f.name, status: 'waiting', hasGps: false })));
 
@@ -76,6 +101,20 @@ export default function BulkUploadSheet({
 
     for (let i = 0; i < files.length; i += 1) {
       const file = files[i];
+      if (cancelRef.current) {
+        setAt(i, { status: 'canceled' });
+        continue;
+      }
+      // iPhones default to HEIC, which Chrome and Firefox cannot decode, so
+      // the compressor would pass raw bytes the server rightly refuses. Say
+      // what to do instead of failing with a format list.
+      if (/\.(heic|heif)$/i.test(file.name) || file.type === 'image/heic' || file.type === 'image/heif') {
+        setAt(i, {
+          status: 'failed',
+          error: 'iPhone HEIC photo. Upload from your phone instead, or convert it to JPEG first.',
+        });
+        continue;
+      }
       setAt(i, { status: 'uploading' });
       try {
         // EXIF first: compression re-encodes and strips it.
@@ -84,7 +123,13 @@ export default function BulkUploadSheet({
         let takenAt: string | null = null;
         try {
           const gps = await exifr.gps(file);
-          if (gps && Number.isFinite(gps.latitude) && Number.isFinite(gps.longitude)) {
+          if (
+            gps &&
+            Number.isFinite(gps.latitude) &&
+            Number.isFinite(gps.longitude) &&
+            // Exact 0,0 is the classic scrubbed-EXIF value, not a real pin.
+            !(gps.latitude === 0 && gps.longitude === 0)
+          ) {
             lat = gps.latitude;
             lng = gps.longitude;
           }
@@ -108,9 +153,11 @@ export default function BulkUploadSheet({
         fd.set('photo', blob, 'backfill.jpg');
 
         const res = await fetch('/api/admin/advertising/placements/bulk', { method: 'POST', body: fd });
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        const body = (await res.json().catch(() => ({}))) as { error?: string; duplicate?: boolean };
         if (!res.ok) {
           setAt(i, { status: 'failed', error: body.error ?? 'Upload failed.' });
+        } else if (body.duplicate) {
+          setAt(i, { status: 'skipped', hasGps: lat !== null });
         } else {
           setAt(i, { status: 'done', hasGps: lat !== null });
         }
@@ -118,12 +165,16 @@ export default function BulkUploadSheet({
         setAt(i, { status: 'failed', error: 'Could not read or send this file.' });
       }
     }
+    // Clear the selection so re-clicking Upload cannot resend the same
+    // batch; the results list stays on screen as the record.
+    if (fileRef.current) fileRef.current.value = '';
     setBusy(false);
     onDone();
   };
 
   const doneCount = results.filter((r) => r.status === 'done').length;
-  const failCount = results.filter((r) => r.status === 'failed').length;
+  const skippedCount = results.filter((r) => r.status === 'skipped').length;
+  const failCount = results.filter((r) => r.status === 'failed' || r.status === 'canceled').length;
   const finished = results.length > 0 && !busy;
 
   return (
@@ -172,6 +223,8 @@ export default function BulkUploadSheet({
                   {r.status === 'waiting' && 'waiting'}
                   {r.status === 'uploading' && 'uploading…'}
                   {r.status === 'done' && (r.hasGps ? 'done, on the map' : 'done, no location in file')}
+                  {r.status === 'skipped' && 'already uploaded, skipped'}
+                  {r.status === 'canceled' && 'canceled'}
                   {r.status === 'failed' && (r.error ?? 'failed')}
                 </span>
               </div>
@@ -181,14 +234,30 @@ export default function BulkUploadSheet({
 
         {finished && (
           <p className="mt-3 text-sm" style={{ color: failCount > 0 ? SC.danger : SC.ok }}>
-            {doneCount} uploaded and accepted{failCount > 0 ? `, ${failCount} failed (fix and re-pick just those files)` : '.'}
+            {doneCount} uploaded and accepted
+            {skippedCount > 0 ? `, ${skippedCount} skipped as already uploaded` : ''}
+            {failCount > 0 ? `, ${failCount} did not land (re-pick just those files)` : '.'}
           </p>
         )}
 
-        <div className="mt-5">
-          <PrimaryButton disabled={busy || !campaignId} onClick={() => void upload()}>
-            {busy ? `Uploading ${results.filter((r) => r.status !== 'waiting').length}/${results.length}…` : 'Upload and accept'}
-          </PrimaryButton>
+        <div className="mt-5 flex gap-3">
+          {busy && (
+            <button
+              type="button"
+              onClick={() => {
+                cancelRef.current = true;
+              }}
+              className="min-h-[52px] flex-1 rounded-full border px-4 text-lg font-semibold"
+              style={{ borderColor: SC.danger, color: SC.danger }}
+            >
+              Stop after this photo
+            </button>
+          )}
+          <div className="flex-1">
+            <PrimaryButton disabled={busy || !campaignId} onClick={() => void upload()}>
+              {busy ? `Uploading ${results.filter((r) => r.status !== 'waiting').length}/${results.length}…` : 'Upload and accept'}
+            </PrimaryButton>
+          </div>
         </div>
       </div>
     </Sheet>

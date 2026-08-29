@@ -14,6 +14,7 @@ const {
   listPlacements,
   acceptPlacement,
   rejectPlacement,
+  unacceptPlacement,
   listAdvertisingWorkers,
   listAdvertisingCampaigns,
   createSignedUrlMock,
@@ -22,6 +23,7 @@ const {
   listPlacements: vi.fn(),
   acceptPlacement: vi.fn(),
   rejectPlacement: vi.fn(),
+  unacceptPlacement: vi.fn(),
   listAdvertisingWorkers: vi.fn(),
   listAdvertisingCampaigns: vi.fn(),
   createSignedUrlMock: vi.fn(),
@@ -33,7 +35,7 @@ vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
 });
 vi.mock('@/lib/advertising/placements', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/advertising/placements')>();
-  return { ...actual, listPlacements, acceptPlacement, rejectPlacement };
+  return { ...actual, listPlacements, acceptPlacement, rejectPlacement, unacceptPlacement };
 });
 vi.mock('@/lib/advertising/workers', () => ({ listAdvertisingWorkers }));
 vi.mock('@/lib/advertising/campaigns', () => ({ listAdvertisingCampaigns }));
@@ -148,6 +150,15 @@ describe('POST accept / reject', () => {
     const ok = await POST(makeReq({ action: 'reject', placementId: 'p1', reason: 'blurry photo' }));
     expect(ok.status).toBe(200);
     expect(rejectPlacement).toHaveBeenCalledWith('p1', 'admin-1', 'blurry photo');
+  });
+
+  it('unaccept requires a reason and calls the data layer with the ADMIN session id', async () => {
+    unacceptPlacement.mockResolvedValue({ id: 'p1', status: 'rejected', acceptedRateCents: null });
+    expect((await POST(makeReq({ action: 'unaccept', placementId: 'p1', reason: '  ' }))).status).toBe(400);
+    expect(unacceptPlacement).not.toHaveBeenCalled();
+    const ok = await POST(makeReq({ action: 'unaccept', placementId: 'p1', reason: 'wrong campaign' }));
+    expect(ok.status).toBe(200);
+    expect(unacceptPlacement).toHaveBeenCalledWith('p1', 'admin-1', 'wrong campaign');
   });
 
   it('surfaces a data-layer state refusal as 409, not 500', async () => {

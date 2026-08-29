@@ -6,6 +6,7 @@ import {
   acceptPlacement,
   listPlacements,
   rejectPlacement,
+  unacceptPlacement,
   type AdvertisingPlacement,
 } from '@/lib/advertising/placements';
 import { listAdvertisingWorkers } from '@/lib/advertising/workers';
@@ -126,6 +127,23 @@ export async function POST(req: NextRequest) {
         );
       }
       const placement = await rejectPlacement(placementId, adminId, reason);
+      return NextResponse.json({ placement });
+    }
+
+    if (action === 'unaccept') {
+      // The undo lever for a wrong accept (bulk-upload mistakes most of
+      // all). The stamped rate is cleared and the row lands rejected; the
+      // reason is required because the worker sees it.
+      const placementId = String(body?.placementId ?? '').trim();
+      const reason = String(body?.reason ?? '').trim();
+      if (!placementId) return NextResponse.json({ error: 'placementId is required' }, { status: 400 });
+      if (!reason) {
+        return NextResponse.json(
+          { error: 'A reason is required. The worker sees it.' },
+          { status: 400 },
+        );
+      }
+      const placement = await unacceptPlacement(placementId, adminId, reason);
       return NextResponse.json({ placement });
     }
 

@@ -189,7 +189,7 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
                   )}
                   <div className="flex items-center justify-between px-4 py-2.5">
                     <span className="truncate text-sm" style={{ color: SC.muted }}>
-                      {p.suggestedAddress ?? 'Location recorded'}
+                      {p.suggestedAddress ?? (p.lat !== null ? 'Location recorded' : 'No location in this photo')}
                     </span>
                     <StatusChip p={p} />
                   </div>

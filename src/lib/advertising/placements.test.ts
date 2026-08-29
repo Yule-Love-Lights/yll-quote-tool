@@ -675,7 +675,7 @@ describe('earnings math', () => {
     expect(mine?.total.pendingEstimatedCents).toBe(250);
   });
 
-  it('groups earned cents by ET day and Monday-start ET week (DST-safe calendar math)', async () => {
+  it('groups earned cents by ET day and Monday-start ET week (DST-safe calendar math, capturedAt first)', async () => {
     const { earningsSummary } = await import('./placements');
     const campaign = seedCampaign({ rate_cents: 250 });
     const worker = seedWorker();
@@ -686,7 +686,8 @@ describe('earnings math', () => {
       status: 'accepted',
       accepted_rate_cents: 250,
       reviewed_by: REVIEWER,
-      reviewed_at: '2026-08-24T03:30:00.000Z',
+      captured_at: '2026-08-24T03:30:00.000Z',
+      reviewed_at: '2026-08-24T12:00:00.000Z',
     });
     // 2026-08-24T12:00Z is 2026-08-24 08:00 ET — MONDAY, week of Mon 2026-08-24.
     seedPlacement({
@@ -694,6 +695,7 @@ describe('earnings math', () => {
       status: 'accepted',
       accepted_rate_cents: 250,
       reviewed_by: REVIEWER,
+      captured_at: '2026-08-24T12:00:00.000Z',
       reviewed_at: '2026-08-24T12:00:00.000Z',
     });
     // Pending sign captured the same Monday: estimated in that day/week bucket.
@@ -814,5 +816,122 @@ describe('submitAcceptedPlacement (admin bulk upload — lands PAID, so every gu
     const { submitAcceptedPlacement } = await import('./placements');
     const p = await submitAcceptedPlacement({ ...base(), lat: null, lng: null, isTest: true });
     expect(p.isTest).toBe(true);
+  });
+});
+
+describe('unacceptPlacement (the undo lever for a wrong accept, admin lens HIGH on PR #1093)', () => {
+  it('moves an accepted row to rejected, CLEARS the stamped rate, records reason and reviewer', async () => {
+    const { unacceptPlacement } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+
+    const undone = await unacceptPlacement(String(p.id), REVIEWER, 'uploaded to the wrong campaign');
+    expect(undone.status).toBe('rejected');
+    expect(undone.acceptedRateCents).toBeNull();
+    expect(undone.rejectionReason).toBe('uploaded to the wrong campaign');
+    expect(undone.reviewedBy).toBe(REVIEWER);
+  });
+
+  it('requires a reason', async () => {
+    const { unacceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: 'x' });
+    await expect(unacceptPlacement(String(p.id), REVIEWER, '   ')).rejects.toThrow(/reason/i);
+  });
+
+  it('a retried unaccept returns the already-rejected row unchanged (pays-zero stays pays-zero)', async () => {
+    const { unacceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: 'x' });
+    await unacceptPlacement(String(p.id), REVIEWER, 'mistake');
+    const again = await unacceptPlacement(String(p.id), REVIEWER, 'mistake');
+    expect(again.status).toBe('rejected');
+    expect(again.acceptedRateCents).toBeNull();
+  });
+
+  it('refuses to touch a pending row: unaccept exists for accepted rows only', async () => {
+    const { unacceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'pending' });
+    await expect(unacceptPlacement(String(p.id), REVIEWER, 'mistake')).rejects.toThrow(/accepted/i);
+  });
+});
+
+describe('findAcceptedByPhotoHash (bulk dedupe, technical lens HIGH on PR #1093)', () => {
+  it('finds an accepted row with the same hash for the same worker and campaign', async () => {
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+      photo_hash: 'aaaa111122223333',
+    });
+    const hit = await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'aaaa111122223333');
+    expect(hit?.photoHash).toBe('aaaa111122223333');
+  });
+
+  it('a different worker, different campaign, non-accepted status, or null hash never matches', async () => {
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'pending', photo_hash: 'aaaa111122223333' });
+    expect(await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'aaaa111122223333')).toBeNull();
+    expect(await findAcceptedByPhotoHash('other-worker', String(campaign.id), 'aaaa111122223333')).toBeNull();
+    expect(await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), null)).toBeNull();
+  });
+});
+
+describe('earnings bucket by the day the work HAPPENED (capturedAt first; Naldo date-taken ruling, PR #1093)', () => {
+  it('a backfilled accepted photo lands in its historical week, not the upload week', async () => {
+    const { earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-29T18:00:00.000Z',
+      captured_at: '2026-07-01T15:00:00.000Z',
+    });
+    const summaries = await earningsSummary();
+    const mine = summaries.find((s) => s.workerId === worker.id);
+    expect(mine?.byWeek).toEqual([{ weekStart: '2026-06-29', pendingEstimatedCents: 0, acceptedEarnedCents: 250 }]);
+  });
+
+  it('an accepted row with no capturedAt still buckets by review time (nothing vanishes)', async () => {
+    const { earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T12:00:00.000Z',
+      captured_at: null,
+    });
+    const summaries = await earningsSummary();
+    const mine = summaries.find((s) => s.workerId === worker.id);
+    expect(mine?.byWeek).toEqual([{ weekStart: '2026-08-24', pendingEstimatedCents: 0, acceptedEarnedCents: 250 }]);
+    expect(mine?.total.acceptedEarnedCents).toBe(250);
   });
 });

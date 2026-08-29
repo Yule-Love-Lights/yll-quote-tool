@@ -310,6 +310,26 @@ export default function CampaignDetailScreen({
                           </div>
                         );
                       })()}
+                      {mode === 'admin' && p.status === 'accepted' && (
+                        <div className="mt-1">
+                          <button
+                            type="button"
+                            disabled={busy === p.id}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                'Undo this accept? The stamped pay is removed and the photo lands rejected with this reason (the worker sees it):',
+                                'accepted by mistake',
+                              );
+                              if (reason === null || !reason.trim()) return;
+                              void act({ action: 'unaccept', placementId: p.id, reason: reason.trim() }, p.id);
+                            }}
+                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Undo accept (removes the pay)
+                          </button>
+                        </div>
+                      )}
                       {mode === 'admin' && (p.status === 'pending' || p.status === 'resubmitted') && (
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <button

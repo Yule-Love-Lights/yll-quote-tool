@@ -232,6 +232,88 @@ export async function submitPlacement(input: {
 }
 
 /**
+ * Bulk-upload dedupe (technical lens HIGH, PR #1093): an exact re-upload of
+ * an already-accepted photo must never mint a second paid row. Exact hash
+ * equality only (never the hamming-distance similarity the review flags
+ * use), scoped to the same worker and campaign. Best-effort: a null hash
+ * matches nothing, and a read error reports null rather than blocking the
+ * upload path.
+ */
+export async function findAcceptedByPhotoHash(
+  workerId: string,
+  campaignId: string,
+  photoHash: string | null,
+): Promise<AdvertisingPlacement | null> {
+  if (!photoHash) return null;
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('advertising_placements')
+    .select(SELECT)
+    .eq('worker_id', workerId.trim())
+    .eq('campaign_id', campaignId.trim())
+    .eq('status', 'accepted')
+    .eq('photo_hash', photoHash)
+    .maybeSingle();
+  if (error) {
+    console.error('findAcceptedByPhotoHash error:', error);
+    return null;
+  }
+  return data ? toPlacement(data as Row) : null;
+}
+
+/**
+ * The undo lever for a wrong accept (admin lens HIGH, PR #1093: a bulk
+ * batch to the wrong worker or campaign had no in-app recovery). Moves an
+ * ACCEPTED row to rejected with a required reason, CLEARING the stamped
+ * rate (the rate_only_when_accepted CHECK demands it, and rejected rows
+ * pay zero by the earnings rules). CAS on status='accepted'; a retried
+ * unaccept finds the row already rejected and returns it unchanged.
+ */
+export async function unacceptPlacement(id: string, reviewedBy: string, reason: string): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) throw new Error('unacceptPlacement: a reason is required');
+  const placementId = id.trim();
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({
+      status: 'rejected',
+      accepted_rate_cents: null,
+      rejection_reason: trimmedReason,
+      reviewed_by: reviewedBy,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq('id', placementId)
+    .eq('status', 'accepted')
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`unacceptPlacement: ${error.message}`);
+
+  if (!data) {
+    const current = await getPlacementRow(db, placementId);
+    if (!current) throw new Error(`unacceptPlacement: no placement found for id ${placementId}`);
+    if (current.status === 'rejected') return toPlacement(current); // idempotent retry
+    throw new Error(
+      `unacceptPlacement: placement is '${current.status}', not accepted: nothing to undo`,
+    );
+  }
+
+  const undone = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: reviewedBy,
+    action: 'unaccepted',
+    placementId: undone.id,
+    workerId: undone.workerId,
+    detail: { reason: trimmedReason },
+  });
+  return undone;
+}
+
+/**
  * Admin bulk upload (Naldo, 2026-08-29): a photo backfilled for work done
  * BEFORE the tool existed lands directly ACCEPTED, stamped with the rate
  * the caller read from the campaign at upload time and reviewed by the
@@ -557,7 +639,12 @@ export function summarizeEarnings(
     if (p.status === 'accepted') {
       if (p.acceptedRateCents == null) continue; // unstorable by CHECK; belt-and-braces
       earned = p.acceptedRateCents;
-      at = p.reviewedAt ?? p.createdAt;
+      // Bucket by the day the WORK happened (capturedAt), matching the
+      // pending buckets and Naldo's date-taken ruling for backfill (PR
+      // #1093): a photo's pay week no longer jumps when review happens,
+      // and a backfilled batch lands in its historical weeks instead of
+      // spiking the upload day. Totals are unaffected; this is grouping.
+      at = p.capturedAt ?? p.reviewedAt ?? p.createdAt;
     } else if (p.status === 'pending' || p.status === 'resubmitted') {
       estimated = currentRateCentsByCampaign.get(p.campaignId) ?? 0;
       at = p.capturedAt ?? p.createdAt;
