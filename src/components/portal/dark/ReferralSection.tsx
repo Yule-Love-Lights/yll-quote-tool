@@ -17,7 +17,7 @@ import { ReferralLinkCopy } from './ReferralLinkCopy';
 import { ReferralShareButton } from './ReferralShareButton';
 import { QrSvg } from '@/components/QrSvg';
 import { formatUsd } from '@/components/portal/format';
-import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
+import { spritzerRetailValueUsd, REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 
 export function ReferralSection({
   referralLink,
@@ -69,9 +69,10 @@ export function ReferralSection({
             enough to use it all.
           </p>
           <p className="mt-3 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
-            You are also giving your friend {formatUsd(spritzerValueUsd)} in free lighting on
-            their first booked install, {spritzerCount} staked spotlights for their yard (
-            {spritzerSizeInches}&quot; spritzers).
+            You are also giving your friend {spritzerCount} free {spritzerSizeInches}&quot;
+            spritzers on their first booked install, worth {formatUsd(spritzerValueUsd)}, or{' '}
+            {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead,
+            their choice.
           </p>
           {referralLink ? (
             <>
