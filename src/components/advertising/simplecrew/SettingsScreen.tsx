@@ -1,10 +1,10 @@
 'use client';
 
 // Settings (Simple Crew replica): sectioned rows with the outline icons —
-// Change Password, Sign Out, Contact Support — plus mode-specific rows
-// (worker: nothing else; admin: the sign-stock reconciliation lives on the
-// Crew screen, and Failed Uploads is a per-session camera concern shown in
-// the capture queue itself, so neither repeats here).
+// Change Password, Sign Out — plus mode-specific rows. No support/help
+// section on purpose (Naldo's device round, 2026-08-29: "we are the
+// support"). The admin page passes the Pay summary as topSection so pay
+// and settings are one screen, plus a back-to-the-quote-tool row.
 
 import { useState } from 'react';
 
@@ -15,10 +15,13 @@ export default function SettingsScreen({
   passwordUrl,
   logoutUrl,
   extraRows,
+  topSection,
 }: {
   passwordUrl: string;
   logoutUrl: string;
   extraRows?: { label: string; href: string }[];
+  /** Rendered under the header, above Account (the admin Pay summary). */
+  topSection?: React.ReactNode;
 }) {
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState('');
@@ -70,6 +73,8 @@ export default function SettingsScreen({
     <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>
       <ScreenHeader title="Settings" />
 
+      {topSection}
+
       <p className="px-5 pb-2 text-sm font-semibold uppercase tracking-wide" style={{ color: SC.muted }}>
         Account
       </p>
@@ -81,13 +86,6 @@ export default function SettingsScreen({
         ))}
       </div>
 
-      <p className="px-5 pb-2 pt-8 text-sm font-semibold uppercase tracking-wide" style={{ color: SC.muted }}>
-        Help
-      </p>
-      <div className="bg-white">
-        <Row label="Contact Support" icon={<MailGlyph />} href="mailto:jason@yulelovelights.com" />
-      </div>
-
       <Sheet open={pwOpen} onClose={() => setPwOpen(false)}>
         <div style={{ color: SC.text }}>
           <h2 className="text-xl font-bold">Change password</h2>
@@ -97,7 +95,7 @@ export default function SettingsScreen({
             onChange={(e) => setPw(e.target.value)}
             placeholder="New password (8+ characters)"
             className="mt-4 w-full rounded-xl border px-4 py-3 text-lg"
-            style={{ borderColor: '#DFE3DE' }}
+            style={{ borderColor: '#DCD4BE' }}
           />
           <input
             type="password"
@@ -105,7 +103,7 @@ export default function SettingsScreen({
             onChange={(e) => setPw2(e.target.value)}
             placeholder="Repeat it"
             className="mt-3 w-full rounded-xl border px-4 py-3 text-lg"
-            style={{ borderColor: '#DFE3DE' }}
+            style={{ borderColor: '#DCD4BE' }}
           />
           {pwMsg && (
             <p className="mt-3 text-sm" style={{ color: pwMsg === 'Password changed.' ? SC.ok : SC.danger }}>
@@ -125,7 +123,7 @@ export default function SettingsScreen({
 
 function Row({ label, icon, onClick, href }: { label: string; icon: React.ReactNode; onClick?: () => void; href?: string }) {
   const inner = (
-    <span className="flex w-full items-center gap-4 border-b px-5 py-4" style={{ borderColor: '#F0F2EF' }}>
+    <span className="flex w-full items-center gap-4 border-b px-5 py-4" style={{ borderColor: '#F1EBDB' }}>
       <span style={{ color: SC.primary }}>{icon}</span>
       <span className="flex-1 text-left text-lg" style={{ color: SC.text }}>
         {label}
@@ -160,9 +158,3 @@ const SignOutGlyph = () => (
   </svg>
 );
 
-const MailGlyph = () => (
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="5.5" width="18" height="13" rx="2" />
-    <path d="m4 7 8 6 8-6" />
-  </svg>
-);

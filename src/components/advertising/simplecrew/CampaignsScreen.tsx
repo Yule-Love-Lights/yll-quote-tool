@@ -144,7 +144,7 @@ export default function CampaignsScreen({
 
       {searchOpen && (
         <div className="px-5 pb-3">
-          <div className="flex items-center gap-2 rounded-full border bg-white px-4 py-3" style={{ borderColor: '#DFE3DE' }}>
+          <div className="flex items-center gap-2 rounded-full border bg-white px-4 py-3" style={{ borderColor: '#DCD4BE' }}>
             <SearchIcon size={18} className="opacity-50" />
             <input
               autoFocus
@@ -220,7 +220,7 @@ export default function CampaignsScreen({
                 {mode === 'admin' && <span className="text-sm">{dollars(c.rateCents)}/photo</span>}
               </span>
             </span>
-            <span className="shrink-0" style={{ color: '#B4BAB4' }}>
+            <span className="shrink-0" style={{ color: '#B4AC93' }}>
               <ChevronRightIcon size={22} />
             </span>
           </a>
@@ -236,7 +236,7 @@ export default function CampaignsScreen({
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               className="mt-1 w-full rounded-xl border px-4 py-3 text-lg"
-              style={{ borderColor: '#DFE3DE' }}
+              style={{ borderColor: '#DCD4BE' }}
               placeholder="Fall yard signs"
             />
           </label>
@@ -250,7 +250,7 @@ export default function CampaignsScreen({
                 style={
                   newKind === k
                     ? { background: SC.primary, borderColor: SC.primary, color: '#fff' }
-                    : { borderColor: '#DFE3DE', color: SC.text }
+                    : { borderColor: '#DCD4BE', color: SC.text }
                 }
               >
                 {k === 'yard_sign' ? 'Yard signs' : 'Door hangers'}
@@ -263,7 +263,7 @@ export default function CampaignsScreen({
               value={newRate}
               onChange={(e) => setNewRate(e.target.value)}
               className="mt-1 w-28 rounded-xl border px-4 py-3 text-lg"
-              style={{ borderColor: '#DFE3DE' }}
+              style={{ borderColor: '#DCD4BE' }}
             />
           </label>
           {createError && (

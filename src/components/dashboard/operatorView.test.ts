@@ -37,9 +37,9 @@ describe('navItemsForView', () => {
     // side lives under /admin/advertising).
     const items = navItemsForView('advertising');
     expect(items.map((i) => [i.label, i.href])).toEqual([
-      ['Review', '/admin/advertising'],
-      ['Pay', '/admin/advertising/pay'],
-      ['People', '/admin/advertising/crew'],
+      ['Campaigns', '/admin/advertising'],
+      ['Settings & pay', '/admin/advertising/settings'],
+      ['Crew', '/admin/advertising/crew'],
     ]);
     // Each item highlights alone (the Jobs-and-Fleet-lighting-together class
     // is a bug by Naldo's 2026-08-28 ruling, not an accepted cost).
