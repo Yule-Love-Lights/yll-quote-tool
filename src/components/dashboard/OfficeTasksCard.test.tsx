@@ -325,6 +325,41 @@ describe('OfficeTasksCard — initial static render', () => {
     expect(html).toContain('Open work');
   });
 
+  it('puts the add form AFTER the list on the page, so a phone and a screen reader get tasks first', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    const list = html.indexOf('office-tasks-heading');
+    const form = html.indexOf('office-task-title');
+    expect(list).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(-1);
+    // The grid lifts the form into the right column at lg; below that it falls
+    // where the DOM puts it, which must be below the tasks.
+    expect(html).toContain('lg:col-start-2');
+    expect(html).toContain('lg:row-start-2');
+  });
+
+  it('keeps the add form BEFORE the list on the card, which is how the dashboard has always read', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    const form = html.indexOf('office-task-title');
+    const seeAll = html.indexOf('See all tasks');
+    expect(form).toBeGreaterThan(-1);
+    expect(seeAll).toBeGreaterThan(form);
+    // No grid placement leaks onto the dashboard.
+    expect(html).not.toContain('lg:col-start-2');
+  });
+
+  it('the page does not paint a second "Open work" heading, because the tab already says it', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    // The heading still exists, for the region's accessible name, but hidden.
+    expect(html).toMatch(/id="office-tasks-heading"[^>]*class="sr-only"|class="sr-only"[^>]*id="office-tasks-heading"/);
+  });
+
+  it('the card still paints its own heading and eyebrow', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('Office Tasks');
+    expect(html).toContain('Open work');
+    expect(html).not.toContain('sr-only" id="office-tasks-heading"');
+  });
+
   it('caps the card at a few tasks, which is the whole reason the page exists', () => {
     expect(CARD_TASK_LIMIT).toBeGreaterThan(0);
     expect(CARD_TASK_LIMIT).toBeLessThan(10);
