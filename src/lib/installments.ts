@@ -17,6 +17,8 @@
 // Collecting a payment is a separate, deliberate action.
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { nyDateString } from '@/lib/jobs/completingToday';
+import { latestConsentAmendment, blocksSettlement, type AmendmentTrailEntry } from '@/lib/amend';
 
 export type Installment = {
   id: string;
@@ -28,6 +30,15 @@ export type Installment = {
   dueOnCompletion: boolean;
   paidAt: string | null;
   paidSource: 'homeworks' | 'valor' | 'manual' | null;
+  /** Doubles as the runner's idempotency slot, exactly as
+   *  `invoices.valor_balance_txn_id` does for the balance charge: null (never
+   *  charged), `pending:<iso>` (a charge is in flight, or crashed and left its
+   *  claim), or a real Valor txn id. Read it with `describeChargeSlot`. */
+  valorTxnId: string | null;
+  /** The operator who recorded this payment. NULL means not attributable: money
+   *  collected at home.works before this tool existed, or an automatic charge,
+   *  which has no human actor by definition. Mirrors `invoices.settled_by`. */
+  paidBy: string | null;
   note: string | null;
 };
 
@@ -49,8 +60,25 @@ export type InstallmentPlan = {
   planOutstanding: number;
   /** collected − planPaid: what was taken up front, before the schedule began. */
   initialDeposit: number;
-  /** Whether the customer has a card on file to charge. */
+  /** Whether the customer has a card on file to charge. The TOKEN itself is
+   *  deliberately not carried here — this shape is returned verbatim by
+   *  GET /api/admin/installments, so a vault token on it would ship a payment
+   *  credential to every browser that opens the page. The runner re-reads the
+   *  token server-side at charge time instead. */
   hasCardOnFile: boolean;
+  /** The linked quote's own state, carried so the runner (row 448) can refuse
+   *  to charge a quote that is no longer a live booked order. */
+  quoteStatus: string | null;
+  isNce: boolean;
+  /** True when the quote's latest amendment is still awaiting the customer's
+   *  consent — the same `blocksSettlement` gate the charge-balance route uses,
+   *  so an amend-up can never be collected without a re-approval. */
+  amendmentBlocksSettlement: boolean;
+  /** When the customer agreed their saved card may be charged automatically for
+   *  the scheduled payments. NULL means they never did, and the runner refuses.
+   *  See migrations/2026-08-28-installment-auto-charge-consent.sql for why this
+   *  is not implied by having a card on file. */
+  autoChargeConsentAt: string | null;
 };
 
 /** The next DATED payment owed — a due-on-completion one is deliberately never
@@ -64,10 +92,17 @@ export function nextDuePayment(plan: InstallmentPlan): Installment | null {
 }
 
 /** True when a dated payment is due on or before `asOf`. Pure — `asOf` is
- *  passed in, never read from the clock, so this is deterministic. */
+ *  passed in, never read from the clock, so this is deterministic.
+ *
+ *  The comparison is against the ET CALENDAR DAY, not the UTC one (row 449).
+ *  `due_date` is a DATE column holding a business date, and `toISOString()`
+ *  rolls over at 8pm ET (7pm in standard time) — so for the last few hours of
+ *  every evening a payment due TOMORROW read as overdue. Cosmetic while nothing
+ *  auto-charged off it; not cosmetic now that the runner (row 448) decides what
+ *  to charge from exactly this predicate. */
 export function isOverdue(inst: Installment, asOf: Date): boolean {
   if (inst.paidAt || inst.dueOnCompletion || !inst.dueDate) return false;
-  return inst.dueDate <= asOf.toISOString().slice(0, 10);
+  return inst.dueDate <= nyDateString(asOf);
 }
 
 /** The invariant from this file's header, as a check rather than a comment:
@@ -90,6 +125,8 @@ type Row = {
   due_on_completion: boolean;
   paid_at: string | null;
   paid_source: string | null;
+  valor_txn_id: string | null;
+  paid_by: string | null;
   note: string | null;
 };
 
@@ -103,6 +140,8 @@ function toInstallment(r: Row): Installment {
     dueOnCompletion: r.due_on_completion,
     paidAt: r.paid_at,
     paidSource: (r.paid_source as Installment['paidSource']) ?? null,
+    valorTxnId: r.valor_txn_id,
+    paidBy: r.paid_by,
     note: r.note,
   };
 }
@@ -116,7 +155,7 @@ export async function listInstallmentPlans(): Promise<
 
   const { data: rows, error } = await sb
     .from('installments')
-    .select('id, quote_id, seq, amount_usd, due_date, due_on_completion, paid_at, paid_source, note')
+    .select('id, quote_id, seq, amount_usd, due_date, due_on_completion, paid_at, paid_source, valor_txn_id, paid_by, note')
     .order('quote_id')
     .order('seq');
   if (error) return { ok: false, error: error.message };
@@ -131,7 +170,7 @@ export async function listInstallmentPlans(): Promise<
 
   const { data: quotes, error: qErr } = await sb
     .from('quotes')
-    .select('id, quote_number, customer_name, customer_email, total, deposit_amount_usd, valor_vault_token')
+    .select('id, quote_number, customer_name, customer_email, total, deposit_amount_usd, valor_vault_token, status, is_nce, approval_snapshot, installment_auto_charge_consent_at')
     .in('id', [...byQuote.keys()]);
   if (qErr) return { ok: false, error: qErr.message };
 
@@ -140,6 +179,9 @@ export async function listInstallmentPlans(): Promise<
     id: string; quote_number: number | null; customer_name: string | null;
     customer_email: string | null; total: number | string | null;
     deposit_amount_usd: number | string | null; valor_vault_token: string | null;
+    status: string | null; is_nce: boolean | null;
+    approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
+    installment_auto_charge_consent_at: string | null;
   }[]) {
     const installments = byQuote.get(q.id) ?? [];
     const quoteTotal = Number(q.total ?? 0);
@@ -159,6 +201,10 @@ export async function listInstallmentPlans(): Promise<
       planOutstanding: r2(installments.filter((i) => !i.paidAt).reduce((a, i) => a + i.amountUsd, 0)),
       initialDeposit: r2(collected - planPaid),
       hasCardOnFile: !!q.valor_vault_token,
+      quoteStatus: q.status,
+      isNce: !!q.is_nce,
+      amendmentBlocksSettlement: blocksSettlement(latestConsentAmendment(q.approval_snapshot?.amendments)),
+      autoChargeConsentAt: q.installment_auto_charge_consent_at,
     });
   }
   plans.sort((a, b) => (b.quoteNumber ?? 0) - (a.quoteNumber ?? 0));
@@ -181,6 +227,12 @@ export async function markInstallmentPaid(input: {
   paidAt: Date;
   source: 'valor' | 'manual';
   valorTxnId?: string | null;
+  /** The operator who recorded it. Omitted/null for the runner's automatic
+   *  charges, which have no human actor — a NULL here is information, not a
+   *  gap. Added after the premerge admin lens found this money write had no
+   *  attributable actor at all, while its sibling `markInvoicePaidManually` has
+   *  recorded `settled_by` since #225. */
+  paidBy?: string | null;
 }): Promise<{ ok: true; amountUsd: number } | { ok: false; error: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -193,6 +245,7 @@ export async function markInstallmentPaid(input: {
       paid_at: input.paidAt.toISOString(),
       paid_source: input.source,
       valor_txn_id: input.valorTxnId ?? null,
+      paid_by: input.paidBy ?? null,
     })
     .eq('id', input.installmentId)
     .is('paid_at', null)

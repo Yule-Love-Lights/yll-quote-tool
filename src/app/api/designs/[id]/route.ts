@@ -23,7 +23,7 @@ import {
   type DesignPortalVisibility,
 } from '@/lib/designs';
 import { clampBrightness } from '@/lib/design/photoBrightness';
-import { SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
+import { SCENE_LOCKED_CODE, sceneLockedMessage } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -182,7 +182,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         // into the same lock.
         if (outcome.reason === 'locked') {
           return NextResponse.json(
-            { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
+            // Row 444: a migrated order gets a remedy that exists, instead of
+            // "decline, revive and re-send", which cannot work for it.
+            { error: sceneLockedMessage(outcome.migrated === true), code: SCENE_LOCKED_CODE },
             { status: 409 },
           );
         }
@@ -228,11 +230,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         if (outcome.reason === 'locked') {
           return NextResponse.json(
             {
-              error:
-                'This satellite trace is locked — the customer already approved the roofline it shows, so it ' +
-                'cannot be redrawn here. Re-calculating without changing the lines still works. To change the ' +
-                'trace itself: decline this quote, revive it, edit, and re-send. (A booked order is changed ' +
-                'through the amend flow.)',
+              // Row 444: a migrated order gets the remedy that exists. The
+              // generic wording below sends staff to decline/revive/re-send,
+              // which cannot clear the migration stamp.
+              error: outcome.migrated
+                ? sceneLockedMessage(true)
+                : 'This satellite trace is locked — the customer already approved the roofline it shows, so it ' +
+                  'cannot be redrawn here. Re-calculating without changing the lines still works. To change the ' +
+                  'trace itself: decline this quote, revive it, edit, and re-send. (A booked order is changed ' +
+                  'through the amend flow.)',
               code: SCENE_LOCKED_CODE,
             },
             { status: 409 },

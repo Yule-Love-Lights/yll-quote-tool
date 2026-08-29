@@ -49,6 +49,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest)
       '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping)
       '/api/referrals/sweep', // Vercel Cron (CRON_SECRET-guarded, naldo/referral-link-sweep)
+      '/api/ops/installment-run', // The installment runner (row 448) — CRON_SECRET or operator session
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
