@@ -254,6 +254,9 @@ async function afterManualWrite(
   }
 }
 
+/** Ten minutes of slack for clock drift; anything further ahead is a typo. */
+const MANUAL_FUTURE_SLACK_MS = 10 * 60_000;
+
 function assertValidInterval(clockInAt: string, clockOutAt: string): void {
   const inMs = Date.parse(clockInAt);
   const outMs = Date.parse(clockOutAt);
@@ -262,6 +265,17 @@ function assertValidInterval(clockInAt: string, clockOutAt: string): void {
   }
   if (outMs <= inMs) {
     throw new ManualShiftRefusedError('invalid-times', 'Clock-out must be after clock-in.');
+  }
+  // Manual entries reconstruct the PAST. A future-dated clock-out is a typo,
+  // and a dangerous one: it would sit in the crew member's timeline and make
+  // their next organic clock-in ([now, infinity)) violate the no-overlap
+  // constraint with only a generic error — silently locking them out of the
+  // clock (S74 post-close integration lens, the #1062 x constraint interaction).
+  if (outMs > Date.now() + MANUAL_FUTURE_SLACK_MS) {
+    throw new ManualShiftRefusedError(
+      'invalid-times',
+      'The clock-out is in the future. Manual entries record time already worked.',
+    );
   }
 }
 
@@ -439,6 +453,12 @@ export async function adminUpdateShiftTimes(input: {
     assertValidInterval(input.clockInAt, input.clockOutAt);
   } else if (!Number.isFinite(Date.parse(input.clockInAt))) {
     throw new ManualShiftRefusedError('invalid-times', 'Times must be valid timestamps.');
+  } else if (Date.parse(input.clockInAt) > Date.now() + MANUAL_FUTURE_SLACK_MS) {
+    // Same future-typo mine as the clock-out check, from the keep-open side.
+    throw new ManualShiftRefusedError(
+      'invalid-times',
+      'The clock-in is in the future. Manual entries record time already worked.',
+    );
   }
 
   const row = await getShiftRowById(db, shiftId);
