@@ -59,7 +59,7 @@ export default function PayScreen() {
       )}
 
       {loaded && workers.length === 0 && !error && (
-        <EmptyState kind="photos" title="No pay yet" hint="Accepted yard signs will land here, worker by worker." />
+        <EmptyState kind="photos" title="No pay yet" hint="Accepted photos will land here, worker by worker." />
       )}
 
       <div className="flex flex-col gap-4 px-4">

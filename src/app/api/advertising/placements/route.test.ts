@@ -172,7 +172,7 @@ describe('POST /api/advertising/placements — submit', () => {
     expect(res.status).toBe(400);
   });
 
-  it("the placement's kind comes from the CAMPAIGN, never the body — a forged yard_sign on a door-hanger campaign stays unpaid", async () => {
+  it("the placement's kind comes from the CAMPAIGN, never the body — a forged kind cannot relabel a campaign's work", async () => {
     getAdvertisingCampaign.mockResolvedValue({ id: 'campaign-1', name: 'Hangers', kind: 'door_hanger', rateCents: 250, active: true });
     const res = await POST(makeFormReq({ ...VALID_FIELDS, kind: 'yard_sign' }, photoFile()));
     expect(res.status).toBe(201);

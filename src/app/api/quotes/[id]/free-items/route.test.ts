@@ -138,6 +138,30 @@ describe('POST /api/quotes/[id]/free-items', () => {
     expect(res.status).toBe(401);
   });
 
+  // Row 444 (premerge technical lens MED): this route rewrites
+  // inputs.customLineItems, result.lineItems AND
+  // approval_snapshot.customerSelection.selectedItemIds. Its own total-drift
+  // assertion means it cannot move money, but a home.works-migrated order is a
+  // penny-reconciled record of what a customer agreed and paid, and its panel
+  // renders on every approved/booked quote — all 20 of them. The /api/quote
+  // guard was real; this was a second door into the same rows.
+  it('409s on a home.works-migrated quote, and writes nothing', async () => {
+    const migrated = approvedQuote({
+      approval_snapshot: {
+        homeworks: { invoiceNumber: 'HW-1162' },
+        customerSelection: { packageId: 'C', selectedItemIds: [], currentTotalUsd: 1311.15 },
+        amendments: [],
+      },
+    });
+    const sb = makeSb(migrated);
+    sbRef.current = sb.client;
+    const res = await POST(req({ action: 'add', label: 'Free spritzers' }), ctx());
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code?: string; error?: string };
+    expect(body.code).toBe('migrated-quote-locked');
+    expect(body.error).toContain('home.works');
+  });
+
   it('409s when the quote is not yet approved (no selection to edit)', async () => {
     const draft = approvedQuote({ customer_approved_at: null, status: 'sent', approval_snapshot: null });
     sbRef.current = makeSb(draft).client;

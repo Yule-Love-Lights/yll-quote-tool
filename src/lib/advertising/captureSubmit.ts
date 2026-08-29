@@ -75,9 +75,10 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
     return NextResponse.json({ error: 'That campaign is not open for submissions.' }, { status: 400 });
   }
   // The KIND comes from the CAMPAIGN, never the body — same treatment as
-  // workerId, because kind gates money: door hangers can never pay, and a
-  // forged kind=yard_sign on a door-hanger campaign would turn unpaid work
-  // into paid work at review time (technical lens HIGH, PR #1078).
+  // workerId (technical lens HIGH, PR #1078). Since 2026-08-29 every kind
+  // pays the campaign rate, so kind no longer gates money; it still labels
+  // the record and drives sign-stock counts, and a client must not be able
+  // to relabel a campaign's work.
   const kind = campaign.kind;
 
   const photo = form.get('photo');

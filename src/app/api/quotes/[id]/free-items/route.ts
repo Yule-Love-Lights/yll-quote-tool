@@ -18,6 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { isMigratedQuote } from '@/lib/quotes';
 import { computeAmendment, type AmendmentTrailEntry } from '@/lib/amend';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
 import { addFreeLineItem, removeFreeLineItem } from '@/lib/freeItemEdit';
@@ -87,6 +88,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!quote.result) {
     return NextResponse.json({ error: 'Quote has no pricing result', code: 'no-result' }, { status: 409 });
+  }
+
+  // Row 444: a home.works-migrated order is a record of what a customer agreed
+  // and paid, penny-reconciled against their real invoice. This route rewrites
+  // inputs.customLineItems, result.lineItems AND
+  // approval_snapshot.customerSelection.selectedItemIds — so even though its own
+  // total-drift assertion means it cannot move money, it can still rewrite that
+  // record. The panel renders on every approved/booked quote, which is all 20 of
+  // them, on the same page that shows the Migrated badge. Found by the premerge
+  // technical lens after the /api/quote guard shipped: the guard was real but
+  // this was a second door into the same rows.
+  if (isMigratedQuote(quote.approval_snapshot)) {
+    return NextResponse.json(
+      {
+        error:
+          'This order was migrated from home.works. Its line items are a record of what the customer agreed and paid, ' +
+          'so they cannot be edited here. To change this order, agree the new figures with Jason and record them directly.',
+        code: 'migrated-quote-locked',
+      },
+      { status: 409 },
+    );
   }
 
   // Only an approved quote has a signed customerSelection to edit.

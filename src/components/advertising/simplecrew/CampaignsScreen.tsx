@@ -87,15 +87,14 @@ export default function CampaignsScreen({
   const create = async () => {
     setCreateError(null);
     const { dollarsToCents } = await import('@/lib/hourlyRate');
-    const rateCents = newKind === 'yard_sign' ? dollarsToCents(newRate) : 0;
-    if (newKind === 'yard_sign' && rateCents === null) {
-      setCreateError('Enter the per-sign rate in dollars, like 2.50.');
+    // Pay per accepted PHOTO, any kind (Naldo 2026-08-29) — every campaign
+    // carries a rate, door hangers included.
+    const rateCents = dollarsToCents(newRate);
+    if (rateCents === null) {
+      setCreateError('Enter the pay per accepted photo in dollars, like 2.50.');
       return;
     }
-    if (
-      newKind === 'yard_sign' &&
-      !window.confirm(`Create "${newName.trim()}" paying ${dollars(rateCents!)} per accepted yard sign?`)
-    ) {
+    if (!window.confirm(`Create "${newName.trim()}" paying ${dollars(rateCents)} per accepted photo?`)) {
       return;
     }
     setCreating(true);
@@ -103,7 +102,7 @@ export default function CampaignsScreen({
       const res = await fetch(createUrl!, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName, kind: newKind, rateCents: rateCents ?? 0 }),
+        body: JSON.stringify({ name: newName, kind: newKind, rateCents }),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
@@ -218,10 +217,7 @@ export default function CampaignsScreen({
                 <span className="flex items-center gap-1.5">
                   {c.workerCount} <CrewIcon size={19} />
                 </span>
-                {mode === 'admin' && c.kind === 'yard_sign' && (
-                  <span className="text-sm">{dollars(c.rateCents)}/sign</span>
-                )}
-                {c.kind === 'door_hanger' && <span className="text-sm">unpaid kind</span>}
+                {mode === 'admin' && <span className="text-sm">{dollars(c.rateCents)}/photo</span>}
               </span>
             </span>
             <span className="shrink-0" style={{ color: '#B4BAB4' }}>
@@ -257,21 +253,19 @@ export default function CampaignsScreen({
                     : { borderColor: '#DFE3DE', color: SC.text }
                 }
               >
-                {k === 'yard_sign' ? 'Yard signs' : 'Door hangers (unpaid)'}
+                {k === 'yard_sign' ? 'Yard signs' : 'Door hangers'}
               </button>
             ))}
           </div>
-          {newKind === 'yard_sign' && (
-            <label className="mt-3 block text-sm" style={{ color: SC.muted }}>
-              Pay per accepted sign ($)
-              <input
-                value={newRate}
-                onChange={(e) => setNewRate(e.target.value)}
-                className="mt-1 w-28 rounded-xl border px-4 py-3 text-lg"
-                style={{ borderColor: '#DFE3DE' }}
-              />
-            </label>
-          )}
+          <label className="mt-3 block text-sm" style={{ color: SC.muted }}>
+            Pay per accepted photo ($)
+            <input
+              value={newRate}
+              onChange={(e) => setNewRate(e.target.value)}
+              className="mt-1 w-28 rounded-xl border px-4 py-3 text-lg"
+              style={{ borderColor: '#DFE3DE' }}
+            />
+          </label>
           {createError && (
             <p className="mt-3 text-sm" style={{ color: SC.danger }}>
               {createError}

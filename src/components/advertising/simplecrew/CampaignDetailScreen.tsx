@@ -229,14 +229,9 @@ export default function CampaignDetailScreen({
         {tab === 'description' ? (
           <div className="px-5 py-4 text-base" style={{ color: SC.text }}>
             <p>{campaign.notes?.trim() || 'No description yet.'}</p>
-            {mode === 'admin' && campaign.kind === 'yard_sign' && campaign.rateCents !== undefined && (
+            {mode === 'admin' && campaign.rateCents !== undefined && (
               <p className="mt-3" style={{ color: SC.muted }}>
-                Pays {dollars(campaign.rateCents)} per accepted yard sign, stamped at acceptance.
-              </p>
-            )}
-            {campaign.kind === 'door_hanger' && (
-              <p className="mt-3" style={{ color: SC.muted }}>
-                Door hangers are tracked but unpaid.
+                Pays {dollars(campaign.rateCents)} per accepted photo, stamped at acceptance.
               </p>
             )}
           </div>
@@ -314,7 +309,7 @@ export default function CampaignDetailScreen({
                             className="rounded-full px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                             style={{ background: SC.ok }}
                           >
-                            {p.kind === 'yard_sign' ? 'Accept (pays the rate)' : 'Accept (no pay)'}
+                            Accept (pays the rate)
                           </button>
                           {rejecting === p.id ? (
                             <>
