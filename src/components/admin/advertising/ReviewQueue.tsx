@@ -126,7 +126,7 @@ export default function ReviewQueue() {
                 <span className="font-semibold text-gray-900">{item.workerName}</span>
                 <span className="text-sm text-gray-500">· {item.campaignName}</span>
                 <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-                  {item.kind === 'yard_sign' ? 'Yard sign' : 'Door hangers (unpaid)'}
+                  {item.kind === 'yard_sign' ? 'Yard sign' : 'Door hangers'}
                 </span>
                 {item.status === 'resubmitted' && (
                   <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">
@@ -181,7 +181,7 @@ export default function ReviewQueue() {
                   onClick={() => void act({ action: 'accept', placementId: item.id }, item.id)}
                   className="rounded-full bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
                 >
-                  {item.kind === 'yard_sign' ? 'Accept (pays the rate)' : 'Accept (no pay)'}
+                  Accept (pays the rate)
                 </button>
                 {rejecting === item.id ? (
                   <span className="flex items-center gap-2">

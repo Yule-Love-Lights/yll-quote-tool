@@ -2,15 +2,18 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { logAdvertisingActivity } from '@/lib/advertising/activity';
 
-// Placements: one row per yard sign (or door hanger) placed, plus the review
-// transitions and the earnings math. The money rules (Naldo 2026-08-27, do
-// not reopen): $2.50 per ACCEPTED yard sign, stamped onto the placement at
-// acceptance (accepted_rate_cents) so later rate changes never move history;
-// pending and rejected placements never count for pay; a
-// rejected-then-resubmitted-then-accepted placement pays exactly once; door
-// hangers are modeled but pay for them is PERMANENTLY EXCLUDED until Naldo
-// approves a rule. The same rules exist as CHECK constraints in
-// migrations/2026-08-28-advertising-schema.sql; the guards here are the
+// Placements: one row per yard sign (or door hanger batch) placed, plus the
+// review transitions and the earnings math. The money rules (Naldo
+// 2026-08-27, pay basis updated by Naldo 2026-08-29): the campaign rate is
+// paid PER ACCEPTED PHOTO, whatever the kind — the campaign's NAME says
+// whether it is a yard-sign or door-hanger campaign, and the kind on the row
+// records which it was. The rate is stamped at acceptance
+// (accepted_rate_cents) so later rate changes never move history; pending
+// and rejected placements never count for pay; a
+// rejected-then-resubmitted-then-accepted placement pays exactly once.
+// (The original door-hangers-never-pay exclusion was SUPERSEDED by the
+// 2026-08-29 per-photo ruling.) The same rules exist as CHECK constraints
+// (migrations/2026-08-29-pay-per-photo.sql); the guards here are the
 // data-layer mirror so a bad call fails with a named message instead of a
 // raw 23514.
 
@@ -218,8 +221,9 @@ export async function submitPlacement(input: {
 }
 
 /**
- * Accept a placement, stamping the campaign's CURRENT rate onto it (yard
- * signs only — door hangers accept with no rate, permanently unpaid).
+ * Accept a placement, stamping the campaign's CURRENT rate onto it — per
+ * accepted PHOTO, any kind (Naldo 2026-08-29; the campaign name says what
+ * the photo is).
  *
  * The status filter (`in ('pending','resubmitted')`) is a compare-and-swap:
  * a concurrent or retried accept matches no row, and the recovery path
@@ -244,22 +248,21 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     throw new Error('acceptPlacement: placement has no proof photo, so it cannot be accepted');
   }
 
-  let acceptedRateCents: number | null = null;
-  if (row.kind === 'yard_sign') {
-    const { data: campaign, error: campaignError } = await db
-      .from('advertising_campaigns')
-      .select('id, rate_cents')
-      .eq('id', row.campaign_id)
-      .maybeSingle();
-    if (campaignError || !campaign) {
-      throw new Error(`acceptPlacement: could not read campaign rate: ${campaignError?.message ?? 'campaign missing'}`);
-    }
-    const rate = (campaign as { rate_cents: number }).rate_cents;
-    if (!Number.isInteger(rate) || rate < 0) {
-      throw new Error(`acceptPlacement: campaign rate ${String(rate)} is not a valid cent amount`);
-    }
-    acceptedRateCents = rate;
+  // Per accepted PHOTO, any kind (Naldo 2026-08-29): every acceptance stamps
+  // the campaign's current rate.
+  const { data: campaign, error: campaignError } = await db
+    .from('advertising_campaigns')
+    .select('id, rate_cents')
+    .eq('id', row.campaign_id)
+    .maybeSingle();
+  if (campaignError || !campaign) {
+    throw new Error(`acceptPlacement: could not read campaign rate: ${campaignError?.message ?? 'campaign missing'}`);
   }
+  const rate = (campaign as { rate_cents: number }).rate_cents;
+  if (!Number.isInteger(rate) || rate < 0) {
+    throw new Error(`acceptPlacement: campaign rate ${String(rate)} is not a valid cent amount`);
+  }
+  const acceptedRateCents = rate;
 
   const { data, error } = await db
     .from('advertising_placements')
@@ -409,12 +412,12 @@ export function etWeekStartKey(d: Date): string {
  * Pure earnings math over placement rows — exported so the money rules are
  * testable with no database in the loop.
  *
- * Earned: accepted YARD SIGNS only, at the STAMPED accepted_rate_cents,
- * bucketed by the ET day/week of reviewed_at (pay accrues at acceptance).
- * Pending estimate: pending + resubmitted yard signs at the campaign's
- * CURRENT rate, bucketed by captured_at (falling back to created_at).
- * Nothing else ever counts: rejected rows, door hangers (permanently
- * unpaid), and is_test rows all contribute zero.
+ * Earned: ACCEPTED placements of any kind (per accepted photo, Naldo
+ * 2026-08-29), at the STAMPED accepted_rate_cents, bucketed by the ET
+ * day/week of reviewed_at (pay accrues at acceptance). Pending estimate:
+ * pending + resubmitted placements at the campaign's CURRENT rate, bucketed
+ * by captured_at (falling back to created_at). Rejected rows and is_test
+ * rows contribute zero.
  */
 export function summarizeEarnings(
   placements: AdvertisingPlacement[],
@@ -451,8 +454,6 @@ export function summarizeEarnings(
       };
       byWorker.set(p.workerId, acc);
     }
-
-    if (p.kind !== 'yard_sign') continue; // door hangers: permanently unpaid
 
     let earned = 0;
     let estimated = 0;

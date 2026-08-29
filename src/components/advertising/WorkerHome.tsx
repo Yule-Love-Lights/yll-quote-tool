@@ -255,16 +255,21 @@ export default function WorkerHome() {
             onClick={() => setKind('yard_sign')}
             className={`min-h-[44px] flex-1 rounded-full border px-3 text-sm font-medium ${kind === 'yard_sign' ? 'border-[#E8B862] bg-[#E8B862] text-[#0B140F]' : 'border-white/15 text-[#C9D3CB]'}`}
           >
-            Yard sign{selectedRate !== null ? ` (${dollars(selectedRate)} when accepted)` : ''}
+            Yard sign
           </button>
           <button
             type="button"
             onClick={() => setKind('door_hanger')}
             className={`min-h-[44px] flex-1 rounded-full border px-3 text-sm font-medium ${kind === 'door_hanger' ? 'border-[#E8B862] bg-[#E8B862] text-[#0B140F]' : 'border-white/15 text-[#C9D3CB]'}`}
           >
-            Door hangers (unpaid)
+            Door hangers
           </button>
         </div>
+        {selectedRate !== null && (
+          <p className="text-sm text-[#C9D3CB]">
+            This campaign pays {dollars(selectedRate)} per accepted photo.
+          </p>
+        )}
 
         <label className="text-sm text-[#C9D3CB]" htmlFor="photo">Proof photo</label>
         <input
