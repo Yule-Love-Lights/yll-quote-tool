@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getAdvertisingCampaign } from '@/lib/advertising/campaigns';
-import { submitPlacement } from '@/lib/advertising/placements';
+import { submitAcceptedPlacement, submitPlacement } from '@/lib/advertising/placements';
 import { reverseGeocode } from '@/lib/advertising/geocode';
 import { computePhotoHash } from '@/lib/advertising/photoHashCompute';
 import { MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
@@ -34,6 +34,65 @@ export function sniffImage(head: Uint8Array): { ext: string; contentType: string
     return { ext: 'webp', contentType: 'image/webp' };
   }
   return null;
+}
+
+type SupabaseServiceClient = NonNullable<ReturnType<typeof getSupabaseServiceClient>>;
+
+type ProofIntake =
+  | { ok: true; photoPath: string; photoHash: string | null }
+  | { ok: false; res: NextResponse };
+
+/** The shared photo intake: presence, size cap, magic-byte sniff, then
+ * upload FIRST (a pay claim with no proof photo must never exist), then the
+ * best-effort perceptual hash. Used by the live capture AND the admin bulk
+ * upload so the two can never drift on what counts as a valid proof. */
+async function intakeProofPhoto(
+  sb: SupabaseServiceClient,
+  form: FormData,
+  workerId: string,
+): Promise<ProofIntake> {
+  const photo = form.get('photo');
+  if (!(photo instanceof File) || photo.size === 0) {
+    return { ok: false, res: NextResponse.json({ error: 'A proof photo is required.' }, { status: 400 }) };
+  }
+  if (photo.size > PHOTO_MAX_BYTES) {
+    return {
+      ok: false,
+      res: NextResponse.json(
+        { error: 'That photo is too large (4MB max). Retake it with your camera set to a smaller size.' },
+        { status: 400 },
+      ),
+    };
+  }
+  const bytes = Buffer.from(await photo.arrayBuffer());
+  const sniffed = sniffImage(new Uint8Array(bytes.subarray(0, 12)));
+  if (!sniffed) {
+    return {
+      ok: false,
+      res: NextResponse.json({ error: 'The proof must be a JPEG, PNG or WebP photo.' }, { status: 400 }),
+    };
+  }
+
+  const photoPath = `placements/${workerId}/${randomUUID()}.${sniffed.ext}`;
+  const { error: uploadError } = await sb.storage.from(BUCKET).upload(photoPath, bytes, {
+    contentType: sniffed.contentType,
+    upsert: false,
+  });
+  if (uploadError) {
+    console.error('capture submit upload:', uploadError.message);
+    return {
+      ok: false,
+      res: NextResponse.json(
+        { error: 'The photo could not be saved. Nothing was submitted. Try again.' },
+        { status: 502 },
+      ),
+    };
+  }
+
+  // Perceptual hash for the review queue's "very similar photo" flag.
+  // Best-effort: null on any failure, the capture never fails over it.
+  const photoHash = await computePhotoHash(bytes);
+  return { ok: true, photoPath, photoHash };
 }
 
 export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingWorker): Promise<NextResponse> {
@@ -82,40 +141,11 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
   // to relabel a campaign's work.
   const kind = campaign.kind;
 
-  const photo = form.get('photo');
-  if (!(photo instanceof File) || photo.size === 0) {
-    return NextResponse.json({ error: 'A proof photo is required.' }, { status: 400 });
-  }
-  if (photo.size > PHOTO_MAX_BYTES) {
-    return NextResponse.json(
-      { error: 'That photo is too large (4MB max). Retake it with your camera set to a smaller size.' },
-      { status: 400 },
-    );
-  }
-  const bytes = Buffer.from(await photo.arrayBuffer());
-  const sniffed = sniffImage(new Uint8Array(bytes.subarray(0, 12)));
-  if (!sniffed) {
-    return NextResponse.json({ error: 'The proof must be a JPEG, PNG or WebP photo.' }, { status: 400 });
-  }
-
-  // Upload FIRST: a pay claim with no proof photo must never exist.
-  const photoPath = `placements/${worker.id}/${randomUUID()}.${sniffed.ext}`;
-  const { error: uploadError } = await sb.storage.from(BUCKET).upload(photoPath, bytes, {
-    contentType: sniffed.contentType,
-    upsert: false,
-  });
-  if (uploadError) {
-    console.error('capture submit upload:', uploadError.message);
-    return NextResponse.json(
-      { error: 'The photo could not be saved. Nothing was submitted — try again.' },
-      { status: 502 },
-    );
-  }
+  const intake = await intakeProofPhoto(sb, form, worker.id);
+  if (!intake.ok) return intake.res;
+  const { photoPath, photoHash } = intake;
 
   const suggestedAddress = await reverseGeocode(lat, lng);
-  // Perceptual hash for the review queue's "very similar photo" flag.
-  // Best-effort: null on any failure, the capture never fails over it.
-  const photoHash = await computePhotoHash(bytes);
 
   try {
     const placement = await submitPlacement({
@@ -141,6 +171,90 @@ export async function handleCaptureSubmit(req: NextRequest, worker: AdvertisingW
       await sb.storage.from(BUCKET).remove([photoPath]);
     } catch (cleanupError) {
       console.error('capture submit orphan cleanup:', cleanupError);
+    }
+    return NextResponse.json({ error: 'The placement could not be saved. Try again.' }, { status: 500 });
+  }
+}
+
+/**
+ * Admin bulk upload (Naldo, 2026-08-29): backfill photos for work done
+ * before the tool existed. Each call is ONE photo, attributed to the given
+ * worker and landing directly ACCEPTED at the campaign's current rate,
+ * reviewed by the uploading admin. GPS is optional here because camera-roll
+ * files often carry none; when present it must be a complete, in-range
+ * pair. The kind still comes from the CAMPAIGN, never the client.
+ */
+export async function handleBulkAcceptedSubmit(
+  form: FormData,
+  worker: AdvertisingWorker,
+  adminUserId: string,
+): Promise<NextResponse> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) {
+    return NextResponse.json({ error: 'Service not configured' }, { status: 503 });
+  }
+
+  const campaignId = String(form.get('campaignId') ?? '').trim();
+  if (!campaignId) {
+    return NextResponse.json({ error: 'Pick a campaign.' }, { status: 400 });
+  }
+  const campaign = await getAdvertisingCampaign(campaignId);
+  if (!campaign || !campaign.active) {
+    return NextResponse.json({ error: 'That campaign is not open for submissions.' }, { status: 400 });
+  }
+  const kind = campaign.kind;
+
+  // GPS: absent is fine (no pin, no location duplicate-flags), but a
+  // one-sided or junk pair is refused rather than silently dropped, so a
+  // photo never quietly loses a location the admin thought it had.
+  const latRaw = String(form.get('lat') ?? '').trim();
+  const lngRaw = String(form.get('lng') ?? '').trim();
+  let lat: number | null = null;
+  let lng: number | null = null;
+  if (latRaw !== '' || lngRaw !== '') {
+    lat = Number(latRaw);
+    lng = Number(lngRaw);
+    if (
+      latRaw === '' || lngRaw === '' ||
+      !Number.isFinite(lat) || !Number.isFinite(lng) ||
+      lat < -90 || lat > 90 || lng < -180 || lng > 180
+    ) {
+      return NextResponse.json(
+        { error: 'That photo carried a broken location. Remove it from the batch or retry without it.' },
+        { status: 400 },
+      );
+    }
+  }
+  const capturedAtRaw = String(form.get('capturedAt') ?? '').trim();
+
+  const intake = await intakeProofPhoto(sb, form, worker.id);
+  if (!intake.ok) return intake.res;
+  const { photoPath, photoHash } = intake;
+
+  const suggestedAddress = lat !== null && lng !== null ? await reverseGeocode(lat, lng) : null;
+
+  try {
+    const placement = await submitAcceptedPlacement({
+      campaignId,
+      workerId: worker.id,
+      kind,
+      rateCents: campaign.rateCents,
+      reviewedBy: adminUserId,
+      lat,
+      lng,
+      capturedAt: capturedAtRaw || null,
+      photoPath,
+      suggestedAddress,
+      photoHash,
+      isTest: worker.isTest,
+    });
+    return NextResponse.json({ placement }, { status: 201 });
+  } catch (e) {
+    console.error('bulk upload submit:', e instanceof Error ? e.message : e);
+    try {
+      await sb.storage.from(BUCKET).remove([photoPath]);
+    } catch (cleanupError) {
+      console.error('bulk upload orphan cleanup:', cleanupError);
     }
     return NextResponse.json({ error: 'The placement could not be saved. Try again.' }, { status: 500 });
   }

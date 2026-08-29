@@ -232,6 +232,90 @@ export async function submitPlacement(input: {
 }
 
 /**
+ * Admin bulk upload (Naldo, 2026-08-29): a photo backfilled for work done
+ * BEFORE the tool existed lands directly ACCEPTED, stamped with the rate
+ * the caller read from the campaign at upload time and reviewed by the
+ * uploading admin. GPS is optional (camera-roll files often carry none)
+ * but never one-sided: a lat without a lng is corrupt, not partial. This
+ * is a pay-creating write, so every guard here is a money guard.
+ */
+export async function submitAcceptedPlacement(input: {
+  campaignId: string;
+  workerId: string;
+  kind: PlacementKind;
+  rateCents: number;
+  reviewedBy: string;
+  lat: number | null;
+  lng: number | null;
+  capturedAt?: string | null;
+  photoPath: string;
+  suggestedAddress?: string | null;
+  photoHash?: string | null;
+  isTest?: boolean;
+}): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const photoPath = input.photoPath.trim();
+  if (!photoPath) throw new Error('submitAcceptedPlacement: a proof photo is required');
+  if (!Number.isInteger(input.rateCents) || input.rateCents < 0) {
+    throw new Error(
+      `submitAcceptedPlacement: invalid rate ${String(input.rateCents)}: must be a non-negative integer number of cents`,
+    );
+  }
+  const reviewedBy = input.reviewedBy.trim();
+  if (!reviewedBy) throw new Error('submitAcceptedPlacement: the reviewing admin is required');
+  if ((input.lat === null) !== (input.lng === null)) {
+    throw new Error('submitAcceptedPlacement: one-sided GPS refused (lat and lng must come together)');
+  }
+  if (input.lat !== null && input.lng !== null) {
+    if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates must be numbers');
+    }
+    if (input.lat < -90 || input.lat > 90 || input.lng < -180 || input.lng > 180) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates out of range');
+    }
+  }
+  if (input.kind !== 'yard_sign' && input.kind !== 'door_hanger') {
+    throw new Error(`submitAcceptedPlacement: unknown kind ${String(input.kind)}`);
+  }
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .insert({
+      campaign_id: input.campaignId.trim(),
+      worker_id: input.workerId.trim(),
+      kind: input.kind,
+      status: 'accepted',
+      lat: input.lat,
+      lng: input.lng,
+      accuracy_m: null,
+      captured_at: input.capturedAt ?? new Date().toISOString(),
+      photo_path: photoPath,
+      suggested_address: input.suggestedAddress?.trim() || null,
+      photo_hash: input.photoHash ?? null,
+      accepted_rate_cents: input.rateCents,
+      reviewed_by: reviewedBy,
+      reviewed_at: new Date().toISOString(),
+      is_test: input.isTest ?? false,
+    })
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`submitAcceptedPlacement: ${error.message}`);
+  if (!data) throw new Error('submitAcceptedPlacement: no row returned');
+
+  const placement = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: reviewedBy,
+    action: 'accepted',
+    placementId: placement.id,
+    workerId: placement.workerId,
+    detail: { kind: placement.kind, acceptedRateCents: placement.acceptedRateCents, bulkUpload: true },
+  });
+  return placement;
+}
+
+/**
  * Accept a placement, stamping the campaign's CURRENT rate onto it — per
  * accepted PHOTO, any kind (Naldo 2026-08-29; the campaign name says what
  * the photo is).

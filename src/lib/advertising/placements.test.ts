@@ -752,3 +752,67 @@ describe('earnings math', () => {
     expect(summaries[0].total.acceptedEarnedCents).toBe(250);
   });
 });
+
+describe('submitAcceptedPlacement (admin bulk upload — lands PAID, so every guard is money)', () => {
+  const base = () => {
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    return {
+      campaignId: String(campaign.id),
+      workerId: String(worker.id),
+      kind: 'yard_sign' as const,
+      rateCents: 250,
+      reviewedBy: REVIEWER,
+      photoPath: 'placements/w/bulk.jpg',
+    };
+  };
+
+  it('inserts directly as accepted with the given rate stamped and the admin as reviewer', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    const p = await submitAcceptedPlacement({ ...base(), lat: 40.75, lng: -73.42 });
+    expect(p.status).toBe('accepted');
+    expect(p.acceptedRateCents).toBe(250);
+    expect(p.reviewedBy).toBe(REVIEWER);
+    expect(p.reviewedAt).toBeTruthy();
+    const logged = stateRef.current.inserted.filter((i) => i.table === 'advertising_activity');
+    expect(logged).toHaveLength(1);
+    expect(logged[0].payload.action).toBe('accepted');
+  });
+
+  it('GPS is optional: both null stores both null', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    const p = await submitAcceptedPlacement({ ...base(), lat: null, lng: null });
+    expect(p.status).toBe('accepted');
+    expect(p.lat).toBeNull();
+    expect(p.lng).toBeNull();
+  });
+
+  it('refuses ONE-SIDED GPS — a lat with no lng is a corrupt location, not a partial one', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: 40.75, lng: null })).rejects.toThrow(/GPS/);
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: -73.42 })).rejects.toThrow(/GPS/);
+  });
+
+  it('refuses out-of-range GPS when present', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: 91, lng: 0 })).rejects.toThrow(/GPS/);
+  });
+
+  it('refuses a rate that is not a non-negative integer number of cents', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, rateCents: -1 })).rejects.toThrow(/rate/i);
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, rateCents: 2.5 })).rejects.toThrow(/rate/i);
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, rateCents: Number.NaN })).rejects.toThrow(/rate/i);
+  });
+
+  it('refuses a missing proof photo path', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, photoPath: '  ' })).rejects.toThrow(/photo/i);
+  });
+
+  it('a test worker flows is_test through, so bulk rows for test workers never touch real money', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    const p = await submitAcceptedPlacement({ ...base(), lat: null, lng: null, isTest: true });
+    expect(p.isTest).toBe(true);
+  });
+});
