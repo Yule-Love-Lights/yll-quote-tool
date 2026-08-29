@@ -132,6 +132,29 @@ describe('isSceneFrozen — home.works migrated orders (row 444)', () => {
     expect(isSceneFrozen({ ...migrated, is_test: true })).toBe(false);
   });
 
+  it('refuseIfFrozen gives a migrated order the remedy that exists, not the futile one', async () => {
+    // S57 wrap (integration lens): this shared helper guards four design-photo
+    // routes and was the ONE call site the migrated-message sweep missed.
+    sbRef.current = fakeSb({
+      quoteId: 'q1',
+      quote: { ...APPROVED, approval_snapshot: { homeworks: { doc: 'Homeworks invoice #5' } } },
+    }).client;
+    const res = await refuseIfFrozen('d1');
+    expect(res).not.toBeNull();
+    const body = await res!.json();
+    expect(body.error).toContain('home.works');
+    expect(body.error).not.toContain('decline');
+    expect(body.code).toBe(SCENE_LOCKED_CODE);
+  });
+
+  it('refuseIfFrozen keeps the ordinary approval wording for a non-migrated quote', async () => {
+    sbRef.current = fakeSb({ quoteId: 'q1', quote: APPROVED }).client;
+    const res = await refuseIfFrozen('d1');
+    const body = await res!.json();
+    expect(body.error).toContain('decline');
+    expect(body.error).not.toContain('home.works');
+  });
+
   it('gives the migrated case its own remedy, because the generic one is futile', () => {
     // Decline/revive/re-send does not clear approval_snapshot.homeworks, so the
     // next save refuses again — telling staff to do it is worse than useless.

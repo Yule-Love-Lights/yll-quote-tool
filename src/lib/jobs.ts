@@ -13,6 +13,7 @@ import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
 import { readLaborPlan, type LaborPlan } from './laborPlan';
 import { allocateNumber } from './displayId';
 import { canTransition, type JobStatus } from './jobStatus';
+import { isMigratedQuote } from './quoteStatus';
 import { getInvoiceByJob, type InvoiceRow } from './invoices';
 import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
@@ -274,6 +275,11 @@ export type JobDetail = {
   isTest: boolean;
   // #199: the linked quote's NCE tag — drives the NceBadge on the detail header.
   isNce: boolean;
+  // Row 444: the linked quote's money came from the retired home.works CRM, so
+  // it cannot be re-priced. The job page's Amend panel needs this to stop
+  // telling staff to go and Calculate, which /api/quote refuses (S57 wrap staff
+  // lens). `approval_snapshot` was already selected here — only the flag is new.
+  isMigrated: boolean;
   // The linked quote's service_type (#117), for surfaces that need to tell a
   // 'permanent_bistro' one_off job apart from an ordinary holiday/event one_off
   // (the type column alone collapses both to 'one_off' — see createJobFromQuote's
@@ -326,6 +332,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let customerAddress: string | null = null;
   let isTest = false;
   let isNce = false;
+  let isMigrated = false;
   let quoteServiceType: string | null = null;
   let intendedDepositUsd: number | null = null;
   let amendments: AmendmentTrailEntry[] = [];
@@ -365,6 +372,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
       isNce = !!data.is_nce;
+      isMigrated = isMigratedQuote(data.approval_snapshot);
       quoteServiceType = data.service_type ?? null;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
       quoteHlContactId = data.highlevel_contact_id ?? null;
@@ -402,6 +410,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
     customerRouteId: quoteHlContactId ?? job.customer_id ?? quoteCustomerId,
     isTest,
     isNce,
+    isMigrated,
     quoteServiceType,
     staleMarkers,
     amendments,
