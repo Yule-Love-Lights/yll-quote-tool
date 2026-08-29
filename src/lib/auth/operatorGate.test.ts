@@ -384,3 +384,18 @@ describe('the advertising surface is NOT public — it needs a session, just an 
     }
   });
 });
+
+describe('the crew door (row 466)', () => {
+  // The crew session is an httpOnly cookie, not a Supabase session, so the
+  // perimeter cannot see it: these paths pass the gate and the surface itself
+  // refuses without the cookie.
+  it.each(['/crew', '/crew/', '/crew/enter', '/api/crew/today'])('lets %s through to its own crew guard', (p) => {
+    expect(isPublicPath(p)).toBe(true);
+  });
+
+  it('does not open anything outside the crew namespace', () => {
+    expect(isPublicPath('/crewmembers')).toBe(false);
+    expect(isPublicPath('/api/crew')).toBe(false);
+    expect(isPublicPath('/api/admin/crew/abc/link', 'POST')).toBe(false);
+  });
+});

@@ -197,6 +197,16 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // shipped public by a prefix (defense-in-depth, review 2026-07-20).
   if (path === '/estimate') return true;
 
+  // The crew door (row 466). Crew logins were retired: field crew reach My Day
+  // through a SIGNED LINK that sets an httpOnly cookie, not a Supabase session,
+  // so this perimeter cannot recognise them and must let the surface answer for
+  // itself. Every /crew page and /api/crew route resolves that cookie through
+  // resolveCrewCaller() and refuses without it, exactly as /portal answers for
+  // its own capability token. Prefix-matched on a namespace that contains
+  // nothing else: a future /crew/<anything> is crew-gated by construction.
+  if (path === '/crew' || path.startsWith('/crew/')) return true;
+  if (path.startsWith('/api/crew/')) return true;
+
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
 
