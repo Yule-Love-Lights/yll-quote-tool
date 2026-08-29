@@ -39,7 +39,7 @@ describe('navItemsForView', () => {
     expect(items.map((i) => [i.label, i.href])).toEqual([
       ['Review', '/admin/advertising'],
       ['Pay', '/admin/advertising/pay'],
-      ['People', '/admin/advertising/people'],
+      ['People', '/admin/advertising/crew'],
     ]);
     // Each item highlights alone (the Jobs-and-Fleet-lighting-together class
     // is a bug by Naldo's 2026-08-28 ruling, not an accepted cost).

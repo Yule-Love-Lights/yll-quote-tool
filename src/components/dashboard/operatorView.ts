@@ -60,7 +60,7 @@ const OFFICE_ITEMS: NavItem[] = [
 const ADVERTISING_ITEMS: NavItem[] = [
   { label: 'Review', href: '/admin/advertising', match: ['advertising'] },
   { label: 'Pay', href: '/admin/advertising/pay', match: ['advertising-pay'] },
-  { label: 'People', href: '/admin/advertising/people', match: ['advertising-people'] },
+  { label: 'People', href: '/admin/advertising/crew', match: ['advertising-people'] },
 ];
 
 /**

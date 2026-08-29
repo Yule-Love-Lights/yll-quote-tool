@@ -4485,6 +4485,51 @@ where not exists (select 1 from inventory_on_hand where sku = 'YLL-YARD-SIGN');
 
 
 -- ---------------------------------------------------------------------
+-- worker_note (2026-08-29, migrations/2026-08-29-placements-worker-note.sql)
+-- — Simple Crew replica per-photo note. Content below is the migration
+-- verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- advertising_placements.worker_note — the per-photo note from the Simple
+-- Crew replica build (Naldo, 2026-08-29): the capture queue offers "Take a
+-- note..." under every shot, and the note rides the placement so admin
+-- review sees it beside the photo. Free text from the worker about their
+-- own placement; never money-bearing.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (nullable column add).
+-- =====================================================================
+
+alter table public.advertising_placements
+  add column if not exists worker_note text;
+
+comment on column public.advertising_placements.worker_note is
+  'Free-text note the worker attached to their own placement photo (Simple Crew replica capture queue). Editable by the owning worker only; shown to admin beside the photo in review.';
+
+
+-- ---------------------------------------------------------------------
+-- campaigns.kind (2026-08-29, migrations/2026-08-29-campaigns-kind.sql)
+-- — the campaign carries what is being placed. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- advertising_campaigns.kind — the Simple Crew replica (Naldo, 2026-08-29)
+-- models campaigns AS the thing being placed ("Signs", "Door Hangers"), so
+-- the camera has no kind toggle: choosing the campaign chooses the kind.
+-- The placement-level kind column stays the money truth (door hangers can
+-- never carry a rate, enforced by its CHECKs); this default feeds it at
+-- capture time.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (NOT NULL DEFAULT column add;
+-- both existing rows are yard-sign campaigns, which the default matches).
+-- =====================================================================
+
+alter table public.advertising_campaigns
+  add column if not exists kind text not null default 'yard_sign'
+    check (kind in ('yard_sign', 'door_hanger'));
+
+
+-- ---------------------------------------------------------------------
 -- pay per photo (2026-08-29, migrations/2026-08-29-pay-per-photo.sql) —
 -- supersedes the door-hanger pay exclusion in the advertising section
 -- above. Content below is the migration verbatim.

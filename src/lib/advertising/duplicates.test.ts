@@ -26,6 +26,7 @@ function placement(overrides: Partial<AdvertisingPlacement> = {}): AdvertisingPl
     neighborhood: null,
     propertyId: null,
     rejectionReason: null,
+    workerNote: null,
     acceptedRateCents: null,
     reviewedBy: null,
     reviewedAt: null,
