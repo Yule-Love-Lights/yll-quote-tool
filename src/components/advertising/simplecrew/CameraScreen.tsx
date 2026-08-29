@@ -132,6 +132,17 @@ export default function CameraScreen({
   // shutter. The status chip above the shutter shows which state we're in.
   const [gpsStatus, setGpsStatus] = useState<'starting' | 'ready' | 'denied' | 'no_signal' | 'unsupported'>('starting');
   const lastFixRef = useRef<{ lat: number; lng: number; accuracyM: number | null; at: number } | null>(null);
+  // The chip must not claim "ready" on a fix that has gone stale (staff
+  // lens: a green chip over a 12s shutter stall reads as a lie). A slow
+  // tick re-checks the last fix's age.
+  const [fixFresh, setFixFresh] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => {
+      const f = lastFixRef.current;
+      setFixFresh(f !== null && Date.now() - f.at < 15_000);
+    }, 3_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     let id: number | null = null;
@@ -151,6 +162,7 @@ export default function CameraScreen({
             at: Date.now(),
           };
           setGpsStatus('ready');
+          setFixFresh(true);
         },
         (err) => {
           // PERMISSION_DENIED (1) is sticky until the worker changes the site
@@ -168,7 +180,12 @@ export default function CameraScreen({
     };
   }, []);
 
-  const GPS_FRESH_MS = 25_000;
+  // Both lenses converged here: at 25s a canvassing worker walks to the
+  // NEXT house before the warm fix expires, so the shot inherits the
+  // previous house's GPS. 5s keeps the drift inside ordinary GPS noise
+  // (~7m at walking pace) while still skipping the one-shot wait when the
+  // watch is streaming fixes.
+  const GPS_FRESH_MS = 5_000;
 
   const getGps = (): Promise<{ lat: number; lng: number; accuracyM: number | null } | null> => {
     const warm = lastFixRef.current;
@@ -386,12 +403,12 @@ export default function CameraScreen({
 
       {/* GPS status — the worker sees the location state BEFORE shooting */}
       <div className="flex justify-center px-6 pt-2">
-        {gpsStatus === 'ready' && (
+        {gpsStatus === 'ready' && fixFresh && (
           <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
             <span className="h-2 w-2 rounded-full" style={{ background: '#4ADE80' }} /> GPS ready
           </span>
         )}
-        {(gpsStatus === 'starting' || gpsStatus === 'no_signal') && (
+        {(gpsStatus === 'starting' || gpsStatus === 'no_signal' || (gpsStatus === 'ready' && !fixFresh)) && (
           <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/90">
             <span className="h-2 w-2 animate-pulse rounded-full bg-white/70" /> Getting your location…
           </span>
@@ -399,7 +416,7 @@ export default function CameraScreen({
         {(gpsStatus === 'denied' || gpsStatus === 'unsupported') && (
           <span className="rounded-full px-3 py-1 text-xs text-white" style={{ background: SC.danger }}>
             {gpsStatus === 'denied'
-              ? 'Location blocked — allow it for this site in your browser settings, then reload'
+              ? 'Location blocked. Allow it for this site in your browser settings, then reload'
               : 'This browser has no location support'}
           </span>
         )}

@@ -3,8 +3,10 @@
 // Settings (Simple Crew replica): sectioned rows with the outline icons —
 // Change Password, Sign Out — plus mode-specific rows. No support/help
 // section on purpose (Naldo's device round, 2026-08-29: "we are the
-// support"). The admin page passes the Pay summary as topSection so pay
-// and settings are one screen, plus a back-to-the-quote-tool row.
+// support"). The admin page passes the Pay summary as paySection so pay
+// and settings are one screen; the routine rows (password, sign out, the
+// back-to-the-quote-tool link) stay on top so a long pay history never
+// buries them (staff lens, PR #1090).
 
 import { useState } from 'react';
 
@@ -15,13 +17,13 @@ export default function SettingsScreen({
   passwordUrl,
   logoutUrl,
   extraRows,
-  topSection,
+  paySection,
 }: {
   passwordUrl: string;
   logoutUrl: string;
   extraRows?: { label: string; href: string }[];
-  /** Rendered under the header, above Account (the admin Pay summary). */
-  topSection?: React.ReactNode;
+  /** Rendered below the Account rows (the admin Pay summary). */
+  paySection?: React.ReactNode;
 }) {
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState('');
@@ -73,8 +75,6 @@ export default function SettingsScreen({
     <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>
       <ScreenHeader title="Settings" />
 
-      {topSection}
-
       <p className="px-5 pb-2 text-sm font-semibold uppercase tracking-wide" style={{ color: SC.muted }}>
         Account
       </p>
@@ -85,6 +85,8 @@ export default function SettingsScreen({
           <Row key={r.href} label={r.label} icon={<ChevronRightIcon size={20} />} href={r.href} />
         ))}
       </div>
+
+      {paySection && <div className="mt-8">{paySection}</div>}
 
       <Sheet open={pwOpen} onClose={() => setPwOpen(false)}>
         <div style={{ color: SC.text }}>

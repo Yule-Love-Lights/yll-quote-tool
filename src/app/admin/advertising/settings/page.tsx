@@ -20,7 +20,7 @@ export default async function AdminAdvertisingSettingsPage() {
       <SettingsScreen
         passwordUrl="/api/account/password"
         logoutUrl="/api/auth/logout"
-        topSection={<PayScreen />}
+        paySection={<PayScreen />}
         extraRows={[
           { label: 'Back to the quote tool', href: '/' },
           { label: 'Inventory stock (yard-sign SKU)', href: '/inventory/stock' },
