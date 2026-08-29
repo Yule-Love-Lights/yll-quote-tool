@@ -19,12 +19,17 @@
 //      reading the same row both try to move it from N to N+1, and only one
 //      update matches. The loser posts nothing.
 //   3. ghl_note_posted_at is written ONLY after HighLevel returns success.
-// The one window that remains is a crash between a successful HighLevel
-// post and the marker write. That row's claim goes stale and it is retried,
-// so a crash in that exact millisecond can produce a second note. It is
-// bounded by CALL_NOTE_MAX_ATTEMPTS rather than unbounded, and closing it
-// completely would need a transaction spanning an external API, which does
-// not exist. Named here rather than left as a surprise.
+// The window that remains: HighLevel accepts the note and the marker write
+// then fails. A review round correctly pointed out this is NOT only a
+// process crash, it is any transient database failure on that write, which
+// is far more likely. So the marker write now has its own try/catch and,
+// when it fails, the row is QUARANTINED rather than left to retry. That
+// trades a row reading as un-noted for never posting the note twice, which
+// is the right way round: a duplicate note sits on a customer's record
+// forever, a low count on an admin page does not. A true duplicate now
+// requires BOTH writes to fail, meaning the database is unreachable, and
+// even then it is bounded by CALL_NOTE_MAX_ATTEMPTS. Closing it completely
+// would need a transaction spanning an external API, which does not exist.
 //
 // Best-effort per call, matching src/lib/calls/pipeline.ts: one failure
 // records a reason on that row and the loop moves on, never a batch abort.
@@ -174,7 +179,19 @@ export async function postPendingCallNotes(
         ? 'no_contact_id'
         : null;
     if (skipReason) {
-      if (!dryRun) await patchRow(supabase, row.id, { ghl_note_skip_reason: skipReason });
+      // Wrapped like every other mutating call in this loop. Before the fix
+      // round this was the one that was not, so a transient DB error on a
+      // test row aborted the entire batch, contradicting this file's own
+      // never-a-batch-abort promise.
+      if (!dryRun) {
+        try {
+          await patchRow(supabase, row.id, { ghl_note_skip_reason: skipReason });
+        } catch (err) {
+          console.error(`Could not mark call ${row.id} as skipped (${skipReason}):`, err);
+          result.failed++;
+          continue;
+        }
+      }
       result.skipped++;
       continue;
     }
@@ -198,7 +215,7 @@ export async function postPendingCallNotes(
     }
 
     const attemptsAfterClaim = row.ghl_note_attempts + 1;
-    let phase: 'summary' | 'post' = 'summary';
+    let phase: 'summary' | 'commitments' | 'post' = 'summary';
     try {
       let summary = row.summary;
       if (!summary) {
@@ -214,6 +231,7 @@ export async function postPendingCallNotes(
         }
       }
 
+      phase = 'commitments';
       const commitments = await loadCommitments(supabase, row.id);
       const body = composeCallNote({ summary, commitments });
 
@@ -226,13 +244,36 @@ export async function postPendingCallNotes(
       phase = 'post';
       const note = await createContactNote(contactId, body);
 
-      // Written only now, and only because HighLevel accepted the note.
-      await patchRow(supabase, row.id, {
-        ghl_note_posted_at: new Date().toISOString(),
-        ghl_note_id: typeof note?.id === 'string' ? note.id : null,
-        ghl_note_last_failure_code: null,
-      });
-      result.posted++;
+      // THE NOTE NOW EXISTS IN THE CRM. From here the only wrong outcome is
+      // posting it a SECOND time, so this write gets its own try/catch: it
+      // must never fall into the retry path below. If the marker cannot be
+      // written we quarantine the row instead, which stops the retry at the
+      // cost of the row reading as un-noted on the admin page. A note the
+      // customer's record shows twice is worse than a count that reads low.
+      try {
+        await patchRow(supabase, row.id, {
+          ghl_note_posted_at: new Date().toISOString(),
+          ghl_note_id: typeof note?.id === 'string' ? note.id : null,
+          ghl_note_last_failure_code: null,
+        });
+        result.posted++;
+      } catch (markErr) {
+        console.error(`Posted the HighLevel note for call ${row.id} but could not record it:`, markErr);
+        result.failed++;
+        try {
+          await patchRow(supabase, row.id, {
+            ghl_note_quarantined_at: now.toISOString(),
+            ghl_note_last_failure_code: 'posted_marker_failed',
+          });
+          result.quarantined++;
+        } catch (quarantineErr) {
+          // Both writes failed, so the database is unreachable. This is the
+          // one path that can genuinely produce a duplicate note, and it is
+          // now the ONLY one.
+          console.error(`Could not quarantine call ${row.id} after a recorded-post failure:`, quarantineErr);
+        }
+      }
+      continue;
     } catch (err) {
       console.error(`Failed to post the HighLevel note for call ${row.id}:`, err);
       result.failed++;
@@ -240,9 +281,11 @@ export async function postPendingCallNotes(
 
       const failureCode = phase === 'post'
         ? 'highlevel_post_failed'
-        : err instanceof TerminalSummaryError
-          ? 'summary_terminal'
-          : 'summary_failed';
+        : phase === 'commitments'
+          ? 'commitments_read_failed'
+          : err instanceof TerminalSummaryError
+            ? 'summary_terminal'
+            : 'summary_failed';
       const quarantine = attemptsAfterClaim >= CALL_NOTE_MAX_ATTEMPTS;
       try {
         await patchRow(supabase, row.id, {

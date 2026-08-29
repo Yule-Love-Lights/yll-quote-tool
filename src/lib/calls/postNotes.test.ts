@@ -50,7 +50,11 @@ function candidate(over: Partial<NoteCandidate> = {}): NoteCandidate {
 function fakeSupabase(
   rows: NoteCandidate[],
   commitments: Record<string, { kind: string; detail: string; promised_at: string | null }[]> = {},
-  opts: { claimWins?: boolean } = {},
+  opts: {
+    claimWins?: boolean;
+    failUpdateWhen?: (patch: Record<string, unknown>) => boolean;
+    commitmentsError?: { code: string };
+  } = {},
 ) {
   const updates: Update[] = [];
   const claimWins = opts.claimWins ?? true;
@@ -66,7 +70,8 @@ function fakeSupabase(
         order() {
           return query;
         },
-        then(resolve: (value: { data: unknown; error: null }) => void) {
+        then(resolve: (value: { data: unknown; error: unknown }) => void) {
+          if (opts.commitmentsError) return resolve({ data: null, error: opts.commitmentsError });
           resolve({ data: commitments[transcriptId] ?? [], error: null });
         },
       };
@@ -100,7 +105,15 @@ function fakeSupabase(
             // Only the claim calls .select(); a lost race returns no rows.
             return Promise.resolve({ data: claimWins ? [{ id: 'claimed' }] : [], error: null });
           },
-          then(resolve: (value: { data: null; error: null }) => void) {
+          then(
+            resolve: (value: { data: null; error: unknown }) => void,
+            reject?: (reason: unknown) => void,
+          ) {
+            if (opts.failUpdateWhen?.(patch)) {
+              // patchRow throws on a returned error, so model the real shape.
+              return resolve({ data: null, error: { message: 'db down' } });
+            }
+            void reject;
             resolve({ data: null, error: null });
           },
         };
@@ -250,6 +263,54 @@ describe('postPendingCallNotes', () => {
 
     expect(result.failed).toBe(1);
     expect(result.posted).toBe(1);
+  });
+
+  it('a failed skip write does not abort the rest of the batch', async () => {
+    // Before the fix round this write was the one mutating call outside a
+    // try/catch, so a transient database error on a test row took the whole
+    // batch down with it.
+    const { supabase } = fakeSupabase(
+      [candidate({ id: 'transcript-1', is_test: true }), candidate({ id: 'transcript-2' })],
+      {},
+      { failUpdateWhen: patch => 'ghl_note_skip_reason' in patch },
+    );
+
+    const result = await postPendingCallNotes(supabase, 6);
+
+    expect(result.failed).toBe(1);
+    expect(result.posted).toBe(1);
+    expect(createContactNoteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('quarantines a note it posted but could not record, rather than posting it twice', async () => {
+    // The note already exists in the CRM at this point. Retrying would put a
+    // second copy on a real customer's record, so the row is taken out of
+    // the queue instead.
+    const { supabase, updates } = fakeSupabase([candidate()], {}, {
+      failUpdateWhen: patch => 'ghl_note_posted_at' in patch,
+    });
+
+    const result = await postPendingCallNotes(supabase, 6);
+
+    expect(createContactNoteMock).toHaveBeenCalledTimes(1);
+    expect(result.posted).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(result.quarantined).toBe(1);
+    const quarantine = patchesWith(updates, 'ghl_note_quarantined_at')[0];
+    expect(quarantine.patch.ghl_note_last_failure_code).toBe('posted_marker_failed');
+  });
+
+  it('labels a commitments read failure as one, not as a summary failure', async () => {
+    const { supabase, updates } = fakeSupabase([candidate()], {}, {
+      commitmentsError: { code: '42P01' },
+    });
+
+    const result = await postPendingCallNotes(supabase, 6);
+
+    expect(result.failed).toBe(1);
+    expect(createContactNoteMock).not.toHaveBeenCalled();
+    expect(patchesWith(updates, 'ghl_note_last_failure_code')[0].patch.ghl_note_last_failure_code)
+      .toBe('commitments_read_failed');
   });
 
   it('dry run writes nothing even for a row it would skip', async () => {

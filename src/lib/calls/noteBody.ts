@@ -60,6 +60,16 @@ function stripEmDashes(text: string): string {
   return text.replace(/\s*—\s*/g, ', ');
 }
 
+/**
+ * One bullet is one line, so any newline inside a commitment detail would
+ * silently break the list into what looks like extra untitled bullets.
+ * Collapsed here rather than trusted upstream: the detail text is written
+ * by a model.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 // Timed tasks first, in time order, then the untimed ones in the order they
 // came out of the extractor. A staffer scanning the note wants "what is due
 // and when" before "what else was promised".
@@ -90,7 +100,7 @@ export function composeCallNote(input: ComposeCallNoteInput): string {
   } else {
     lines.push('Tasks from this call:');
     for (const commitment of commitments) {
-      const detail = stripEmDashes(commitment.detail).trim();
+      const detail = oneLine(stripEmDashes(commitment.detail));
       const when = formatPromisedAt(commitment.promised_at);
       lines.push(when ? `- ${detail} (by ${when})` : `- ${detail}`);
     }

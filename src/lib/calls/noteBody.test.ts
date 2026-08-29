@@ -54,6 +54,16 @@ describe('composeCallNote', () => {
     expect(body).toContain('Customer wants lights up early, before Thanksgiving.');
   });
 
+  it('keeps one task on one line even when the detail contains newlines', () => {
+    const body = composeCallNote({
+      summary: SUMMARY,
+      commitments: [{ kind: 'other', detail: 'Call the venue\nthen call the customer back', promised_at: null }],
+    });
+    const bullets = body.split('\n').filter(line => line.startsWith('- '));
+    expect(bullets).toHaveLength(1);
+    expect(bullets[0]).toBe('- Call the venue then call the customer back');
+  });
+
   it('refuses to compose a note with no summary', () => {
     expect(() => composeCallNote({ summary: '   ', commitments: [] })).toThrow();
   });
