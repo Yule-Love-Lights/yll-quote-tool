@@ -2,13 +2,13 @@ import { redirect } from 'next/navigation';
 
 import { getAdvertisingCaller } from '@/lib/auth/advertisingAuth';
 import BlockedNote from '@/components/advertising/simplecrew/BlockedNote';
-import CampaignsScreen from '@/components/advertising/simplecrew/CampaignsScreen';
+import SettingsScreen from '@/components/advertising/simplecrew/SettingsScreen';
 import { WorkerTabs } from '@/components/advertising/simplecrew/Tabs';
 
-// Worker home = the Campaigns tab (Simple Crew replica). The proxy confines
-// advertising sessions TO this surface; this gate closes the other
-// direction and gives deactivated / not-yet-linked logins a plain answer.
-export default async function AdvertisingCampaignsPage() {
+// Worker settings (Simple Crew replica): Change Password, Sign Out, Contact
+// Support — all against routes inside the advertising namespace, since the
+// perimeter confines this population there.
+export default async function WorkerSettingsPage() {
   const caller = await getAdvertisingCaller();
   if (!caller.ok) {
     if (caller.reason === 'unauthenticated') redirect('/login?from=%2Fadvertising');
@@ -18,12 +18,11 @@ export default async function AdvertisingCampaignsPage() {
 
   return (
     <>
-      <CampaignsScreen
-        mode="worker"
-        campaignsUrl="/api/advertising/campaigns"
-        detailHrefBase="/advertising/campaigns"
+      <SettingsScreen
+        passwordUrl="/api/advertising/account/password"
+        logoutUrl="/api/advertising/account/logout"
       />
-      <WorkerTabs active="campaigns" />
+      <WorkerTabs active="settings" />
     </>
   );
 }

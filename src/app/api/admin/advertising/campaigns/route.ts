@@ -26,7 +26,19 @@ export async function GET() {
   const auth = await requireAdmin();
   if ('response' in auth) return auth.response;
   const campaigns = await listAdvertisingCampaigns({ includeInactive: true });
-  return NextResponse.json({ campaigns });
+  const { campaignActivitySummary } = await import('@/lib/advertising/placements');
+  const activity = await campaignActivitySummary(campaigns.map((c) => c.id));
+  return NextResponse.json({
+    campaigns: campaigns.map((c) => {
+      const a = activity.get(c.id);
+      return {
+        ...c,
+        photoCount: a?.photoCount ?? 0,
+        workerCount: a?.workerCount ?? 0,
+        lastPhotoAt: a?.lastPhotoAt ?? null,
+      };
+    }),
+  });
 }
 
 /**
@@ -52,7 +64,7 @@ export async function POST(req: NextRequest) {
   if ('response' in auth) return auth.response;
 
   const body = (await req.json().catch(() => null)) as
-    | { name?: unknown; notes?: unknown; rateCents?: unknown; isTest?: unknown }
+    | { name?: unknown; kind?: unknown; notes?: unknown; rateCents?: unknown; isTest?: unknown }
     | null;
   const name = String(body?.name ?? '').trim();
   if (!name) return NextResponse.json({ error: 'Give the campaign a name.' }, { status: 400 });
@@ -61,8 +73,10 @@ export async function POST(req: NextRequest) {
   if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
 
   try {
+    const kind = body?.kind === 'door_hanger' ? 'door_hanger' as const : 'yard_sign' as const;
     const campaign = await createAdvertisingCampaign({
       name,
+      kind,
       notes: typeof body?.notes === 'string' ? body.notes : null,
       rateCents: rate.value,
       isTest: body?.isTest === true,

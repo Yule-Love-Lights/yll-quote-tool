@@ -1,21 +1,20 @@
 import { redirect } from 'next/navigation';
 
 import { getSessionRole } from '@/lib/auth/sessionRole';
-import PayScreen from '@/components/advertising/simplecrew/PayScreen';
+import ManageCrewScreen from '@/components/advertising/simplecrew/ManageCrewScreen';
 import { AdminTabs } from '@/components/advertising/simplecrew/Tabs';
 
 export const dynamic = 'force-dynamic';
 
-// The admin profile tab, repurposed as PAY (our money view in the replica's
-// card language).
-export default async function AdminPayPage() {
+// Manage Crew (Simple Crew replica): the accounts door + sign stock.
+export default async function AdminCrewPage() {
   const role = await getSessionRole();
   if (role !== 'admin') redirect('/');
 
   return (
     <>
-      <PayScreen />
-      <AdminTabs active="pay" />
+      <ManageCrewScreen />
+      <AdminTabs active="crew" />
     </>
   );
 }

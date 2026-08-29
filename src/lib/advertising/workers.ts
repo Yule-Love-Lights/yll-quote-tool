@@ -149,3 +149,37 @@ export async function setAdvertisingWorkerActive(id: string, active: boolean): P
   if (error) throw new Error(`setAdvertisingWorkerActive: ${error.message}`);
   return data ? toWorker(data as Row) : null;
 }
+
+/**
+ * Resolve (or create) the advertising_workers row backing an AUTH USER —
+ * the admin-capture path of the Simple Crew replica: Naldo or Jason shooting
+ * from the admin camera submits under their own worker row, auto-provisioned
+ * on first use and linked by auth_user_id. A display-name collision (the
+ * admin's name already taken by an unlinked row) falls back to a suffixed
+ * name rather than failing the capture.
+ */
+export async function ensureWorkerForAuthUser(
+  authUserId: string,
+  displayName: string,
+): Promise<AdvertisingWorker> {
+  const existing = await getAdvertisingWorkerByAuthUserId(authUserId);
+  if (existing) return existing;
+
+  const base = displayName.trim() || 'Admin';
+  try {
+    const created = await createAdvertisingWorker({ displayName: base, authUserId });
+    if (created.authUserId === authUserId) return created;
+    // Name-race recovery handed back someone else's row — do not submit
+    // under it; fall through to the suffixed name.
+  } catch (e) {
+    // createAdvertisingWorker recovers a same-name race by returning the
+    // winner — but that winner may be someone ELSE'S row (unlinked or linked
+    // to a different login). Never submit under it; take a suffixed name.
+    if (e instanceof WorkerLoginTakenError) throw e;
+  }
+  const suffixed = await createAdvertisingWorker({ displayName: `${base} (admin)`, authUserId });
+  if (suffixed.authUserId !== authUserId) {
+    throw new Error('ensureWorkerForAuthUser: could not provision a worker row for this login');
+  }
+  return suffixed;
+}
