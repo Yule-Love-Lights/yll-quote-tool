@@ -29,6 +29,7 @@ import { loadReferralMetrics } from '@/lib/dashboard/referralMetrics';
 import { ReferralMetricsCard } from '@/components/dashboard/ReferralMetricsCard';
 import { loadSelfServeMetrics } from '@/lib/dashboard/selfServeMetrics';
 import { SelfServeMetricsCard } from '@/components/dashboard/SelfServeMetricsCard';
+import OfficeTasksCard from '@/components/dashboard/OfficeTasksCard';
 
 // Always render fresh — the dashboard reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
@@ -109,6 +110,7 @@ export default async function DashboardPage() {
         <Worklist items={worklist} />
         <WorkflowBoard board={workflowBoard} />
         <NeedsActionCard items={needsActionItems} />
+        <OfficeTasksCard />
         <ServiceSections holiday={holiday} permanent={permanent} event={event} bistro={bistro} />
         <div className="mb-8">
           <ReferralMetricsCard data={referralMetrics} />
