@@ -2,17 +2,23 @@
 // docs/context/calls_merge_plan_2026-08.md). Thin wrappers around the two
 // office_tasks_* SECURITY DEFINER RPCs (migrations/2026-08-28-office-tasks.sql)
 // plus the list reads. All the real logic — the advisory-lock idempotency
-// replay, the immutability triggers, the creator-or-assignee authorization —
-// lives in the database; this module is deliberately thin.
+// replay, the immutability triggers — lives in the database; this module is
+// deliberately thin.
 //
 // S1 has exactly one producer (manual entry via createManualOfficeTask), but
 // the list read already returns every source_system (per the plan's list
 // fix) so later slices (S6 call_commitment, S8 quote_tool) need no per-
-// SOURCE change when they start writing rows. S6 DID widen the list's
-// visibility SCOPE, though (see listOfficeTasks' own comment below): a
-// non-manual row has no creator/assignee to match against, so a creator-
-// or-assignee-only scope would have made every commitment-sourced task
-// invisible to everyone the instant S6 started writing them.
+// SOURCE change when they start writing rows.
+//
+// EVERYTHING IS SHARED (Naldo's ruling, 2026-08-29): every task, manual
+// included, is visible to and actionable by every operator — see
+// listOfficeTasks' own comment below for the read side and
+// migrations/2026-08-28-office-tasks.sql's third amendment for the RPC
+// side (the creator-or-assignee ownership check is REMOVED, not widened).
+// created_by/assigned_to still exist and are still stamped on every write —
+// they no longer gate who may act, but they still say who created a task
+// and (for a call_commitment task, per the rep-assignment ruling) who it's
+// assigned to.
 //
 // The migration is NOT applied to any database yet (it creates functions/
 // triggers, off the migration self-apply allowlist) — every function here
@@ -21,6 +27,7 @@
 // instead of showing a scary error.
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { nameOf } from '@/lib/auth/supabaseServer';
 
 export type OfficeTaskSourceSystem = 'manual' | 'call_commitment' | 'quote_tool';
 export type OfficeTaskStatus = 'open' | 'blocked' | 'completed' | 'dismissed';
@@ -39,6 +46,15 @@ export type OfficeTask = {
   dismissalReason: string | null;
   completedAt: string | null;
   dismissedAt: string | null;
+  /**
+   * "Everything is shared" ruling: a manual task's creator is no longer
+   * obvious from context (anyone can see and act on it), so the list
+   * surfaces who it was originally for. 'You' for the viewer's own task, a
+   * resolved display name/email for someone else's, a generic fallback if
+   * that resolution fails, and null for any non-manual task (those carry
+   * no meaningful "personal" framing — see sourceLabel in OfficeTasksCard).
+   */
+  createdByLabel: string | null;
 };
 
 type Row = {
@@ -54,12 +70,18 @@ type Row = {
   dismissal_reason: string | null;
   completed_at: string | null;
   dismissed_at: string | null;
+  created_by: string | null;
 };
 
 const TASK_SELECT =
-  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at';
+  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by';
 
-function toOfficeTask(row: Row): OfficeTask {
+function toOfficeTask(row: Row, actorId: string, creatorLabels: ReadonlyMap<string, string>): OfficeTask {
+  let createdByLabel: string | null = null;
+  if (row.source_system === 'manual') {
+    if (row.created_by === actorId) createdByLabel = 'You';
+    else if (row.created_by) createdByLabel = creatorLabels.get(row.created_by) ?? 'a teammate';
+  }
   return {
     id: row.id,
     sourceSystem: row.source_system,
@@ -73,7 +95,47 @@ function toOfficeTask(row: Row): OfficeTask {
     dismissalReason: row.dismissal_reason,
     completedAt: row.completed_at,
     dismissedAt: row.dismissed_at,
+    createdByLabel,
   };
+}
+
+/**
+ * Resolves a display label for every distinct manual-task creator in `rows`
+ * OTHER than `actorId` (the viewer's own tasks get the free 'You' label in
+ * toOfficeTask, no lookup needed). Bounded by the task list itself (this
+ * repo's Office Tasks is a small working list, not a paginated table), so a
+ * per-id admin.getUserById lookup is cheap here — no need to page through
+ * the WHOLE auth population the way adminUsers.ts's listAllRawUsers does
+ * for the Settings → Accounts screen. Best-effort per id: a lookup failure
+ * just leaves that creator unresolved (toOfficeTask's 'a teammate'
+ * fallback), never fails the whole list read.
+ */
+async function resolveCreatorLabels(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  rows: Row[],
+  actorId: string,
+): Promise<Map<string, string>> {
+  const distinctCreators = Array.from(
+    new Set(
+      rows
+        .filter((r) => r.source_system === 'manual' && r.created_by && r.created_by !== actorId)
+        .map((r) => r.created_by as string),
+    ),
+  );
+  const labels = new Map<string, string>();
+  await Promise.all(
+    distinctCreators.map(async (id) => {
+      try {
+        const { data, error } = await db.auth.admin.getUserById(id);
+        if (error || !data?.user) return;
+        const label = nameOf(data.user.app_metadata) ?? data.user.email ?? null;
+        if (label) labels.set(id, label);
+      } catch {
+        // best-effort — leave this id unresolved.
+      }
+    }),
+  );
+  return labels;
 }
 
 /** Postgres/PostgREST error code off a Supabase error object, or null. */
@@ -99,19 +161,14 @@ export type ListOfficeTasksResult =
   | { ok: false; reason: 'not_ready' | 'unavailable' };
 
 /**
- * The tasks visible to this actor, across every source_system.
- *
- * Visibility (calls merge plan S6): a 'manual' task stays personal —
- * creator OR assignee only, matching the update RPC's ownership rule, so
- * every manual task an operator can see is one they can also act on. A
- * NON-manual task (call_commitment, quote_tool) has no operator to credit
- * as creator or assignee (see migrations/2026-08-28-office-tasks.sql's S6
- * amendment — created_by/assigned_to are both null for these), so scoping
- * it the same way would make it invisible to EVERY operator. Those rows are
- * visible to every operator instead — matching the plan's "all operators
- * see all coaching data" ruling, and the same NULL-comparison semantics
- * that already let any operator ACT on one of these via
- * office_tasks_update_status (see that migration's own comment).
+ * EVERY task, across every source_system and every operator — Naldo's
+ * "everything is shared" ruling, 2026-08-29. This used to scope 'manual'
+ * tasks to creator-or-assignee (matching an update RPC ownership check that
+ * has since been REMOVED, not just widened — see
+ * migrations/2026-08-28-office-tasks.sql's third amendment); that scoping
+ * is gone. `actorId` is kept as a parameter, not for filtering, but to
+ * compute each manual task's createdByLabel below ('You' for the viewer's
+ * own task, a resolved name for someone else's).
  *
  *   view: 'active'  -> open + blocked, due soonest first (the working list).
  *   view: 'history' -> completed + dismissed, most recently touched first —
@@ -128,7 +185,6 @@ export async function listOfficeTasks(
   let query = db
     .from('office_tasks')
     .select(TASK_SELECT)
-    .or(`created_by.eq.${actorId},assigned_to.eq.${actorId},source_system.neq.manual`)
     .in('status', statuses);
   query = view === 'history'
     ? query.order('updated_at', { ascending: false }).order('id', { ascending: false })
@@ -141,7 +197,9 @@ export async function listOfficeTasks(
       reason: isOfficeTasksSchemaUnavailable(error) ? 'not_ready' : 'unavailable',
     };
   }
-  return { ok: true, tasks: (data ?? []).map((row) => toOfficeTask(row as Row)) };
+  const rows = (data ?? []) as Row[];
+  const creatorLabels = await resolveCreatorLabels(db, rows, actorId);
+  return { ok: true, tasks: rows.map((row) => toOfficeTask(row, actorId, creatorLabels)) };
 }
 
 export type CreateOfficeTaskInput = {
@@ -194,10 +252,12 @@ export type UpdateOfficeTaskResult =
 
 /**
  * office_tasks_update_status — see the RPC's own comment for the full
- * contract. 42501 (not the task's creator/assignee) and 23503 (task id
- * doesn't exist) BOTH map to 'not_found': a non-owner gets the identical
- * response for "not yours" and "doesn't exist", so probing task ids can't
- * distinguish the two.
+ * contract. 42501 now only ever means "p_actor was null" (the ownership
+ * check that used to also raise it was REMOVED by the "everything is
+ * shared" amendment — see that migration's header), and 23503 means the
+ * task id doesn't exist; both still map to the same 'not_found' outcome so
+ * a caller can't distinguish "no such actor" from "no such task" by
+ * probing.
  */
 export async function updateOfficeTaskStatus(input: UpdateOfficeTaskStatusInput): Promise<UpdateOfficeTaskResult> {
   const db = getSupabaseServiceClient();

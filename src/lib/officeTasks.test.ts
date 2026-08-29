@@ -24,14 +24,20 @@ type Row = Record<string, unknown>;
 
 /** A chainable fake query builder — every filter/order method returns
  * itself, and it resolves like a real Supabase PostgrestFilterBuilder
- * (thenable) to the configured { data, error } once awaited. */
-function makeListClient(result: { data: Row[] | null; error: { code?: string } | null }) {
+ * (thenable) to the configured { data, error } once awaited. Also carries a
+ * fake auth.admin.getUserById for resolveCreatorLabels — defaults to "not
+ * found" for any id, override via `getUserById` for a resolution test. */
+function makeListClient(
+  result: { data: Row[] | null; error: { code?: string } | null },
+  opts: { getUserById?: (id: string) => Promise<{ data: { user: { app_metadata?: unknown; email?: string | null } } | null; error: unknown }> } = {},
+) {
   const calls: { method: string; args: unknown[] }[] = [];
   const builder: Record<string, unknown> = {};
   const record = (method: string) => (...args: unknown[]) => {
     calls.push({ method, args });
     return builder;
   };
+  const getUserById = opts.getUserById ?? (async () => ({ data: null, error: { message: 'not found' } }));
   Object.assign(builder, {
     from: record('from'),
     select: record('select'),
@@ -39,6 +45,7 @@ function makeListClient(result: { data: Row[] | null; error: { code?: string } |
     in: record('in'),
     order: record('order'),
     then: (resolve: (v: typeof result) => void) => resolve(result),
+    auth: { admin: { getUserById } },
   });
   return { client: builder, calls };
 }
@@ -61,6 +68,7 @@ const ROW: Row = {
   dismissal_reason: null,
   completed_at: null,
   dismissed_at: null,
+  created_by: 'op-1',
 };
 
 beforeEach(() => {
@@ -94,7 +102,7 @@ describe('listOfficeTasks', () => {
     expect(result).toEqual({ ok: false, reason: 'unavailable' });
   });
 
-  it('active view filters to open+blocked, scoped to creator-or-assignee OR any non-manual row, ordered by due date', async () => {
+  it('active view filters to open+blocked ONLY, no actor scoping at all, ordered by due date (everything is shared)', async () => {
     const { client, calls } = makeListClient({ data: [ROW], error: null });
     sbRef.current = client;
     const result = await listOfficeTasks('op-1', 'active');
@@ -103,32 +111,105 @@ describe('listOfficeTasks', () => {
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0]).toMatchObject({ id: 't-1', sourceSystem: 'manual', status: 'open' });
 
-    const orCall = calls.find((c) => c.method === 'or');
-    expect(orCall?.args[0]).toBe('created_by.eq.op-1,assigned_to.eq.op-1,source_system.neq.manual');
+    expect(calls.find((c) => c.method === 'or')).toBeUndefined();
     const inCall = calls.find((c) => c.method === 'in');
     expect(inCall?.args).toEqual(['status', ['open', 'blocked']]);
     const orderCalls = calls.filter((c) => c.method === 'order');
     expect(orderCalls[0].args).toEqual(['due_at', { ascending: true }]);
   });
 
-  it('visibility widening (S6): the same filter string is sent for EVERY actor -- a call_commitment/quote_tool row (source_system.neq.manual) is visible to any operator regardless of created_by/assigned_to, while a manual row still requires the actor be creator or assignee', async () => {
-    const { client: clientA, calls: callsA } = makeListClient({ data: [], error: null });
-    sbRef.current = clientA;
-    await listOfficeTasks('operator-a', 'active');
-    const orCallA = callsA.find((c) => c.method === 'or');
-    expect(orCallA?.args[0]).toBe('created_by.eq.operator-a,assigned_to.eq.operator-a,source_system.neq.manual');
+  it("everything is shared: a manual task created by SOMEONE ELSE is still returned to this actor -- the query issues NO or() filter regardless of who's asking", async () => {
+    const someoneElsesTask: Row = { ...ROW, id: 't-2', created_by: 'a-different-operator' };
+    const { client, calls } = makeListClient({ data: [someoneElsesTask], error: null });
+    sbRef.current = client;
 
-    const { client: clientB, calls: callsB } = makeListClient({ data: [], error: null });
-    sbRef.current = clientB;
-    await listOfficeTasks('operator-b', 'active');
-    const orCallB = callsB.find((c) => c.method === 'or');
-    // Different actor, same filter SHAPE -- source_system.neq.manual is
-    // actor-independent, so a call_commitment task created by nobody
-    // (created_by/assigned_to both null) matches this OR clause for BOTH
-    // operator-a and operator-b, while a manual task created by operator-a
-    // matches only operator-a's created_by.eq/assigned_to.eq legs.
-    expect(orCallB?.args[0]).toBe('created_by.eq.operator-b,assigned_to.eq.operator-b,source_system.neq.manual');
-    expect(orCallA?.args[0]).not.toBe(orCallB?.args[0]);
+    const result = await listOfficeTasks('op-1', 'active');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks.map((t) => t.id)).toEqual(['t-2']);
+    expect(calls.find((c) => c.method === 'or')).toBeUndefined();
+  });
+
+  it("createdByLabel: 'You' for the viewer's own manual task, no admin lookup needed", async () => {
+    const getUserById = vi.fn();
+    const { client } = makeListClient({ data: [ROW], error: null }, { getUserById }); // ROW.created_by === 'op-1'
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].createdByLabel).toBe('You');
+    expect(getUserById).not.toHaveBeenCalled(); // the viewer's own id never needs a lookup
+  });
+
+  it("createdByLabel: another operator's manual task resolves their name via admin.getUserById", async () => {
+    const otherTask: Row = { ...ROW, id: 't-2', created_by: 'op-2' };
+    const getUserById = vi.fn(async (id: string) =>
+      id === 'op-2'
+        ? { data: { user: { app_metadata: { name: 'Jason' }, email: 'jason@x.com' } }, error: null }
+        : { data: null, error: { message: 'not found' } },
+    );
+    const { client } = makeListClient({ data: [otherTask], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].createdByLabel).toBe('Jason');
+    expect(getUserById).toHaveBeenCalledWith('op-2');
+  });
+
+  it('createdByLabel: falls back to email when the creator has no display name', async () => {
+    const otherTask: Row = { ...ROW, id: 't-2', created_by: 'op-2' };
+    const getUserById = vi.fn(async () => ({ data: { user: { app_metadata: {}, email: 'jason@x.com' } }, error: null }));
+    const { client } = makeListClient({ data: [otherTask], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].createdByLabel).toBe('jason@x.com');
+  });
+
+  it("createdByLabel: falls back to 'a teammate' when the admin lookup fails, never fails the whole list read", async () => {
+    const otherTask: Row = { ...ROW, id: 't-2', created_by: 'op-2' };
+    const getUserById = vi.fn(async () => ({ data: null, error: { message: 'boom' } }));
+    const { client } = makeListClient({ data: [otherTask], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].createdByLabel).toBe('a teammate');
+  });
+
+  it('createdByLabel is null for a non-manual (call_commitment) task -- no "personal" framing applies', async () => {
+    const commitmentTask: Row = { ...ROW, id: 't-2', source_system: 'call_commitment', created_by: null };
+    const getUserById = vi.fn();
+    const { client } = makeListClient({ data: [commitmentTask], error: null }, { getUserById });
+    sbRef.current = client;
+
+    const result = await listOfficeTasks('op-1', 'active');
+
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.tasks[0].createdByLabel).toBeNull();
+    expect(getUserById).not.toHaveBeenCalled();
+  });
+
+  it('resolves the operator population only once per distinct creator, not once per task', async () => {
+    const rows: Row[] = [
+      { ...ROW, id: 't-2', created_by: 'op-2' },
+      { ...ROW, id: 't-3', created_by: 'op-2' },
+    ];
+    const getUserById = vi.fn(async () => ({ data: { user: { app_metadata: { name: 'Jason' }, email: 'jason@x.com' } }, error: null }));
+    const { client } = makeListClient({ data: rows, error: null }, { getUserById });
+    sbRef.current = client;
+
+    await listOfficeTasks('op-1', 'active');
+
+    expect(getUserById).toHaveBeenCalledTimes(1);
   });
 
   it('history view filters to completed+dismissed, ordered by most-recently-touched first', async () => {

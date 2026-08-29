@@ -5,12 +5,17 @@
 // GET already returns every source_system so later slices need no read-side
 // change when they start writing.
 //
-//   GET  /api/tasks               — the caller's own active tasks (open +
-//                                    blocked), due soonest first.
-//   GET  /api/tasks?status=history — the caller's own completed/dismissed
-//                                    tasks, most recently touched first —
-//                                    the plan's fix for finished work
-//                                    otherwise going invisible.
+// EVERYTHING IS SHARED (2026-08-29 ruling): GET returns EVERY task, not just
+// the caller's own — see officeTasks.ts's listOfficeTasks comment.
+// createdByLabel rides along so the client can badge a manual task with
+// whose it was ('You' / a resolved name / a generic fallback).
+//
+//   GET  /api/tasks               — every active task (open + blocked),
+//                                    due soonest first.
+//   GET  /api/tasks?status=history — every completed/dismissed task, most
+//                                    recently touched first — the plan's fix
+//                                    for finished work otherwise going
+//                                    invisible.
 //   POST /api/tasks               — create a manual task. Requires
 //                                    x-idempotency-key (a client-minted uuid;
 //                                    see OfficeTasksCard's createKeyRef).
@@ -40,6 +45,7 @@ function taskResponse(task: OfficeTask) {
     dismissalReason: task.dismissalReason,
     completedAt: task.completedAt,
     dismissedAt: task.dismissedAt,
+    createdByLabel: task.createdByLabel,
   };
 }
 
