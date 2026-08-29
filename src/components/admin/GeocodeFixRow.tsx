@@ -20,6 +20,8 @@ type SaveState =
   | { kind: 'saving' }
   | { kind: 'verified' }
   | { kind: 'still_refused' }
+  | { kind: 'archiving' }
+  | { kind: 'archived' }
   | { kind: 'error'; message: string };
 
 export function GeocodeFixRow({ propertyId, customerId, customerName, nickname, address }: Props) {
@@ -52,6 +54,46 @@ export function GeocodeFixRow({ propertyId, customerId, customerName, nickname, 
     } catch {
       setState({ kind: 'error', message: 'Could not reach the server.' });
     }
+  }
+
+  // Archive (never a hard delete): the property drops off this list and every
+  // picker; the customer row stays. For the test/garbage entries the import
+  // left behind (Naldo, 2026-08-28). The route refuses if a job references
+  // this property, so a real job's address cannot be hidden by mistake.
+  async function archive() {
+    if (state.kind === 'saving' || state.kind === 'archiving') return;
+    if (
+      !window.confirm(
+        `Remove "${customerName}" from this list? Nothing is deleted; the address is archived, and you can undo it from the customer's profile, Properties tab.`,
+      )
+    ) {
+      return;
+    }
+    setState({ kind: 'archiving' });
+    try {
+      const res = await fetch(`/api/customers/${customerId}/properties/${propertyId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived: true }),
+      });
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) {
+        setState({ kind: 'error', message: body?.error ?? `Archive failed (${res.status}).` });
+        return;
+      }
+      setState({ kind: 'archived' });
+    } catch {
+      setState({ kind: 'error', message: 'Could not reach the server.' });
+    }
+  }
+
+  if (state.kind === 'archived') {
+    return (
+      <li className="rounded-lg border border-gray-200 p-4 text-sm text-gray-400">
+        {customerName} — archived. Undo from the customer&apos;s profile, Properties tab, if
+        needed.
+      </li>
+    );
   }
 
   return (
@@ -88,11 +130,20 @@ export function GeocodeFixRow({ propertyId, customerId, customerName, nickname, 
         <button
           type="button"
           onClick={save}
-          disabled={state.kind === 'saving' || !value.trim()}
+          disabled={state.kind === 'saving' || state.kind === 'archiving' || !value.trim()}
           className="rounded px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           style={{ background: 'var(--brand-evergreen-3)' }}
         >
           {state.kind === 'saving' ? 'Checking…' : 'Save and re-check'}
+        </button>
+        <button
+          type="button"
+          onClick={archive}
+          disabled={state.kind === 'saving' || state.kind === 'archiving'}
+          className="rounded px-3 py-2 text-sm font-medium border border-gray-300 text-gray-600 disabled:opacity-50"
+          title="Remove this test or garbage entry from the list. Nothing is deleted."
+        >
+          {state.kind === 'archiving' ? 'Archiving…' : 'Archive'}
         </button>
       </div>
     </li>
