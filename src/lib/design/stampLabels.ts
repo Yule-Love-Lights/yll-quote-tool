@@ -23,20 +23,42 @@ export function baseStampLabel(i: SceneItem): string {
   return 'item';
 }
 
+// Is this item ever DISPLAYED by name in either consumer (the twin picker's
+// stamp-row, or the billing-link "Same as" dropdown)? A twin (`linkedToId`
+// set) never is — the canonical bills and is what's shown. A GROUPED member
+// (`groupId` set — a strand or miniArea belonging to a MiniGroupItem, #240)
+// never is either: the twin picker's isStampableCanonical excludes it
+// outright (its extent belongs to the group), and the billing-link dropdown
+// only ever surfaces it as a same-kind "Same as" candidate for an UNGROUPED
+// item of that kind, never as a row naming the member itself. Both
+// consumers' real population is "non-twin, non-grouped-member" — the two
+// pools are not literally identical (isStampableCanonical is also choosier
+// about strand surfaces), but neither consumer ever needs a NUMBER on a
+// grouped member, which is the only thing this predicate has to get right.
+function isDisplayableByName(item: SceneItem): boolean {
+  const groupId = 'groupId' in item ? item.groupId : undefined;
+  return !item.linkedToId && !groupId;
+}
+
 // Number duplicate base labels in DRAW ORDER — the `items` array order IS the
 // persisted scene order (projectScene relies on this same invariant) — scoped
 // PER SOURCE PHOTO, so photo 2's numbering never counts against photo 1's
 // items. Mirrors pricingEngine's numberDuplicateLabels rule (number only when
 // 2+ items share a label; a lone item stays unnumbered) but keyed by item id
 // so two different UI consumers render the identical name for the same item.
-// Twins (`linkedToId` set) never appear in either consumer, so they're
-// dropped from the count and never receive an entry.
+// Only items isDisplayableByName() contribute to the count or receive a
+// number; everything else (a twin, or a grouped member) falls through to
+// stampLabel's own `?? baseStampLabel(i)` fallback — an unnumbered base
+// label, never a number borrowed from a pool it was never really part of.
+// A MiniGroupItem itself has no `groupId` (only its MEMBERS do), so the
+// GROUP still counts and gets numbered normally — only its members are
+// excluded.
 export function numberStampLabels(items: SceneItem[]): Map<string, string> {
   const keyOf = (item: SceneItem) => `${item.photoId ?? ''} ${baseStampLabel(item)}`;
 
   const counts = new Map<string, number>();
   for (const item of items) {
-    if (item.linkedToId) continue;
+    if (!isDisplayableByName(item)) continue;
     const key = keyOf(item);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
@@ -44,7 +66,7 @@ export function numberStampLabels(items: SceneItem[]): Map<string, string> {
   const seen = new Map<string, number>();
   const labels = new Map<string, string>();
   for (const item of items) {
-    if (item.linkedToId) continue;
+    if (!isDisplayableByName(item)) continue;
     const key = keyOf(item);
     const base = baseStampLabel(item);
     const total = counts.get(key) ?? 1;

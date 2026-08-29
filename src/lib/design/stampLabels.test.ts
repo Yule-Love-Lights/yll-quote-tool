@@ -148,4 +148,47 @@ describe('numberStampLabels', () => {
     ];
     expect(numberStampLabels(items)).toEqual(numberStampLabels(items));
   });
+
+  // Coordinator-reported defect, reproduced exactly: a mini GROUP whose
+  // members are miniAreas shares its base label ("column minis") with those
+  // very members, because baseStampLabel reads a MiniGroupItem and a
+  // MiniAreaItem identically. A grouped member can never be shown by name in
+  // either consumer (isStampableCanonical excludes it from the twin picker;
+  // it only ever appears in the billing-link dropdown as a "Same as"
+  // candidate for an UNGROUPED item, never as a row naming itself) — so it
+  // must not contribute to the count or receive a number. Before the fix
+  // this returned 'column minis 4' (verbatim from the report).
+  it('excludes GROUPED MEMBERS from the count — a group does not inherit a number from its own members', () => {
+    const items: SceneItem[] = [
+      area('m1', { surface: 'column', groupId: 'g1' }),
+      area('m2', { surface: 'column', groupId: 'g1' }),
+      area('m3', { surface: 'column', groupId: 'g1' }),
+      miniGroup('g1', ['m1', 'm2', 'm3'], { surface: 'column' }),
+    ];
+    const labels = numberStampLabels(items);
+    expect(labels.get('g1')).toBe('column minis');
+    // The members themselves get no entry — neither consumer ever displays
+    // one by name, so there is nothing to number them FOR.
+    expect(labels.has('m1')).toBe(false);
+    expect(labels.has('m2')).toBe(false);
+    expect(labels.has('m3')).toBe(false);
+  });
+
+  it('mutation-probe companion: two REAL groups sharing a photo and surface still number normally (the fix must not swallow legitimate duplicates)', () => {
+    const items: SceneItem[] = [
+      area('m1', { surface: 'column', groupId: 'g1' }),
+      area('m2', { surface: 'column', groupId: 'g1' }),
+      miniGroup('g1', ['m1', 'm2'], { surface: 'column' }),
+      area('m3', { surface: 'column', groupId: 'g2' }),
+      area('m4', { surface: 'column', groupId: 'g2' }),
+      miniGroup('g2', ['m3', 'm4'], { surface: 'column' }),
+    ];
+    const labels = numberStampLabels(items);
+    expect(labels.get('g1')).toBe('column minis 1');
+    expect(labels.get('g2')).toBe('column minis 2');
+    expect(labels.has('m1')).toBe(false);
+    expect(labels.has('m2')).toBe(false);
+    expect(labels.has('m3')).toBe(false);
+    expect(labels.has('m4')).toBe(false);
+  });
 });
