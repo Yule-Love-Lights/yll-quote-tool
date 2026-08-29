@@ -11,8 +11,15 @@
 // portal (reviews / gallery / steps / protection / FAQ / about / contact,
 // referral page bug batch 2026-07-17, fix 3).
 
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { getReferralByCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import {
+  getReferralByCode,
+  REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
+  REFERRAL_FRIEND_SPRITZERS,
+  REFERRAL_FRIEND_ALT_CREDIT_USD,
+} from '@/lib/referrals';
 import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getDesignByQuote } from '@/lib/designs';
@@ -37,6 +44,7 @@ import { PersonalContact } from '@/components/portal/dark/PersonalContact';
 import { formatUsd } from '@/components/portal/format';
 import { asServiceType, type ServiceType } from '@/lib/serviceType';
 import { getAppSettings } from '@/lib/appSettings';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { ReferralPageTracker } from './ReferralPageTracker';
 import { ReferralForm } from './ReferralForm';
@@ -66,7 +74,92 @@ type Params = { code: string };
 function firstNameOf(name: string | null): string {
   if (!name) return 'A neighbor';
   const first = name.trim().split(/\s+/)[0];
-  return first || 'A neighbor';
+  if (!first) return 'A neighbor';
+  // Names arrive from GoHighLevel however the customer or a staffer typed
+  // them. This is the first word of a link preview a stranger sees, so it is
+  // worth normalising the two common bad shapes and nothing else.
+  //   "david"    -> "David"  (60% of the 52 code-holders in prod today)
+  //   "DAVID"    -> "David"  (caps-lock form fill; reads as shouting in a text)
+  //   "McKenzie" -> unchanged (mixed case is neither all-upper nor all-lower)
+  //   "(631)"    -> unchanged (no letters, so the all-caps test cannot fire)
+  // Never blanket-lowercase the tail: that would wreck McDonald and DeSantis.
+  // Live dev check 2026-08-28 rendered "david thinks you'd love this".
+  const isAllCaps =
+    first.length > 1 && first === first.toUpperCase() && first !== first.toLowerCase();
+  const base = isAllCaps ? first.toLowerCase() : first;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+// ─── Link preview (Open Graph) ──────────────────────────────────────────────
+// This page's whole job is to be TEXTED by one neighbor to another, so the
+// preview card is the first thing the friend sees, before they ever tap.
+// Without it this route inherited the ROOT layout's metadata, which carries no
+// image and describes the operator console ("quoting, customer portal, and
+// dashboard") — the wrong pitch to a homeowner, and verified live on
+// quote.yulelovelights.com/refer/<code> as the only meta tags served.
+// Wrap-review 2026-08-28, customer lens HIGH.
+//
+// The card image is a real completed job, the same class of photo this page
+// falls back to for its hero. Deliberately NOT the referrer's own house even
+// when we have it: preview images are fetched and cached by messaging
+// platforms, which would put a customer's home in a third-party cache. The
+// page itself still shows their house.
+//
+// noindex: the URL embeds a personal referral code. It should be shareable by
+// the person who owns it, never surfaced in search. Open Graph scrapers ignore
+// robots directives, so the preview card still renders.
+const SHARE_CARD = '/refer-share-card.jpg';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<Params>;
+}): Promise<Metadata> {
+  const { code } = await params;
+  // A bad code must still return usable metadata: the page's own notFound()
+  // owns that case, and a throw here would break the whole response.
+  // Narrower than it looks: getReferralByCode catches and logs its own
+  // PostgREST errors and returns null, so a database outage never reaches
+  // this catch. It guards a synchronous throw (a missing Supabase config,
+  // a client-construction fault), which is the only way one gets here.
+  const referrer = await getReferralByCode(code).catch(() => null);
+  const firstName = referrer ? firstNameOf(referrer.name) : null;
+
+  const title = firstName
+    ? `${firstName} thinks you'd love this`
+    : 'A neighbor sent you this';
+  const description =
+    `${REFERRAL_FRIEND_SPRITZERS.count} free spritzers on your first install with Yule Love Lights, ` +
+    `or ${formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead. Free quote, no obligation.`;
+  const base = appBaseUrl();
+  const url = `${base}/refer/${encodeURIComponent(code)}`;
+  const image = {
+    url: `${base}${SHARE_CARD}`,
+    width: 1200,
+    height: 630,
+    alt: 'A Long Island home lit by Yule Love Lights: warm-white roofline bulbs, lit wreaths, and light-wrapped trees along the driveway',
+  };
+
+  return {
+    title,
+    description,
+    alternates: { canonical: url },
+    robots: { index: false, follow: false },
+    openGraph: {
+      type: 'website',
+      siteName: 'Yule Love Lights',
+      url,
+      title,
+      description,
+      images: [image],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: [image.url],
+    },
+  };
 }
 
 // The referrer's most recently APPROVED quote (customer_approved_at set):
@@ -204,11 +297,13 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 For you
               </p>
               <p className="font-display text-[24px] font-semibold text-[#F4ECD8]">
-                {formatUsd(SPRITZER_VALUE_USD)} in free lighting
+                {REFERRAL_FRIEND_SPRITZERS.count} free spritzers, or {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                {REFERRAL_FRIEND_SPRITZERS.count} staked spotlights for your yard ({REFERRAL_FRIEND_SPRITZERS.sizeInches}
-                &quot; spritzers) on your first booked install. No purchase needed to get your free quote.
+                {REFERRAL_FRIEND_SPRITZERS.count} spritzers ({REFERRAL_FRIEND_SPRITZERS.sizeInches}&quot; staked
+                spotlights that light up your yard, worth {formatUsd(SPRITZER_VALUE_USD)}) on your first booked
+                install. Or take {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead, your choice.
+                No purchase needed to get your free quote.
               </p>
             </div>
             <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-6">
@@ -220,7 +315,8 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
                 Good toward any Yule Love Lights service: holiday, permanent, event and wedding
-                lighting, or bistro. Once you book, they get their credit automatically.
+                lighting, or bistro. Tell us {firstName} sent you when you book and we credit
+                their account, good for {REFERRAL_CREDIT_EXPIRY_YEARS} years.
               </p>
             </div>
           </div>

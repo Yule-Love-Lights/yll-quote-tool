@@ -160,12 +160,23 @@ describe('POST /api/referrals/submit', () => {
     expect(json).toEqual({ ok: true, referralId: null });
   });
 
-  it('works without an email (optional field)', async () => {
+  it('refuses a submission with no email, and writes nothing', async () => {
+    // Reversed 2026-08-28 (Naldo): email used to be optional here. The
+    // referral program depends on reaching these people afterwards, so a
+    // lead with no email is not one we can act on.
     const res = await POST(makeReq({ ...VALID_BODY, email: undefined }));
-    expect(res.status).toBe(200);
-    expect(createPendingReferral).toHaveBeenCalledWith(
-      expect.objectContaining({ refereeContactEmail: null }),
-    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      error: 'Name, phone, address, and email are required',
+    });
+    expect(createPendingReferral).not.toHaveBeenCalled();
+    expect(createContact).not.toHaveBeenCalled();
+  });
+
+  it('refuses a whitespace-only email the same way, not just a missing key', async () => {
+    const res = await POST(makeReq({ ...VALID_BODY, email: '   ' }));
+    expect(res.status).toBe(400);
+    expect(createPendingReferral).not.toHaveBeenCalled();
   });
 
   // #41 adversarial-review LOW fix: a resubmitted/refreshed form (same phone,

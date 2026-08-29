@@ -14,8 +14,9 @@ const LINK = 'https://quote.yulelovelights.com/refer/ABCD1234';
 describe('buildReferralShareMessage', () => {
   it('states the friend\'s real offer in dollars (never the referrer\'s $125 credit) and still names the physical item', () => {
     const msg = buildReferralShareMessage(LINK, 2, 16, 170);
-    expect(msg).toContain('$170 in free lighting');
-    expect(msg).toContain('2 staked spotlights for your yard (16" spritzers)');
+    expect(msg).toContain('$170');
+    expect(msg).toContain('$150 off instead');
+    expect(msg).toContain('2 free 16" spritzers');
     expect(msg).toContain('first booked install');
     expect(msg).not.toContain('$125');
   });
@@ -27,8 +28,17 @@ describe('buildReferralShareMessage', () => {
 
   it('reflects a different spritzer count/size/value if the constants ever change, never a hardcoded 170', () => {
     const msg = buildReferralShareMessage(LINK, 3, 20, 255);
-    expect(msg).toContain('$255 in free lighting');
-    expect(msg).toContain('3 staked spotlights for your yard (20" spritzers)');
+    expect(msg).toContain('3 free 20" spritzers');
+    expect(msg).toContain('$255');
+  });
+
+  it('offers the cash alternative, so a friend who is not doing lights still has a reason', () => {
+    // Naldo, 2026-08-28: an event, wedding or bistro customer has no use
+    // for spritzers. $150 is deliberately NOT the spritzers' $170 retail
+    // value; the two numbers are independent.
+    const msg = buildReferralShareMessage(LINK, 2, 16, 170);
+    expect(msg).toContain('$150 off instead');
+    expect(msg).toContain('your choice');
   });
 
   it('never uses an em dash (voice rules)', () => {

@@ -11,7 +11,7 @@
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
-import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
+import { spritzerRetailValueUsd, REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 
 const QUOTE_READY_EMAIL_SUBJECT: Record<ServiceType, string> = {
   holiday: 'Your Yule Love Lights quote is ready 🎄',
@@ -1050,11 +1050,13 @@ export function referralLinkEmailHtml(input: {
     )} in credit</strong> toward any Yule Love Lights service, holiday, permanent, event and wedding lighting, or bistro, good for ${
       input.creditExpiryYears
     } years from when they book.</p>`,
-    `<p>You will also be giving them <strong>${usd(
-      spritzerValueUsd,
-    )} in free lighting</strong> on their first install, ${input.spritzerCount} staked ${
+    `<p>You will also be giving them <strong>${input.spritzerCount} free ${
       input.spritzerSizeInches
-    }" spotlights for their yard.</p>`,
+    }" spritzers</strong> on their first install, worth ${usd(
+      spritzerValueUsd,
+    )}, or <strong>${usd(
+      REFERRAL_FRIEND_ALT_CREDIT_USD,
+    )} off</strong> instead, their choice.</p>`,
     `<p>No limit, share it with as many people as you like.</p>`,
     `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
     `<p>Warm wishes,<br>Yule Love Lights team</p>`,

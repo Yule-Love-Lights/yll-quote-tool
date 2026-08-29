@@ -13,7 +13,7 @@
 // to the pre-#41-V2 shape below.
 //
 // POST /api/referrals/submit
-//   Body: { code, name, phone, address, email? }
+//   Body: { code, name, phone, address, email }  (all required)
 //   Response: { ok: true, referralId, preview? } | { error }
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -66,8 +66,16 @@ export async function POST(req: NextRequest) {
   const cleanPhone = cleanStr(phone, MAX_FIELD_LEN);
   const cleanAddress = cleanStr(address, MAX_ADDRESS_LEN);
   const cleanEmail = cleanStr(email, MAX_FIELD_LEN);
-  if (!cleanName || !cleanPhone || !cleanAddress) {
-    return NextResponse.json({ error: 'Name, phone, and address are required' }, { status: 400 });
+  // Email became required 2026-08-28 (Naldo): the referral program's whole
+  // point is reaching these people afterwards, and a lead with no email is
+  // one we cannot follow up by the channel this program runs on. Enforced
+  // here as well as on the form, because a required-looking field that the
+  // API accepts empty is a label making a promise the code does not keep.
+  if (!cleanName || !cleanPhone || !cleanAddress || !cleanEmail) {
+    return NextResponse.json(
+      { error: 'Name, phone, address, and email are required' },
+      { status: 400 },
+    );
   }
   const normalizedPhone = normalizePhone(cleanPhone);
 
