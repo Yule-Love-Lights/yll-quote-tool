@@ -26,6 +26,13 @@ type Campaign = {
   isTest: boolean;
 };
 
+type SignStock = {
+  onHandQty: number;
+  reorderPoint: number;
+  acceptedAllTime: number;
+  pendingReview: number;
+};
+
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
@@ -33,6 +40,7 @@ function dollars(cents: number): string {
 export default function PeoplePanel() {
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [signStock, setSignStock] = useState<SignStock | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -52,9 +60,10 @@ export default function PeoplePanel() {
     let cancelled = false;
     (async () => {
       try {
-        const [wRes, cRes] = await Promise.all([
+        const [wRes, cRes, sRes] = await Promise.all([
           fetch('/api/admin/advertising/workers'),
           fetch('/api/admin/advertising/campaigns'),
+          fetch('/api/admin/advertising/sign-stock'),
         ]);
         if (cancelled) return;
         if (!wRes.ok || !cRes.ok) {
@@ -63,10 +72,14 @@ export default function PeoplePanel() {
         }
         const w = ((await wRes.json()) as { workers: Worker[] }).workers;
         const c = ((await cRes.json()) as { campaigns: Campaign[] }).campaigns;
+        const s = sRes.ok ? ((await sRes.json()) as { stock: SignStock }).stock : null;
         if (cancelled) return;
         setWorkers(w);
         setCampaigns(c);
-        setError(null);
+        setSignStock(s);
+        // A failed stock read must not vanish silently (staff lens LOW): the
+        // rest of the panel still works, but say the card is missing.
+        setError(sRes.ok ? null : 'Sign stock could not be loaded; the rest of this page is fine.');
       } catch {
         if (!cancelled) setError('Could not load.');
       }
@@ -88,9 +101,12 @@ export default function PeoplePanel() {
       const payload = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setError(payload.error ?? 'Action failed.');
+        // Refresh anyway: a 409 means the numbers on screen are stale, and
+        // "reload and try again" should not require a browser refresh.
+        reload();
         return false;
       }
-      await reload();
+      reload();
       return true;
     } catch {
       setError('Action failed. Try again.');
@@ -187,10 +203,64 @@ export default function PeoplePanel() {
     if (ok) setNotice(`${worker.displayName}'s password was reset.`);
   };
 
+  const setStockCount = async () => {
+    const raw = window.prompt(
+      `How many yard signs are actually in stock right now? (was ${signStock?.onHandQty ?? 0})\nCount the pile and type the number. Accepting a placement never changes this; you reconcile it by hand.`,
+      String(signStock?.onHandQty ?? 0),
+    );
+    if (raw === null) return;
+    const trimmed = raw.trim();
+    // Number('') is 0 — an emptied prompt must be a refusal, never a silent
+    // zeroing of the count (staff lens MED on this PR).
+    if (trimmed === '' || !/^\d+$/.test(trimmed)) {
+      setError('Enter a whole number, 0 or more.');
+      return;
+    }
+    const qty = Number(trimmed);
+    if (!Number.isInteger(qty) || qty < 0) {
+      setError('Enter a whole number, 0 or more.');
+      return;
+    }
+    if (qty === 0 && !window.confirm('Set the sign stock to ZERO?')) return;
+    const ok = await call('/api/admin/advertising/sign-stock', 'PATCH', { onHandQty: qty });
+    if (ok) setNotice(`Sign stock set to ${qty}.`);
+  };
+
   return (
     <div className="flex flex-col gap-8">
       {error && <p className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700">{error}</p>}
       {notice && <p className="rounded-lg bg-emerald-50 px-4 py-2 text-sm text-emerald-700">{notice}</p>}
+
+      {signStock && (
+        <section>
+          <h2 className="mb-2 font-semibold text-gray-900">Sign stock</h2>
+          <div className="flex flex-wrap items-center gap-6 rounded-xl border border-gray-200 bg-white p-4 text-sm">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-gray-500">In stock (hand-counted)</p>
+              <p className="text-2xl font-semibold text-gray-900">{signStock.onHandQty}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-gray-500">Accepted, cumulative (retrieved signs included)</p>
+              <p className="text-2xl font-semibold text-gray-900">{signStock.acceptedAllTime}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-gray-500">Awaiting review</p>
+              <p className="text-2xl font-semibold text-gray-900">{signStock.pendingReview}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void setStockCount()}
+              className="ml-auto rounded-full border border-gray-300 px-4 py-1.5 text-gray-700"
+            >
+              Set counted stock…
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            Reconciliation is manual on purpose: accepting a sign never moves this number. The SKU
+            (YLL-YARD-SIGN) also appears on the Inventory stock page.
+          </p>
+        </section>
+      )}
 
       <section>
         <h2 className="mb-2 font-semibold text-gray-900">Workers</h2>
