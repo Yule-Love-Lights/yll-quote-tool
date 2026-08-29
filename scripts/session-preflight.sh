@@ -51,6 +51,16 @@ else
   fi
 fi
 
+# Frozen-log drift: an older PR that still appends to session_log*.md can merge
+# after the fragment migration and strand real history in a file nothing reads.
+if [ -f scripts/migrate-journal.py ]; then
+  if python scripts/migrate-journal.py --check >/dev/null 2>&1; then
+    pass "journal fragments match the frozen logs"
+  else
+    fail "frozen-log drift: run python scripts/migrate-journal.py, then commit the regenerated fragments"
+  fi
+fi
+
 if [ "$OVERALL_PASS" = true ]; then
   echo "RESULT: PASS"
   exit 0
