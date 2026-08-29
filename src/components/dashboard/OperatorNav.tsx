@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
+import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { readRoleHint, writeRoleHint } from './roleHint';
 import { ViewAsMenu, useViewSwitcher } from './ViewAsMenu';
@@ -14,13 +15,14 @@ import { ViewAsMenu, useViewSwitcher } from './ViewAsMenu';
 // rewriting this component. Today every operator's view is 'office' and the
 // list is unchanged.
 
-// Small numeric pill for the Inbox nav item — red once something's overdue
-// (>4h, matching the /inbox escalation convention), otherwise a neutral tone
-// so a merely-waiting lead doesn't read as urgent.
-function NavBadge({ count, overdue }: { count: number; overdue: boolean }) {
+// Small numeric pill for a nav item — red once something's overdue,
+// otherwise a neutral tone so a merely-waiting item doesn't read as urgent.
+// Two callers today: Inbox (overdue = a lead waiting >4h, the /inbox
+// escalation convention) and Tasks (overdue = past its due time).
+function NavBadge({ count, overdue, label }: { count: number; overdue: boolean; label: string }) {
   return (
     <span
-      aria-label={`${count} lead${count === 1 ? '' : 's'} waiting in the inbox`}
+      aria-label={label}
       className="ml-1.5 inline-flex items-center justify-center min-w-[1.15rem] h-[1.15rem] px-1 rounded-full text-[10px] font-semibold leading-none"
       style={{ background: overdue ? 'var(--op-danger)' : 'var(--op-text-2)', color: 'var(--brand-cream)' }}
     >
@@ -74,6 +76,24 @@ export function OperatorNav({
   // because one fetch blipped, which would silently strand a signed-in
   // staffer with no way to sign out until their next page load.
   const [sessionState, setSessionState] = useState<SessionState>('unknown');
+  // Open/overdue Office Task counts for the Tasks badge. Fetched here rather
+  // than passed down like the Inbox counts, because the Tasks badge has to be
+  // right on EVERY page and only the dashboard fetches inbox data server-side.
+  // GET /api/tasks/count is one small query over due_at, reads no task
+  // content, and answers zeroes rather than an error when the task schema is
+  // unavailable — so a task-side problem can never put an error state on an
+  // unrelated screen. null until it answers: no badge, no layout shift beyond
+  // the pill itself appearing, same as Inbox's absent-badge case.
+  const [taskCounts, setTaskCounts] = useState<{ open: number; overdue: number } | null>(null);
+  // Orders the count reads against each other. Mirrors OfficeTasksCard's own
+  // loadSequenceRef/applyTaskLoad pattern, which is the house idiom for
+  // exactly this: once a component can have two reads of the same endpoint in
+  // flight, "did this component unmount" is a different question from "is this
+  // still the newest answer". Caught by the adversarial delta-verify on the
+  // fix round, and reproduced in a browser before it was fixed: holding the
+  // mount fetch for 4 seconds while completing a task moved the badge to the
+  // right number and then let the stale response drag it back, red.
+  const countSequenceRef = useRef(0);
   // The caller's own role, from the same session answer. Drives the
   // admin-only View-as control below; null (pre-fetch, signed out, retry
   // exhausted) renders no control, so the safe default is "not admin".
@@ -130,6 +150,50 @@ export function OperatorNav({
     };
   }, []);
 
+  // Deliberately gated on a CONFIRMED signed-in session, unlike the
+  // Sign-out slot above: this one is a data read, so firing it while the
+  // session is still 'unknown' would mean a guaranteed 401 on the login page
+  // every time. One attempt, no retry — a missing badge is a non-event, and
+  // the next page navigation tries again.
+  useEffect(() => {
+    if (sessionState !== 'signedIn') return;
+    let cancelled = false;
+
+    const load = () => {
+      const sequence = ++countSequenceRef.current;
+      fetch('/api/tasks/count')
+        .then(res => (res.ok ? (res.json() as Promise<{ open?: number; overdue?: number }>) : null))
+        .then(body => {
+          // Two separate guards, and they answer different questions:
+          // `cancelled` means this component went away, `sequence` means a
+          // newer read has already been issued and this answer is stale. A
+          // slow mount fetch resolving after a fast post-mutation one must
+          // NOT win, or the badge silently goes backwards.
+          if (cancelled || sequence !== countSequenceRef.current || !body) return;
+          const open = typeof body.open === 'number' ? body.open : 0;
+          const overdue = typeof body.overdue === 'number' ? body.overdue : 0;
+          setTaskCounts({ open, overdue });
+        })
+        .catch(() => {
+          // Leave the badge as it is. Nothing on this page depends on it.
+        });
+    };
+
+    load();
+
+    // Premerge staff-lens MED: the count was fetched once per page mount and
+    // never again, so completing a task on the dashboard card left the pill
+    // showing a stale number — and, worse, a stale RED — until the staffer
+    // happened to navigate. The card announces every successful mutation on
+    // this channel; re-read the real count rather than adjusting a local
+    // number, so the badge and the database cannot drift apart.
+    window.addEventListener(OFFICE_TASKS_CHANGED, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(OFFICE_TASKS_CHANGED, load);
+    };
+  }, [sessionState]);
+
   // Only a CONFIRMED signedOut hides the control. 'unknown' stays visible.
   const hideSignOut = sessionState === 'signedOut';
 
@@ -154,10 +218,32 @@ export function OperatorNav({
     }
   };
 
-  const inboxBadge = (item: NavItem) =>
-    item.href === '/inbox' && inboxOpenLeads > 0 ? (
-      <NavBadge count={inboxOpenLeads} overdue={inboxOverdue > 0} />
-    ) : null;
+  const badgeFor = (item: NavItem) => {
+    if (item.href === '/inbox' && inboxOpenLeads > 0) {
+      return (
+        <NavBadge
+          count={inboxOpenLeads}
+          overdue={inboxOverdue > 0}
+          label={`${inboxOpenLeads} lead${inboxOpenLeads === 1 ? '' : 's'} waiting in the inbox`}
+        />
+      );
+    }
+    if (item.href === '/tasks' && taskCounts && taskCounts.open > 0) {
+      const { open, overdue } = taskCounts;
+      return (
+        <NavBadge
+          count={open}
+          overdue={overdue > 0}
+          label={
+            overdue > 0
+              ? `${open} open task${open === 1 ? '' : 's'}, ${overdue} past due`
+              : `${open} open task${open === 1 ? '' : 's'}`
+          }
+        />
+      );
+    }
+    return null;
+  };
 
   return (
     <nav
@@ -209,12 +295,12 @@ export function OperatorNav({
               1280px: 0 overflow (xl:px-3 restores full padding — this is
                        the original pre-Schedule design's natural fit)
             */}
-        <ul className="hidden lg:flex items-center gap-0.5 text-sm">
+        <ul className="hidden lg:flex items-center gap-0 text-sm">
           {items.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="lg:px-1.5 xl:px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
+              <Link href={item.href} className="lg:px-0.5 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
                 {item.label}
-                {inboxBadge(item)}
+                {badgeFor(item)}
               </Link>
             </li>
           ))}
@@ -337,7 +423,7 @@ export function OperatorNav({
                 }}
               >
                 {item.label}
-                {inboxBadge(item)}
+                {badgeFor(item)}
               </Link>
             </li>
           ))}

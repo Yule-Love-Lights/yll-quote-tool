@@ -55,6 +55,16 @@ export type OfficeTask = {
    * no meaningful "personal" framing — see sourceLabel in OfficeTasksCard).
    */
   createdByLabel: string | null;
+  /**
+   * Who the task is assigned to, as a display label: 'You' for the viewer,
+   * a resolved name or email for anyone else, 'a teammate' when that lookup
+   * fails, and null when nothing is assigned. Assignment is a LABEL, never
+   * an access control: the everything-is-shared ruling stands, so every
+   * operator still sees and can act on every task regardless of this field.
+   * Populated for any source_system (the S75 call backfill assigned 9 of 19
+   * call_commitment tasks to reps by email match).
+   */
+  assignedToLabel: string | null;
 };
 
 type Row = {
@@ -71,17 +81,30 @@ type Row = {
   completed_at: string | null;
   dismissed_at: string | null;
   created_by: string | null;
+  assigned_to: string | null;
 };
 
 const TASK_SELECT =
-  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by';
+  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by,assigned_to';
 
-function toOfficeTask(row: Row, actorId: string, creatorLabels: ReadonlyMap<string, string>): OfficeTask {
-  let createdByLabel: string | null = null;
-  if (row.source_system === 'manual') {
-    if (row.created_by === actorId) createdByLabel = 'You';
-    else if (row.created_by) createdByLabel = creatorLabels.get(row.created_by) ?? 'a teammate';
-  }
+/**
+ * A display label for one operator id: 'You' for the viewer, a resolved name
+ * or email for anyone else, and 'a teammate' when the lookup did not resolve.
+ * null for a null id.
+ */
+function labelFor(id: string | null, actorId: string, labels: ReadonlyMap<string, string>): string | null {
+  if (!id) return null;
+  if (id === actorId) return 'You';
+  return labels.get(id) ?? 'a teammate';
+}
+
+function toOfficeTask(row: Row, actorId: string, userLabels: ReadonlyMap<string, string>): OfficeTask {
+  // createdByLabel stays manual-only on purpose: it drives the "Personal"
+  // badge, which has no meaning for a call-derived task. assignedToLabel is
+  // computed for EVERY source_system, because a call_commitment task is
+  // exactly the kind that carries an assignee.
+  const createdByLabel =
+    row.source_system === 'manual' ? labelFor(row.created_by, actorId, userLabels) : null;
   return {
     id: row.id,
     sourceSystem: row.source_system,
@@ -96,35 +119,39 @@ function toOfficeTask(row: Row, actorId: string, creatorLabels: ReadonlyMap<stri
     completedAt: row.completed_at,
     dismissedAt: row.dismissed_at,
     createdByLabel,
+    assignedToLabel: labelFor(row.assigned_to, actorId, userLabels),
   };
 }
 
 /**
- * Resolves a display label for every distinct manual-task creator in `rows`
- * OTHER than `actorId` (the viewer's own tasks get the free 'You' label in
- * toOfficeTask, no lookup needed). Bounded by the task list itself (this
- * repo's Office Tasks is a small working list, not a paginated table), so a
- * per-id admin.getUserById lookup is cheap here — no need to page through
- * the WHOLE auth population the way adminUsers.ts's listAllRawUsers does
- * for the Settings → Accounts screen. Best-effort per id: a lookup failure
- * just leaves that creator unresolved (toOfficeTask's 'a teammate'
- * fallback), never fails the whole list read.
+ * Resolves a display label for every distinct operator id referenced by
+ * `rows` OTHER than `actorId` (the viewer's own ids get the free 'You' label
+ * in labelFor, no lookup needed). Two kinds of id are collected: the
+ * created_by of a MANUAL task (drives the "Personal" badge, meaningless on a
+ * call-derived task) and the assigned_to of ANY task (a call_commitment task
+ * is exactly the kind that carries an assignee). Deduplicated across both, so
+ * one person who both created and is assigned costs one lookup, not two.
+ *
+ * Bounded by the task list itself (this repo's Office Tasks is a small
+ * working list, not a paginated table), so a per-id admin.getUserById lookup
+ * is cheap here — no need to page through the WHOLE auth population the way
+ * adminUsers.ts's listAllRawUsers does for the Settings → Accounts screen.
+ * Best-effort per id: a lookup failure just leaves that id unresolved
+ * (labelFor's 'a teammate' fallback), never fails the whole list read.
  */
-async function resolveCreatorLabels(
+async function resolveUserLabels(
   db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   rows: Row[],
   actorId: string,
 ): Promise<Map<string, string>> {
-  const distinctCreators = Array.from(
-    new Set(
-      rows
-        .filter((r) => r.source_system === 'manual' && r.created_by && r.created_by !== actorId)
-        .map((r) => r.created_by as string),
-    ),
-  );
+  const wanted = new Set<string>();
+  for (const r of rows) {
+    if (r.source_system === 'manual' && r.created_by && r.created_by !== actorId) wanted.add(r.created_by);
+    if (r.assigned_to && r.assigned_to !== actorId) wanted.add(r.assigned_to);
+  }
   const labels = new Map<string, string>();
   await Promise.all(
-    distinctCreators.map(async (id) => {
+    Array.from(wanted).map(async (id) => {
       try {
         const { data, error } = await db.auth.admin.getUserById(id);
         if (error || !data?.user) return;
@@ -198,8 +225,54 @@ export async function listOfficeTasks(
     };
   }
   const rows = (data ?? []) as Row[];
-  const creatorLabels = await resolveCreatorLabels(db, rows, actorId);
-  return { ok: true, tasks: rows.map((row) => toOfficeTask(row, actorId, creatorLabels)) };
+  const userLabels = await resolveUserLabels(db, rows, actorId);
+  return { ok: true, tasks: rows.map((row) => toOfficeTask(row, actorId, userLabels)) };
+}
+
+export type OfficeTaskCounts = { open: number; overdue: number };
+
+export type CountActiveOfficeTasksResult =
+  | { ok: true; counts: OfficeTaskCounts }
+  | { ok: false; reason: 'not_ready' | 'unavailable' };
+
+/**
+ * The two numbers the nav badge needs: how many tasks are active (open +
+ * blocked, the same set listOfficeTasks' 'active' view returns) and how many
+ * of those are past their due time.
+ *
+ * ONE round trip, selecting only due_at. Two head-only counts would also
+ * work, but this is a single query and the active list is inherently small
+ * (a working list, not a paginated table — the same assumption
+ * resolveUserLabels above already rests on). It reads no titles, no details
+ * and no operator ids, so it does no auth lookups and exposes nothing a
+ * viewer could not already read from GET /api/tasks.
+ *
+ * Overdue is computed against the server clock at read time, not the
+ * client's, so a stale or skewed browser clock cannot turn the badge red.
+ */
+export async function countActiveOfficeTasks(): Promise<CountActiveOfficeTasksResult> {
+  const db = getSupabaseServiceClient();
+  if (!db) return { ok: false, reason: 'unavailable' };
+
+  const { data, error } = await db
+    .from('office_tasks')
+    .select('due_at')
+    .in('status', ['open', 'blocked']);
+
+  if (error) {
+    return { ok: false, reason: isOfficeTasksSchemaUnavailable(error) ? 'not_ready' : 'unavailable' };
+  }
+
+  const rows = (data ?? []) as { due_at: string }[];
+  const now = Date.now();
+  let overdue = 0;
+  for (const row of rows) {
+    const due = new Date(row.due_at).getTime();
+    // An unparseable due_at is not evidence of lateness — leave it out
+    // rather than turning the badge red on bad data.
+    if (!Number.isNaN(due) && due < now) overdue += 1;
+  }
+  return { ok: true, counts: { open: rows.length, overdue } };
 }
 
 export type CreateOfficeTaskInput = {

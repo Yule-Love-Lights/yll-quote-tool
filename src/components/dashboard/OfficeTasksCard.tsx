@@ -1,6 +1,8 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { notifyOfficeTasksChanged } from './officeTasksEvents';
 
 // Office Tasks — the single task list (calls merge plan S1). Ported from
 // yll-call-copilot's OfficeTasksCard.tsx onto this dashboard, adapted for
@@ -19,6 +21,19 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 // it was, shown via personalLabel below, next to sourceLabel's "From a
 // call" badge for non-manual tasks.
 //
+// TWO VARIANTS, ONE IMPLEMENTATION (2026-08-29). The same component renders
+// the dashboard card and the /tasks page, because both need identical fetch,
+// action and idempotency behaviour and a second copy would drift:
+//
+//   variant="card" (the default, src/app/page.tsx) — the working few. The
+//     next CARD_TASK_LIMIT tasks by due time, the add-task form, and a link
+//     out to /tasks. No history, no filters: the dashboard is a glance, not
+//     a workbench.
+//   variant="page" (src/app/tasks/page.tsx) — the whole list. Active and
+//     History tabs, filter by source and by assignee, and a sort control.
+//
+// Everything below that is not explicitly variant-gated is shared by both.
+//
 // The idempotency-key-per-action pattern (createKeyRef / actionKeysRef) is
 // what makes the server's idempotency contract real end to end: a network
 // failure or a double-tap reuses the SAME key, so the retry either lands
@@ -33,6 +48,18 @@ type TaskSourceSystem = 'manual' | 'call_commitment' | 'quote_tool';
 type TaskStatus = 'open' | 'blocked' | 'completed' | 'dismissed';
 type TaskAction = 'blocked' | 'completed' | 'dismissed';
 type ViewMode = 'active' | 'history';
+type Variant = 'card' | 'page';
+/** 'all' plus one entry per source system actually present in the loaded list. */
+type SourceFilter = 'all' | TaskSourceSystem;
+/** 'all', the sentinel for nothing assigned, or an assignee's display label. */
+type OwnerFilter = string;
+type SortMode = 'due' | 'created' | 'resolved';
+
+/** The owner-filter value meaning "nobody is assigned to this". A literal
+ *  sentinel rather than null so it can live in a <select> value. */
+const UNASSIGNED = '\u0000unassigned';
+/** How many tasks the dashboard card shows before sending you to /tasks. */
+export const CARD_TASK_LIMIT = 3;
 type LoadState = 'loading' | 'ready' | 'error' | 'unavailable';
 
 interface OfficeTask {
@@ -48,6 +75,7 @@ interface OfficeTask {
   completedAt: string | null;
   dismissedAt: string | null;
   createdByLabel: string | null;
+  assignedToLabel: string | null;
 }
 
 interface ActionEditor {
@@ -130,6 +158,74 @@ export function personalLabel(sourceSystem: TaskSourceSystem, createdByLabel: st
   return createdByLabel ? `Personal (${createdByLabel})` : 'Personal';
 }
 
+/**
+ * The assignee chip's text. Assignment is a LABEL and never an access
+ * control (the everything-is-shared ruling): anyone can still act on a task
+ * that says someone else's name, which is why the chip reads "Assigned to"
+ * rather than anything possessive.
+ */
+export function assignedLabel(assignedToLabel: string | null): string | null {
+  if (!assignedToLabel) return null;
+  return assignedToLabel === 'You' ? 'Assigned to you' : `Assigned to ${assignedToLabel}`;
+}
+
+/** Human name for a source system, used by the /tasks source filter. */
+export function sourceFilterLabel(source: TaskSourceSystem): string {
+  if (source === 'call_commitment') return 'From a call';
+  if (source === 'quote_tool') return 'From the quote tool';
+  return 'Personal';
+}
+
+/**
+ * Filter + sort, pure so it can be tested without a DOM.
+ *
+ * Note what this deliberately does NOT do: drop a task whose source system
+ * the filter has no option for. The source options are built from what the
+ * loaded list actually contains (see sourceOptions below), so a future
+ * source system shows up as its own option rather than vanishing from every
+ * non-"all" selection.
+ */
+export function applyTaskViewControls(
+  tasks: OfficeTask[],
+  controls: { source: SourceFilter; owner: OwnerFilter; sort: SortMode },
+): OfficeTask[] {
+  const filtered = tasks.filter((task) => {
+    if (controls.source !== 'all' && task.sourceSystem !== controls.source) return false;
+    if (controls.owner !== 'all') {
+      const owner = task.assignedToLabel;
+      if (controls.owner === UNASSIGNED ? owner !== null : owner !== controls.owner) return false;
+    }
+    return true;
+  });
+
+  const time = (value: string | null) => {
+    if (!value) return null;
+    const parsed = new Date(value).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  };
+  // An unsortable value sinks to the bottom rather than jumping to the top,
+  // in every mode — a task with a broken timestamp must never outrank a real
+  // one at the head of the list.
+  const rank = (task: OfficeTask): number | null => {
+    if (controls.sort === 'due') return time(task.dueAt);
+    if (controls.sort === 'created') return time(task.createdAt);
+    return time(task.completedAt ?? task.dismissedAt);
+  };
+  // 'due' reads soonest-first (the working order); the other two read
+  // most-recent-first.
+  const direction = controls.sort === 'due' ? 1 : -1;
+
+  return [...filtered].sort((a, b) => {
+    const left = rank(a);
+    const right = rank(b);
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    if (left === right) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    return (left - right) * direction;
+  });
+}
+
 async function requestTasks(view: ViewMode): Promise<TaskLoadResult> {
   const url = view === 'history' ? '/api/tasks?status=history' : '/api/tasks';
   try {
@@ -149,8 +245,12 @@ async function requestTasks(view: ViewMode): Promise<TaskLoadResult> {
   }
 }
 
-export default function OfficeTasksCard() {
+export default function OfficeTasksCard({ variant = 'card' }: { variant?: Variant } = {}) {
+  const isPage = variant === 'page';
   const [view, setView] = useState<ViewMode>('active');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
+  const [sort, setSort] = useState<SortMode>('due');
   const [tasks, setTasks] = useState<OfficeTask[] | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [loadMessage, setLoadMessage] = useState('Loading tasks…');
@@ -204,6 +304,60 @@ export default function OfficeTasksCard() {
     };
   }, [view, applyTaskLoad]);
 
+  // Filter options are built from the LOADED LIST, not from a hard-coded
+  // enumeration, so nothing a task can actually be is missing from the
+  // control that is supposed to select it.
+  const sourceOptions = useMemo(() => {
+    const present = new Set<TaskSourceSystem>();
+    for (const task of tasks ?? []) present.add(task.sourceSystem);
+    return Array.from(present).sort();
+  }, [tasks]);
+
+  const ownerOptions = useMemo(() => {
+    const names = new Set<string>();
+    let hasUnassigned = false;
+    for (const task of tasks ?? []) {
+      if (task.assignedToLabel) names.add(task.assignedToLabel);
+      else hasUnassigned = true;
+    }
+    return { names: Array.from(names).sort(), hasUnassigned };
+  }, [tasks]);
+
+  // A selection can outlive the list it was made against: pick an assignee in
+  // Open work, switch to History, and that person may not appear there. Rather
+  // than RESETTING the state in an effect (a cascading render, and the
+  // react-hooks/set-state-in-effect rule is a CI error here), the out-of-range
+  // case is simply DERIVED back to 'all'. The select shows 'all' too, because
+  // both read the same value — and switching back to a view where the option
+  // exists again restores the original choice, which is the friendlier
+  // behaviour of the two.
+  const effectiveSource: SourceFilter =
+    sourceFilter !== 'all' && !sourceOptions.includes(sourceFilter) ? 'all' : sourceFilter;
+  const ownerStillPresent =
+    ownerFilter === 'all' ||
+    (ownerFilter === UNASSIGNED ? ownerOptions.hasUnassigned : ownerOptions.names.includes(ownerFilter));
+  const effectiveOwner: OwnerFilter = ownerStillPresent ? ownerFilter : 'all';
+
+  // The card shows the server's own due-soonest order, capped. The page
+  // applies whatever the operator picked.
+  const visibleTasks = useMemo(() => {
+    if (!tasks) return null;
+    if (!isPage) return tasks.slice(0, CARD_TASK_LIMIT);
+    return applyTaskViewControls(tasks, { source: effectiveSource, owner: effectiveOwner, sort });
+  }, [tasks, isPage, effectiveSource, effectiveOwner, sort]);
+
+  // True when the operator's own filters, not an empty database, are why
+  // nothing is on screen. Worth distinguishing: the fix is different.
+  const hiddenByFilters = (tasks?.length ?? 0) > 0 && (visibleTasks?.length ?? 0) === 0;
+
+  function changeView(next: ViewMode) {
+    setView(next);
+    // History's natural order is most-recently-finished; the working list's
+    // is soonest-due. Switching tabs moves the sort to that tab's default
+    // rather than leaving a mode that reads as arbitrary there.
+    setSort(next === 'history' ? 'resolved' : 'due');
+  }
+
   function resetCreateIntent() {
     createKeyRef.current = null;
     setCreateError(null);
@@ -251,6 +405,8 @@ export default function OfficeTasksCard() {
       setDetail('');
       setDueAt('');
       setAnnouncement(`Created task: ${normalizedTitle}.`);
+      // The nav badge holds its own count; tell it the list moved.
+      notifyOfficeTasksChanged();
       // A new task is always 'open' — jump back to the active view so it's
       // visible immediately, even if the operator was browsing history.
       if (view === 'history') setView('active');
@@ -310,6 +466,7 @@ export default function OfficeTasksCard() {
         return current.filter((candidate) => candidate.id !== task.id);
       });
       setActionEditor((current) => (current?.taskId === task.id ? null : current));
+      notifyOfficeTasksChanged();
       setAnnouncement(
         action === 'blocked'
           ? `Blocked task: ${task.title}.`
@@ -338,16 +495,25 @@ export default function OfficeTasksCard() {
 
   return (
     <section
-      className="rounded-lg border p-4 mb-8"
-      style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
+      className={isPage ? '' : 'rounded-lg border p-4 mb-8'}
+      style={isPage ? undefined : { background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
       aria-labelledby="office-tasks-heading"
     >
       <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>
-            Office Tasks
-          </p>
-          <h2 id="office-tasks-heading" className="mt-1 text-base font-semibold" style={{ color: 'var(--op-text)' }}>
+          {/* The page already carries "Office Tasks" as its own h1, so this
+              eyebrow would just say it twice there. The card needs it: on the
+              dashboard it is the only thing naming the section. */}
+          {!isPage ? (
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>
+              Office Tasks
+            </p>
+          ) : null}
+          <h2
+            id="office-tasks-heading"
+            className={isPage ? 'mt-1 text-xl font-semibold' : 'mt-1 text-base font-semibold'}
+            style={{ color: 'var(--op-text)' }}
+          >
             {view === 'history' ? 'Completed & dismissed' : 'Open work'}
           </h2>
           {view === 'active' && (
@@ -365,16 +531,97 @@ export default function OfficeTasksCard() {
               {tasks.length} active
             </span>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setView((v) => (v === 'active' ? 'history' : 'active'))}
-            className="min-h-11 rounded-md border px-3 py-2 text-sm font-semibold"
-            style={{ borderColor: 'var(--op-border-mid)', color: 'var(--op-text)', background: 'var(--op-bg-raised)' }}
-          >
-            {view === 'active' ? 'View history' : 'Back to open work'}
-          </button>
+          {/* The card has no history toggle: it links to the page instead
+              (see the footer below), which is the whole point of having a
+              page. The page carries the tabs. */}
+          {isPage ? (
+            <div className="flex gap-2" role="tablist" aria-label="Task list view">
+              {(['active', 'history'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === tab}
+                  onClick={() => changeView(tab)}
+                  className="min-h-11 rounded-md border px-3 py-2 text-sm font-semibold"
+                  style={
+                    view === tab
+                      ? { borderColor: 'var(--brand-evergreen)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
+                      : { borderColor: 'var(--op-border-mid)', color: 'var(--op-text)', background: 'var(--op-bg-raised)' }
+                  }
+                >
+                  {tab === 'active' ? 'Open work' : 'History'}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
+
+      {/* Filter and sort, page only. Rendered once the list is loaded, because
+          every option is derived from what the list actually contains. */}
+      {isPage && loadState === 'ready' && (tasks?.length ?? 0) > 0 ? (
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label htmlFor="office-task-source-filter" className="block text-xs font-semibold" style={{ color: 'var(--op-text-dim)' }}>
+              Source
+            </label>
+            <select
+              id="office-task-source-filter"
+              value={effectiveSource}
+              onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
+              className="min-h-11 rounded-md border px-2 py-2 text-sm"
+              style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+            >
+              <option value="all">All sources</option>
+              {sourceOptions.map((source) => (
+                <option key={source} value={source}>
+                  {sourceFilterLabel(source)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="office-task-owner-filter" className="block text-xs font-semibold" style={{ color: 'var(--op-text-dim)' }}>
+              Assigned to
+            </label>
+            <select
+              id="office-task-owner-filter"
+              value={effectiveOwner}
+              onChange={(event) => setOwnerFilter(event.target.value)}
+              className="min-h-11 rounded-md border px-2 py-2 text-sm"
+              style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+            >
+              <option value="all">Anyone</option>
+              {ownerOptions.names.map((name) => (
+                <option key={name} value={name}>
+                  {name === 'You' ? 'You' : name}
+                </option>
+              ))}
+              {ownerOptions.hasUnassigned ? <option value={UNASSIGNED}>Nobody yet</option> : null}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="office-task-sort" className="block text-xs font-semibold" style={{ color: 'var(--op-text-dim)' }}>
+              Sort
+            </label>
+            <select
+              id="office-task-sort"
+              value={sort}
+              onChange={(event) => setSort(event.target.value as SortMode)}
+              className="min-h-11 rounded-md border px-2 py-2 text-sm"
+              style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+            >
+              {view === 'history' ? <option value="resolved">Recently finished</option> : null}
+              <option value="due">Due soonest</option>
+              <option value="created">Recently added</option>
+            </select>
+          </div>
+          <p className="ml-auto text-sm" style={{ color: 'var(--op-text-dim)' }} aria-live="polite">
+            Showing {visibleTasks?.length ?? 0} of {tasks?.length ?? 0}
+          </p>
+        </div>
+      ) : null}
 
       {view === 'active' && (
         <form className="mt-4 grid gap-3" onSubmit={createTask} aria-busy={creating}>
@@ -472,13 +719,34 @@ export default function OfficeTasksCard() {
             </button>
           ) : null}
         </div>
+      ) : hiddenByFilters ? (
+        <div className="mt-4 rounded-md p-3 text-sm" style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}>
+          <p>
+            No tasks match these filters. There {tasks?.length === 1 ? 'is 1 task' : `are ${tasks?.length ?? 0} tasks`}{' '}
+            in this view.
+          </p>
+          {/* Premerge staff-lens LOW: clearing two dropdowns separately to get
+              back to a list is busywork, and the empty screen is exactly where
+              someone needs the way out. */}
+          <button
+            type="button"
+            onClick={() => {
+              setSourceFilter('all');
+              setOwnerFilter('all');
+            }}
+            className="mt-2 min-h-11 rounded-md border px-3 py-2 font-semibold"
+            style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+          >
+            Clear filters
+          </button>
+        </div>
       ) : tasks?.length === 0 ? (
         <p className="mt-4 rounded-md p-3 text-sm" style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}>
           {view === 'history' ? 'No completed or dismissed tasks yet.' : 'No open or blocked tasks. New tasks will appear here.'}
         </p>
       ) : (
         <ul className="mt-4 grid gap-3">
-          {tasks?.map((task) => {
+          {visibleTasks?.map((task) => {
             const pending = pendingTaskIds.has(task.id);
             const editing = actionEditor?.taskId === task.id ? actionEditor : null;
             const resolvedTime = view === 'history' ? resolvedTimeFor(task) : null;
@@ -526,6 +794,15 @@ export default function OfficeTasksCard() {
                           title="Visible to every operator. Anyone can pick this up."
                         >
                           {personalLabel(task.sourceSystem, task.createdByLabel)}
+                        </span>
+                      ) : null}
+                      {assignedLabel(task.assignedToLabel) ? (
+                        <span
+                          className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                          style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}
+                          title="A label, not a lock. Anyone can still work this task."
+                        >
+                          {assignedLabel(task.assignedToLabel)}
                         </span>
                       ) : null}
                     </div>
@@ -648,6 +925,20 @@ export default function OfficeTasksCard() {
           })}
         </ul>
       )}
+
+      {/* The card's way out to everything it does not show: history, the
+          rest of the list, and the filters. Rendered whatever the load state,
+          so a failed fetch on the dashboard still leaves a route to the page. */}
+      {!isPage ? (
+        <p className="mt-4 text-sm">
+          <Link href="/tasks" className="font-semibold underline" style={{ color: 'var(--brand-evergreen-3)' }}>
+            See all tasks
+          </Link>
+          {(tasks?.length ?? 0) > CARD_TASK_LIMIT ? (
+            <span style={{ color: 'var(--op-text-dim)' }}> ({(tasks?.length ?? 0) - CARD_TASK_LIMIT} more not shown)</span>
+          ) : null}
+        </p>
+      ) : null}
 
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {announcement}
