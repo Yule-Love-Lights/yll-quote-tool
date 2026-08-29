@@ -2038,12 +2038,29 @@ create table if not exists public.shifts (
   source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
   close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
   device_time     timestamptz,
+  -- Who made a manual admin entry or the last manual edit (2026-08-29,
+  -- migrations/2026-08-29-shifts-manual-by.sql). Null = only ever touched by
+  -- the crew member's own clock actions. Always a HUMAN identity; nothing
+  -- automated sets it — GPS never writes payroll.
+  manual_by       text,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
 
 create unique index if not exists shifts_one_open_per_person
   on public.shifts (crew_member_id) where clock_out_at is null;
+
+-- One person can never hold two overlapping shifts — DB-enforced (2026-08-29,
+-- migrations/2026-08-29-shifts-no-overlap.sql, Naldo's explicit go). An open
+-- shift occupies all time from its clock-in onward. Violations = 23P01,
+-- mapped to the 'overlap' refusal in src/lib/shifts.ts.
+create extension if not exists btree_gist;
+alter table public.shifts drop constraint if exists shifts_no_overlap;
+alter table public.shifts add constraint shifts_no_overlap
+  exclude using gist (
+    crew_member_id with =,
+    tstzrange(clock_in_at, coalesce(clock_out_at, 'infinity'::timestamptz), '[)') with &&
+  );
 
 create index if not exists shifts_crew_member_id_idx
   on public.shifts (crew_member_id);
