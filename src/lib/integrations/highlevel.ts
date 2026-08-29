@@ -93,7 +93,11 @@ function requireConfig(): { apiKey: string; locationId: string } {
 // CALL, not per logical operation.
 const GHL_TIMEOUT_MS = 10_000;
 
-async function ghlFetch<T>(
+// Exported for src/lib/calls/* (calls_merge_plan_2026-08.md slice S2):
+// reuse this file's auth/timeout/error-shape handling for the calls export
+// and transcription endpoints instead of standing up a second HighLevel
+// client, per the plan's decision to reconcile rather than duplicate.
+export async function ghlFetch<T>(
   path: string,
   init: RequestInit = {},
   version: string = API_VERSION_HEADER,
