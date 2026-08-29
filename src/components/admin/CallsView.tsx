@@ -50,6 +50,7 @@ type NoteSummary = {
   pending: number;
   skipped: number;
   quarantined: number;
+  untraceable: number;
   lastPostedAt: string | null;
   lastFailureCode: string | null;
 } | null;
@@ -259,6 +260,11 @@ export function CallsView() {
             {data.notes.lastFailureCode && (
               <span className="text-sm text-red-600">Last failure: {data.notes.lastFailureCode}</span>
             )}
+            {data.notes.untraceable > 0 && (
+              <span className="text-sm text-red-600">
+                {data.notes.untraceable} posted with no HighLevel id, so they cannot be found again automatically
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:max-w-2xl">
@@ -266,6 +272,7 @@ export function CallsView() {
             <StatTile label="Awaiting a note" value={data.notes.pending} />
             <StatTile label="Skipped" value={data.notes.skipped} />
             <StatTile label="Quarantined" value={data.notes.quarantined} />
+            <StatTile label="Untraceable" value={data.notes.untraceable} />
           </div>
         </div>
       )}

@@ -101,6 +101,12 @@ type NoteSummary = {
   pending: number;
   skipped: number;
   quarantined: number;
+  // Posted, but HighLevel returned no id we could read, so that note cannot
+  // be found again without hunting the CRM by hand. Counted separately
+  // because the first six notes went out exactly this way and the only
+  // signal was a console warning nobody reads. If a future response shape
+  // slips past noteIdFrom, this number moves and the page says so.
+  untraceable: number;
   lastPostedAt: string | null;
   lastFailureCode: string | null;
 };
@@ -118,23 +124,25 @@ type NoteSummary = {
 async function loadNoteSummary(supabase: SupabaseClient): Promise<NoteSummary | null> {
   const { data, error } = await supabase
     .from('call_transcripts')
-    .select('ghl_note_posted_at, ghl_note_skip_reason, ghl_note_quarantined_at, ghl_note_last_failure_code');
+    .select('ghl_note_posted_at, ghl_note_id, ghl_note_skip_reason, ghl_note_quarantined_at, ghl_note_last_failure_code');
   if (error) {
     if (isCallNotesSchemaUnavailable(error)) return null;
     throw error;
   }
 
   const summary: NoteSummary = {
-    posted: 0, pending: 0, skipped: 0, quarantined: 0, lastPostedAt: null, lastFailureCode: null,
+    posted: 0, pending: 0, skipped: 0, quarantined: 0, untraceable: 0, lastPostedAt: null, lastFailureCode: null,
   };
   for (const row of (data ?? []) as {
     ghl_note_posted_at: string | null;
+    ghl_note_id: string | null;
     ghl_note_skip_reason: string | null;
     ghl_note_quarantined_at: string | null;
     ghl_note_last_failure_code: string | null;
   }[]) {
     if (row.ghl_note_posted_at) {
       summary.posted++;
+      if (!row.ghl_note_id) summary.untraceable++;
       if (!summary.lastPostedAt || row.ghl_note_posted_at > summary.lastPostedAt) {
         summary.lastPostedAt = row.ghl_note_posted_at;
       }
