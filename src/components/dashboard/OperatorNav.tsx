@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
+import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { readRoleHint, writeRoleHint } from './roleHint';
 import { ViewAsMenu, useViewSwitcher } from './ViewAsMenu';
@@ -148,19 +149,33 @@ export function OperatorNav({
   useEffect(() => {
     if (sessionState !== 'signedIn') return;
     let cancelled = false;
-    fetch('/api/tasks/count')
-      .then(res => (res.ok ? (res.json() as Promise<{ open?: number; overdue?: number }>) : null))
-      .then(body => {
-        if (cancelled || !body) return;
-        const open = typeof body.open === 'number' ? body.open : 0;
-        const overdue = typeof body.overdue === 'number' ? body.overdue : 0;
-        setTaskCounts({ open, overdue });
-      })
-      .catch(() => {
-        // Leave the badge absent. Nothing on this page depends on it.
-      });
+
+    const load = () => {
+      fetch('/api/tasks/count')
+        .then(res => (res.ok ? (res.json() as Promise<{ open?: number; overdue?: number }>) : null))
+        .then(body => {
+          if (cancelled || !body) return;
+          const open = typeof body.open === 'number' ? body.open : 0;
+          const overdue = typeof body.overdue === 'number' ? body.overdue : 0;
+          setTaskCounts({ open, overdue });
+        })
+        .catch(() => {
+          // Leave the badge as it is. Nothing on this page depends on it.
+        });
+    };
+
+    load();
+
+    // Premerge staff-lens MED: the count was fetched once per page mount and
+    // never again, so completing a task on the dashboard card left the pill
+    // showing a stale number — and, worse, a stale RED — until the staffer
+    // happened to navigate. The card announces every successful mutation on
+    // this channel; re-read the real count rather than adjusting a local
+    // number, so the badge and the database cannot drift apart.
+    window.addEventListener(OFFICE_TASKS_CHANGED, load);
     return () => {
       cancelled = true;
+      window.removeEventListener(OFFICE_TASKS_CHANGED, load);
     };
   }, [sessionState]);
 

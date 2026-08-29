@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { notifyOfficeTasksChanged } from './officeTasksEvents';
 
 // Office Tasks — the single task list (calls merge plan S1). Ported from
 // yll-call-copilot's OfficeTasksCard.tsx onto this dashboard, adapted for
@@ -404,6 +405,8 @@ export default function OfficeTasksCard({ variant = 'card' }: { variant?: Varian
       setDetail('');
       setDueAt('');
       setAnnouncement(`Created task: ${normalizedTitle}.`);
+      // The nav badge holds its own count; tell it the list moved.
+      notifyOfficeTasksChanged();
       // A new task is always 'open' — jump back to the active view so it's
       // visible immediately, even if the operator was browsing history.
       if (view === 'history') setView('active');
@@ -463,6 +466,7 @@ export default function OfficeTasksCard({ variant = 'card' }: { variant?: Varian
         return current.filter((candidate) => candidate.id !== task.id);
       });
       setActionEditor((current) => (current?.taskId === task.id ? null : current));
+      notifyOfficeTasksChanged();
       setAnnouncement(
         action === 'blocked'
           ? `Blocked task: ${task.title}.`
@@ -716,10 +720,26 @@ export default function OfficeTasksCard({ variant = 'card' }: { variant?: Varian
           ) : null}
         </div>
       ) : hiddenByFilters ? (
-        <p className="mt-4 rounded-md p-3 text-sm" style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}>
-          No tasks match these filters. There {tasks?.length === 1 ? 'is 1 task' : `are ${tasks?.length ?? 0} tasks`} in
-          this view.
-        </p>
+        <div className="mt-4 rounded-md p-3 text-sm" style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}>
+          <p>
+            No tasks match these filters. There {tasks?.length === 1 ? 'is 1 task' : `are ${tasks?.length ?? 0} tasks`}{' '}
+            in this view.
+          </p>
+          {/* Premerge staff-lens LOW: clearing two dropdowns separately to get
+              back to a list is busywork, and the empty screen is exactly where
+              someone needs the way out. */}
+          <button
+            type="button"
+            onClick={() => {
+              setSourceFilter('all');
+              setOwnerFilter('all');
+            }}
+            className="mt-2 min-h-11 rounded-md border px-3 py-2 font-semibold"
+            style={{ borderColor: 'var(--op-border-mid)', background: 'var(--op-bg-raised)', color: 'var(--op-text)' }}
+          >
+            Clear filters
+          </button>
+        </div>
       ) : tasks?.length === 0 ? (
         <p className="mt-4 rounded-md p-3 text-sm" style={{ background: 'var(--op-bg)', color: 'var(--op-text-dim)' }}>
           {view === 'history' ? 'No completed or dismissed tasks yet.' : 'No open or blocked tasks. New tasks will appear here.'}
