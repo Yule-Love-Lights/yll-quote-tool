@@ -35,12 +35,15 @@ function formatActor(actor: string): string {
   return actor === 'system' ? 'an automatic rule' : `operator ${actor.slice(0, 8)}`;
 }
 
+// Reads as a sentence fragment after "Suppressed", which is how the row uses
+// it. The browser drive caught the first version rendering as "Suppressed
+// Before we started recording this", a capital mid-sentence and a clumsy line.
 function formatWhen(iso: string | null): string {
-  if (!iso) return 'Before we started recording this';
+  if (!iso) return 'at some point before we started keeping a record';
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
-    ? 'Unknown'
-    : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    ? 'at an unreadable date'
+    : `on ${d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`;
 }
 
 export default function SuppressedSendersPage() {
@@ -173,7 +176,7 @@ export default function SuppressedSendersPage() {
                     <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
                       {entry.kind === 'email' ? 'Email' : 'Phone'} · Suppressed{' '}
                       {formatWhen(entry.suppressedAt)}
-                      {entry.suppressedBy && <> by {formatActor(entry.suppressedBy)}</>}
+                      {entry.suppressedBy && <>, by {formatActor(entry.suppressedBy)}</>}
                       {entry.hasQuote && (
                         <>
                           {' '}

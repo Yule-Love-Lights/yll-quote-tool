@@ -31,6 +31,7 @@ import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
+import { shouldSuppressOnDismiss } from './dismissSuppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
@@ -1225,6 +1226,37 @@ export async function markItemHandledLocal(
  * unchanged: a benign `{ ok: true }` no-op, since under `.neq` a zero-row match
  * can only mean "already dismissed".
  */
+/**
+ * Do these identifiers belong to somebody we have quoted? (S75)
+ *
+ * The last line of defence before a dismiss silences a sender. Best-effort and
+ * fails CLOSED on any error: if we cannot prove they are NOT a customer, we do
+ * not suppress. Losing a suppression is a bit more inbox noise; a wrong
+ * suppression loses a customer's mail silently for months, which is what
+ * actually happened.
+ */
+async function identifiersBelongToACustomer(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  identifiers: (string | null)[],
+): Promise<boolean> {
+  if (!sb) return true;
+  const emails = identifiers
+    .filter((v): v is string => !!v && v.includes('@'))
+    .map((v) => v.trim().toLowerCase());
+  if (!emails.length) return false;
+  try {
+    const { data, error } = await sb
+      .from('quotes')
+      .select('id')
+      .in('customer_email', emails)
+      .limit(1);
+    if (error) return true; // cannot tell -> do not suppress
+    return (data?.length ?? 0) > 0;
+  } catch {
+    return true; // cannot tell -> do not suppress
+  }
+}
+
 export async function dismissItem(
   itemId: string,
   operatorId: string | null,
@@ -1244,7 +1276,7 @@ export async function dismissItem(
     : Array.isArray(expectedStatus)
       ? update.in('status', expectedStatus)
       : update.eq('status', expectedStatus))
-    .select('dashboard_contacts ( primary_email, primary_phone )')
+    .select('source, lead_kind, dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
@@ -1265,15 +1297,36 @@ export async function dismissItem(
     return { ok: true };
   }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
-  const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
-  // S75: carry WHO dismissed it and from WHICH item into the audit trail, so
-  // Settings -> Not a lead can say who silenced an address and when. Purely
-  // additive: the suppression write itself is unchanged.
-  if (c)
-    await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null], {
-      actor: operatorId,
-      inboxItemId: itemId,
+  const row = data as {
+    source?: string | null;
+    dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null };
+  } | null;
+  const c = row?.dashboard_contacts;
+  // S75 — the dismiss ALWAYS lands; this only decides whether the sender is
+  // silenced from here on. It used to be unconditional, which is how five
+  // paying customers ended up silenced by staff correctly dismissing our own
+  // "we sent a quote" rows and a lead forward. See dismissSuppression.ts for
+  // the traced cases. The check fails CLOSED: anything that looks like one of
+  // our customers keeps notifying us.
+  if (c) {
+    const identifiers = [c.primary_email ?? null, c.primary_phone ?? null];
+    const decision = shouldSuppressOnDismiss({
+      source: row?.source ?? null,
+      isKnownCustomer: await identifiersBelongToACustomer(sb, identifiers),
     });
+    if (decision.suppress) {
+      await addSuppressedSenders(identifiers, { actor: operatorId, inboxItemId: itemId });
+    } else {
+      // Say so in the activity trail rather than silently doing nothing, so a
+      // staffer wondering why a sender still notifies them can find the answer.
+      await sb.from('dashboard_activity').insert({
+        actor: operatorId ?? 'system',
+        action: 'dismiss_suppression_skipped',
+        inbox_item_id: itemId,
+        detail: { reason: decision.reason },
+      });
+    }
+  }
   // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
   // a real lead, so any pending nag anchored to it should die with it. Only on
   // the matched (real transition) path above, never the already-dismissed no-op.
