@@ -2038,6 +2038,11 @@ create table if not exists public.shifts (
   source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
   close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
   device_time     timestamptz,
+  -- Who made a manual admin entry or the last manual edit (2026-08-29,
+  -- migrations/2026-08-29-shifts-manual-by.sql). Null = only ever touched by
+  -- the crew member's own clock actions. Always a HUMAN identity; nothing
+  -- automated sets it — GPS never writes payroll.
+  manual_by       text,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );

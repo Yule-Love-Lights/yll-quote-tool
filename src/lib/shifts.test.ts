@@ -8,6 +8,7 @@ type ShiftRow = {
   source: 'pwa' | 'telegram' | 'office' | 'system';
   close_source: 'pwa' | 'telegram' | 'office' | 'system' | null;
   device_time: string | null;
+  manual_by: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -50,6 +51,7 @@ const OPEN_SHIFT: ShiftRow = {
   source: 'pwa',
   close_source: null,
   device_time: null,
+  manual_by: null,
   created_at: '2026-08-10T12:00:00.000Z',
   updated_at: '2026-08-10T12:00:00.000Z',
 };
@@ -62,6 +64,7 @@ const CLOSED_SHIFT: ShiftRow = {
   source: 'office',
   close_source: 'office',
   device_time: null,
+  manual_by: null,
   created_at: '2026-08-10T08:00:00.000Z',
   updated_at: '2026-08-10T10:00:00.000Z',
 };
@@ -76,6 +79,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
       insertRaceRow: null as ShiftRow | null,
+      afterSelect: null as (() => void) | null,
       breaks: [] as BreakRow[],
       breakUpdates: [] as Record<string, unknown>[],
       segments: [] as Record<string, unknown>[],
@@ -93,11 +97,12 @@ function makeInsertedRow(payload: Record<string, unknown>): ShiftRow {
   return {
     id: `generated-${stateRef.current.rows.length + 1}`,
     crew_member_id: String(payload.crew_member_id),
-    clock_in_at: now,
-    clock_out_at: null,
+    clock_in_at: (payload.clock_in_at as string | undefined) ?? now,
+    clock_out_at: (payload.clock_out_at as string | null | undefined) ?? null,
     source: payload.source as ShiftRow['source'],
-    close_source: null,
+    close_source: (payload.close_source as ShiftRow['close_source'] | undefined) ?? null,
     device_time: (payload.device_time as string | null | undefined) ?? null,
+    manual_by: (payload.manual_by as string | null | undefined) ?? null,
     created_at: now,
     updated_at: now,
   };
@@ -189,7 +194,33 @@ function makeDb() {
           }
           return builder;
         },
-        maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: stateRef.current.selectError }),
+        lt: (col: keyof ShiftRow, val: unknown) => {
+          filtered = filtered.filter((row) => {
+            const v = row[col];
+            return typeof v === 'string' && typeof val === 'string' && v < val;
+          });
+          return builder;
+        },
+        // The admin overlap check awaits the builder directly for a LIST.
+        then: (res: (v: { data: ShiftRow[]; error: DbError | null }) => unknown, rej?: (e: unknown) => unknown) =>
+          Promise.resolve({ data: filtered, error: stateRef.current.selectError }).then(res, rej),
+        maybeSingle: () => {
+          // A COPY, like a real DB read — otherwise the race-injection hook
+          // below would mutate the very object the caller just "read" and no
+          // CAS could ever be seen to fire.
+          const result = {
+            data: filtered[0] ? { ...filtered[0] } : null,
+            error: stateRef.current.selectError,
+          };
+          // Race-injection hook: lets a test mutate rows AFTER a read resolves
+          // but BEFORE the caller's next write, to prove a CAS actually guards.
+          const hook = stateRef.current.afterSelect;
+          if (hook) {
+            stateRef.current.afterSelect = null;
+            hook();
+          }
+          return Promise.resolve(result);
+        },
         insert: (payload: Record<string, unknown>) => {
           stateRef.current.inserted.push(payload);
 
@@ -273,6 +304,7 @@ beforeEach(() => {
     inserted: [],
     updated: [],
     insertRaceRow: null,
+    afterSelect: null,
     breaks: [],
     breakUpdates: [],
     segments: [],
@@ -285,7 +317,215 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-import { clockIn, clockOut, getOpenShift } from './shifts';
+import {
+  adminCreateShift,
+  adminUpdateShiftTimes,
+  clockIn,
+  clockOut,
+  getOpenShift,
+  ManualShiftRefusedError,
+} from './shifts';
+
+// ─── Manual admin entries (2026-08-29, Naldo's ruling) ──────────────────────
+// An admin reconstructs a forgotten shift by TYPING times; the GPS timeline is
+// reference only. Every refusal is typed so the route can answer honestly.
+
+async function expectRefused(p: Promise<unknown>, code: string) {
+  try {
+    await p;
+    throw new Error(`expected ManualShiftRefusedError(${code}) but nothing was thrown`);
+  } catch (e) {
+    expect(e).toBeInstanceOf(ManualShiftRefusedError);
+    expect((e as ManualShiftRefusedError).code).toBe(code);
+  }
+}
+
+describe('adminCreateShift', () => {
+  const actor = 'Naldo';
+
+  it('creates a closed manual shift stamped with the actor', async () => {
+    const got = await adminCreateShift({
+      crewMemberId: 'crew-2',
+      clockInAt: '2026-08-10T11:00:00.000Z',
+      clockOutAt: '2026-08-10T13:00:00.000Z',
+      actor,
+    });
+    expect(got.manualBy).toBe('Naldo');
+    expect(got.clockInAt).toBe('2026-08-10T11:00:00.000Z');
+    expect(got.clockOutAt).toBe('2026-08-10T13:00:00.000Z');
+    expect(stateRef.current.inserted).toEqual([
+      {
+        crew_member_id: 'crew-2',
+        clock_in_at: '2026-08-10T11:00:00.000Z',
+        clock_out_at: '2026-08-10T13:00:00.000Z',
+        source: 'office',
+        close_source: 'office',
+        manual_by: 'Naldo',
+      },
+    ]);
+  });
+
+  it('refuses clock-out at or before clock-in (invalid-times), inserting nothing', async () => {
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-2',
+        clockInAt: '2026-08-10T13:00:00.000Z',
+        clockOutAt: '2026-08-10T13:00:00.000Z',
+        actor,
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('refuses an overlap with an existing closed shift', async () => {
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-2',
+        clockInAt: '2026-08-10T09:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor,
+      }),
+      'overlap',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('refuses an overlap with an OPEN shift (still running counts as occupying all later time)', async () => {
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-1',
+        clockInAt: '2026-08-10T13:00:00.000Z',
+        clockOutAt: '2026-08-10T14:00:00.000Z',
+        actor,
+      }),
+      'overlap',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('allows a back-to-back shift that touches but does not overlap', async () => {
+    const got = await adminCreateShift({
+      crewMemberId: 'crew-2',
+      clockInAt: '2026-08-10T10:00:00.000Z',
+      clockOutAt: '2026-08-10T11:00:00.000Z',
+      actor,
+    });
+    expect(got.clockInAt).toBe('2026-08-10T10:00:00.000Z');
+  });
+});
+
+describe('adminUpdateShiftTimes', () => {
+  const actor = 'Jason';
+
+  it('updates the times, stamps the actor, and guards with a CAS on updated_at', async () => {
+    const got = await adminUpdateShiftTimes({
+      shiftId: 'shift-closed-1',
+      clockInAt: '2026-08-10T08:30:00.000Z',
+      clockOutAt: '2026-08-10T10:30:00.000Z',
+      actor,
+    });
+    expect(got.manualBy).toBe('Jason');
+    expect(got.clockInAt).toBe('2026-08-10T08:30:00.000Z');
+    expect(stateRef.current.updated).toEqual([
+      {
+        clock_in_at: '2026-08-10T08:30:00.000Z',
+        clock_out_at: '2026-08-10T10:30:00.000Z',
+        manual_by: 'Jason',
+      },
+    ]);
+  });
+
+  it('closing an OPEN shift records the office as the closer', async () => {
+    const got = await adminUpdateShiftTimes({
+      shiftId: 'shift-open-1',
+      clockInAt: '2026-08-10T12:00:00.000Z',
+      clockOutAt: '2026-08-10T15:00:00.000Z',
+      actor,
+    });
+    expect(got.clockOutAt).toBe('2026-08-10T15:00:00.000Z');
+    expect(stateRef.current.updated).toEqual([
+      {
+        clock_in_at: '2026-08-10T12:00:00.000Z',
+        clock_out_at: '2026-08-10T15:00:00.000Z',
+        close_source: 'office',
+        manual_by: 'Jason',
+      },
+    ]);
+  });
+
+  it("refuses an unknown shift id (not-found)", async () => {
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-nope',
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T09:00:00.000Z',
+        actor,
+      }),
+      'not-found',
+    );
+  });
+
+  it('refuses clock-out at or before clock-in (invalid-times)', async () => {
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-closed-1',
+        clockInAt: '2026-08-10T10:00:00.000Z',
+        clockOutAt: '2026-08-10T09:00:00.000Z',
+        actor,
+      }),
+      'invalid-times',
+    );
+  });
+
+  it("refuses times that would overlap the member's OTHER shift, while excluding itself", async () => {
+    stateRef.current.rows.push({
+      ...CLOSED_SHIFT,
+      id: 'shift-closed-2',
+      clock_in_at: '2026-08-10T06:00:00.000Z',
+      clock_out_at: '2026-08-10T07:30:00.000Z',
+    });
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-closed-1',
+        clockInAt: '2026-08-10T07:00:00.000Z',
+        clockOutAt: '2026-08-10T09:00:00.000Z',
+        actor,
+      }),
+      'overlap',
+    );
+  });
+
+  it('closing an OPEN shift also closes its running break, like clockOut does', async () => {
+    stateRef.current.breaks = [{ ...OPEN_BREAK }];
+    await adminUpdateShiftTimes({
+      shiftId: 'shift-open-1',
+      clockInAt: '2026-08-10T12:00:00.000Z',
+      clockOutAt: '2026-08-10T15:00:00.000Z',
+      actor,
+    });
+    expect(stateRef.current.breakUpdates).toHaveLength(1);
+    expect(stateRef.current.breakUpdates[0]).toMatchObject({ ended_at: '2026-08-10T15:00:00.000Z' });
+  });
+
+  it('refuses when the row changed between read and write (edit-race), writing nothing', async () => {
+    stateRef.current.afterSelect = () => {
+      const row = stateRef.current.rows.find((r) => r.id === 'shift-closed-1');
+      if (row) row.updated_at = '2026-08-10T10:00:01.000Z';
+    };
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-closed-1',
+        clockInAt: '2026-08-10T08:30:00.000Z',
+        clockOutAt: '2026-08-10T10:30:00.000Z',
+        actor,
+      }),
+      'edit-race',
+    );
+    const row = stateRef.current.rows.find((r) => r.id === 'shift-closed-1');
+    expect(row?.clock_in_at).toBe('2026-08-10T08:00:00.000Z');
+  });
+});
 
 describe('getOpenShift', () => {
   it('returns null when there is no open shift for the crew member', async () => {
@@ -301,6 +541,7 @@ describe('getOpenShift', () => {
       source: 'pwa',
       closeSource: null,
       deviceTime: null,
+      manualBy: null,
       createdAt: '2026-08-10T12:00:00.000Z',
       updatedAt: '2026-08-10T12:00:00.000Z',
     });
@@ -322,6 +563,7 @@ describe('clockIn', () => {
       source: 'telegram',
       closeSource: null,
       deviceTime: null,
+      manualBy: null,
       createdAt: '2026-08-10T15:30:00.000Z',
       updatedAt: '2026-08-10T15:30:00.000Z',
     });
@@ -339,6 +581,7 @@ describe('clockIn', () => {
       source: 'pwa',
       closeSource: null,
       deviceTime: null,
+      manualBy: null,
       createdAt: '2026-08-10T12:00:00.000Z',
       updatedAt: '2026-08-10T12:00:00.000Z',
     });
@@ -356,6 +599,7 @@ describe('clockIn', () => {
       source: 'pwa',
       close_source: null,
       device_time: null,
+      manual_by: null,
       created_at: '2026-08-10T15:29:59.000Z',
       updated_at: '2026-08-10T15:29:59.000Z',
     };
@@ -368,6 +612,7 @@ describe('clockIn', () => {
       source: 'pwa',
       closeSource: null,
       deviceTime: null,
+      manualBy: null,
       createdAt: '2026-08-10T15:29:59.000Z',
       updatedAt: '2026-08-10T15:29:59.000Z',
     });
@@ -387,6 +632,7 @@ describe('clockOut', () => {
       source: 'pwa',
       closeSource: 'office',
       deviceTime: null,
+      manualBy: null,
       createdAt: '2026-08-10T12:00:00.000Z',
       updatedAt: '2026-08-10T15:30:00.000Z',
     });
