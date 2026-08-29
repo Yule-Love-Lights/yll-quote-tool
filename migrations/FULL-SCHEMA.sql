@@ -31,6 +31,12 @@
 -- 38 live tables — neither adds a new table). Both migrations are UNAPPLIED
 -- to prod as of that PR — see each one's own header + this file's
 -- inventory_orders posture note for why.
+-- 2026-08-29-call-commitments.sql (calls_merge_plan_2026-08.md slice S6)
+-- folded in the SAME PR that added it: one new table (call_commitments)
+-- plus the office_tasks_create_from_commitment producer function, and an
+-- in-place amendment to the office_tasks section above (created_by is now
+-- nullable — see that section's own comment). UNAPPLIED to prod as of
+-- this PR, same as the S1/S2 migrations it sits alongside.
 -- 2026-08-29-call-ingest.sql (calls_merge_plan_2026-08.md slice S2) folded
 -- in the SAME PR that added it: three new tables (call_recordings,
 -- recording_sync_state, call_transcripts). NOTE: several migrations landed
@@ -2975,7 +2981,11 @@ create table if not exists public.office_tasks (
     check (status in ('open', 'blocked', 'completed', 'dismissed')),
   due_at timestamptz not null default (now() + interval '24 hours'),
   -- Operator auth user ids (auth.users.id) — NO FK (no employees table).
-  created_by uuid not null,
+  -- Nullable as of the 2026-08-29 (S6) amendment: a 'manual' row always has
+  -- a real creator (office_tasks_created_by_presence below, matching
+  -- office_tasks_create_manual's own p_actor-required check); a
+  -- machine-sourced row (S6's call_commitment producer) has none.
+  created_by uuid,
   assigned_to uuid,
   completed_at timestamptz,
   dismissed_at timestamptz,
@@ -2989,6 +2999,11 @@ create table if not exists public.office_tasks (
   constraint office_tasks_source_event_presence check (
     (source_system = 'manual' and source_event_id is null)
     or (source_system <> 'manual' and nullif(btrim(source_event_id), '') is not null)
+  ),
+  -- Added by the 2026-08-29 (S6) amendment: a 'manual' row must always carry
+  -- a real creator; any other source_system may leave it null.
+  constraint office_tasks_created_by_presence check (
+    source_system <> 'manual' or created_by is not null
   ),
   constraint office_tasks_status_fields_check check (
     (
@@ -3873,3 +3888,335 @@ begin
   return v_stored_cursor;
 end;
 $$;
+
+-- ---------------------------------------------------------------------
+-- call_commitments (2026-08-29, migrations/2026-08-29-call-commitments.sql)
+-- -- rep commitments extracted from a call transcript + the producer that
+-- turns each OPEN one into an office_tasks row, calls_merge_plan slice S6.
+-- Content below is the migration file verbatim (see that file's own header
+-- for the full port/deviation notes against the yll-call-copilot source).
+-- The office_tasks section ABOVE in this file already carries this same
+-- migration's sibling amendment (created_by now nullable).
+-- ---------------------------------------------------------------------
+create table if not exists public.call_commitments (
+  id uuid primary key default gen_random_uuid(),
+  transcript_id uuid not null references public.call_transcripts(id) on delete cascade,
+  ghl_contact_id text,
+  -- Same identity column and convention as call_transcripts.rep_email
+  -- (migrations/2026-08-29-call-ingest.sql) -- denormalized at extraction
+  -- time from the parent transcript row, not populated by this slice (S2
+  -- leaves call_transcripts.rep_email null; see that migration's header).
+  rep_email text,
+  kind text not null check (kind in ('send_quote', 'send_photos', 'callback', 'schedule_estimate', 'send_info', 'other')),
+  detail text not null,
+  -- Anchored to the CALL's wall-clock time (America/New_York), not
+  -- extraction time -- see src/lib/commitments/time.ts. Nullable: not every
+  -- commitment carries a specific time ("I'll follow up soon").
+  promised_at timestamptz,
+  status text not null default 'open' check (status in ('open', 'cleared', 'done', 'dismissed', 'expired')),
+  dismissed_reason text,
+  -- Free text naming the event that verified/cleared this commitment (e.g.
+  -- "quote sent 2026-08-12", a GHL event id). Populated by a later slice's
+  -- verification job -- nullable and unused by this slice's extractor.
+  verified_by_event text,
+  -- DEDUPE KEY, third column. Zero-based, per (transcript_id, kind). See
+  -- this file's header for why this (not the freeform `detail` text) is the
+  -- stable ordinal: Claude is not byte-deterministic about wording across
+  -- re-extractions.
+  extraction_index int not null default 0,
+  created_at timestamptz not null default now(),
+  cleared_at timestamptz
+);
+
+create unique index if not exists call_commitments_dedupe_key
+  on public.call_commitments (transcript_id, kind, extraction_index);
+
+-- Read by the producer (office_tasks_create_from_commitment's caller) and by
+-- the /admin/calls debug page's commitment-status counts.
+create index if not exists call_commitments_transcript_status_idx
+  on public.call_commitments (transcript_id, status);
+
+alter table public.call_commitments enable row level security;
+alter table public.call_commitments force row level security;
+
+revoke all privileges on table public.call_commitments
+  from public, anon, authenticated, service_role;
+
+-- Same grant shape as the copilot's 0021 -- select for the admin debug page's
+-- counts; insert/update/delete for the finalize/failure functions below
+-- (both SECURITY DEFINER, so this grant is defense-in-depth, not the only
+-- path -- matches office_tasks_create_manual's own posture in S1).
+grant select, insert, update, delete on table public.call_commitments
+  to service_role;
+
+-- ---------------------------------------------------------------------
+-- call_commitments_finalize_extraction -- ported from the copilot's
+-- migration 0024 (final/canonical form -- see this file's header for why
+-- 0022's earlier ON CONFLICT upsert is not ported). Adapted: reads/writes
+-- call_transcripts, not transcripts; every metric_scope check and column
+-- reference is dropped (no such column here -- see header).
+-- ---------------------------------------------------------------------
+create or replace function public.call_commitments_finalize_extraction(
+  p_transcript_id uuid,
+  p_rows jsonb,
+  p_extractor_version text
+) returns text
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_extracted_at timestamptz;
+  v_has_resolved boolean;
+begin
+  if jsonb_typeof(p_rows) is distinct from 'array' then
+    raise exception using errcode = '22023', message = 'p_rows must be a JSON array';
+  end if;
+  if nullif(btrim(p_extractor_version), '') is null then
+    raise exception using errcode = '22023', message = 'p_extractor_version is required';
+  end if;
+
+  select transcript_record.commitments_extracted_at
+  into v_extracted_at
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = p_transcript_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'source transcript does not exist';
+  end if;
+  if v_extracted_at is not null then
+    return 'already_finalized';
+  end if;
+
+  select bool_or(commitment_record.status <> 'open')
+  into v_has_resolved
+  from (
+    select locked_commitment.status
+    from public.call_commitments as locked_commitment
+    where locked_commitment.transcript_id = p_transcript_id
+    for update
+  ) as commitment_record;
+
+  if coalesce(v_has_resolved, false) then
+    update public.call_transcripts
+    set
+      commitments_extracted_at = now(),
+      commitment_extractor_version = 'preexisting-resolved',
+      commitment_extracted_count = null,
+      commitment_extraction_quarantined_at = null
+    where id = p_transcript_id;
+    return 'refused';
+  end if;
+
+  -- A prior process may have committed rows and crashed before a completion
+  -- marker existed. Replace the entire still-open set so a nondeterministic
+  -- retry cannot leave stale rows that are absent from the final extraction.
+  delete from public.call_commitments
+  where transcript_id = p_transcript_id;
+
+  insert into public.call_commitments (
+    transcript_id,
+    ghl_contact_id,
+    rep_email,
+    kind,
+    detail,
+    promised_at,
+    extraction_index
+  )
+  select
+    p_transcript_id,
+    row_record ->> 'ghl_contact_id',
+    row_record ->> 'rep_email',
+    row_record ->> 'kind',
+    row_record ->> 'detail',
+    (row_record ->> 'promised_at')::timestamptz,
+    (row_record ->> 'extraction_index')::integer
+  from jsonb_array_elements(p_rows) as row_record;
+
+  update public.call_transcripts
+  set
+    commitments_extracted_at = now(),
+    commitment_extractor_version = p_extractor_version,
+    commitment_extracted_count = jsonb_array_length(p_rows),
+    commitment_extraction_quarantined_at = null
+  where id = p_transcript_id;
+
+  return 'ok';
+end
+$function$;
+
+revoke all on function public.call_commitments_finalize_extraction(uuid, jsonb, text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.call_commitments_finalize_extraction(uuid, jsonb, text)
+  to service_role;
+
+-- ---------------------------------------------------------------------
+-- record_commitment_extraction_failure -- ported from the copilot's
+-- migration 0024, same table adaptation as above (call_transcripts, no
+-- metric_scope check).
+-- ---------------------------------------------------------------------
+create or replace function public.record_commitment_extraction_failure(
+  p_transcript_id uuid,
+  p_failure_code text
+) returns text
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_attempts integer;
+  v_extracted_at timestamptz;
+  v_quarantined_at timestamptz;
+  v_terminal_failures integer;
+begin
+  if p_failure_code is null or p_failure_code not in (
+    'deterministic_extraction_failed',
+    'transient_dependency_failed'
+  ) then
+    raise exception using errcode = '22023', message = 'invalid commitment extraction failure code';
+  end if;
+
+  select
+    transcript_record.commitment_extraction_attempts,
+    transcript_record.commitments_extracted_at,
+    transcript_record.commitment_extraction_quarantined_at,
+    transcript_record.commitment_extraction_terminal_failures
+  into v_attempts, v_extracted_at, v_quarantined_at, v_terminal_failures
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = p_transcript_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'source transcript does not exist';
+  end if;
+  if v_extracted_at is not null then
+    return 'already_finalized';
+  end if;
+  if v_quarantined_at is not null then
+    return 'already_quarantined';
+  end if;
+
+  v_attempts := v_attempts + 1;
+  if p_failure_code = 'deterministic_extraction_failed' then
+    v_terminal_failures := v_terminal_failures + 1;
+  end if;
+  update public.call_transcripts
+  set
+    commitment_extraction_attempts = v_attempts,
+    commitment_extraction_terminal_failures = v_terminal_failures,
+    commitment_extraction_last_attempt_at = clock_timestamp(),
+    commitment_extraction_last_failure_code = p_failure_code,
+    commitment_extraction_quarantined_at = case
+      when v_terminal_failures >= 3 then clock_timestamp()
+      else null
+    end
+  where id = p_transcript_id;
+
+  return case when v_terminal_failures >= 3 then 'quarantined' else 'retry_scheduled' end;
+end
+$function$;
+
+revoke all on function public.record_commitment_extraction_failure(uuid, text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.record_commitment_extraction_failure(uuid, text)
+  to service_role;
+
+-- ---------------------------------------------------------------------
+-- office_tasks_create_from_commitment -- THE PRODUCER (new code, not a
+-- copilot port -- see this file's header). Turns one OPEN call_commitments
+-- row into an office_tasks row (source_system='call_commitment',
+-- source_event_id=the commitment's own id). Idempotent via office_tasks'
+-- existing (source_system, source_event_id) partial unique index (S1): a
+-- retried call for the same commitment id is a no-op that returns the same
+-- task id.
+-- ---------------------------------------------------------------------
+create or replace function public.office_tasks_create_from_commitment(
+  p_commitment_id uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_commitment public.call_commitments%rowtype;
+  v_customer_name text;
+  v_customer_phone text;
+  v_customer_line text;
+  v_title text;
+  v_detail text;
+  v_due_at timestamptz;
+  v_task_id uuid;
+begin
+  select *
+  into v_commitment
+  from public.call_commitments
+  where id = p_commitment_id
+    and status = 'open';
+
+  if not found then
+    -- Not an error: the commitment may already have been actioned (status
+    -- moved off 'open'), or the id may not exist. The only caller (the
+    -- extraction pipeline) only ever passes ids it just wrote as 'open', so
+    -- this is defensive rather than an expected path.
+    return null;
+  end if;
+
+  select transcript_record.customer_name, transcript_record.customer_phone
+  into v_customer_name, v_customer_phone
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = v_commitment.transcript_id;
+
+  v_title := case v_commitment.kind
+    when 'send_quote' then 'Send quote'
+    when 'send_photos' then 'Send photos'
+    when 'callback' then 'Call back'
+    when 'schedule_estimate' then 'Schedule estimate'
+    when 'send_info' then 'Send info'
+    when 'other' then 'Follow up'
+    else 'Follow up'
+  end;
+  if nullif(btrim(v_commitment.detail), '') is not null then
+    v_title := v_title || ': ' || btrim(v_commitment.detail);
+  end if;
+  v_title := left(v_title, 200);
+
+  v_customer_line := nullif(
+    trim(both ' ' from
+      coalesce(v_customer_name, '')
+      || case when v_customer_name is not null and v_customer_phone is not null then ' - ' else '' end
+      || coalesce(v_customer_phone, '')
+    ),
+    ''
+  );
+  v_detail := v_commitment.detail;
+  if v_customer_line is not null then
+    v_detail := v_detail || E'\n\n' || v_customer_line;
+  end if;
+  v_detail := left(v_detail, 2000);
+
+  v_due_at := coalesce(v_commitment.promised_at, now() + interval '24 hours');
+
+  insert into public.office_tasks (
+    source_system, source_event_id, title, detail, due_at, created_by, assigned_to
+  ) values (
+    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, null
+  )
+  on conflict (source_system, source_event_id) do nothing
+  returning id into v_task_id;
+
+  if v_task_id is null then
+    select office_task.id into v_task_id
+    from public.office_tasks as office_task
+    where office_task.source_system = 'call_commitment'
+      and office_task.source_event_id = p_commitment_id::text;
+  end if;
+
+  return v_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_create_from_commitment(uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_create_from_commitment(uuid)
+  to service_role;

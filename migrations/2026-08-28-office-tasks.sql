@@ -39,6 +39,30 @@
 -- (that allowlist covers only additive/nullable column adds, new indexes,
 -- RLS-enable-with-zero-policies on a brand-new table, and guarded seed
 -- inserts) — the seat asks Naldo and applies it separately.
+--
+-- AMENDED 2026-08-29 for slice S6 (docs/context/calls_merge_plan_2026-08.md),
+-- STATED LOUDLY per that slice's build brief: this migration was still
+-- UNAPPLIED (see above), so this is an in-place amendment, not a second
+-- migration. created_by changes from NOT NULL to NULLABLE, gated by a new
+-- CHECK that still REQUIRES it for 'manual' rows (a human always creates
+-- those via office_tasks_create_manual, which already rejects a null actor
+-- with 42501) while ALLOWING it to be null for any other source_system.
+-- Reason: S6's new producer (office_tasks_create_from_commitment,
+-- migrations/2026-08-29-call-commitments.sql) creates tasks straight from a
+-- phone call with no operator to credit — there is no actor to be the
+-- "creator" of a machine-detected commitment.
+--
+-- office_tasks_update_status's ownership check below —
+--   if p_actor <> v_task.created_by and p_actor is distinct from v_task.assigned_to
+-- — is UNCHANGED by this amendment, and needs no change: when created_by and
+-- assigned_to are both NULL, `p_actor <> NULL` evaluates to NULL, `NULL and
+-- <anything but false>` is NULL, and plpgsql's IF treats a NULL condition as
+-- false — so the ownership check silently never fires for one of these
+-- null-owner tasks, and ANY operator can already claim/block/complete/
+-- dismiss it through this same RPC. That is the S6 plan's "assign-to-me
+-- falls out naturally" case, achieved by existing NULL comparison semantics
+-- with zero RPC body changes — see migrations/2026-08-29-call-commitments.sql
+-- for the full reasoning.
 -- =====================================================================
 
 create table public.office_tasks (
@@ -59,7 +83,12 @@ create table public.office_tasks (
   due_at timestamptz not null default (now() + interval '24 hours'),
   -- Operator auth user ids (auth.users.id) — NO FK per decision 1. There is
   -- no employees table in the Quote Tool; identity IS the operator.
-  created_by uuid not null,
+  -- Nullable as of the 2026-08-29 (S6) amendment above: a 'manual' row is
+  -- always created by a real, authenticated operator (enforced below by
+  -- office_tasks_created_by_presence, mirroring office_tasks_create_manual's
+  -- own p_actor-required check), but a machine-sourced row (S6's
+  -- call_commitment producer) has no operator to credit.
+  created_by uuid,
   assigned_to uuid,
   completed_at timestamptz,
   dismissed_at timestamptz,
@@ -73,6 +102,12 @@ create table public.office_tasks (
   constraint office_tasks_source_event_presence check (
     (source_system = 'manual' and source_event_id is null)
     or (source_system <> 'manual' and nullif(btrim(source_event_id), '') is not null)
+  ),
+  -- Added by the 2026-08-29 (S6) amendment above: a 'manual' row must always
+  -- carry a real creator; any other source_system may leave it null (a
+  -- machine-sourced row has no operator to credit).
+  constraint office_tasks_created_by_presence check (
+    source_system <> 'manual' or created_by is not null
   ),
   constraint office_tasks_status_fields_check check (
     (
