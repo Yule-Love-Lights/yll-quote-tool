@@ -197,15 +197,13 @@ purpose** (per-dev merge behavior — see "Skills placement" above), so don't "f
 that as drift; and a pure continuity-doc append — a session-log entry, a ledger row,
 a journal note — was never gated and is not gated now.
 
-## One session per lane (PROPOSED 2026-08-29, NOT IN FORCE, a draft awaiting Jason's go, ledger row 467)
+## One session per lane (IN FORCE 2026-08-29 — Naldo drafted it, Jason gave his go, ledger row 467)
 
-Nothing in this section binds anyone yet. It is written out in full so Jason can react to the actual wording instead of a summary. If he says no, delete the section; if he says yes, delete this paragraph and the PROPOSED marker in the header.
+**The rule.** A session owns the lanes it is working, and it does not put another session's open branch inside its own merge to `master`. When two lanes have to land together, each lane's owner lands its own branch, in whatever order the two sessions agree.
 
-**The proposed rule.** A session owns the lanes it is working, and it does not put another session's open branch inside its own merge to `master`. When two lanes have to land together, each lane's owner lands its own branch, in whatever order the two sessions agree.
+**Lane, defined for this rule:** the branch or stack of branches a session is actively working, plus any branch that session opened and still has open. A lane does NOT come free just because a session ended. It stays with its dev across sessions, which is the normal pattern here (pause overnight, resume the same lane tomorrow), and it comes free only when its PR merges or closes, or when the owning dev hands it over. If a session died mid-work and left a branch behind, ask its dev before taking it; never infer abandonment from silence.
 
-**Lane, defined for this rule (still proposed):** the branch or stack of branches a session is actively working, plus any branch that session opened and still has open. A lane does NOT come free just because a session ended. It stays with its dev across sessions, which is the normal pattern here (pause overnight, resume the same lane tomorrow), and it comes free only when its PR merges or closes, or when the owning dev hands it over. If a session died mid-work and left a branch behind, ask its dev before taking it; never infer abandonment from silence.
-
-**What the proposed rule does NOT restrict:**
+**What this rule does NOT restrict:**
 - Reading another lane's branch, at any time.
 - Merging current `master` into your own branch, even when `master` now carries another lane's work. The always-merge-current rule below still requires exactly that.
 - The combined-tree gate in Pitfalls ("Parallel PRs land only after the combined tree gates green as a set"). That integration tree is a local scratch check that is never pushed and never merged, and this rule leaves it alone. What is forbidden is shipping another session's branch inside your own merge, not gating against it locally.
