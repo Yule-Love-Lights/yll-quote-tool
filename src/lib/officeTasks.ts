@@ -7,8 +7,12 @@
 //
 // S1 has exactly one producer (manual entry via createManualOfficeTask), but
 // the list read already returns every source_system (per the plan's list
-// fix) so later slices (S6 call_commitment, S8 quote_tool) need no read-side
-// change when they start writing rows.
+// fix) so later slices (S6 call_commitment, S8 quote_tool) need no per-
+// SOURCE change when they start writing rows. S6 DID widen the list's
+// visibility SCOPE, though (see listOfficeTasks' own comment below): a
+// non-manual row has no creator/assignee to match against, so a creator-
+// or-assignee-only scope would have made every commitment-sourced task
+// invisible to everyone the instant S6 started writing them.
 //
 // The migration is NOT applied to any database yet (it creates functions/
 // triggers, off the migration self-apply allowlist) — every function here
@@ -95,9 +99,19 @@ export type ListOfficeTasksResult =
   | { ok: false; reason: 'not_ready' | 'unavailable' };
 
 /**
- * The actor's own tasks (creator OR assignee — matches the update RPC's
- * ownership rule, so every task an operator can see is one they can also
- * act on), across every source_system.
+ * The tasks visible to this actor, across every source_system.
+ *
+ * Visibility (calls merge plan S6): a 'manual' task stays personal —
+ * creator OR assignee only, matching the update RPC's ownership rule, so
+ * every manual task an operator can see is one they can also act on. A
+ * NON-manual task (call_commitment, quote_tool) has no operator to credit
+ * as creator or assignee (see migrations/2026-08-28-office-tasks.sql's S6
+ * amendment — created_by/assigned_to are both null for these), so scoping
+ * it the same way would make it invisible to EVERY operator. Those rows are
+ * visible to every operator instead — matching the plan's "all operators
+ * see all coaching data" ruling, and the same NULL-comparison semantics
+ * that already let any operator ACT on one of these via
+ * office_tasks_update_status (see that migration's own comment).
  *
  *   view: 'active'  -> open + blocked, due soonest first (the working list).
  *   view: 'history' -> completed + dismissed, most recently touched first —
@@ -114,7 +128,7 @@ export async function listOfficeTasks(
   let query = db
     .from('office_tasks')
     .select(TASK_SELECT)
-    .or(`created_by.eq.${actorId},assigned_to.eq.${actorId}`)
+    .or(`created_by.eq.${actorId},assigned_to.eq.${actorId},source_system.neq.manual`)
     .in('status', statuses);
   query = view === 'history'
     ? query.order('updated_at', { ascending: false }).order('id', { ascending: false })

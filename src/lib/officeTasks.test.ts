@@ -94,7 +94,7 @@ describe('listOfficeTasks', () => {
     expect(result).toEqual({ ok: false, reason: 'unavailable' });
   });
 
-  it('active view filters to open+blocked, scoped to creator-or-assignee, ordered by due date', async () => {
+  it('active view filters to open+blocked, scoped to creator-or-assignee OR any non-manual row, ordered by due date', async () => {
     const { client, calls } = makeListClient({ data: [ROW], error: null });
     sbRef.current = client;
     const result = await listOfficeTasks('op-1', 'active');
@@ -104,11 +104,31 @@ describe('listOfficeTasks', () => {
     expect(result.tasks[0]).toMatchObject({ id: 't-1', sourceSystem: 'manual', status: 'open' });
 
     const orCall = calls.find((c) => c.method === 'or');
-    expect(orCall?.args[0]).toBe('created_by.eq.op-1,assigned_to.eq.op-1');
+    expect(orCall?.args[0]).toBe('created_by.eq.op-1,assigned_to.eq.op-1,source_system.neq.manual');
     const inCall = calls.find((c) => c.method === 'in');
     expect(inCall?.args).toEqual(['status', ['open', 'blocked']]);
     const orderCalls = calls.filter((c) => c.method === 'order');
     expect(orderCalls[0].args).toEqual(['due_at', { ascending: true }]);
+  });
+
+  it('visibility widening (S6): the same filter string is sent for EVERY actor -- a call_commitment/quote_tool row (source_system.neq.manual) is visible to any operator regardless of created_by/assigned_to, while a manual row still requires the actor be creator or assignee', async () => {
+    const { client: clientA, calls: callsA } = makeListClient({ data: [], error: null });
+    sbRef.current = clientA;
+    await listOfficeTasks('operator-a', 'active');
+    const orCallA = callsA.find((c) => c.method === 'or');
+    expect(orCallA?.args[0]).toBe('created_by.eq.operator-a,assigned_to.eq.operator-a,source_system.neq.manual');
+
+    const { client: clientB, calls: callsB } = makeListClient({ data: [], error: null });
+    sbRef.current = clientB;
+    await listOfficeTasks('operator-b', 'active');
+    const orCallB = callsB.find((c) => c.method === 'or');
+    // Different actor, same filter SHAPE -- source_system.neq.manual is
+    // actor-independent, so a call_commitment task created by nobody
+    // (created_by/assigned_to both null) matches this OR clause for BOTH
+    // operator-a and operator-b, while a manual task created by operator-a
+    // matches only operator-a's created_by.eq/assigned_to.eq legs.
+    expect(orCallB?.args[0]).toBe('created_by.eq.operator-b,assigned_to.eq.operator-b,source_system.neq.manual');
+    expect(orCallA?.args[0]).not.toBe(orCallB?.args[0]);
   });
 
   it('history view filters to completed+dismissed, ordered by most-recently-touched first', async () => {
