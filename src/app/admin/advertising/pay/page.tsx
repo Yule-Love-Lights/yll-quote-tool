@@ -7,7 +7,7 @@ import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
 import { getSessionRole } from '@/lib/auth/sessionRole';
-import { earningsSummary } from '@/lib/advertising/placements';
+import { countDoorHangersByWorker, earningsSummary, listPlacements } from '@/lib/advertising/placements';
 import { listAdvertisingWorkers } from '@/lib/advertising/workers';
 
 export const dynamic = 'force-dynamic';
@@ -20,11 +20,15 @@ export default async function AdvertisingPayPage() {
   const role = await getSessionRole();
   if (role !== 'admin') redirect('/');
 
-  const [summaries, workers] = await Promise.all([
+  const [summaries, workers, allPlacements] = await Promise.all([
     earningsSummary(),
     listAdvertisingWorkers({ includeInactive: true }),
+    listPlacements(),
   ]);
   const nameById = new Map(workers.map((w) => [w.id, w.displayName]));
+  // Door hangers pay nothing by ruling, so they appear in no money figure;
+  // this count shows the hustle anyway (and whether workers log them at all).
+  const doorHangers = countDoorHangersByWorker(allPlacements);
 
   return (
     <OperatorShell active="advertising-pay">
@@ -53,7 +57,14 @@ export default async function AdvertisingPayPage() {
         {summaries.map((s) => (
           <section key={s.workerId} className="mb-6 rounded-xl border border-gray-200 bg-white p-4">
             <div className="flex items-baseline justify-between">
-              <h2 className="font-semibold text-gray-900">{nameById.get(s.workerId) ?? '(unknown worker)'}</h2>
+              <h2 className="font-semibold text-gray-900">
+                {nameById.get(s.workerId) ?? '(unknown worker)'}
+                {(doorHangers.get(s.workerId) ?? 0) > 0 && (
+                  <span className="ml-2 text-xs font-normal text-gray-500">
+                    · {doorHangers.get(s.workerId)} door hanger{doorHangers.get(s.workerId) === 1 ? '' : 's'} (unpaid)
+                  </span>
+                )}
+              </h2>
               <p className="text-sm">
                 <span className="font-semibold text-gray-900">{dollars(s.total.acceptedEarnedCents)} earned</span>
                 {s.total.pendingEstimatedCents > 0 && (

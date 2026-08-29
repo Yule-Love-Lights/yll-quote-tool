@@ -44,6 +44,7 @@ export default function WorkerHome() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
+  const [rateChanged, setRateChanged] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [campaignId, setCampaignId] = useState('');
@@ -82,11 +83,12 @@ export default function WorkerHome() {
         }
         const c = (await cRes.json()) as { campaigns: Campaign[] };
         const p = (await pRes.json()) as { placements: Placement[] };
-        const e = (await eRes.json()) as { summary: Earnings };
+        const e = (await eRes.json()) as { summary: Earnings; rateChangedSincePending?: boolean };
         if (cancelled) return;
         setCampaigns(c.campaigns);
         setPlacements(p.placements);
         setEarnings(e.summary);
+        setRateChanged(e.rateChangedSincePending === true);
         setLoadError(null);
         setCampaignId((prev) => prev || c.campaigns[0]?.id || '');
       } catch {
@@ -211,6 +213,12 @@ export default function WorkerHome() {
           <div className="rounded-xl bg-white/5 p-4">
             <p className="text-xs uppercase tracking-wide text-[#C9D3CB]">Pending (estimate)</p>
             <p className="text-2xl font-semibold">{dollars(earnings.total.pendingEstimatedCents)}</p>
+            {rateChanged && (
+              <p className="mt-1 text-xs text-[#E8C877]">
+                The sign rate changed after some of these were placed, so this estimate moved.
+                Accepted signs always pay the rate from when they were approved.
+              </p>
+            )}
           </div>
           {earnings.byWeek.length > 0 && (
             <div className="col-span-2 rounded-xl bg-white/5 p-4">

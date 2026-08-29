@@ -495,6 +495,20 @@ export function summarizeEarnings(
     }));
 }
 
+/** PURE: door hangers placed per worker (ops suggestions round). Door
+ * hangers are permanently unpaid, so they appear in no money figure — this
+ * count is how the admin pay page shows the hustle anyway, and whether
+ * workers bother logging them at all. Test rows count for nothing, same as
+ * everywhere else. */
+export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const p of placements) {
+    if (p.isTest || p.kind !== 'door_hanger') continue;
+    out.set(p.workerId, (out.get(p.workerId) ?? 0) + 1);
+  }
+  return out;
+}
+
 /** Per-worker earnings: pending estimated cents and accepted earned cents,
  * total plus ET day and week groupings. Scope with workerId for the worker's
  * own view; unscoped for the admin pay summary. */

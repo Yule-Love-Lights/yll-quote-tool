@@ -3,16 +3,24 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getAdvertisingCaller, earningsSummary } = vi.hoisted(() => ({
+const { getAdvertisingCaller, earningsSummary, listPlacements, listRateChangeEvents } = vi.hoisted(() => ({
   getAdvertisingCaller: vi.fn(),
   earningsSummary: vi.fn(),
+  listPlacements: vi.fn(),
+  listRateChangeEvents: vi.fn(),
 }));
 
 vi.mock('@/lib/auth/advertisingAuth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/auth/advertisingAuth')>();
   return { ...actual, getAdvertisingCaller };
 });
-vi.mock('@/lib/advertising/placements', () => ({ earningsSummary }));
+vi.mock('@/lib/advertising/placements', () => ({ earningsSummary, listPlacements }));
+vi.mock('@/lib/advertising/rateChangeNote', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/advertising/rateChangeNote')>();
+  // hasPendingRateChange stays REAL (it is the pure logic under test through
+  // the route); only the db read is mocked.
+  return { ...actual, listRateChangeEvents };
+});
 
 import { GET } from './route';
 
@@ -24,6 +32,8 @@ const CALLER = {
 beforeEach(() => {
   vi.clearAllMocks();
   getAdvertisingCaller.mockResolvedValue(CALLER);
+  listPlacements.mockResolvedValue([]);
+  listRateChangeEvents.mockResolvedValue([]);
   earningsSummary.mockResolvedValue([
     {
       workerId: 'worker-1',
@@ -32,6 +42,18 @@ beforeEach(() => {
       byWeek: [],
     },
   ]);
+});
+
+const pendingRow = (over: Record<string, unknown> = {}) => ({
+  id: 'p1',
+  campaignId: 'c1',
+  workerId: 'worker-1',
+  kind: 'yard_sign',
+  status: 'pending',
+  capturedAt: '2026-08-25T10:00:00Z',
+  createdAt: '2026-08-25T10:00:00Z',
+  isTest: false,
+  ...over,
 });
 
 describe('GET /api/advertising/earnings', () => {
@@ -48,6 +70,28 @@ describe('GET /api/advertising/earnings', () => {
     const res = await GET();
     const body = await res.json();
     expect(body.summary.total).toEqual({ pendingEstimatedCents: 0, acceptedEarnedCents: 0 });
+  });
+
+  it('flags a rate change that happened AFTER a pending row was captured', async () => {
+    listPlacements.mockResolvedValue([pendingRow()]);
+    listRateChangeEvents.mockResolvedValue([{ campaignId: 'c1', createdAt: '2026-08-27T10:00:00Z' }]);
+    const body = await (await GET()).json();
+    expect(body.rateChangedSincePending).toBe(true);
+    expect(listPlacements).toHaveBeenCalledWith({ workerId: 'worker-1' });
+  });
+
+  it('does not flag when there are no pending rows, and never queries events', async () => {
+    listPlacements.mockResolvedValue([pendingRow({ status: 'accepted' })]);
+    const body = await (await GET()).json();
+    expect(body.rateChangedSincePending).toBe(false);
+    expect(listRateChangeEvents).not.toHaveBeenCalled();
+  });
+
+  it('does not flag a change on a campaign the pending rows do not belong to', async () => {
+    listPlacements.mockResolvedValue([pendingRow()]);
+    listRateChangeEvents.mockResolvedValue([{ campaignId: 'other', createdAt: '2026-08-27T10:00:00Z' }]);
+    const body = await (await GET()).json();
+    expect(body.rateChangedSincePending).toBe(false);
   });
 
   it('401s logged-out and 403s non-advertising sessions', async () => {
