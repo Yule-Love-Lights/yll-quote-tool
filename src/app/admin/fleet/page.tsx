@@ -44,9 +44,14 @@ export default async function FleetPage() {
           <h1 className="text-xl font-semibold text-gray-900">Fleet</h1>
           <p className="text-sm text-gray-500 mt-1">Where the vans are right now.</p>
           {role === 'admin' && (
-            <p className="text-sm mt-2">
+            <p className="text-sm mt-2 flex gap-4">
               <a href="/admin/fleet/clocks" className="underline text-gray-600">
                 The day&apos;s two clocks →
+              </a>
+              {/* Same admin gate as the clocks link: /admin/time-tracking
+                  redirects non-admins server-side, this only hides the door. */}
+              <a href="/admin/time-tracking" className="underline text-gray-600">
+                Time tracking →
               </a>
             </p>
           )}
