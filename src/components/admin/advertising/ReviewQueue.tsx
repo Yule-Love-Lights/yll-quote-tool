@@ -6,6 +6,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { splitDuplicateSignals } from './duplicateSignals';
+
 type Duplicate = {
   id: string;
   status: string;
@@ -40,6 +42,9 @@ export default function ReviewQueue() {
   // Per-item drafts (staff lens MED): acting on one row must never wipe the
   // rejection text an admin is mid-typing on ANOTHER row.
   const [reasons, setReasons] = useState<Record<string, string>>({});
+  // Which items' weak (worker-day-only) duplicate lists are expanded — the
+  // photos stay one tap away rather than collapsed into an unopenable count.
+  const [weakOpen, setWeakOpen] = useState<Record<string, boolean>>({});
 
   // Reload by bumping the tick — the effect owns every setState (the
   // ClockCard load-on-mount idiom, which the react lint rule accepts).
@@ -151,28 +156,55 @@ export default function ReviewQueue() {
                 </p>
               )}
 
-              {item.duplicates.length > 0 && (
-                <div className="mt-2 rounded-lg bg-amber-50 p-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                    Possible duplicates, your call
-                  </p>
-                  <ul className="mt-1 flex flex-col gap-1">
-                    {item.duplicates.map((d) => (
-                      <li key={d.id} className="flex items-center gap-2 text-sm text-amber-800">
-                        {d.photoUrl && (
-                          <a href={d.photoUrl} target="_blank" rel="noreferrer">
-                            {/* eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL */}
-                            <img src={d.photoUrl} alt="Duplicate candidate" className="h-10 w-10 rounded object-cover" />
-                          </a>
-                        )}
-                        <span>
-                          {d.workerName} · {d.status} · {d.reasons.join(', ')}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              {item.duplicates.length > 0 && (() => {
+                // Strong signals (location or address) get photos and eyes
+                // up front; worker-day-only matches collapse behind a toggle,
+                // because a worker placing 30 signs a day makes every sign
+                // "match" its 29 siblings and the panel would drown. The
+                // toggle, not a bare count (admin lens on this PR): a
+                // re-placed sign a few hundred meters away carries ONLY the
+                // worker-day reason, and its photo must stay one tap from
+                // the decision, never invisible.
+                const { strong, weak } = splitDuplicateSignals(item.duplicates);
+                const showWeak = weakOpen[item.id] === true;
+                const renderDup = (d: (typeof item.duplicates)[number]) => (
+                  <li key={d.id} className="flex items-center gap-2 text-sm text-amber-800">
+                    {d.photoUrl && (
+                      <a href={d.photoUrl} target="_blank" rel="noreferrer">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL */}
+                        <img src={d.photoUrl} alt="Duplicate candidate" className="h-10 w-10 rounded object-cover" />
+                      </a>
+                    )}
+                    <span>
+                      {d.workerName} · {d.status} · {d.reasons.join(', ')}
+                    </span>
+                  </li>
+                );
+                return (
+                  <div className="mt-2 rounded-lg bg-amber-50 p-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                      Possible duplicates, your call
+                    </p>
+                    {strong.length > 0 && (
+                      <ul className="mt-1 flex flex-col gap-1">{strong.map(renderDup)}</ul>
+                    )}
+                    {weak.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setWeakOpen((w) => ({ ...w, [item.id]: !(w[item.id] === true) }))}
+                        className="mt-1 text-xs text-amber-700 underline"
+                      >
+                        {showWeak
+                          ? 'Hide the same-day list'
+                          : `${weak.length} more from the same worker that day (no location or address match) — show`}
+                      </button>
+                    )}
+                    {showWeak && weak.length > 0 && (
+                      <ul className="mt-1 flex flex-col gap-1">{weak.map(renderDup)}</ul>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button

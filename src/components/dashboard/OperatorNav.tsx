@@ -4,9 +4,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
-import { navItemsForView, type NavItem } from './operatorView';
-import { useOperatorView } from './OperatorViewContext';
-import { ViewAsControl } from './ViewAsControl';
+import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
+import { readRoleHint, writeRoleHint } from './roleHint';
+import { ViewAsMenu, useViewSwitcher } from './ViewAsMenu';
 
 // The item list itself lives in operatorView.ts (ops hub workstream A slice
 // 2): it flows through navItemsForView(view) so the later Crew My Day and
@@ -54,7 +54,7 @@ export function OperatorNav({
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
-  const { view } = useOperatorView();
+  const { view, choose: chooseView } = useViewSwitcher();
   const items = navItemsForView(view);
   const isActive = (item: NavItem) => item.match.includes(active);
 
@@ -78,6 +78,21 @@ export function OperatorNav({
   // admin-only View-as control below; null (pre-fetch, signed out, retry
   // exhausted) renders no control, so the safe default is "not admin".
   const [role, setRole] = useState<'admin' | 'operator' | null>(null);
+  // Hint-first (ops suggestions round): seed the role from the localStorage
+  // echo of the LAST session answer, one tick after hydration, so an admin's
+  // View-as menu does not wait a network round trip on every page mount.
+  // Wrapped in queueMicrotask for the react-hooks/set-state-in-effect rule
+  // (the /admin/invoices load-on-mount idiom) — the premerge technical lens
+  // caught the bare version as a real red CI gate. The fetch below remains
+  // the truth: it overwrites the hint and the state both, so a stale or
+  // hand-edited hint survives at most one page load, and everything the menu
+  // opens is server-gated on the real role anyway.
+  useEffect(() => {
+    queueMicrotask(() => {
+      const hint = readRoleHint();
+      if (hint) setRole(prev => prev ?? hint);
+    });
+  }, []);
   useEffect(() => {
     let cancelled = false;
 
@@ -91,8 +106,10 @@ export function OperatorNav({
         .then(body => {
           if (cancelled) return;
           const signedIn = body.signedIn === true;
+          const trueRole = signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null;
           setSessionState(signedIn ? 'signedIn' : 'signedOut');
-          setRole(signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null);
+          setRole(trueRole);
+          writeRoleHint(trueRole);
         })
         .catch(() => {
           if (cancelled) return;
@@ -123,7 +140,12 @@ export function OperatorNav({
 
   // WT-60: logout (POST /api/auth/logout) worked but had no UI trigger. Best
   // effort — even if the request fails, still send the operator to /login.
+  // The role hint clears FIRST (staff lens MED on this PR): on a shared
+  // computer, a leftover 'admin' hint would flash the View-as menu at the
+  // next person for one page load. Cleared before the network call so even
+  // an aborted logout leaves no hint behind.
   const signOut = async () => {
+    writeRoleHint(null);
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
@@ -232,15 +254,28 @@ export function OperatorNav({
                 whitespace-nowrap forces it single-line; the padding step
                 mirrors the tab links and contributes to the ~11.75px real
                 margin measured at 1024px (see the lg:px-1.5 comment above for
-                the full before/after numbers at all 3 widths). */}
-            <button
-              type="button"
-              onClick={signOut}
-              className="whitespace-nowrap lg:px-2 xl:px-3 py-1.5 rounded-md transition-colors"
-              style={{ color: 'var(--op-text-2)' }}
-            >
-              Sign out
-            </button>
+                the full before/after numbers at all 3 widths).
+
+                View-as lives HERE, not in a strip (Naldo's design,
+                2026-08-29): for an ADMIN this slot renders the compact
+                "View as" menu with Sign out as its last item, so the header
+                row's measured fit is spent once and nothing is added below
+                the bar. Everyone else keeps the plain Sign-out button —
+                zero change for operators. The swap happens when the role
+                resolves (hint or fetch); the slot itself is always mounted,
+                so the row never gains or loses an element. */}
+            {role === 'admin' ? (
+              <ViewAsMenu onSignOut={signOut} />
+            ) : (
+              <button
+                type="button"
+                onClick={signOut}
+                className="whitespace-nowrap lg:px-2 xl:px-3 py-1.5 rounded-md transition-colors"
+                style={{ color: 'var(--op-text-2)' }}
+              >
+                Sign out
+              </button>
+            )}
           </li>
         </ul>
 
@@ -259,25 +294,16 @@ export function OperatorNav({
         </button>
       </div>
 
-      {/* Admin-only View-as strip (ops hub workstream A slice 2). Its own
-          block row UNDER the h-12 header row on purpose: the 1024px header
-          fit has ~12px of margin (see the lg:px-1.5 comment above), so the
-          control must add zero width there. A block row adds ~29px of height
-          for admins only, at every viewport width, and no width for anyone.
-          Renders nothing until the session check above resolves an admin.
-
-          KNOWN RESIDUAL (staff lens on PR #1055, deferred; reach widened by
-          the advertising view's pages, staff lens on the one-merge round):
-          because this nav remounts on every page and the role arrives by
-          fetch, the strip pops in after each navigation and shifts admin
-          page content down ~29px, the vertical twin of the #347 Sign-out
-          flash fixed above. Reserving the space here would show a permanent
-          blank band to every non-admin operator, so it is deliberately NOT
-          reserve-space fixed. The real fix is server-rendering the role into
-          OperatorShell (one getOperator read in the shell, role passed as a
-          prop); top of the ops suggestions list from the 2026-08-29 close.
-          Affects only the two admin accounts. */}
-      <ViewAsControl role={role} />
+      {/* The View-as strip that briefly lived here is gone (Naldo's design,
+          2026-08-29): the control is the header menu in the Sign-out slot
+          above, so the #1055-era ~29px pop-in class cannot exist at all —
+          there is no admin-only row to appear. The once-suggested
+          "server-render the role into OperatorShell" alternative remains
+          IMPOSSIBLE: about two dozen 'use client' surfaces (QuoteBuilder
+          included) render OperatorShell, and a client component cannot
+          render an async server component; the localStorage role hint
+          (roleHint.ts) is what makes the menu appear at first paint from a
+          browser's second page onward. */}
 
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
       {open && (
@@ -315,6 +341,38 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          {/* Mobile View-as (admins only): the same switcher the desktop
+              menu uses, as tappable pills inside the hamburger menu — the
+              header row itself gains nothing at any width. */}
+          {role === 'admin' && (
+            <li className="border-b" style={{ borderColor: 'var(--op-border)' }}>
+              <p className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--op-text-2)' }}>
+                View as
+              </p>
+              <div className="flex flex-wrap gap-2 px-4 pb-3">
+                {OPERATOR_VIEWS.map(v => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={!v.built}
+                    onClick={() => {
+                      setOpen(false);
+                      chooseView(v.id);
+                    }}
+                    className="px-3 py-1.5 rounded-full text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={
+                      view === v.id
+                        ? { background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
+                        : { color: 'var(--op-text-2)' }
+                    }
+                  >
+                    {v.label}
+                    {!v.built && ' (not built yet)'}
+                  </button>
+                ))}
+              </div>
+            </li>
+          )}
           {/* Same always-mounted / visibility-hidden treatment as the
               desktop copy above — this dropdown only opens on a click, so it
               is not the layout-shift MED, but it stays tri-state-consistent
