@@ -16,7 +16,18 @@ import OfficeTasksCard from '@/components/dashboard/OfficeTasksCard';
 
 export const dynamic = 'force-dynamic';
 
-export default function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // ?view=history opens straight on the History tab, which is what the
+  // dashboard card's History link uses. Anything else, including a missing or
+  // misspelled value, falls back to the working list rather than erroring.
+  const params = (await searchParams) ?? {};
+  const raw = Array.isArray(params.view) ? params.view[0] : params.view;
+  const initialView = raw === 'history' ? 'history' : 'active';
+
   return (
     <OperatorShell active="tasks">
       <main className="max-w-4xl mx-auto">
@@ -35,7 +46,7 @@ export default function TasksPage() {
             is assigned to.
           </p>
         </div>
-        <OfficeTasksCard variant="page" />
+        <OfficeTasksCard variant="page" initialView={initialView} />
       </main>
     </OperatorShell>
   );
