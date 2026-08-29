@@ -4712,7 +4712,6 @@ alter table public.advertising_placements
 create unique index if not exists advertising_placements_accepted_photo_unique
   on public.advertising_placements (worker_id, campaign_id, photo_hash)
   where status = 'accepted' and photo_hash is not null;
-=======
 -- placement void (2026-08-29, migrations/2026-08-29-placement-void.sql).
 -- Content below is the migration verbatim.
 -- ---------------------------------------------------------------------
