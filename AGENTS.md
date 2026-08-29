@@ -153,16 +153,6 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
   - Reason: added 2026-08-20 after a review flagged a `claude/*` branch as breaking the naming rule, when the rule had simply never addressed sessions that don't pick their own branch name.
 - Branch off fresh `master` (pull first); keep PRs small; merge `master` back in if a branch lives more than a day.
 
-## One session per lane (PROPOSED 2026-08-29, not in force until Jason gives his go)
-
-A session owns the workstream lane it is working. It merges its own branches, and it does NOT bundle another session's open branch into its own merge. When two lanes have to land together, the sessions coordinate and each lane's owner merges its own branch.
-
-What this does not restrict: reading another lane's branch, merging current `master` into your own branch, or one session picking up a lane another session has finished and closed.
-
-Reason: on 2026-08-29 `master` moved about twelve times underneath a single session, and that session's one-merge bundle had absorbed a snapshot of another session's branch. That other session then merged a newer copy of the same work, so re-syncing produced add/add two-way merges (a squash against branch history), the class that silently mangles content. Nothing was lost, but the only thing standing between the bundle and a silent mangle was a manual sweep proving that the only differences against `master` were the intended edits. The convention removes the situation instead of relying on the sweep catching it.
-
-Status: this is a policy-class edit under the SHARED-file rule, so it binds nobody until Jason gives an explicit go. Ledger row 467.
-
 ## Area ownership
 | Owner | Files |
 |---|---|
@@ -205,6 +195,24 @@ Three carve-outs, so nobody over-applies this: per-machine copies under
 purpose** (per-dev merge behavior — see "Skills placement" above), so don't "fix"
 that as drift; and a pure continuity-doc append — a session-log entry, a ledger row,
 a journal note — was never gated and is not gated now.
+
+## One session per lane (PROPOSED 2026-08-29, NOT IN FORCE, a draft awaiting Jason's go, ledger row 467)
+
+Nothing in this section binds anyone yet. It is written out in full so Jason can react to the actual wording instead of a summary. If he says no, delete the section; if he says yes, delete this paragraph and the PROPOSED marker in the header.
+
+**The proposed rule.** A session owns the lanes it is working, and it does not put another session's open branch inside its own merge to `master`. When two lanes have to land together, each lane's owner lands its own branch, in whatever order the two sessions agree.
+
+**Lane, defined for this rule:** the branch or stack of branches a session is actively working, plus any branch that session opened and still has open. A branch whose session has closed out (PR merged or closed, session wrapped) belongs to nobody and anyone may pick it up.
+
+**What the rule does NOT restrict:**
+- Reading another lane's branch, at any time.
+- Merging current `master` into your own branch, even when `master` now carries another lane's work. The always-merge-current rule below still requires exactly that.
+- The combined-tree gate in Pitfalls ("Parallel PRs land only after the combined tree gates green as a set"). That integration tree is a local scratch check that is never pushed and never merged, and this rule leaves it alone. What is forbidden is shipping another session's branch inside your own merge, not gating against it locally.
+- Stacking. A PR based on another session's open branch is fine: the base's owner merges the base, then the stack's owner retargets and merges their own.
+
+**Merge authority is unchanged by this.** "Lands its own branch" is about WHICH branch, never about permission. An assistant still merges nothing without its operating dev's explicit go (see "An AI assistant never merges on its own" in the next section).
+
+**Reason.** On 2026-08-29 `master` moved about twelve times underneath one session while that session's one-merge bundle held an absorbed snapshot of another session's branch. The other session then merged a newer copy of the same work, so re-syncing produced add/add two-way merges (a squash against branch history), which is the class that silently mangles content. Nothing was lost, but the only thing that proved it was a manual sweep asserting that the sole differences against `master` were the intended edits. The rule removes the situation instead of trusting the sweep to catch it.
 
 ## Review / merge
 - **An AI assistant never merges on its own — a human says go.** Assistants may create, push, and open PRs, but must **not** merge to `master` without their operating dev's explicit go-ahead (Jason's assistant ← Jason; Naldo's assistant ← Naldo). `master` auto-deploys to prod, so a human approves every merge. One standing exception (Naldo, 2026-07-02, per-machine): on Naldo's machine the `wrap` skill may auto-merge its OWN close PR when the close is documents-only (every changed path under `docs/context/**` or the `CLAUDE.md` journal — the auto-merge allowlist above), after a re-sync onto fresh master and a collision check; a close that touches ANY non-doc file (code, `AGENTS.md`, `.claude/**`, `.github/workflows/**`, settings), and every code/feature PR, still needs the dev's explicit go. Reason: wrap notes PRs once piled up six deep waiting for manual gos. (Jason's machine keeps the human-gated wrap; the two wrap skill copies differ on purpose.)
