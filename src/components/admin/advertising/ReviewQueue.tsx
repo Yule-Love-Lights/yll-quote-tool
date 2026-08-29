@@ -191,7 +191,7 @@ export default function ReviewQueue() {
                     {weak.length > 0 && (
                       <button
                         type="button"
-                        onClick={() => setWeakOpen((w) => ({ ...w, [item.id]: !showWeak }))}
+                        onClick={() => setWeakOpen((w) => ({ ...w, [item.id]: !(w[item.id] === true) }))}
                         className="mt-1 text-xs text-amber-700 underline"
                       >
                         {showWeak
