@@ -66,6 +66,17 @@ function makeDb() {
               filters.push({ kind: 'is', col, val });
               return b;
             },
+            // PostgREST .limit(n) — an ARRAY read. Modelled because the
+            // dedupe existence check must never use maybeSingle: on 2+
+            // matches PostgREST returns PGRST116 and null data, which a
+            // catch-all null return would read as "no duplicate".
+            limit(n: number) {
+              if (stateRef.current.selectError) {
+                return Promise.resolve({ data: null, error: stateRef.current.selectError });
+              }
+              const found = rows().filter((r) => rowMatches(r, filters));
+              return Promise.resolve({ data: found.slice(0, n), error: null });
+            },
             maybeSingle() {
               if (stateRef.current.selectError) {
                 return Promise.resolve({ data: null, error: stateRef.current.selectError });
@@ -76,6 +87,16 @@ function makeDb() {
                 return Promise.resolve({ data: stale, error: null });
               }
               const found = rows().filter((r) => rowMatches(r, filters));
+              // Real PostgREST: 2+ matching rows is an ERROR (PGRST116) with
+              // null data, not "the first row". Modelled so any caller that
+              // reaches for maybeSingle on a non-unique predicate fails here
+              // instead of in prod.
+              if (found.length > 1) {
+                return Promise.resolve({
+                  data: null,
+                  error: { code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' },
+                });
+              }
               return Promise.resolve({ data: found[0] ?? null, error: null });
             },
             order(col: string, opts?: { ascending?: boolean }) {
@@ -833,7 +854,8 @@ describe('unacceptPlacement (the undo lever for a wrong accept, admin lens HIGH 
       reviewed_at: '2026-08-24T16:00:00.000Z',
     });
 
-    const undone = await unacceptPlacement(String(p.id), REVIEWER, 'uploaded to the wrong campaign');
+    const { placement: undone, changed } = await unacceptPlacement(String(p.id), REVIEWER, 'uploaded to the wrong campaign');
+    expect(changed).toBe(true);
     expect(undone.status).toBe('rejected');
     expect(undone.acceptedRateCents).toBeNull();
     expect(undone.rejectionReason).toBe('uploaded to the wrong campaign');
@@ -855,8 +877,9 @@ describe('unacceptPlacement (the undo lever for a wrong accept, admin lens HIGH 
     const p = seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'accepted', accepted_rate_cents: 250, reviewed_by: REVIEWER, reviewed_at: 'x' });
     await unacceptPlacement(String(p.id), REVIEWER, 'mistake');
     const again = await unacceptPlacement(String(p.id), REVIEWER, 'mistake');
-    expect(again.status).toBe('rejected');
-    expect(again.acceptedRateCents).toBeNull();
+    expect(again.placement.status).toBe('rejected');
+    expect(again.placement.acceptedRateCents).toBeNull();
+    expect(again.changed).toBe(false);
   });
 
   it('refuses to touch a pending row: unaccept exists for accepted rows only', async () => {
@@ -933,5 +956,71 @@ describe('earnings bucket by the day the work HAPPENED (capturedAt first; Naldo 
     const mine = summaries.find((s) => s.workerId === worker.id);
     expect(mine?.byWeek).toEqual([{ weekStart: '2026-08-24', pendingEstimatedCents: 0, acceptedEarnedCents: 250 }]);
     expect(mine?.total.acceptedEarnedCents).toBe(250);
+  });
+});
+
+describe('dedupe and undo hardening (delta-verify BLOCK on PR #1093)', () => {
+  it('findAcceptedByPhotoHash still finds a duplicate when TWO accepted rows already share the hash', async () => {
+    // The maybeSingle version returned PGRST116 + null here, which the
+    // catch-all read as "no duplicate" — disarming dedupe exactly where
+    // duplicates already exist.
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const common = {
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+      photo_hash: 'bbbb222233334444',
+    };
+    seedPlacement(common);
+    seedPlacement(common);
+    const hit = await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'bbbb222233334444');
+    expect(hit).not.toBeNull();
+    expect(hit?.photoHash).toBe('bbbb222233334444');
+  });
+
+  it('submitAcceptedPlacement surfaces a unique-violation as DuplicatePlacementError, so a lost race never mints a second paid row', async () => {
+    const { submitAcceptedPlacement, DuplicatePlacementError } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    stateRef.current.insertError = { code: '23505', message: 'duplicate key value violates unique constraint' };
+    await expect(
+      submitAcceptedPlacement({
+        campaignId: String(campaign.id),
+        workerId: String(worker.id),
+        kind: 'yard_sign',
+        rateCents: 250,
+        reviewedBy: REVIEWER,
+        lat: null,
+        lng: null,
+        photoPath: 'placements/w/x.jpg',
+        photoHash: 'cccc333344445555',
+      }),
+    ).rejects.toBeInstanceOf(DuplicatePlacementError);
+  });
+
+  it('a retried unaccept reports that nothing CHANGED, so a second different reason is never silently dropped', async () => {
+    const { unacceptPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+    });
+    const first = await unacceptPlacement(String(p.id), REVIEWER, 'wrong campaign');
+    expect(first.changed).toBe(true);
+    expect(first.placement.acceptedRateCents).toBeNull();
+
+    const again = await unacceptPlacement(String(p.id), REVIEWER, 'a different reason');
+    expect(again.changed).toBe(false);
+    expect(again.placement.rejectionReason).toBe('wrong campaign');
   });
 });

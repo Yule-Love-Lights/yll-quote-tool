@@ -231,6 +231,16 @@ export async function submitPlacement(input: {
   return placement;
 }
 
+/** Thrown when the DB's own uniqueness guard refuses a second accepted row
+ * for the same worker, campaign and photo hash. The pre-check above can
+ * lose a race (two admin tabs); this is the authority that cannot. */
+export class DuplicatePlacementError extends Error {
+  constructor() {
+    super('This photo is already uploaded and accepted for this worker and campaign.');
+    this.name = 'DuplicatePlacementError';
+  }
+}
+
 /**
  * Bulk-upload dedupe (technical lens HIGH, PR #1093): an exact re-upload of
  * an already-accepted photo must never mint a second paid row. Exact hash
@@ -247,6 +257,10 @@ export async function findAcceptedByPhotoHash(
   if (!photoHash) return null;
   const db = getSupabaseServiceClient();
   if (!db) return null;
+  // limit(1), never maybeSingle: PostgREST answers a multi-row maybeSingle
+  // with PGRST116 and NULL data, which a catch-all null return reads as
+  // "no duplicate" — disarming this guard exactly where duplicates already
+  // exist (delta-verify HIGH, PR #1093).
   const { data, error } = await db
     .from('advertising_placements')
     .select(SELECT)
@@ -254,12 +268,13 @@ export async function findAcceptedByPhotoHash(
     .eq('campaign_id', campaignId.trim())
     .eq('status', 'accepted')
     .eq('photo_hash', photoHash)
-    .maybeSingle();
+    .limit(1);
   if (error) {
     console.error('findAcceptedByPhotoHash error:', error);
     return null;
   }
-  return data ? toPlacement(data as Row) : null;
+  const rows = (data ?? []) as Row[];
+  return rows.length > 0 ? toPlacement(rows[0]) : null;
 }
 
 /**
@@ -270,7 +285,11 @@ export async function findAcceptedByPhotoHash(
  * pay zero by the earnings rules). CAS on status='accepted'; a retried
  * unaccept finds the row already rejected and returns it unchanged.
  */
-export async function unacceptPlacement(id: string, reviewedBy: string, reason: string): Promise<AdvertisingPlacement> {
+export async function unacceptPlacement(
+  id: string,
+  reviewedBy: string,
+  reason: string,
+): Promise<{ placement: AdvertisingPlacement; changed: boolean }> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
@@ -296,7 +315,13 @@ export async function unacceptPlacement(id: string, reviewedBy: string, reason: 
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`unacceptPlacement: no placement found for id ${placementId}`);
-    if (current.status === 'rejected') return toPlacement(current); // idempotent retry
+    if (current.status === 'rejected') {
+      // Idempotent retry — but report changed:false so the caller can say
+      // so. A silent 200 here would swallow a SECOND, different reason the
+      // admin typed, and show the original as if it had been recorded
+      // (delta-verify MED, PR #1093).
+      return { placement: toPlacement(current), changed: false };
+    }
     throw new Error(
       `unacceptPlacement: placement is '${current.status}', not accepted: nothing to undo`,
     );
@@ -310,7 +335,7 @@ export async function unacceptPlacement(id: string, reviewedBy: string, reason: 
     workerId: undone.workerId,
     detail: { reason: trimmedReason },
   });
-  return undone;
+  return { placement: undone, changed: true };
 }
 
 /**
@@ -383,7 +408,14 @@ export async function submitAcceptedPlacement(input: {
     })
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`submitAcceptedPlacement: ${error.message}`);
+  if (error) {
+    // 23505: the partial unique index on (worker_id, campaign_id,
+    // photo_hash) where status='accepted' refused a second paid row. This
+    // is the guard that survives a lost race, so it reports as a duplicate
+    // rather than a failure.
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`submitAcceptedPlacement: ${error.message}`);
+  }
   if (!data) throw new Error('submitAcceptedPlacement: no row returned');
 
   const placement = toPlacement(data as Row);

@@ -143,8 +143,8 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
-      const placement = await unacceptPlacement(placementId, adminId, reason);
-      return NextResponse.json({ placement });
+      const { placement, changed } = await unacceptPlacement(placementId, adminId, reason);
+      return NextResponse.json({ placement, changed });
     }
 
     if (action === 'bulk-accept') {

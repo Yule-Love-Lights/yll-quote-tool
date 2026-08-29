@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getAdvertisingCampaign } from '@/lib/advertising/campaigns';
-import { findAcceptedByPhotoHash, submitAcceptedPlacement, submitPlacement } from '@/lib/advertising/placements';
+import {
+  DuplicatePlacementError,
+  findAcceptedByPhotoHash,
+  submitAcceptedPlacement,
+  submitPlacement,
+} from '@/lib/advertising/placements';
 import { reverseGeocode } from '@/lib/advertising/geocode';
 import { computePhotoHash } from '@/lib/advertising/photoHashCompute';
 import { MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
@@ -272,6 +277,12 @@ export async function handleBulkAcceptedSubmit(
       await sb.storage.from(BUCKET).remove([photoPath]);
     } catch (cleanupError) {
       console.error('bulk upload orphan cleanup:', cleanupError);
+    }
+    // The DB's unique index refused a second paid row for this exact photo:
+    // the pre-check lost a race (two admin tabs). Report it as the skip it
+    // is, never as a failure the admin would retry into a duplicate.
+    if (e instanceof DuplicatePlacementError) {
+      return NextResponse.json({ duplicate: true }, { status: 200 });
     }
     return NextResponse.json({ error: 'The placement could not be saved. Try again.' }, { status: 500 });
   }

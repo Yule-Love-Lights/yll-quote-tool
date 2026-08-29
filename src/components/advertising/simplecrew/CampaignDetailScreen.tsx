@@ -101,9 +101,12 @@ export default function CampaignDetailScreen({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      const body = (await res.json().catch(() => ({}))) as { error?: string; changed?: boolean };
       if (!res.ok) {
         setError(body.error ?? 'Action failed.');
+      } else if (body.changed === false) {
+        // The row was already rejected, so this reason was NOT recorded.
+        setError('That photo was already undone earlier, so this reason was not saved.');
       } else {
         setError(null);
         // Clear the draft only when the action LANDED — a transient failure
