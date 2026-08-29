@@ -11,9 +11,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const getContactMock = vi.fn();
+const getGhlUserMock = vi.fn();
 let highLevelConfigured = true;
 vi.mock('../integrations/highlevel', () => ({
   getContact: (...args: unknown[]) => getContactMock(...args),
+  getGhlUser: (...args: unknown[]) => getGhlUserMock(...args),
   isHighLevelConfigured: () => highLevelConfigured,
 }));
 
@@ -26,7 +28,7 @@ vi.mock('./transcribeHighLevel', async () => {
   };
 });
 
-import { claimRecording, processOneRecording, processPendingRecordings } from './pipeline';
+import { claimRecording, processOneRecording, processPendingRecordings, type RepIdentityCache } from './pipeline';
 
 type RowState = { status: string; processing_at: string | null };
 
@@ -147,6 +149,7 @@ describe('processOneRecording', () => {
   beforeEach(() => {
     highLevelConfigured = true;
     getContactMock.mockReset().mockResolvedValue({ phone: '5551234567', email: 'jamie@example.com', fullName: 'Jamie Lee' });
+    getGhlUserMock.mockReset().mockResolvedValue({ email: 'rep@x.com', name: 'Jane Rep' });
     fetchHighLevelTranscriptMock.mockReset().mockResolvedValue({
       rawText: 'Speaker 0: hi there this is a real conversation about holiday lights for your home this season.\n\nSpeaker 1: great, tell me more about pricing and scheduling please.',
       utterances: [
@@ -234,9 +237,39 @@ describe('processOneRecording', () => {
       direction: 'inbound',
       duration_seconds: 120,
     });
-    // rep_email is never populated by this slice -- see pipeline.ts's comment.
-    expect(insertCalls[0]).toHaveProperty('rep_email', null);
+    // rep_email/rep_name resolved via getGhlUser (rep-assignment ruling).
+    expect(insertCalls[0]).toMatchObject({ rep_email: 'rep@x.com', rep_name: 'Jane Rep' });
     expect(updateCalls).toEqual([{ id: 'r1', patch: { status: 'transcribed', transcript_id: 'tr1' } }]);
+  });
+
+  it('degrades rep_email/rep_name to null on a GHL user-lookup failure, without failing the recording', async () => {
+    getGhlUserMock.mockResolvedValueOnce({ email: null, name: null });
+    const { client, insertCalls } = fakeSupabase();
+
+    const result = await processOneRecording(client, baseRow());
+
+    expect(result).toBe('transcribed');
+    expect(insertCalls[0]).toMatchObject({ rep_email: null, rep_name: null });
+  });
+
+  it('resolves rep_email/rep_name to null (no lookup attempted) when the recording has no ghl_user_id', async () => {
+    const { client, insertCalls } = fakeSupabase();
+
+    const result = await processOneRecording(client, baseRow({ ghl_user_id: null }));
+
+    expect(result).toBe('transcribed');
+    expect(insertCalls[0]).toMatchObject({ rep_email: null, rep_name: null });
+    expect(getGhlUserMock).not.toHaveBeenCalled();
+  });
+
+  it('caches a rep identity lookup across multiple recordings sharing a ghl_user_id within one run', async () => {
+    const cache: RepIdentityCache = new Map();
+    const { client } = fakeSupabase();
+
+    await processOneRecording(client, baseRow({ id: 'r1' }), cache);
+    await processOneRecording(client, baseRow({ id: 'r2' }), cache);
+
+    expect(getGhlUserMock).toHaveBeenCalledTimes(1);
   });
 
   it('rounds a fractional adapter duration to an integer for the call_transcripts insert', async () => {
@@ -286,7 +319,28 @@ describe('processPendingRecordings', () => {
   beforeEach(() => {
     highLevelConfigured = true;
     getContactMock.mockReset().mockResolvedValue({ phone: null, email: null, fullName: null });
+    getGhlUserMock.mockReset().mockResolvedValue({ email: null, name: null });
     fetchHighLevelTranscriptMock.mockReset();
+  });
+
+  it('shares one rep-identity cache across the whole batch: two rows with the same ghl_user_id resolve it only once', async () => {
+    fetchHighLevelTranscriptMock.mockResolvedValue({
+      rawText: 'Speaker 0: hello and welcome to yule love lights how can I help you today with your display.\n\nSpeaker 1: I would like a quote for my house please.',
+      utterances: [
+        { speaker: 0, start: 0, end: 3, text: 'hello and welcome to yule love lights how can I help you today with your display' },
+        { speaker: 1, start: 3, end: 6, text: 'I would like a quote for my house please' },
+      ],
+      durationSeconds: 90,
+    });
+    getGhlUserMock.mockResolvedValue({ email: 'rep@x.com', name: 'Jane Rep' });
+
+    const rows: Row[] = [baseRow({ id: 'r1', ghl_user_id: 'u1' }), baseRow({ id: 'r2', ghl_user_id: 'u1' })];
+    const { client } = fakeSupabase({ pendingRows: rows });
+
+    const result = await processPendingRecordings(client, 6);
+
+    expect(result).toEqual({ done: 2, skipped: 0, failed: 0 });
+    expect(getGhlUserMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns all-zero counts with no pending rows', async () => {

@@ -8,19 +8,46 @@
 // stripped of everything out of scope for this slice: no Deepgram audio
 // download (decision 3 -- HighLevel supplies the transcript directly), no
 // verticals lookup (S3), no learnings extraction (S4), no outcome matching
-// (S4, decision 2 -- a local quotes query). Rep email resolution also stays
-// out of this slice -- see this file's rep_ghl_user_id comment below.
+// (S4, decision 2 -- a local quotes query).
+//
+// REP IDENTITY (rep-assignment ruling, same day as the fix round): resolves
+// row.ghl_user_id -> the rep's email + display name via getGhlUser
+// (src/lib/integrations/highlevel.ts), and stores both on the
+// call_transcripts row. Cached PER BATCH RUN (repIdentityCache, keyed on
+// ghl_user_id): a batch is typically many calls from the same handful of
+// reps, so this avoids one GHL round trip per recording for a rep this run
+// already resolved. Best-effort, same posture as the contact hydrate below:
+// any lookup failure degrades to null fields, never fails the recording.
 //
 // Best-effort per recording: one failure marks that row 'failed' with a
 // detail and the loop moves on -- never a batch abort.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getContact, isHighLevelConfigured } from '../integrations/highlevel';
+import { getContact, getGhlUser, isHighLevelConfigured, type GhlUserIdentity } from '../integrations/highlevel';
 import { fetchHighLevelTranscript, HighLevelTranscriptUnavailableError } from './transcribeHighLevel';
 import { junkReasonFromTurns } from './junk';
 import { MIN_RECORDING_SECONDS, PROCESSING_STALE_MS, RECORDING_BATCH_SIZE } from './sync';
 
 export { RECORDING_BATCH_SIZE };
+
+/** Per-run cache for resolveRepIdentity below -- one Map per processPendingRecordings call. */
+export type RepIdentityCache = Map<string, GhlUserIdentity>;
+
+/**
+ * Resolves a GHL user id to its email/name, cached in `cache` for the
+ * lifetime of the current batch run. A lookup failure inside getGhlUser
+ * already degrades to { email: null, name: null } (see that function's own
+ * comment) -- this wrapper only adds the cache, it does not add its own
+ * try/catch, so a cache HIT never re-throws something a MISS wouldn't.
+ */
+async function resolveRepIdentity(ghlUserId: string | null, cache: RepIdentityCache): Promise<GhlUserIdentity> {
+  if (!ghlUserId) return { email: null, name: null };
+  const cached = cache.get(ghlUserId);
+  if (cached) return cached;
+  const identity = await getGhlUser(ghlUserId);
+  cache.set(ghlUserId, identity);
+  return identity;
+}
 
 type CallRecordingRow = {
   id: string;
@@ -47,6 +74,7 @@ export type ProcessOutcome = 'transcribed' | 'skipped' | 'failed';
 export async function processOneRecording(
   supabase: SupabaseClient,
   row: CallRecordingRow,
+  repIdentityCache: RepIdentityCache = new Map(),
 ): Promise<ProcessOutcome> {
   try {
     if (!row.ghl_message_id) {
@@ -78,6 +106,11 @@ export async function processOneRecording(
       }
     }
 
+    // Rep identity, cached per batch run -- best-effort, same posture as the
+    // contact hydrate above: a failure degrades to nulls (getGhlUser never
+    // throws), never fails the recording.
+    const repIdentity = await resolveRepIdentity(row.ghl_user_id, repIdentityCache);
+
     let transcribed;
     try {
       transcribed = await fetchHighLevelTranscript(row.ghl_message_id);
@@ -107,11 +140,11 @@ export async function processOneRecording(
         called_at: row.called_at,
         raw_text: transcribed.rawText,
         utterances: transcribed.utterances,
-        // rep_email is deliberately left null in this slice: this repo's
-        // HighLevel client has no user-id -> email lookup yet (unlike the
-        // copilot's getGhlUserEmail). rep_ghl_user_id carries the ground-
-        // truth id from the call message so a later slice can map it.
-        rep_email: null,
+        // rep_email/rep_name resolved above (best-effort, cached per batch
+        // run). rep_ghl_user_id stays the ground-truth id from the call
+        // message regardless of whether the lookup succeeded.
+        rep_email: repIdentity.email,
+        rep_name: repIdentity.name,
         rep_ghl_user_id: row.ghl_user_id,
         direction: row.direction,
         // Math.round both sources: the column is an integer, and the
@@ -191,13 +224,19 @@ export async function processPendingRecordings(
   const rows = (data ?? []) as CallRecordingRow[];
   if (rows.length === 0) return { done: 0, skipped: 0, failed: 0 };
 
+  // One rep-identity cache for the WHOLE batch -- a batch is typically many
+  // calls from the same handful of reps, so this avoids a GHL round trip
+  // per recording for a rep this run already resolved (see this file's
+  // header).
+  const repIdentityCache: RepIdentityCache = new Map();
+
   let done = 0;
   let skipped = 0;
   let failed = 0;
   for (const row of rows) {
     const claimed = await claimRecording(supabase, row, now);
     if (!claimed) continue; // another invocation claimed this row first -- not double-spent, not counted here
-    const outcome = await processOneRecording(supabase, row);
+    const outcome = await processOneRecording(supabase, row, repIdentityCache);
     if (outcome === 'transcribed') done++;
     else if (outcome === 'skipped') skipped++;
     else failed++;
