@@ -248,14 +248,26 @@ function toPayable(row: PlacementRow): PayablePlacement {
 }
 
 /**
+ * Money readers refuse rather than return zeros when the database is not
+ * configured. Returning an empty result here would render "$0 earned, $0
+ * owed" for every worker on a healthy-looking response, which is the same
+ * confident falsehood the throwing earnings read exists to prevent, reached
+ * through a different door. (Delta-verify round 2, PR #1130.)
+ */
+function requireDb(): NonNullable<ReturnType<typeof getSupabaseServiceClient>> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('payouts: Supabase service role not configured, so the pay figures could not be read');
+  return db;
+}
+
+/**
  * What this worker is still owed for, photo by photo: accepted, not voided,
  * not a test row, and not already on a settlement line. This is the set the
  * "Mark paid" action defaults to (Naldo 2026-08-30: pay everything
  * outstanding).
  */
 export async function listPayablePlacements(workerId: string): Promise<PayablePlacement[]> {
-  const db = getSupabaseServiceClient();
-  if (!db) return [];
+  const db = requireDb();
   const id = workerId.trim();
   const [accepted, settled] = await Promise.all([readAcceptedPlacements(db, id), settledTotals(db)]);
   return accepted.filter((row) => !settled.paidPlacementIds.has(row.id)).map(toPayable);
@@ -273,16 +285,7 @@ export async function isPlacementSettled(placementId: string): Promise<boolean> 
 /** One worker's money at a glance: earned (history), paid, still owed. */
 export async function getWorkerPayoutSummary(workerId: string): Promise<WorkerPayoutSummary> {
   const id = workerId.trim();
-  const db = getSupabaseServiceClient();
-  const empty: WorkerPayoutSummary = {
-    workerId: id,
-    earnedCents: 0,
-    settledCents: 0,
-    unpaidCents: 0,
-    lastPaidAt: null,
-    payableCount: 0,
-  };
-  if (!db) return empty;
+  const db = requireDb();
 
   const [summaries, settled, accepted] = await Promise.all([
     earningsSummaryOrThrow({ workerId: id }),
@@ -303,8 +306,7 @@ export async function getWorkerPayoutSummary(workerId: string): Promise<WorkerPa
 
 /** Every worker's earned / paid / unpaid, for the admin pay screen. */
 export async function listPayoutSummaries(): Promise<WorkerPayoutSummary[]> {
-  const db = getSupabaseServiceClient();
-  if (!db) return [];
+  const db = requireDb();
   const [summaries, settled, accepted] = await Promise.all([
     earningsSummaryOrThrow(),
     settledTotals(db),
@@ -359,8 +361,7 @@ function toSettlement(row: SettlementRow, lineCount: number): AdvertisingSettlem
  * shows this (Naldo 2026-08-30), and it is what settles a "you never paid me
  * for that week" conversation. */
 export async function listSettlements(workerId: string): Promise<AdvertisingSettlement[]> {
-  const db = getSupabaseServiceClient();
-  if (!db) return [];
+  const db = requireDb();
   const settlements = await readSettlements(db, workerId.trim());
   const lines = await readLinesForSettlements(
     db,
@@ -531,7 +532,11 @@ export async function recordSettlement(
   const stored = await readLinesForSettlements(db, [settlement.id]);
   const storedSum = stored.reduce((sum, line) => sum + line.amount_cents, 0);
   if (stored.length !== ids.length || storedSum !== totalCents) {
-    await unwind();
+    // Some lines may already be on the books here, and settled money is
+    // summed from LINES: if the delete then fails, those lines are real paid
+    // money against a settlement nobody meant to keep. Tell unwind the truth
+    // about what landed so its message asks for the right thing.
+    await unwind(stored.length > 0);
     throw new Error(
       `recordSettlement: the payment's lines did not land in full (${stored.length} of ${ids.length}, ${dollars(storedSum)} of ${dollars(totalCents)}) — nothing was recorded`,
     );

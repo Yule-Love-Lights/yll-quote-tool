@@ -25,6 +25,10 @@ const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker, earningsS
       // Fires ONCE as the settlement lines land, before the write verifies
       // itself — models a void winning the gap after the placements were read.
       onLinesInsertOnce: null as null | (() => void),
+      // How many of the next settlement deletes should fail. A delete that
+      // can never fail leaves the unwind's retry and its two messages
+      // untestable, which is how an unprobed guard ships.
+      failSettlementDeletes: 0,
       seq: 0,
     },
   },
@@ -164,7 +168,11 @@ function makeDb() {
               preds.push((r) => r[col] === val);
               return d;
             },
-            then(resolve: (v: { error: null }) => void) {
+            then(resolve: (v: { error: { message: string } | null }) => void) {
+              if (table === 'advertising_settlements' && stateRef.current.failSettlementDeletes > 0) {
+                stateRef.current.failSettlementDeletes -= 1;
+                return Promise.resolve({ error: { message: 'connection reset by peer' } }).then(resolve);
+              }
               const rows = rowsFor(table);
               const removed: AnyRow[] = [];
               for (let i = rows.length - 1; i >= 0; i--) {
@@ -237,6 +245,7 @@ beforeEach(() => {
   stateRef.current.placementWrites = 0;
   stateRef.current.dropLinesOnce = 0;
   stateRef.current.onLinesInsertOnce = null;
+  stateRef.current.failSettlementDeletes = 0;
   stateRef.current.seq = 0;
   dbRef.current = makeDb();
   getAdvertisingWorker.mockImplementation(async (workerId: string) => ({
@@ -443,6 +452,38 @@ describe('trap 8 — the lines always sum to the settlement total', () => {
 });
 
 describe('a void racing the payment (technical lens, PR #1130)', () => {
+  it('retries a failed unwind, and stays quiet when a later attempt succeeds', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    stateRef.current.onLinesInsertOnce = () => {
+      a.voided_at = '2026-08-30T18:00:00.000Z';
+    };
+    stateRef.current.failSettlementDeletes = 2; // the third attempt lands
+
+    await expect(recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' })).rejects.toThrow(
+      /voided while this payment was being written/i,
+    );
+    // The retry did its job, so nothing is left on the books and the caller
+    // gets the ordinary refusal, not a call to reconcile anything by hand.
+    expect(stateRef.current.settlements).toHaveLength(0);
+    expect(stateRef.current.lines).toHaveLength(0);
+  });
+
+  it('asks for the row by hand when it cannot remove a payment that DID land', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    stateRef.current.onLinesInsertOnce = () => {
+      a.voided_at = '2026-08-30T18:00:00.000Z';
+    };
+    stateRef.current.failSettlementDeletes = 99; // every attempt fails
+
+    // The one outcome a person has to fix: the photo is voided and paid at
+    // once, so paid and earned disagree until someone reconciles it. "Try
+    // again" would be useless advice, so the message must not say that.
+    await expect(recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' })).rejects.toThrow(
+      /reconciled by hand/i,
+    );
+    expect(stateRef.current.settlements).toHaveLength(1); // it really is still there
+  });
+
   it('refuses and unwinds when a photo is voided while the payment is being written', async () => {
     const a = seedPlacement({ accepted_rate_cents: 250 });
     const b = seedPlacement({ accepted_rate_cents: 300 });
