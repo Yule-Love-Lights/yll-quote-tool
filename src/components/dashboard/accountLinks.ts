@@ -12,13 +12,16 @@
 // page reachable on a phone and not on a desktop, or the reverse.
 //
 // Two rules for anything added here:
-//   1. It must be a real route. These are the ONLY doors to these pages now,
-//      so a typo is a page nobody can reach rather than a broken-looking link.
+//   1. It must be a real route. For /admin/calls this menu is the only door in
+//      the app, so a typo there is a page nobody can reach rather than a
+//      broken-looking link. The others do have other doors (the design editor
+//      links Settings; the site-forms page links the leads page), which is
+//      exactly why the route-existence test checks every row rather than
+//      trusting that someone would notice.
 //   2. Adding a row grants no permission. Each page keeps whatever gate it
 //      already has; this list only decides where the door is drawn. Where a
-//      page is admin-only BEHIND the door, mark the row adminOnly too, or a
-//      plain operator gets a row that bounces them to a login screen they are
-//      already signed in past.
+//      page is admin-only BEHIND the door, mark the row adminOnly too, so the
+//      menu does not offer a plain operator something they cannot open.
 
 export type AccountLink = {
   label: string;
@@ -36,18 +39,39 @@ export const ACCOUNT_LINKS: ReadonlyArray<AccountLink> = [
   { label: 'Settings', href: '/settings' },
   { label: 'Insights', href: '/insights' },
   // Labelled to match the heading each page actually shows, so the row and
-  // the destination agree: /admin/calls says "Call recordings" and
-  // /admin/leads says "Website leads".
+  // the destination agree: /admin/calls says "Call recordings".
   { label: 'Call recordings', href: '/admin/calls' },
-  // /api/admin/leads is requireAdmin, and the page bounces to /login on the
-  // 401 rather than explaining itself. Shown to admins only, so a plain
-  // operator never gets a row that dead-ends at a sign-in screen they are
-  // already signed in past. Opening the page up to all operators is a
-  // permissions decision, not a menu one.
-  { label: 'Leads', href: '/admin/leads', adminOnly: true },
+  // "Website leads", not "Leads" (premerge staff lens). Staff already say
+  // "leads" all day about the Inbox, whose badge reads "N leads waiting in the
+  // inbox"; this page is the website-form sync, and its own heading says
+  // Website leads. A bare "Leads" row sends someone told to "check the leads"
+  // to the wrong screen.
+  //
+  // Admin only: /api/admin/leads is requireAdmin, which answers a signed-in
+  // non-admin with 403 "Admin access required". The page only redirects on
+  // 401, so that 403 surfaces as a red error banner rather than anything
+  // explaining itself. Either way it is a dead end for an operator, so the row
+  // is not offered to them. Opening the page up is a permissions decision, not
+  // a menu one.
+  { label: 'Website leads', href: '/admin/leads', adminOnly: true },
 ];
 
-/** The rows this caller may actually open. PURE. */
-export function accountLinksFor(role: 'admin' | 'operator' | null): AccountLink[] {
-  return ACCOUNT_LINKS.filter((l) => !l.adminOnly || role === 'admin');
+/**
+ * The rows this caller may actually open. PURE.
+ *
+ * `roleConfirmed` is required rather than defaulted, because defaulting it
+ * true would make the permissive answer the silent one. It is false until
+ * GET /api/auth/session has actually answered: OperatorNav seeds `role` from a
+ * localStorage hint one tick after hydration so an admin's controls appear at
+ * first paint, and on a shared office computer that hint can still say 'admin'
+ * for the NEXT person (premerge admin lens). An admin-only row must therefore
+ * wait for the confirmed answer, not the hint. Hiding it is cosmetic either
+ * way: requireAdmin on the route is what actually refuses the data.
+ */
+export function accountLinksFor(
+  role: 'admin' | 'operator' | null,
+  roleConfirmed: boolean,
+): AccountLink[] {
+  const isAdmin = roleConfirmed && role === 'admin';
+  return ACCOUNT_LINKS.filter((l) => !l.adminOnly || isAdmin);
 }

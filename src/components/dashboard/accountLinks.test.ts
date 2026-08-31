@@ -12,7 +12,7 @@ describe('ACCOUNT_LINKS', () => {
       'Settings',
       'Insights',
       'Call recordings',
-      'Leads',
+      'Website leads',
     ]);
   });
 
@@ -37,13 +37,20 @@ describe('ACCOUNT_LINKS', () => {
     expect(new Set(ACCOUNT_LINKS.map((l) => l.label)).size).toBe(ACCOUNT_LINKS.length);
   });
 
-  it('marks Leads admin-only, because its API is requireAdmin', () => {
-    // The page fetches /api/admin/leads, which is requireAdmin, and bounces to
-    // /login on the 401 rather than explaining itself. An ungated row would
-    // send a plain operator to a sign-in screen they are already signed in
-    // past.
+  it('marks the website-leads row admin-only, because its API is requireAdmin', () => {
+    // /api/admin/leads answers a signed-in non-admin with 403, and the page
+    // only redirects on 401, so that 403 lands as a red error banner. A dead
+    // end either way, so the row is not offered to an operator.
     const leads = ACCOUNT_LINKS.find((l) => l.href === '/admin/leads');
     expect(leads?.adminOnly).toBe(true);
+  });
+
+  // Premerge staff lens: staff say "leads" all day about the Inbox, whose
+  // badge reads "N leads waiting in the inbox". This page is the website-form
+  // sync, and its own heading says Website leads.
+  it('does not label the website-form page with the Inbox’s word for its own queue', () => {
+    const leads = ACCOUNT_LINKS.find((l) => l.href === '/admin/leads');
+    expect(leads?.label).toBe('Website leads');
   });
 
   it('leaves the operator-gated rows open to everyone', () => {
@@ -61,31 +68,44 @@ describe('ACCOUNT_LINKS', () => {
 });
 
 describe('accountLinksFor', () => {
-  it('gives an admin every row', () => {
-    expect(accountLinksFor('admin').map((l) => l.label)).toEqual([
+  it('gives a CONFIRMED admin every row', () => {
+    expect(accountLinksFor('admin', true).map((l) => l.label)).toEqual([
       'Settings',
       'Insights',
       'Call recordings',
-      'Leads',
+      'Website leads',
     ]);
   });
 
   it('hides the admin-only rows from a plain operator', () => {
-    const labels = accountLinksFor('operator').map((l) => l.label);
+    const labels = accountLinksFor('operator', true).map((l) => l.label);
     expect(labels).toEqual(['Settings', 'Insights', 'Call recordings']);
-    expect(labels).not.toContain('Leads');
+    expect(labels).not.toContain('Website leads');
   });
 
   it('treats an unresolved role as not-admin, the same safe default as View-as', () => {
-    expect(accountLinksFor(null).map((l) => l.label)).not.toContain('Leads');
+    expect(accountLinksFor(null, true).map((l) => l.label)).not.toContain('Website leads');
+    expect(accountLinksFor(null, false).map((l) => l.label)).not.toContain('Website leads');
   });
 
-  it('never hides a row that is open to everyone', () => {
+  // Premerge admin lens: OperatorNav seeds the role from a localStorage hint
+  // one tick after hydration so an admin's controls appear at first paint. On
+  // a shared office computer that hint can still say 'admin' for the NEXT
+  // person, so an admin-only row must wait for the session answer.
+  it('withholds an admin-only row while the role is only a HINT', () => {
+    const labels = accountLinksFor('admin', false).map((l) => l.label);
+    expect(labels).not.toContain('Website leads');
+    expect(labels).toEqual(['Settings', 'Insights', 'Call recordings']);
+  });
+
+  it('never hides a row that is open to everyone, confirmed or not', () => {
     for (const role of ['admin', 'operator', null] as const) {
-      const labels = accountLinksFor(role).map((l) => l.label);
-      expect(labels).toContain('Settings');
-      expect(labels).toContain('Insights');
-      expect(labels).toContain('Call recordings');
+      for (const confirmed of [true, false]) {
+        const labels = accountLinksFor(role, confirmed).map((l) => l.label);
+        expect(labels).toContain('Settings');
+        expect(labels).toContain('Insights');
+        expect(labels).toContain('Call recordings');
+      }
     }
   });
 });

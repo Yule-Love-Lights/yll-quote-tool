@@ -410,6 +410,7 @@ export function OperatorNav({
               identity={{ name, email, role }}
               onSignOut={signOut}
               canSignOut={!hideSignOut}
+              roleConfirmed={sessionState === 'signedIn'}
             />
           </li>
         </ul>
@@ -462,8 +463,12 @@ export function OperatorNav({
           {/* These pages left the tab list and live in the desktop account
               menu. This dropdown IS the account menu on a phone, so they have
               to appear here too, or they would be unreachable below 1024px.
-              Same array both places, so a row added in one is added in both. */}
-          {accountLinksFor(role).map(link => (
+              Same array and same role filter both places, so a row added in
+              one is added in both and an admin-only row hides in both.
+              `sessionState === 'signedIn'` is the CONFIRMED answer, never the
+              localStorage role hint, which on a shared computer can still say
+              'admin' for the next person. */}
+          {accountLinksFor(role, sessionState === 'signedIn').map(link => (
             <li key={link.href}>
               <Link
                 href={link.href}

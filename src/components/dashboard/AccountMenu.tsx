@@ -12,8 +12,9 @@
 //
 // Settings and Insights moved here from the top bar (Naldo, 2026-08-31).
 // Settings was reachable from two places at once, which was the complaint.
-// This is now the ONLY door to both, which is why the menu itself and those
-// two links are unconditional: an operator who cannot open this menu cannot
+// This menu is the main door to all of these, and the only one in the app for
+// /admin/calls, which is why the menu itself and its non-admin rows are
+// unconditional: an operator who cannot open this menu cannot
 // reach Settings at all. Sign out is the one item that IS conditional, on
 // there being a session to sign out of. The first cut of this got that
 // backwards and hid the whole control, Settings included, whenever the
@@ -34,9 +35,17 @@ export function AccountMenu({
   identity,
   onSignOut,
   canSignOut = true,
+  roleConfirmed = false,
 }: {
   identity: AccountIdentity;
   onSignOut: () => void;
+  /**
+   * Whether `identity.role` came from the SESSION answer rather than the
+   * localStorage hint. Admin-only rows wait for it. Defaults false, the
+   * cautious answer, so a caller that forgets it shows fewer rows rather than
+   * more.
+   */
+  roleConfirmed?: boolean;
   /**
    * Whether there is a session to sign out OF. False only on a POSITIVE
    * signedOut answer from GET /api/auth/session; the pre-fetch 'unknown'
@@ -128,10 +137,15 @@ export function AccountMenu({
             )}
           </div>
 
-          {/* Plain links for EVERY role, admin or not. They are the only
-              doors to these pages now that the tabs are gone, and the list is
-              shared with the mobile hamburger so the two cannot drift. */}
-          {accountLinksFor(identity.role).map((link) => (
+          {/* The rows this caller may actually open. Most are open to every
+              role; a row marked adminOnly (Leads) is filtered out for anyone
+              else, because its page refuses them and bounces to a login screen
+              they are already signed in past. Hiding a row is COSMETIC: the
+              real gate is the route's own requireAdmin plus the default-deny
+              perimeter in src/proxy.ts, and both hold whatever this renders.
+              The list is shared with the mobile hamburger so the two menus
+              cannot drift. */}
+          {accountLinksFor(identity.role, roleConfirmed).map((link) => (
             <Link
               key={link.href}
               href={link.href}

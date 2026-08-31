@@ -118,11 +118,17 @@ describe('AccountMenu — the items the dropdown must carry', () => {
     // The desktop menu and the mobile hamburger used to hold SEPARATE copies,
     // so adding a page was two edits and forgetting one made it reachable on
     // a phone and not on a desktop. Both map over ACCOUNT_LINKS now.
-    expect(SOURCE).toContain('accountLinksFor(identity.role).map');
+    expect(SOURCE).toContain('accountLinksFor(identity.role, roleConfirmed).map');
     expect(SOURCE).not.toContain('href="/settings"');
   });
 
-  it('shows an admin the Leads row and a plain operator not', () => {
+  it('asks the role-aware helper, and only on a CONFIRMED role', () => {
+    // NAMED for what it actually checks. The dropdown is closed in a static
+    // render, so this pass cannot see the rows themselves; which rows each
+    // role gets is proved in accountLinks.test.ts against accountLinksFor,
+    // and was driven per role in a browser. What is pinned here is that this
+    // component consults the role at all rather than mapping the raw list.
+
     const asAdmin = renderToStaticMarkup(
       <AccountMenu
         identity={{ name: 'A', email: null, role: 'admin' }}
@@ -135,11 +141,9 @@ describe('AccountMenu — the items the dropdown must carry', () => {
         onSignOut={() => {}}
       />,
     );
-    // The dropdown is closed in a static render, so neither contains the rows;
-    // what this pins is that the menu asks the role-aware helper at all.
     expect(asAdmin).toContain('aria-haspopup="menu"');
     expect(asOperator).toContain('aria-haspopup="menu"');
-    expect(SOURCE).toContain('accountLinksFor(identity.role)');
+    expect(SOURCE).toContain('accountLinksFor(identity.role, roleConfirmed)');
   });
 
   it('shows the View-as switcher to admins only', () => {

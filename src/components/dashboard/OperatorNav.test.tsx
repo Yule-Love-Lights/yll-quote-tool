@@ -141,7 +141,7 @@ describe('OperatorNav — the four tabs that left the bar (Naldo, 2026-08-31)', 
     // The SHARED, role-filtered list, not a local copy: a second copy is how
     // the two menus drift apart, and an unfiltered one would show a plain
     // operator the admin-only Leads row.
-    expect(source).toContain('accountLinksFor(role).map');
+    expect(source).toContain("accountLinksFor(role, sessionState === 'signedIn').map");
     expect(source).toContain("from './accountLinks'");
     expect(source).not.toContain("{ label: 'Settings', href: '/settings' }");
   });
