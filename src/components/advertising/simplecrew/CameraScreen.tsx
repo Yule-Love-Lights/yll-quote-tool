@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 import { chipStateFor, GPS_TICK_MS, isFixFresh, type GpsPermission } from './cameraGps';
+import { decideCampaign, readRememberedCampaign, rememberCampaign } from './campaignMemory';
 import { CloseIcon, FlashOffIcon, FlipCameraIcon, SearchIcon } from './icons';
 import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
 
@@ -32,12 +33,20 @@ export default function CameraScreen({
   submitUrl,
   noteBase,
   backHref,
+  memoryScope,
+  fromPageCampaignId = null,
 }: {
   campaignsUrl: string;
   submitUrl: string;
   /** `${noteBase}/${placementId}/note` is the note PATCH endpoint. */
   noteBase: string;
   backHref: string;
+  /** Keys the per-device campaign memory, so two accounts on one phone
+   * cannot inherit each other's campaign. */
+  memoryScope: string;
+  /** Set when the worker opened the camera from a campaign's own page:
+   * that campaign is used outright, with nothing to confirm. */
+  fromPageCampaignId?: string | null;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -49,6 +58,10 @@ export default function CameraScreen({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerChoice, setPickerChoice] = useState<string | null>(null);
   const [guardOpen, setGuardOpen] = useState(false);
+  // Set when a campaign was preselected from a memory older than the
+  // freshness window: the name is shown and the shutter stays blocked
+  // until the worker confirms it (Naldo's ruling, 2026-08-29).
+  const [needsConfirm, setNeedsConfirm] = useState(false);
   const [search, setSearch] = useState('');
 
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -83,7 +96,20 @@ export default function CameraScreen({
         const res = await fetch(campaignsUrl);
         if (!res.ok || cancelled) return;
         const body = (await res.json()) as { campaigns: Campaign[] };
-        if (!cancelled) setCampaigns(body.campaigns);
+        if (cancelled) return;
+        setCampaigns(body.campaigns);
+        // Open on the campaign the worker most likely means, and say so
+        // rather than guessing silently when the memory has gone cold.
+        const decision = decideCampaign({
+          fromPageCampaignId,
+          remembered: readRememberedCampaign(memoryScope),
+          campaigns: body.campaigns,
+          now: Date.now(),
+        });
+        if (decision.campaignId) {
+          setCampaign(body.campaigns.find((c) => c.id === decision.campaignId) ?? null);
+          setNeedsConfirm(decision.needsConfirm);
+        }
       } catch {
         /* picker shows empty; capture still guards */
       }
@@ -91,7 +117,7 @@ export default function CameraScreen({
     return () => {
       cancelled = true;
     };
-  }, [campaignsUrl]);
+  }, [campaignsUrl, memoryScope, fromPageCampaignId]);
 
   // Live camera. Re-acquired when the facing mode flips.
   useEffect(() => {
@@ -226,6 +252,9 @@ export default function CameraScreen({
       setGuardOpen(true);
       return;
     }
+    // A campaign carried over from more than an hour ago has to be
+    // confirmed first: it decides what the photo is worth.
+    if (needsConfirm) return;
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) return;
 
@@ -271,11 +300,15 @@ export default function CameraScreen({
               : it,
           ),
         );
+
+        // Remember only what actually LANDED: a failed upload should not
+        // teach the camera anything.
+        rememberCampaign(memoryScope, campaign.id, Date.now());
       } catch {
         fail('Upload failed. Check your connection and retry.');
       }
     })();
-  }, [campaign, submitUrl, gpsFailMessage]);
+  }, [campaign, needsConfirm, submitUrl, gpsFailMessage, memoryScope]);
 
   const retry = (item: QueueItem) => {
     // A failed shot never made a placement; drop it and let the worker
@@ -399,6 +432,35 @@ export default function CameraScreen({
           </div>
         )}
       </div>
+
+      {/* Carried-over campaign, older than an hour: name it and block the
+          shutter until the worker says yes. */}
+      {campaign && needsConfirm && (
+        <div className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-2xl bg-white/95 px-4 py-3">
+          <span className="min-w-0 flex-1 text-sm" style={{ color: SC.text }}>
+            Still shooting <span className="font-semibold">{campaign.name}</span>?
+          </span>
+          <button
+            type="button"
+            onClick={() => setNeedsConfirm(false)}
+            className="rounded-full px-4 py-2 text-sm font-semibold text-white"
+            style={{ background: SC.primaryDeep }}
+          >
+            Yes, continue
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setPickerChoice(campaign.id);
+              setPickerOpen(true);
+            }}
+            className="rounded-full border px-4 py-2 text-sm"
+            style={{ borderColor: '#DCD4BE', color: SC.text }}
+          >
+            Change
+          </button>
+        </div>
+      )}
 
       {/* GPS status — the worker sees the location state BEFORE shooting */}
       <div className="flex justify-center px-6 pt-2">
@@ -525,6 +587,7 @@ export default function CameraScreen({
               onClick={() => {
                 const chosen = campaigns.find((c) => c.id === pickerChoice) ?? null;
                 setCampaign(chosen);
+                setNeedsConfirm(false);
                 setPickerOpen(false);
               }}
             >

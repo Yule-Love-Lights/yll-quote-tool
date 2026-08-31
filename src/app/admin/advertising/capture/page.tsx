@@ -8,7 +8,12 @@ export const dynamic = 'force-dynamic';
 // The ADMIN camera (Simple Crew replica: owners shoot too). Submits through
 // the shared capture pipeline under the admin's auto-provisioned worker
 // row; their signs flow through the same review + pay rules as anyone's.
-export default async function AdminCapturePage() {
+export default async function AdminCapturePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ campaign?: string }>;
+}) {
+  const { campaign } = await searchParams;
   const role = await getSessionRole();
   if (role !== 'admin') redirect('/');
 
@@ -18,6 +23,8 @@ export default async function AdminCapturePage() {
       submitUrl="/api/admin/advertising/capture"
       noteBase="/api/admin/advertising/placements"
       backHref="/admin/advertising"
+      memoryScope="admin"
+      fromPageCampaignId={campaign ?? null}
     />
   );
 }
