@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { PersonAddIcon } from './icons';
+import BulkUploadSheet from './BulkUploadSheet';
 import { EmptyState, PrimaryButton, SC, ScreenHeader, Sheet, ToolbarButton } from './ui';
 
 type Worker = {
@@ -44,6 +45,7 @@ export default function ManageCrewScreen() {
 
   const [pwFor, setPwFor] = useState<Worker | null>(null);
   const [pwValue, setPwValue] = useState('');
+  const [bulkFor, setBulkFor] = useState<Worker | null>(null);
 
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
@@ -247,6 +249,9 @@ export default function ManageCrewScreen() {
               </span>
             </span>
             <span className="flex gap-3 text-sm">
+              <button type="button" className="underline" style={{ color: SC.primary }} onClick={() => setBulkFor(w)}>
+                Upload photos
+              </button>
               {w.hasLogin ? (
                 <button type="button" className="underline" style={{ color: SC.primary }} onClick={() => { setPwFor(w); setPwValue(''); }}>
                   Reset password
@@ -314,6 +319,17 @@ export default function ManageCrewScreen() {
           </div>
         </div>
       </Sheet>
+
+      {/* bulk photo upload sheet */}
+      {bulkFor && (
+        <BulkUploadSheet
+          workerId={bulkFor.id}
+          workerName={bulkFor.displayName}
+          open
+          onClose={() => setBulkFor(null)}
+          onDone={() => reload()}
+        />
+      )}
 
       {/* password reset sheet */}
       <Sheet open={pwFor !== null} onClose={() => setPwFor(null)}>

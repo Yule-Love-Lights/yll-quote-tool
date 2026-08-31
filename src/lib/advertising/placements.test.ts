@@ -27,6 +27,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as { table: string; payload: AnyRow }[],
       selectError: null as DbError | null,
       insertError: null as DbError | null,
+      updateError: null as DbError | null,
       // When set, the NEXT single-row select returns this snapshot instead of
       // the live row, then clears — models a stale read racing a concurrent
       // writer, so the CAS guards can actually be exercised.
@@ -66,6 +67,17 @@ function makeDb() {
               filters.push({ kind: 'is', col, val });
               return b;
             },
+            // PostgREST .limit(n) — an ARRAY read. Modelled because the
+            // dedupe existence check must never use maybeSingle: on 2+
+            // matches PostgREST returns PGRST116 and null data, which a
+            // catch-all null return would read as "no duplicate".
+            limit(n: number) {
+              if (stateRef.current.selectError) {
+                return Promise.resolve({ data: null, error: stateRef.current.selectError });
+              }
+              const found = rows().filter((r) => rowMatches(r, filters));
+              return Promise.resolve({ data: found.slice(0, n), error: null });
+            },
             maybeSingle() {
               if (stateRef.current.selectError) {
                 return Promise.resolve({ data: null, error: stateRef.current.selectError });
@@ -76,6 +88,16 @@ function makeDb() {
                 return Promise.resolve({ data: stale, error: null });
               }
               const found = rows().filter((r) => rowMatches(r, filters));
+              // Real PostgREST: 2+ matching rows is an ERROR (PGRST116) with
+              // null data, not "the first row". Modelled so any caller that
+              // reaches for maybeSingle on a non-unique predicate fails here
+              // instead of in prod.
+              if (found.length > 1) {
+                return Promise.resolve({
+                  data: null,
+                  error: { code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' },
+                });
+              }
               return Promise.resolve({ data: found[0] ?? null, error: null });
             },
             order(col: string, opts?: { ascending?: boolean }) {
@@ -184,6 +206,12 @@ function makeDb() {
             select(_cols?: string) {
               return {
                 maybeSingle: () => {
+                  // An UPDATE can violate a unique index too (the accepted
+                  // photo index applies to a row TRANSITIONING into
+                  // accepted, not only to inserts).
+                  if (stateRef.current.updateError) {
+                    return Promise.resolve({ data: null, error: stateRef.current.updateError });
+                  }
                   const idx = rows().findIndex((r) => rowMatches(r, filters));
                   if (idx === -1) return Promise.resolve({ data: null, error: null });
                   stateRef.current.updates.push({ table, payload });
@@ -280,6 +308,7 @@ beforeEach(() => {
   stateRef.current.inserted = [];
   stateRef.current.selectError = null;
   stateRef.current.insertError = null;
+  stateRef.current.updateError = null;
   stateRef.current.staleReadOnce = null;
   dbRef.current = makeDb();
 });
@@ -818,7 +847,7 @@ describe('earnings math', () => {
     expect(mine?.total.pendingEstimatedCents).toBe(250);
   });
 
-  it('groups earned cents by ET day and Monday-start ET week (DST-safe calendar math)', async () => {
+  it('groups earned cents by ET day and Monday-start ET week (DST-safe calendar math, capturedAt first)', async () => {
     const { earningsSummary } = await import('./placements');
     const campaign = seedCampaign({ rate_cents: 250 });
     const worker = seedWorker();
@@ -829,7 +858,8 @@ describe('earnings math', () => {
       status: 'accepted',
       accepted_rate_cents: 250,
       reviewed_by: REVIEWER,
-      reviewed_at: '2026-08-24T03:30:00.000Z',
+      captured_at: '2026-08-24T03:30:00.000Z',
+      reviewed_at: '2026-08-24T12:00:00.000Z',
     });
     // 2026-08-24T12:00Z is 2026-08-24 08:00 ET — MONDAY, week of Mon 2026-08-24.
     seedPlacement({
@@ -837,6 +867,7 @@ describe('earnings math', () => {
       status: 'accepted',
       accepted_rate_cents: 250,
       reviewed_by: REVIEWER,
+      captured_at: '2026-08-24T12:00:00.000Z',
       reviewed_at: '2026-08-24T12:00:00.000Z',
     });
     // Pending sign captured the same Monday: estimated in that day/week bucket.
@@ -893,5 +924,199 @@ describe('earnings math', () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].workerId).toBe(w1.id);
     expect(summaries[0].total.acceptedEarnedCents).toBe(250);
+  });
+});
+
+describe('submitAcceptedPlacement (admin bulk upload — lands PAID, so every guard is money)', () => {
+  const base = () => {
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    return {
+      campaignId: String(campaign.id),
+      workerId: String(worker.id),
+      kind: 'yard_sign' as const,
+      rateCents: 250,
+      reviewedBy: REVIEWER,
+      photoPath: 'placements/w/bulk.jpg',
+    };
+  };
+
+  it('inserts directly as accepted with the given rate stamped and the admin as reviewer', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    const p = await submitAcceptedPlacement({ ...base(), lat: 40.75, lng: -73.42 });
+    expect(p.status).toBe('accepted');
+    expect(p.acceptedRateCents).toBe(250);
+    expect(p.reviewedBy).toBe(REVIEWER);
+    expect(p.reviewedAt).toBeTruthy();
+    const logged = stateRef.current.inserted.filter((i) => i.table === 'advertising_activity');
+    expect(logged).toHaveLength(1);
+    expect(logged[0].payload.action).toBe('accepted');
+  });
+
+  it('GPS is optional: both null stores both null', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    const p = await submitAcceptedPlacement({ ...base(), lat: null, lng: null });
+    expect(p.status).toBe('accepted');
+    expect(p.lat).toBeNull();
+    expect(p.lng).toBeNull();
+  });
+
+  it('refuses ONE-SIDED GPS — a lat with no lng is a corrupt location, not a partial one', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: 40.75, lng: null })).rejects.toThrow(/GPS/);
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: -73.42 })).rejects.toThrow(/GPS/);
+  });
+
+  it('refuses out-of-range GPS when present', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: 91, lng: 0 })).rejects.toThrow(/GPS/);
+  });
+
+  it('refuses a rate that is not a non-negative integer number of cents', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, rateCents: -1 })).rejects.toThrow(/rate/i);
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, rateCents: 2.5 })).rejects.toThrow(/rate/i);
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, rateCents: Number.NaN })).rejects.toThrow(/rate/i);
+  });
+
+  it('refuses a missing proof photo path', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    await expect(submitAcceptedPlacement({ ...base(), lat: null, lng: null, photoPath: '  ' })).rejects.toThrow(/photo/i);
+  });
+
+  it('a test worker flows is_test through, so bulk rows for test workers never touch real money', async () => {
+    const { submitAcceptedPlacement } = await import('./placements');
+    const p = await submitAcceptedPlacement({ ...base(), lat: null, lng: null, isTest: true });
+    expect(p.isTest).toBe(true);
+  });
+});
+
+describe('findAcceptedByPhotoHash (bulk dedupe, technical lens HIGH on PR #1093)', () => {
+  it('finds an accepted row with the same hash for the same worker and campaign', async () => {
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+      photo_hash: 'aaaa111122223333',
+    });
+    const hit = await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'aaaa111122223333');
+    expect(hit?.photoHash).toBe('aaaa111122223333');
+  });
+
+  it('a different worker, different campaign, non-accepted status, or null hash never matches', async () => {
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'pending', photo_hash: 'aaaa111122223333' });
+    expect(await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'aaaa111122223333')).toBeNull();
+    expect(await findAcceptedByPhotoHash('other-worker', String(campaign.id), 'aaaa111122223333')).toBeNull();
+    expect(await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), null)).toBeNull();
+  });
+});
+
+describe('earnings bucket by the day the work HAPPENED (capturedAt first; Naldo date-taken ruling, PR #1093)', () => {
+  it('a backfilled accepted photo lands in its historical week, not the upload week', async () => {
+    const { earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-29T18:00:00.000Z',
+      captured_at: '2026-07-01T15:00:00.000Z',
+    });
+    const summaries = await earningsSummary();
+    const mine = summaries.find((s) => s.workerId === worker.id);
+    expect(mine?.byWeek).toEqual([{ weekStart: '2026-06-29', pendingEstimatedCents: 0, acceptedEarnedCents: 250 }]);
+  });
+
+  it('an accepted row with no capturedAt still buckets by review time (nothing vanishes)', async () => {
+    const { earningsSummary } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T12:00:00.000Z',
+      captured_at: null,
+    });
+    const summaries = await earningsSummary();
+    const mine = summaries.find((s) => s.workerId === worker.id);
+    expect(mine?.byWeek).toEqual([{ weekStart: '2026-08-24', pendingEstimatedCents: 0, acceptedEarnedCents: 250 }]);
+    expect(mine?.total.acceptedEarnedCents).toBe(250);
+  });
+});
+
+describe('dedupe and undo hardening (delta-verify BLOCK on PR #1093)', () => {
+  it('findAcceptedByPhotoHash still finds a duplicate when TWO accepted rows already share the hash', async () => {
+    // The maybeSingle version returned PGRST116 + null here, which the
+    // catch-all read as "no duplicate" — disarming dedupe exactly where
+    // duplicates already exist.
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const common = {
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+      photo_hash: 'bbbb222233334444',
+    };
+    seedPlacement(common);
+    seedPlacement(common);
+    const hit = await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'bbbb222233334444');
+    expect(hit).not.toBeNull();
+    expect(hit?.photoHash).toBe('bbbb222233334444');
+  });
+
+  it('submitAcceptedPlacement surfaces a unique-violation as DuplicatePlacementError, so a lost race never mints a second paid row', async () => {
+    const { submitAcceptedPlacement, DuplicatePlacementError } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    stateRef.current.insertError = { code: '23505', message: 'duplicate key value violates unique constraint' };
+    await expect(
+      submitAcceptedPlacement({
+        campaignId: String(campaign.id),
+        workerId: String(worker.id),
+        kind: 'yard_sign',
+        rateCents: 250,
+        reviewedBy: REVIEWER,
+        lat: null,
+        lng: null,
+        photoPath: 'placements/w/x.jpg',
+        photoHash: 'cccc333344445555',
+      }),
+    ).rejects.toBeInstanceOf(DuplicatePlacementError);
+  });
+
+});
+
+describe('the accepted-photo unique index also guards UPDATES (delta-verify round 2)', () => {
+  it('acceptPlacement maps a 23505 to DuplicatePlacementError, so a duplicate resubmission refuses cleanly instead of 500ing', async () => {
+    const { acceptPlacement, DuplicatePlacementError } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'pending',
+      photo_hash: 'dddd444455556666',
+    });
+    stateRef.current.updateError = { code: '23505', message: 'duplicate key value violates unique constraint' };
+    await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toBeInstanceOf(DuplicatePlacementError);
   });
 });

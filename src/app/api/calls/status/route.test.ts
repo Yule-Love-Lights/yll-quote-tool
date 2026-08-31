@@ -30,6 +30,15 @@ function fakeSupabase(opts: {
         commitment_extraction_attempts?: number;
       }[]
     | { code: string };
+  noteRows?:
+    | {
+        ghl_note_posted_at: string | null;
+        ghl_note_id: string | null;
+        ghl_note_skip_reason: string | null;
+        ghl_note_quarantined_at: string | null;
+        ghl_note_last_failure_code: string | null;
+      }[]
+    | { code: string };
 } = {}) {
   const from = vi.fn((table: string) => {
     if (table === 'recording_sync_state') {
@@ -59,6 +68,11 @@ function fakeSupabase(opts: {
           if (cols === 'id, outcome') {
             return { in: async () => ({ data: opts.transcriptRows ?? [], error: null }) };
           }
+          if (cols.startsWith('ghl_note_posted_at')) {
+            const noteRows = opts.noteRows;
+            if (noteRows && 'code' in noteRows) return Promise.resolve({ data: null, error: noteRows });
+            return Promise.resolve({ data: noteRows ?? [], error: null });
+          }
           // The commitment-extraction progress select (S6) -- no .in(), just
           // awaited directly.
           const rows = opts.transcriptExtractionRows;
@@ -86,6 +100,66 @@ describe('GET /api/calls/status', () => {
     requireOperatorMock.mockReset().mockResolvedValue(null);
     isSupabaseServiceConfiguredMock.mockReset().mockReturnValue(true);
     getSupabaseServiceClientMock.mockReset();
+  });
+
+  it('reports note progress so a note phase that goes dark is visible', async () => {
+    getSupabaseServiceClientMock.mockReturnValue(
+      fakeSupabase({
+        noteRows: [
+          { ghl_note_posted_at: '2026-08-29T10:00:00.000Z', ghl_note_id: 'n1', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: '2026-08-29T12:00:00.000Z', ghl_note_id: 'n2', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: null, ghl_note_id: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: null, ghl_note_id: null, ghl_note_skip_reason: 'is_test', ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: null, ghl_note_id: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: '2026-08-29T13:00:00.000Z', ghl_note_last_failure_code: 'highlevel_post_failed' },
+        ],
+      }),
+    );
+
+    const json = await (await GET()).json();
+
+    expect(json.notes).toEqual({
+      posted: 2,
+      pending: 1,
+      skipped: 1,
+      quarantined: 1,
+      untraceable: 0,
+      lastPostedAt: '2026-08-29T12:00:00.000Z',
+      lastFailureCode: 'highlevel_post_failed',
+    });
+  });
+
+  it('counts a posted note with no HighLevel id as untraceable, not as healthy', async () => {
+    // The first six notes went out exactly this way. Folding them into the
+    // plain posted count is what made a silent failure look like success.
+    getSupabaseServiceClientMock.mockReturnValue(
+      fakeSupabase({
+        noteRows: [
+          { ghl_note_posted_at: '2026-08-29T10:00:00.000Z', ghl_note_id: 'note-1', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: '2026-08-29T11:00:00.000Z', ghl_note_id: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+        ],
+      }),
+    );
+
+    const json = await (await GET()).json();
+
+    expect(json.notes.posted).toBe(2);
+    expect(json.notes.untraceable).toBe(1);
+  });
+
+  it('degrades the note section to null before its migration is applied, without taking the page down', async () => {
+    getSupabaseServiceClientMock.mockReturnValue(
+      fakeSupabase({
+        statusRows: [{ status: 'transcribed' }],
+        noteRows: { code: '42703' },
+      }),
+    );
+
+    const res = await GET();
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.notes).toBeNull();
+    expect(json.counts.transcribed).toBe(1);
   });
 
   it('returns the denial response unchanged when the caller is not an operator', async () => {

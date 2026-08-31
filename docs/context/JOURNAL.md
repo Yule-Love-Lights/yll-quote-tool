@@ -2586,6 +2586,22 @@ _(S21 and older → `session_log_naldo_archive.md`.)_
 - **Caught a session-number collision, but only in two stages, and the first stage was wrong.** This log's own "Next fresh conversation" marker said S53 (stale since S52's close). First check: `feedback_self_assessment.md` already had a completed S55 entry with an open close PR (#713) — took that as proof S53 was free and renumbered to S56. That was still wrong: at merge time, `git switch -c naldo/s56-close origin/master` pulled in a REAL S53 entry (PR #707, a remote session that closed independently) that neither doc I'd checked had surfaced. Correct number was right (S56, since S53-S55 were all genuinely taken), but the reasoning chain that got there was lucky, not sound — checking self-assessment alone would have missed a docs-only close PR that never touched that file. The only check that actually catches this class is `gh pr list --limit 200` for the highest merged `sNN-close`/session PR, checked FIRST, before trusting any local memory file.
 
 
+### S57 (Jason) — 2026-08-29 — the Homeworks migration finished and verified three ways; the installment runner built and deliberately left unarmed — 9 PRs merged
+
+- **SHIPPED, all merged+live:** **#1051** the monthly installment runner (pure planner, four independent gates, ET business day — closing row 449) · **#1053** the row-444 money trap closed: `/api/quote`, `free-items` and every design write refuse a migrated quote, plus a Record-payment route and button and `installments.paid_by` · **#1080** the builder copy the browser check caught still lying · **#1113** the wrap review's own four findings · plus four ledger/doc PRs (#1052, #1074, #1081, #1082).
+- **JASON'S RULING, the one that matters most: THE RUNNER STAYS UNARMED, indefinitely.** Not a hold pending readiness — he keeps collecting the remaining installments by hand and sends each customer a pay link on the day. Both code headers and the consent migration were rewritten to say there is no plan to arm it, because they read as a checklist waiting to be ticked. Four gates stand between the code and a card: no `vercel.json` cron, `INSTALLMENT_RUNNER_ENABLED` off, `VALOR_AUTO_CHARGE_ENABLED` off, and `installment_auto_charge_consent_at` NULL on every row.
+- **THE MIGRATION IS DONE, AND VERIFIED THREE WAYS AGAINST HOMEWORKS' OWN EXPORTS** — `payments.csv` → collected **$29,890.70**, the A/R aging report → outstanding **$11,272.18**, revenue-by-customer → contracted **$41,162.88**. Every one to the cent, with exactly two adjustments, both already-known facts: Raymond's $278.40 4th installment (collected after the export was taken) and the five estimate-sourced customers who never had a Homeworks *invoice* and so appear in neither report. **No customer exists in Homeworks that is not in the tool.** Homeworks holds **$0** of expense data, so cancelling it before 16 September loses nothing.
+- **8 of 20 deposit dates were wrong; 5 corrected, 3 deliberately left.** The five estimate-sourced quotes carried the ESTIMATE's date because S56 had no payment record for them — #1318 Steve Herman was out by **78 days**. The other three (#1000, #1212, #1315) are a credit-timing artifact where money entered account credit days before reaching the invoice; moving those back would make each quote *paid before it was approved*, so that is Jason's call, not an inference. Mary O'Connor's 2nd installment cleared 2026-08-17, not on its due date.
+- **READING THAT EXPORT NEEDS A RULE, now written into `project_quote_tool.md`:** money in = invoice payments **+** `added to credit` **−** `decreased from credit`, and an invoice row paid from `Customer Credit Balance` is a credit being *applied*, not new money. Without it Jane Laguerre reads $6,811.89 instead of $4,093.14 and Michael Green $4,020.11 instead of $2,010.05.
+- **Deposit rates (row 452), Jason's rule:** the chip flags a genuinely DIFFERENT arrangement — 50% standard, 40% NCE, anything else rare — so it is about the deposit, not about how much has been collected. Three NCE quotes corrected to 40%; #1316 Ryan Roth stamped 0.469 (a confirmed rare case) and #1141/#1142 at 1.0 (paid in full BEFORE install). Rodney Smith, Anthony Infranco and Asharib Iqbal deliberately NOT stamped: they reached 100% collected the ordinary way, which is exactly what the chip should stay quiet about.
+- **REVIEW:** four-lens premerge round plus an adversarial delta-verify on each of #1051 and #1053 (8 HIGHs and 5 HIGHs respectively, every one in my own code); a full four-lens wrap round — Customer BLOCK 1 HIGH, Staff BLOCK 1 HIGH + 3 MED, **Admin PASS 0**, Integration 0 HIGH + 3 MED. All four wrap HIGH/MED-worth-fixing items shipped in #1113; three MEDs deferred; one accepted with a reason (`paid_by` is unrendered exactly as its sibling `invoices.settled_by` has been since #225).
+- **THE ADMIN LENS ANSWERED THE QUESTION I MOST FEARED:** the five moved `deposit_paid_at` timestamps broke **no** reporting. It grepped all 60+ consumers — `computeKpis` keys off `customer_approved_at`, `monthlyRevenue` buckets by approval month, `serviceMetrics` by install month, and everywhere else the column is read as a *boolean*. S56 turned a homepage KPI negative by back-dating `quote_sent_at`, which *does* feed month buckets; this session moved a column that feeds none. Safe by the column's nature, not by luck — but I did not check that before writing, which is the lesson.
+- **MISTAKES:** told Jason rows 450/451 were dormant because the runner is unarmed — true of the runner and irrelevant, since #1053's own manual Record button has no such gate and is the path staff actually use · fixed the surface a guard lives on and missed the surfaces that talk about it **four times in one session** (locking without builder copy, builder copy without the job page, `sceneLockedMessage` without `refuseIfFrozen`, and the dormancy claim itself) · told him row 425 "does not exist" from a grep that required bold, when it does · under-counted the paid-in-full quotes as four when it is five · left all six rows this session shipped reading as OPEN until he asked a question that surfaced it.
+- **DID RIGHT:** the browser drive found four defects that tsc, lint and 8,448 tests all passed · every guard mutation-probed at write time, including one probe that pins the case we must NOT do · reconciled against three independent exports rather than trusting my own arithmetic · verified "mine is a superset" character-by-character before resolving a squash conflict, and checked nothing was lost before deleting another dev's stray merge marker · pushed back on one review finding with evidence rather than building a UI nobody asked for.
+- **CROSS-DEV:** `migrations/FULL-SCHEMA.sql` carried a stray `=======` from Naldo's `1c9771ab` (#1093) that would break `psql -f` on a fresh rebuild. Verified nothing was lost, removed it in #1113, flagged in the PR body rather than silently touching his file.
+- **ENDING STATE:** master `5c22695f` before #1113. Gates: tsc 0 · lint 0 errors / 21 warnings · vitest **9378 across 538 files**. Prod verified READY on master's exact tip. Ledger rows 444-449 marked off, 450/451 recorded live-not-dormant, 452 closed, 453 open and fail-closed. Counter 460.
+- **JASON'S DATED ACTIONS:** Valor pay link to Jane before **5 Sep** ($453.13), Raymond before **28 Sep** ($278.40). Mary needs neither. No install dates exist for any of the 20 yet, and that is expected — dates come first, then scheduling.
+
 ### Naldo S57 (post-close delta) — the merge-go landed #726/#727/#728, then a five-number ledger collision surfaced mid-merge and was resolved by the merged-source tiebreaker (2026-08-10→11)
 
 > Recovered from the unmerged close PR #731 and landed as a sibling fragment by the 2026-08-23 stale-PR cleanup. Content verbatim from that PR; it was written against the now-frozen `session_log_naldo.md`, so it lands here instead.
@@ -3504,4 +3520,152 @@ errors, vitest 9268.
   the change.
 - Naldo: send the crew GPS notice before any hours conversation references GPS, and
   work the fix-list from the triage doc.
+
+# S79 (Naldo) — 2026-08-29 — the marketing site: accessibility to 100, agentic audit cleared, and a paid speed tool that had silently stopped working
+
+**Zero repo changes.** Everything this session shipped is on the live WordPress site
+(yulelovelights.com). The close PR is documents only.
+
+## What prompted it
+
+Naldo ran PageSpeed Insights on the marketing site and asked three things: fix the
+failing "Agentic Browsing" accessibility-tree audit, explain what the WebMCP items mean
+and whether they matter, and give an honest answer on whether the weak performance score
+hurts SEO, plus what else we should measure.
+
+## What shipped, all on the live site
+
+- **New Elementor Custom Code snippet 4792, "A11y Contrast and Agentic Browsing Fixes"**
+  (entire site, body end). One CSS block and one `<script nitro-exclude>` block. Undo
+  lever: delete the snippet.
+  - Contrast: global body text `#777E90` to `#6b7182` (4.06 to 4.87 against white); the
+    two top contact bars and the lead-form submit button `#33995F` to `#2b8251` (3.58 to
+    4.76). `transition:none` was needed because those containers animate background-color
+    and fought the override.
+  - Agentic fix: Elementor stamps an invalid `role="presentation"` on the hero background
+    video; swapped for `aria-hidden="true"`.
+  - Carousel: `aria-label` "Previous slide" / "Next slide" on the Elementor swiper
+    buttons, which had `role="button"` and no accessible name.
+  - Lead-form honeypot: `tabindex="-1"` on the hidden `input[name=company]` spam traps.
+    **CORRECTED at close:** this was reported mid-session as closing a real lead-loss
+    hazard, and that claim was wrong. The wrap technical lens found the widget already
+    bakes `tabindex: '-1'` into the honeypot, and `git log` confirms it has done so in
+    `public/lead-form.js` since 2026-07-11, before this session started. The live page and
+    a Lighthouse `aria-hidden-focus` failure both showed the attribute absent at the time,
+    most likely a stale cached copy of that script being served, but the widget was never
+    actually unprotected. The change is harmless belt-and-braces, not a hazard closed.
+- **Edit to pre-existing snippet 3559** (April's accessibility fixes): added
+  `nitro-exclude` to its script tag. No logic change.
+- **NitroPack**: Naldo renewed the lapsed subscription and upgraded to Plus (40,000
+  pageviews, 25GB CDN). Cache purged and rebuilt several times.
+
+- **CORRECTION shipped inside the close:** the `!important` background added for the
+  contact bars was also applied to the lead-form submit button, which silently killed that
+  button's hover darken, because `!important` beats the widget's own non-`!important`
+  `:hover` rule regardless of specificity. Found by the wrap technical lens with a real
+  hover in a headless browser, not by reading CSS. The rule was split so the bars keep the
+  override and the button gets its own `:hover`/`:focus` state at `#21633e` (contrast 7.19).
+  This was a regression introduced by this session on the site's primary conversion CTA.
+
+## Results, measured
+
+Google PageSpeed mobile: **Performance 39 to 85**, FCP 4.2s to 1.7s, **LCP 10.2s to
+3.7s**, TBT 840ms to 180ms, SI 8.0s to 3.0s. Best Practices 100, SEO 100.
+Lighthouse mobile **Accessibility 97 to 100**. Page weight ~9,355 KiB to ~817 KiB;
+stylesheets on the homepage 62 to 7. The hero video was left untouched throughout, at
+Naldo's explicit instruction. One audit still fails: `td-has-header` on the towns
+comparison table, deliberately left because fixing it could visibly change that table.
+
+## The real root cause, after two wrong ones
+
+The cache had been missing on **every** request and NitroPack reported **0 optimized
+pages**. Two confident diagnoses were given before the right one:
+
+1. The Meta pixel plugin's server-side `Set-Cookie: _fbp` on every response, with nginx
+   skipping cache on any Set-Cookie. Refuted by test: a request already carrying `_fbp`
+   gets a response with no Set-Cookie and still missed.
+2. SiteGround's edge WAF returning 403 to bot-format user agents, blocking NitroPack's
+   optimizer. This one was **sent to NitroPack support before it was tested**. The 403 is
+   real and reproducible (control-tested against interleaved current-Chrome requests) but
+   was not the cause.
+
+NitroPack support answered it in one message: **the Business plan's renewal had failed,
+so they stopped serving cache.** Pure billing. The evidence was visible from the start —
+renewal cancellation emails in the info@ inbox and "Next billing: N/A" on the dashboard —
+and was treated as a footnote while technical theories were chased.
+
+## The trap worth inheriting
+
+Once optimization came back on, **both accessibility snippets went completely dead** and
+Lighthouse accessibility fell 100 to 94. NitroPack rewrites inline scripts to
+`type="nitropack/inlinescript"` and defers them until the visitor interacts, so nothing
+ran for a crawler, a screen reader, or an AI agent, while the page looked fine in a
+browser. NitroPack's `nitro-exclude` attribute on the script tag fixes it. **Any future
+accessibility or structural script on this site needs that attribute or it silently does
+nothing.**
+
+## Also delivered
+
+A four-lens audit of the site (performance, AI/GEO visibility, local SEO, structured
+data) with a ranked backlog, published as an artifact plus four detailed files. Highlights
+still open for Naldo to action: the Yelp listing slug says "hicksville" while the site's
+schema says Amityville (a top-tier citation mismatch), the Google Business Profile primary
+category and hours need an owner-only check, the 5.0/172 review rating is displayed but
+absent from structured data, and seven live town permanent-lighting pages are set to
+noindex. Answered directly: WebMCP is a draft standard with no real traffic yet and is
+worth skipping for now; and the performance score costs nothing in rankings today because
+the origin has no CrUX field data, but 10 seconds on a phone was costing real customers.
+
+## Session review
+
+Four lenses (customer, technical, admin, staff) run against a written description of the
+live-surface changes, since there is no git diff to review.
+
+### S80 (Naldo) — 2026-08-29 — the advertising subsystem built end to end: six PRs, all merged and live, plus a live E2E with real sample photos — close PR naldo/s80-close
+
+- **NUMBER:** stamped S80. S74-S78 were held by concurrent sessions (master already carried an S78 close), and **S79 was held by a `naldo/s79-close` branch existing only in another local worktree** — invisible to master, the archive, every open PR and every remote branch. The S73 lesson recurring through the one door no repo-side check covers; caught by `git checkout` refusing the name, before a single artifact was stamped.
+- **SHIPPED, six merged PRs, each with its own four-lens round plus an adversarial delta-verify:**
+  - **#1057** schema + data layer: `advertising_workers` / `campaigns` / `placements` / `activity`, the private `advertising-proof` bucket, RLS-enabled-zero-policies, and the money rules as CHECK constraints.
+  - **#1061** the surfaces: worker capture (GPS + camera + campaign), own-placements with rejection reasons and resubmit, earnings; admin review queue with duplicate flags, accept/reject/bulk, the account-creation door, campaign management, pay summary. Login now names `/advertising` as home for an advertising account.
+  - **#1067** the yard-sign SKU in the shared inventory tables + manual stock reconciliation (no auto-decrement, by ruling).
+  - **#1077** **pay per accepted PHOTO** — Naldo's device-check ruling superseding the door-hangers-never-pay exclusion. Constraint swap on a populated table, backfill, and a copy sweep.
+  - **#1086** sign allotments (issuance ledger, remaining DERIVED as issued minus photos taken) + the photo-similarity engine (dHash + Hamming, strict 10-bit threshold).
+  - **#1096** placement **void**: a voided row counts for nothing (pay, estimates, allotments, stock, badges, duplicate flags) while its history stays.
+- **LIVE E2E with real photos, not mocks:** generated a yard-sign and a door-hanger sample image, signed in as a seeded `is_test` worker on a phone-sized browser with mocked GPS, submitted both through the real routes (Google reverse-geocoded to a real Farmingdale address), rejected one and accepted the other as the office, resubmitted through the worker UI, accepted again — **exactly one $2.50 stamp, retry a no-op**, six audit rows in order. Later re-ran the same shape for per-photo pay and for void.
+- MISTAKES: **the Void button I added rendered only on pending rows**, so the mis-tapped Accept it exists for had no button (self-caught while briefing the delta-verify) · **fixed the voided chips and never checked the MAP**, leaving voided-accepted rows as green "this paid" pins (delta-verify HIGH) · **shipped three counter guards with no tests at all**, then wrote tests that passed immediately until mutation probes proved them · **left the door-hangers-never-pay claim in code comments** after the rule changed, in three files · **a PR body went up with em dashes** against the standing voice rule.
+- DID RIGHT: **measured before believing** (sharp's grayscale raw really is 72 bytes; the two sample photos really are 27 bits apart while an identical photo is 0) · every CHECK negative-controlled **live** on prod, both directions, before trusting it · **held nothing back from the lens rounds**, which returned two BLOCKs that were both real (a stale branch that would have broken master's tsc, and a green "$2.50 Accepted" chip on rows that earn nothing) · every guard mutation-probed · the merge loop re-gated on **six** master moves rather than merging stale once.
+- REVIEW AT CLOSE: one integration lens plus the customer lens (the combined diff touches SHARED paths). Customer lens PASS, zero findings, reachability traced by construction. **The integration lens found a HIGH in MERGED, LIVE code, and it was my own mistake a THIRD time:** the void PR gated the status chip's LABEL on `voidedAt` and left the money suffix on the very next line ungated, so a voided-accepted placement rendered **"Voided · $2.50"** — on the admin screen the void was performed on, and on the worker's own view of the pay they lost. The sibling ProfileScreen already had the correct early-return shape with a comment naming that exact class: same fix, one file short. Fixed in **PR #1104** with a regression test pinning label and suffix as ONE decision, which fails when the guard is removed (probed). Its MED (the one placement counter without an `is_test` filter) was EXPLAINED rather than "fixed": that counter is scoped to a single worker, placements inherit the worker's flag, and filtering would zero a TEST worker's own balance during the device check that reads it. Two doc-comment nits corrected, FULL-SCHEMA parity re-asserted by script.
+- Ledger **479-482** minted (first written as 474-477; **S79's marketing rows 474-478 MERGED while this close PR was open**, so the merged rows won and these renumbered rather than hand-resolving over them): void's allotment give-back ruling (**Naldo's call**), the issuance idempotency lock, **payout settlement tracking** (the one real gap left: the tool says what is earned, nothing records that it was paid), and the two voided-exclusion guards needing real assertions.
+- NEXT: the UI session's Simple Crew replica owns presentation; wiring left for it is a Void button surface on its own screens and the allotment balance in Manage Crew. First device check: real phone, real GPS, real camera.
+
+#### S80 POST-CLOSE DELTA (same conversation, 2026-08-29)
+
+- Naldo asked whether the advertising side was finished. VERIFIED against the ledger rather than answered from memory: everything built is live, and the only genuinely open items are his two product decisions (row 479 void's allotment give-back, row 481 payout settlement) plus two small hardening rows.
+- That check surfaced **row 468**, another session's row about drift MY pay-per-photo change caused in their smoke script. All four of its claims are actually fixed now (the smoke asserts the per-photo rule, the doorHangerCount test header was corrected, no door-hanger "unpaid" claim survives a tree-wide grep) — the work landed, the ROW was never marked off. Recorded as verified-resolved in the row itself; left standing to close because it is S76's row, not mine.
+- Wrote `docs/reference/advertising-payout-spec.md` at Naldo's ask: a cold-start build spec for row 481, ready for a later session. Its load-bearing call is that a settlement records WHICH PLACEMENTS it paid (lines keyed to placement ids, unique per placement) rather than a period and a total — period-only settlement drifts the moment a placement inside an already-paid week is accepted late, and the office cannot then tell an underpayment from a late acceptance. Unpaid stays derived (earned minus settled), never stored. Four open questions are listed for him to answer BEFORE any code, the sharpest being what should happen when an already-PAID placement is voided.
+
+### S81 (Naldo) — 2026-08-29 — the Simple Crew replica, the device round it earned, and admin mass photo upload — close PR naldo/s81-close
+
+- **NUMBER:** this conversation never stamped one while it built, and by close time S80 was held by the concurrent advertising-engine session (close PR #1103, post-close #1106 already merged). Took S81. **Attribution caveat worth recording rather than quietly resolving:** the S80 fragment claims #1057, #1061 and #1067 as well, and this session's own record claims them too. What is beyond dispute from this conversation's transcript is #1078, #1090 and #1093, so those are what this entry claims. The three contested numbers are on `claude/advertising-*` branches; if it matters later, the branch reflog is the evidence, not either fragment.
+- **SHIPPED, three merged PRs, all live:**
+  - **#1078 the Simple Crew replica.** Naldo sent 17 screenshots of the Simple Crew app and asked for an exact replica in our colours, admin view and worker view. This replaced the v1 advertising UI wholesale: worker app at `/advertising` (Campaigns, Camera, Profile, Settings) and admin app at `/admin/advertising` (Campaigns, Crew, Camera, Settings). Leaflet maps with status-coloured pins, a live camera with a multi-shot background upload queue and per-photo notes, day-grouped photo cards, the confetti empty states, bottom tab bars, sheet modals. Two migrations (`worker_note`, `campaigns.kind`) applied to prod and appended to FULL-SCHEMA.
+  - **#1090 the device round.** Naldo tested the replica on his phone and returned five findings, all fixed: the camera never prompted for location (the browser only shows its permission prompt when the geolocation API is CALLED, and the old code called it only after the shutter, so a never-asked device saw failures and no prompt); Pay merged into Settings as one screen; a way back to the quote tool for admins; the Help section deleted ("we are the support"); and the palette re-pointed to the quote tool's own cream and evergreen.
+  - **#1093 admin mass photo upload.** Someone placed signs before the tool existed and could not record them. An admin can now attach a batch of camera-roll photos to a worker: each lands accepted and paid at the campaign's current rate, GPS and the taken date read out of the file's EXIF client-side before compression strips them, a money-echo confirm before anything uploads, exact duplicates skipped, a partial unique index as the backstop that cannot be raced.
+- **THE REVIEW RECORD, which is the real story of this session.** Every PR took its lens round and every fix round took an adversarial delta-verify, and the delta-verifies earned their keep three separate times: **#1090's fix reintroduced the exact class it was written to close** (the chip trusted a GPS fix for 15 seconds while the shutter trusted it for 5, so a green "GPS ready" could vouch for a fix the shutter would then refuse), and **#1093's two fix rounds were both BLOCKed** — first because the dedupe used `maybeSingle`, which PostgREST answers with an error and null data when two rows match, so the guard silently disarmed itself exactly where duplicates already existed; then because the new unique index guards the transition INTO accepted, so the ordinary Accept button could hit a raw 23505 and 500. Both were real. Neither would have been caught by the gates.
+- **THE COLLISION, handled by deleting my own work.** Mid-review, the concurrent session shipped **placement void** (#1096) for the same problem this session had solved with an `unaccept` action. Theirs is better: the row keeps its status and stamped rate as history, records who voided it and why, and stops counting for pay everywhere. Two mechanisms for one job would have been the worse outcome, so `unacceptPlacement`, its route action, its tests and its UI were deleted in the merge and the admin's undo button now voids.
+- MISTAKES: **the GPS fix that reintroduced its own class** (two thresholds, no shared constant; now one `GPS_FRESH_MS` with the chip and the shutter reading the same rule, mutation-probed) · **a test mock that lied** — it returned the first row where real PostgREST errors, so the dedupe test could never have caught the bug it was written for; fixed the instrument first, then watched the test fail for the right reason · **committed with a red suite** because the commit was `&&`-chained after the test line, so a failing OperatorNav test rode through (the rename had a third consumer) · **em dashes in a commit message**, caught before push, against the standing voice rule.
+- DID RIGHT: **let the delta-verify BLOCK me twice on my own money code and fixed rather than argued** · **measured before applying the unique index** (zero colliding groups in prod, which is what made it safe/additive rather than a constraint change needing a named go) · **negative-controlled every new guard** at write time, including the accept-path 23505 which failed correctly before the fix · **checked the riskiest interaction myself while the reviewer ran** and found the accept-path gap independently, so the fix was already written when the BLOCK arrived · **took master's void over my own unaccept** instead of defending the work.
+- **REVIEW AT CLOSE: one integration lens over the combined two-session advertising subsystem, plus the customer lens (the combined diff touches SHARED paths: `package.json` gained leaflet and exifr). Customer lens PASS, zero findings, with live logged-out probes: the marketing form and a portal quote render clean and carry no leaflet or exifr, every advertising surface 307s to login, both advertising APIs 401. The integration lens found a HIGH in MERGED, LIVE code, at exactly the seam it was spawned to inspect, and it was mine: the bulk-upload dedupe index refuses a second accepted row for the same worker, campaign and photo hash, while void is an OVERLAY that leaves `status='accepted'` forever. So a VOIDED photo still satisfied the index. Void a wrongly accepted photo and the office could never redo the work: the worker path 409s claiming the photo is already accepted (false, it pays nothing), and the bulk path is worse, reporting a calm 'already uploaded, skipped' 200 and creating nothing. The void migration's own comment names resubmission as the remedy, and the bulk sheet's confirm text promises the admin that a wrong accept can be undone; the index silently defeated both. Neither PR's own review could have seen it: the dedupe shipped before `voided_at` existed. Fixed in **PR #1107** (query filter plus a narrowed index predicate, applied to prod after measuring zero live colliding groups), with tests pinning both directions and a mutation probe that fails exactly the voided test.**
+- **ENDING STATE:** gates green — tsc 0, lint 0 errors (21 pre-existing warnings), vitest **9321** across 532 files (9315 at the moment of the last merge, plus the six tests added by the close review's fix). Prod deploy verified on the #1093 merge commit; the new bulk route refuses a logged-out POST with 401; the unique index verified live in the database.
+- **NOT DONE, deliberately:** no ledger rows were minted and `task_ledger.md` was not touched at all, because this session's kickoff prompt forbade editing it while concurrent sessions were live. The mass-upload follow-ups are therefore recorded here and in the handoff rather than as rows: backfilled yard-sign photos draw down a worker's sign allotment (the allotment derive treats any photographed sign as a used sign, whenever it was taken), and there is no per-row "this was backfilled" badge — the activity log records it, nothing renders it.
+- **NEXT:** Naldo's real ask behind mass upload was never the file picker: he wants to hand over a Google Drive folder link and have the photos ingested for him. Drive access is confirmed working from the assistant side (listing and downloading his images), so the next session's first job is that ingest, with a 3-photo dry run before the full batch. The manual picker stays as the second door.
+
+#### S81 POST-CLOSE DELTA (same conversation) — the close lens finished, and the rest of its findings
+
+- The integration lens's HIGH was acted on from its partial file before the agent finished; its FULL report then landed with **1 HIGH, 1 MED, 3 LOW**, so the close entry above understated the count. Recording the whole set and its dispositions here rather than leaving a doc that tells half the story.
+- **MED, FLAGGED TO NALDO, NOT FIXED:** the sign-allotment feature (#1086: issuance ledger, balances, its API route) has **zero UI reachability** — nothing in any component calls it. The other session's own close names the UI wiring as pending, and the screen it belongs on (Manage Crew) is this session's, so it sits exactly between the two lanes. This is the S61 `CrewLogins` class, a built and tested feature with no door into the product, and it needs a decision rather than a quiet fix.
+- **LOW, FIXED in PR #1107:** the pure `countDoorHangersByWorker` called itself the tested pin of the counting rules while the paged counter beside it filtered voided rows and it did not, so the two enforced different rules; a future caller wiring the pure one into a live path would have counted voided door hangers. Now skips voided rows, with a test that fails without the change.
+- **LOW, FIXED in PR #1107:** the workers route claimed `active` gates "login use and pay eligibility". It gates login only: an inactive worker's pending placements can still be accepted and paid, and bulk upload allows inactive workers by design. The comment now says what the code does.
+- **LOW, DEFERRED:** `advertising_activity` is written diligently by every mutator and read by nothing in the product. Three separate code comments justify their CAS design by the audit trail's trustworthiness, and no human can look at it. Worth a viewer on a placement or worker detail eventually; no money moves wrongly today.
+- Gates after the two comment fixes: tsc 0, lint 0 errors, vitest **9322** across 532 files. PR #1107 now carries the HIGH fix and both LOW fixes and still waits for Naldo's go.
 

@@ -24,6 +24,7 @@ import {
   countSeededGarlandUnestimated,
 } from '@/lib/design/seedFromAnalysis';
 import { isMiniGroup } from '@/lib/design/sceneTypes';
+import type { MiniGroupItem } from '@/lib/design/sceneTypes';
 
 export const runtime = 'nodejs';
 
@@ -69,13 +70,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // #255: a staff-created miniGroup (railing/curtain, etc.) is never seed-
   // prefixed, so seedSceneFromAnalysis's own `kept` filter always lets it
   // through — the ONLY way one disappears between the pre-seed scene and the
-  // post-seed scene is pruneOrphanedMiniGroups dropping it because a
-  // re-analyze didn't re-detect its last surviving member. A plain id diff of
-  // the two scenes' miniGroups is therefore an exact (not approximate) report
-  // of what THIS call pruned — no need to plumb a new return value out of
+  // post-seed scene is pruneOrphanedMiniGroups dropping it, either because a
+  // re-analyze didn't re-detect its last surviving member (#227) or (#13 x
+  // #240, item-1 fix round) because it's a TWIN whose canonical just got
+  // dropped by this same re-seed. A plain id diff of the two scenes'
+  // miniGroups is therefore an exact (not approximate) report of what THIS
+  // call pruned — no need to plumb a new return value out of
   // seedSceneFromAnalysis and touch its 45 existing call sites in
-  // seedFromAnalysis.test.ts.
-  const beforeGroups = (row.scene ?? EMPTY_SCENE).items.filter(isMiniGroup);
+  // seedFromAnalysis.test.ts. Twins are excluded from the "before" pool
+  // (item-4a fix round): a twinned group never bills twice, so if a
+  // re-analyze drops both the canonical AND its twin, only the canonical
+  // half is a real loss — counting the twin too would overstate it as 2
+  // groups (double the strings) instead of 1.
+  const beforeGroups = (row.scene ?? EMPTY_SCENE).items.filter((it): it is MiniGroupItem => isMiniGroup(it) && !it.linkedToId);
   const scene = seedSceneFromAnalysis(row.scene ?? EMPTY_SCENE, seed, row.photo_w, row.photo_h);
   // Ledger row 260: CAS'd on the version this route just read via getDesign()
   // above. "The builder closes/remounts the editor around this" (see the file
