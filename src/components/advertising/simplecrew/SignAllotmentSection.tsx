@@ -11,16 +11,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { parseAllotments, type AllotmentRow } from './signAllotmentView';
 import { PrimaryButton, SC, Sheet } from './ui';
 
-type Balance = {
-  workerId: string;
-  displayName: string;
-  active: boolean;
-  issuedTotal: number;
-  signsUsed: number;
-  remaining: number;
-};
+// The row shape and the parsing of the route's payload live in
+// signAllotmentView.ts, where a test pins them against what the route
+// actually returns.
+type Balance = AllotmentRow;
 
 type Issuance = { id: string; qty: number; note: string | null; createdAt: string };
 
@@ -46,6 +43,7 @@ export default function SignAllotmentSection() {
 
   const [historyFor, setHistoryFor] = useState<Balance | null>(null);
   const [history, setHistory] = useState<Issuance[] | null>(null);
+  const [historyFailed, setHistoryFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +55,16 @@ export default function SignAllotmentSection() {
           setError('Could not load sign allotments.');
           return;
         }
-        setBalances(((await res.json()) as { workers: Balance[] }).workers);
+        const rows = parseAllotments(await res.json());
+        if (!rows) {
+          // A body we cannot read is a FAILED load, not an empty roster.
+          // The first cut read the wrong key here, cleared the error state
+          // and then crashed the whole Settings screen on the next line
+          // (both lenses, PR #1135).
+          setError('Could not load sign allotments.');
+          return;
+        }
+        setBalances(rows);
         setError(null);
       } catch {
         if (!cancelled) setError('Could not load sign allotments.');
@@ -115,12 +122,21 @@ export default function SignAllotmentSection() {
   const openHistory = async (b: Balance) => {
     setHistoryFor(b);
     setHistory(null);
+    setHistoryFailed(false);
     try {
       const res = await fetch(`/api/admin/advertising/issuances?workerId=${encodeURIComponent(b.workerId)}`);
-      if (!res.ok) return;
-      setHistory(((await res.json()) as { issuances: Issuance[] }).issuances);
+      if (!res.ok) {
+        setHistoryFailed(true);
+        return;
+      }
+      const body = (await res.json()) as { issuances?: Issuance[] };
+      if (!Array.isArray(body.issuances)) {
+        setHistoryFailed(true);
+        return;
+      }
+      setHistory(body.issuances);
     } catch {
-      /* the sheet keeps showing the loading line; the balance above stands */
+      setHistoryFailed(true);
     }
   };
 
@@ -198,7 +214,14 @@ export default function SignAllotmentSection() {
         ))}
       </div>
 
-      <Sheet open={issueFor !== null} onClose={() => setIssueFor(null)}>
+      <Sheet
+        open={issueFor !== null}
+        onClose={() => {
+          // Never close over an in-flight hand-out: the sheet is the only
+          // place its result is reported (staff lens MED).
+          if (!busy) setIssueFor(null);
+        }}
+      >
         {issueFor && (
           <div style={{ color: SC.text }}>
             <h2 className="text-xl font-bold">Give signs to {issueFor.displayName}</h2>
@@ -240,7 +263,12 @@ export default function SignAllotmentSection() {
         {historyFor && (
           <div style={{ color: SC.text }}>
             <h2 className="text-xl font-bold">{historyFor.displayName}: signs handed out</h2>
-            {history === null && (
+            {historyFailed && (
+              <p className="mt-3 text-sm" style={{ color: SC.danger }}>
+                Could not load the history. The balance on the card is still correct.
+              </p>
+            )}
+            {history === null && !historyFailed && (
               <p className="mt-3 text-sm" style={{ color: SC.muted }}>
                 Loading…
               </p>

@@ -90,9 +90,9 @@ export default function SettingsScreen({
         ))}
       </div>
 
-      {paySection && <div className="mt-8">{paySection}</div>}
-
       {extraSection}
+
+      {paySection && <div className="mt-8">{paySection}</div>}
 
       <Sheet open={pwOpen} onClose={() => setPwOpen(false)}>
         <div style={{ color: SC.text }}>
