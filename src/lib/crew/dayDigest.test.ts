@@ -101,3 +101,30 @@ describe('jobs nobody should drive to', () => {
     expect(msg).not.toMatch(/do not go/i);
   });
 });
+
+// The cap and the trailing lines, from the delta-verify on PR #1129.
+describe('the character budget covers the WHOLE message', () => {
+  const longAddress = `${'A'.repeat(300)} Long Road, Locust Valley, NY`;
+
+  it('stays under the budget even with long addresses, a footer and a warning', () => {
+    const many = Array.from({ length: 60 }, (_, i) => job({ jobNumber: 1000 + i, address: longAddress }));
+    const msg = crewDayDigestMessage('2026-08-29', [group({ jobs: many })], [], ['property lookup: boom']);
+    expect(msg.length).toBeLessThanOrEqual(3500);
+    expect(msg).toMatch(/may be incomplete/i);
+    expect(msg).toMatch(/more not shown/i);
+  });
+
+  // A header that claims five jobs above three printed lines reads as a
+  // complete day. Same property the read-failure warning exists for.
+  it('says how many of a crew member jobs are actually shown when the cap bites', () => {
+    const many = Array.from({ length: 50 }, (_, i) => job({ jobNumber: 1000 + i }));
+    const msg = crewDayDigestMessage('2026-08-29', [group({ crewName: 'Field Crew One', jobs: many })], []);
+    expect(msg).toMatch(/Field Crew One — 50 jobs \(\d+ shown\)/);
+  });
+
+  it('leaves the header alone when everything fits', () => {
+    const msg = crewDayDigestMessage('2026-08-29', [group({ crewName: 'Field Crew One' })], []);
+    expect(msg).toContain('Field Crew One — 1 job');
+    expect(msg).not.toMatch(/shown\)/);
+  });
+});

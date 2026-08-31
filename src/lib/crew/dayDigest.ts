@@ -74,48 +74,70 @@ export function crewDayDigestMessage(
   errors: string[] = [],
 ): string {
   const readFailed = errors.length > 0;
-  const lines: string[] = [`Today's schedule, ${humanDate(date)}`];
+  const header = `Today's schedule, ${humanDate(date)}`;
 
   if (!groups.length && !unassigned.length) {
     // A failed read collapses the day to empty, and an all-clear on a busy
     // morning is the worst thing this message can do. Say which one this is.
-    lines.push(
+    return [
+      header,
       '',
       readFailed
         ? 'Could not read the schedule this morning, so jobs may be missing from this list. Check the schedule in the app before heading out.'
         : 'Nothing on the schedule for today.',
-    );
-    return lines.join('\n');
+    ].join('\n');
   }
 
+  const warning = readFailed
+    ? '\n\nSome details could not be read this morning, so this list may be incomplete. Check the schedule in the app.'
+    : '';
+
+  // The budget covers the WHOLE message, not just the job lines: the trailing
+  // warning and the "…and N more" footer are reserved BEFORE any line is
+  // placed, and every section heading is counted as it is added. The earlier
+  // cut gated job lines only, so its own "hard character budget" comment
+  // promised more than it delivered (delta-verify, PR #1129).
+  const FOOTER_RESERVE = 40;
+  const budget = MAX_CHARS - warning.length - FOOTER_RESERVE;
+
+  const lines: string[] = [header];
   let printed = 0;
   let dropped = 0;
 
-  for (const group of groups) {
-    lines.push('', `${group.crewName} — ${group.jobs.length} ${group.jobs.length === 1 ? 'job' : 'jobs'}`);
-    for (const job of group.jobs) {
+  const fits = (line: string): boolean =>
+    printed < MAX_JOB_LINES && charCount(lines) + line.length <= budget;
+
+  const section = (title: (shown: number, total: number) => string, jobs: CrewDayJob[]): void => {
+    const rendered: string[] = [];
+    for (const job of jobs) {
       const line = jobLine(job);
-      if (printed >= MAX_JOB_LINES || charCount(lines) + line.length > MAX_CHARS) {
+      // Count the heading too, so a section cannot be opened that leaves no
+      // room for its own jobs.
+      if (!fits(line) || charCount([...lines, title(rendered.length, jobs.length), ...rendered]) + line.length > budget) {
         dropped += 1;
         continue;
       }
-      lines.push(line);
+      rendered.push(line);
       printed += 1;
     }
+    if (!rendered.length) return;
+    lines.push('', title(rendered.length, jobs.length), ...rendered);
+  };
+
+  for (const group of groups) {
+    // A header claiming five jobs above three printed lines reads as a whole
+    // day. When the cap bites, the heading says how many are actually shown.
+    section(
+      (shown, total) =>
+        `${group.crewName} — ${total} ${total === 1 ? 'job' : 'jobs'}${shown < total ? ` (${shown} shown)` : ''}`,
+      group.jobs,
+    );
   }
 
-  if (unassigned.length) {
-    lines.push('', `Nobody assigned yet — ${unassigned.length}`);
-    for (const job of unassigned) {
-      const line = jobLine(job);
-      if (printed >= MAX_JOB_LINES || charCount(lines) + line.length > MAX_CHARS) {
-        dropped += 1;
-        continue;
-      }
-      lines.push(line);
-      printed += 1;
-    }
-  }
+  section(
+    (shown, total) => `Nobody assigned yet — ${total}${shown < total ? ` (${shown} shown)` : ''}`,
+    unassigned,
+  );
 
   // Never silently truncate: a message that dropped rows says how many, so a
   // busy day reads as capped rather than as a short schedule.
@@ -123,12 +145,5 @@ export function crewDayDigestMessage(
 
   // Same rule as the empty case: a partial read must never read as a complete
   // day. It rides at the END so the jobs are seen first on a phone.
-  if (readFailed) {
-    lines.push(
-      '',
-      'Some details could not be read this morning, so this list may be incomplete. Check the schedule in the app.',
-    );
-  }
-
-  return lines.join('\n');
+  return lines.join('\n') + warning;
 }
