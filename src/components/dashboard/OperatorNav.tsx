@@ -7,7 +7,10 @@ import type { OperatorArea } from '@/components/OperatorShell';
 import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { readRoleHint, writeRoleHint } from './roleHint';
-import { ViewAsMenu, useViewSwitcher } from './ViewAsMenu';
+import { AccountMenu } from './AccountMenu';
+import { displayName, roleLabel } from './accountIdentity';
+import { HeaderSearch } from './HeaderSearch';
+import { useViewSwitcher } from './useViewSwitcher';
 
 // The item list itself lives in operatorView.ts (ops hub workstream A slice
 // 2): it flows through navItemsForView(view) so the later Crew My Day and
@@ -98,6 +101,12 @@ export function OperatorNav({
   // admin-only View-as control below; null (pre-fetch, signed out, retry
   // exhausted) renders no control, so the safe default is "not admin".
   const [role, setRole] = useState<'admin' | 'operator' | null>(null);
+  // Who is signed in, for the account menu (Naldo, 2026-08-30). Same session
+  // answer as the role above, which already carried these on the Operator
+  // record and simply never returned them. Null before it resolves, which the
+  // menu renders as initials plus "Signed in" rather than an empty control.
+  const [name, setName] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
   // Hint-first (ops suggestions round): seed the role from the localStorage
   // echo of the LAST session answer, one tick after hydration, so an admin's
   // View-as menu does not wait a network round trip on every page mount.
@@ -121,7 +130,12 @@ export function OperatorNav({
         .then(res => {
           if (res.status === 401) return { signedIn: false }; // real answer, not a failure
           if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
-          return res.json() as Promise<{ signedIn?: boolean; role?: string }>;
+          return res.json() as Promise<{
+            signedIn?: boolean;
+            role?: string;
+            name?: string | null;
+            email?: string | null;
+          }>;
         })
         .then(body => {
           if (cancelled) return;
@@ -129,6 +143,8 @@ export function OperatorNav({
           const trueRole = signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null;
           setSessionState(signedIn ? 'signedIn' : 'signedOut');
           setRole(trueRole);
+          setName(signedIn ? (body.name ?? null) : null);
+          setEmail(signedIn ? (body.email ?? null) : null);
           writeRoleHint(trueRole);
         })
         .catch(() => {
@@ -251,13 +267,32 @@ export function OperatorNav({
       className="border-b"
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
-      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-3 h-12">
+      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
+        {/* The wordmark shortens to YLL between 1024 and 1279px (Naldo,
+            2026-08-30). That band is where the row is tightest, and the full
+            name is the least functional thing in it — the search box that
+            replaced its width is the reason the 11 nav items all kept their
+            slots. Full name returns at 1280px and below 1024px, where the nav
+            is a hamburger and there is room to spare. */}
         <span
           className="text-xs font-semibold uppercase tracking-widest shrink-0"
           style={{ color: 'var(--brand-evergreen-3)' }}
         >
-          Yule Love Lights
+          <span className="lg:hidden xl:inline">Yule Love Lights</span>
+          <span className="hidden lg:inline xl:hidden">YLL</span>
         </span>
+
+        {/* Tablet-portrait and phone: the search box takes the width the nav
+            links are not using, since they live in the hamburger below. */}
+        <div className="flex-1 min-w-0 lg:hidden">
+          <HeaderSearch variant="mobile" />
+        </div>
+
+        {/* Desktop: a deliberately narrow box at 1024px, widening at 1280px
+            with the rest of the row. Ctrl+K and Cmd+K focus this one. */}
+        <div className="hidden lg:block lg:w-28 xl:w-52 shrink-0">
+          <HeaderSearch variant="desktop" />
+        </div>
 
         {/* Desktop / tablet-landscape: inline links. Shown at lg+ (1024px), NOT
             md (768px): the 9-item row needs ~832px, so at md it overflowed the
@@ -318,12 +353,16 @@ export function OperatorNav({
                 width — that's the false-pass trap the lg:px-1.5 comment above
                 explains. Forcing single-line makes its true width count
                 toward the overflow check instead of hiding behind a wrap. */}
+            {/* "+ New" between 1024 and 1279px, "+ New quote" at 1280px and
+                up (Naldo, 2026-08-30): the shorter label is part of what pays
+                for the search box in the tight band. Same destination either
+                way, and both single-line. */}
             <Link
               href="/quote/new"
-              className="whitespace-nowrap px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              className="whitespace-nowrap lg:px-2 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
-              + New quote
+              + New<span className="hidden xl:inline">&nbsp;quote</span>
             </Link>
           </li>
           {/* Always mounted (ledger #347 fix round) — reserves its layout
@@ -342,26 +381,16 @@ export function OperatorNav({
                 margin measured at 1024px (see the lg:px-1.5 comment above for
                 the full before/after numbers at all 3 widths).
 
-                View-as lives HERE, not in a strip (Naldo's design,
-                2026-08-29): for an ADMIN this slot renders the compact
-                "View as" menu with Sign out as its last item, so the header
-                row's measured fit is spent once and nothing is added below
-                the bar. Everyone else keeps the plain Sign-out button —
-                zero change for operators. The swap happens when the role
-                resolves (hint or fetch); the slot itself is always mounted,
-                so the row never gains or loses an element. */}
-            {role === 'admin' ? (
-              <ViewAsMenu onSignOut={signOut} />
-            ) : (
-              <button
-                type="button"
-                onClick={signOut}
-                className="whitespace-nowrap lg:px-2 xl:px-3 py-1.5 rounded-md transition-colors"
-                style={{ color: 'var(--op-text-2)' }}
-              >
-                Sign out
-              </button>
-            )}
+                This slot is now the ACCOUNT MENU for everyone (Naldo,
+                2026-08-30), which is the second half of the header search
+                change: it names who is signed in, links to Settings, folds in
+                the admin View-as switcher that used to live here on its own,
+                and keeps Sign out as its last item. Sign out MOVED, it did
+                not disappear — removing it would strand a staffer on a shared
+                computer. The initials-only trigger is also narrower than the
+                "Sign out" text it replaces, which is part of how the search
+                box fits at 1024px. */}
+            <AccountMenu identity={{ name, email, role }} onSignOut={signOut} />
           </li>
         </ul>
 
@@ -397,6 +426,19 @@ export function OperatorNav({
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* Who is signed in, at the top of the hamburger menu — the mobile
+              half of the desktop account menu (Naldo, 2026-08-30). The View-as
+              rows and Sign out already live further down this same list, so
+              this adds the identity line they were missing rather than a
+              second control. */}
+          <li className="border-b" style={{ borderColor: 'var(--op-border)' }}>
+            <p className="px-4 pt-3 text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+              {displayName({ name, email, role })}
+            </p>
+            <p className="px-4 pb-3 text-xs" style={{ color: 'var(--op-text-2)' }}>
+              {roleLabel(role) ?? 'Signed in'}
+            </p>
+          </li>
           {/* "+ New quote" first in the mobile menu — same one-click-access
               ask as the desktop CTA above. */}
           <li>
