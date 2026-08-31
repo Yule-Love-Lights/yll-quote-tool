@@ -53,22 +53,18 @@ const APPS: InstallApp[] = [
     slug: 'advertising',
     name: 'YLL Advertising',
     homeScreenName: 'YLL Ads',
-    audience: 'Field crews. Photographing yard signs and door hangers to get paid.',
-    // The worker HOME, not /advertising/capture. Both pages gate on an
-    // advertising account, and after signing in the login route sends an
-    // advertising worker to /advertising, so this is the page they are actually
-    // standing on at the moment they add it to the home screen. Capture is one
-    // tap from there.
-    path: '/advertising',
+    audience: 'Field crews and the owner. Opens straight into the camera for yard signs and door hangers.',
+    // The role router, not either camera directly: it sends a crew login to
+    // /advertising/capture and an admin to /admin/advertising/capture, so one
+    // icon works for both. See src/app/advertising/go/page.tsx.
+    path: '/advertising/go',
     icon: '/icons/yll-advertising-192.png',
-    // Two ways this saves the wrong icon, both worth saying out loud. iOS reads
-    // the manifest of whatever page is ON SCREEN: a signed-out worker is bounced
-    // to /login, which is a root-layout page carrying the QUOTE branding. And an
-    // office or admin login is redirected to the quote tool by design (the
-    // advertising surface refuses every non-advertising account), so an admin
-    // cannot install this one at all, no matter which link they open.
+    // iOS reads the manifest of whatever page is ON SCREEN, and /login is a
+    // root-layout page carrying the QUOTE branding, so installing before
+    // signing in still saves the wrong icon. Both cameras carry the
+    // advertising branding, so once the camera is up either one is fine.
     caution:
-      'Crew logins only. Sign in first and wait until you see the Campaigns screen before you add it to your home screen. Office and admin logins are sent to the quote tool instead, so this app can only be installed from a crew login.',
+      'Sign in first, and wait until the camera is on screen before you add it to your home screen. If you add it from the login screen you will save the wrong icon.',
   },
 ];
 
