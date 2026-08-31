@@ -3407,6 +3407,96 @@ Every merged PR carried its pre-merge round: CODE-tier lens pairs on #1059/#1060
 - Post-#1077 drift, sharpened by this close's integration lens (HIGH on this session's own artifact): #1077 removed the kind filter from `summarizeEarnings`, so a pending door hanger now estimates 250 cents and the smoke script's "door hanger earns/pends 0" checks WILL FAIL its next run; the pay page's "(unpaid)" label and two never-pay comments are stale too. Row 468, flagged to Naldo directly at close; the label half is also flagged on the open #1078.
 - The settings page carries a pre-existing ~433px horizontal overflow at 375px width (control-measured: identical for operator/admin, menu closed/open, untouched by this session) — row 469.
 
+### S77 (Naldo) — 2026-08-29 — the daily PostHog robot's report worked: a site-wide JavaScript error traced to our own dead code and deleted, and error alerting turned from decorative into functional — close PR naldo/s77-close
+
+**NUMBER:** S75 and S76 were both taken by concurrent sessions while this one ran, and both had already merged their close PRs by wrap time. S77 verified free against master, the archive, every open PR, every remote branch and the machine-local self-assessment before anything was stamped.
+
+**ZERO REPO DIFF.** Everything this session changed lives outside git: a live WordPress theme file and PostHog project configuration. The close PR is documents only.
+
+## What shipped
+
+**1. The marketing site's site-wide JavaScript error, fixed at source (ledger row 440, now archived).**
+
+The daily PostHog review robot reported 201 exceptions in 24 hours across at least 9 pages of yulelovelights.com, `TypeError: Cannot read properties of null (reading 'classList')`, and suggested chasing it against recent WordPress, Elementor or plugin updates. It was not an update. The stack frame named `sticky_head_func` at line 3061 of the served document, which led to `astra-child/functions.php` lines 27-50: a `wp_footer` hook printing a scroll handler that read `#stick_form_section`, an element removed from the site long ago. `header` was null, so every scroll event threw, on every page, for every visitor.
+
+Two measurements settled the diagnosis before any edit:
+- The element exists on zero pages while the script ships on every page, including the 404 page.
+- The "0 to 201 in 24 hours" was **instrumentation, not regression**. Pageviews on that host go back to 2026-07-30; the first `$exception` is 2026-08-28T12:38, the day exception capture was switched on. The bug is old; yesterday is only when it became visible.
+
+Deleted the whole block, file 157 lines to 133. Purged NitroPack. Verified 12 live pages (5 originally erroring, plus the blog index, an about page, the services index, a 404, and three more) all returning 200 with the script absent and no PHP fatal. `window.onscroll` now reads null on two pages checked, so nothing else on the site was competing for that global. Resolved all four PostHog issues for this error so a recurrence trips the new reopened alert.
+
+**The removed code, preserved verbatim as the rollback artifact** (there is no version history on a live theme file; this is the revert lever):
+
+```php
+add_action('wp_footer','sticky_quote_form_func');
+function sticky_quote_form_func(){
+echo '<script>
+	//console.log("test");
+	// When the user scrolls the page, execute myFunction
+	window.onscroll = function() {sticky_head_func()};
+
+	// Get the header
+	var header = document.getElementById("stick_form_section");
+	//console.log(header);
+
+	// Get the offset position of the navbar
+	var sticky = 900;
+
+	// Add the sticky class to the header when you reach its scroll position. Remove "sticky" when you leave the scroll position
+	function sticky_head_func() {
+		if (window.pageYOffset > sticky) {
+			header.classList.add("sticky_block");
+		} else {
+			header.classList.remove("sticky_block");
+		}
+	}
+</script>';
+}
+```
+
+**2. PostHog error alerting made functional.**
+
+Before: one alert on issue-created, and spike detection sitting at its shipped defaults. The default **minimum threshold is 500 exceptions in a 5-minute window**, and the largest 5-minute bucket this project has ever recorded is **23**, so the spiking alert could never have fired. Retuned to threshold 10, multiplier unchanged at 10, snooze 10 minutes to 60 (which matches the 1-hour baseline window PostHog's docs describe). Re-read after a full page reload: 60 / 10 / 10.
+
+Added the two missing alerts, spiking and reopened, cloned server-side from the existing Telegram destination so the webhook URL was never read into the transcript. Then the wrap review found the real weakness: the message body was a **static string with no template tokens at all**, so an alert would have said "new error on Yule Love Lights" and nothing else, on all three triggers. Rewrote both bodies to carry the issue name, the error text, a direct link to the issue, and for spiking the current bucket value against the computed baseline. Fire-tested both after the rewrite.
+
+**3. The lead form, cleared rather than fixed (ledger row 441 updated, still open).**
+
+The robot's third suggestion was to test the form because it showed 0 submits from 4 starts in 2 days. Naldo tested it and `yll_lead_form_submitted` fired. Re-measured over 30 days: 486 views, 107 starts, 20 submissions, about 0.67 a day, so two empty days is ordinary. Row 441 stays open because the per-field drop-off events are two days old and hold one session.
+
+## Session review (full four lenses, per the wrap rule for a live non-repo surface change)
+
+Customer PASS (0 HIGH, 0 MED, 1 LOW), admin PASS (0 HIGH), technical CONCERNS (5 MED), process **BLOCK (2 HIGH, 4 MED)**. Dispositions:
+
+- **Process HIGH, no rollback artifact.** Correct and fixed in this document: the deleted 24 lines are above, verbatim. Also raised as proposed standing rule 472.
+- **Process HIGH, probed a blocked tool call three times.** Accepted as a real mistake, recorded in the self-assessment. Nuance kept for accuracy: the manual procedure was handed over after the second block, and the third attempt came only after Naldo explicitly asked me to try again.
+- **Technical MED, undefined-function fatal if another file called the deleted function.** Refuted empirically: 12 pages across 5 template types return 200 with no fatal.
+- **Technical MED, the head of the file (lines 1-26) was never hashed.** Refuted: the edit was a true range delete, and the post-save read showed lines 1-27 unchanged.
+- **Technical MED, spike baseline semantics unverified.** Answered from PostHog's docs: the baseline is the issue's own activity over the past hour, falling back to an average across other issues when an issue is too new. A spike inflates the baseline for the following hour only.
+- **Technical MED, cloned body references fields absent on the new events.** Refuted, and it exposed something worse: zero tokens at all. Fixed, see above.
+- **Technical and admin converged, the alerts are unproven on a real event.** Accepted. Both fire-tested, but a synthetic invocation bypasses the trigger pipeline, so ledger row 471 holds it open until a genuine alert lands.
+- **Admin MED, the GHL key has no durable tracking.** Fixed: ledger row 470.
+- **Admin MED, the canonical PostHog doc was not updated.** Fixed in this close.
+- **Admin LOW/MED, resolving by fingerprint can miss a fifth variant; the alert text does not name the host.** Both folded into row 471.
+
+## Mistakes
+
+- **Reported a 3-day query result as an all-time fact** ("the first `yll_lead_form_submitted` event ever recorded"). The real 30-day figure is 20. Corrected in the next message. Second occurrence of the class (S39 reported a `LIMIT 5` result as exhaustive), so it is promoted to AGENTS.md Pitfalls in this close.
+- **Probed a blocked tool call three times** instead of handing over the paste-able procedure on the first block, which Naldo's own global rule names explicitly.
+- **Read a NitroPack purge as done when it had not run.** A stale element ref sent the click to a different page entirely and I only caught it by re-reading the "last purge" timestamp, which still said 2 hours. The feature check caught what the click result did not.
+- **A scroll test that proved nothing.** The automated browser tab reports `innerHeight` 0, so `scrollTo` was a no-op; the `window.onscroll === null` reads stand because they need no layout, but there is still no real scroll test of the fixed pages.
+
+## Ending state
+
+Master `9d883b7f` at branch time; `origin/master` then moved to `993d95cc` (PR #1078) mid-close, so the branch was re-synced and re-gated. Gates at branch time: tsc 0 · lint 0 errors (21 warnings) · vitest **9156** across 522 files. Gates on the merged tree, which is what this PR actually is: **tsc 0 · lint 0 errors (21 warnings) · vitest 9158 passed across 522 files**. Ledger: row 440 shipped and archived, 441 updated, 470-472 minted, counter at 473.
+
+## Next
+
+- Row 470 first, and it is Naldo's to do: rotate both GHL keys and move the live one into `wp-config.php`.
+- Row 471 closes itself the first time a real alert lands. Check the message names the issue and the link opens it.
+- Row 441 wants a week of per-field data before anyone touches the lead form.
+- One thing worth a human eyeball: scroll any page of yulelovelights.com once, since no automated scroll test was possible.
+
 # S78 (Naldo), 2026-08-29: the silent-empty class closed on three surfaces, a payroll row made deletable, and a wrap review that found the hole in my own delete
 
 > Session number note: the handoff said S75. By the time the first PR was ready master
@@ -3452,7 +3542,7 @@ Every merged PR carried its pre-merge round: CODE-tier lens pairs on #1059/#1060
     carrying no address at all.
 - **PR #1095, merged: the ledger rows corrected** so 455 and 458 read as shipped and
   456 and 457 stay open for the parts that are still a person's job, not code.
-- **PR #1098, OPEN at close, awaiting Naldo's go: the wrap review's own HIGH fix.**
+- **PR #1098, merged and live: the wrap review's own HIGH fix.** Merged after the close docs were written, which is why the post-close delta below exists.
 
 ## The wrap review, and what it found in my own merged code
 
@@ -3520,6 +3610,43 @@ errors, vitest 9268.
   the change.
 - Naldo: send the crew GPS notice before any hours conversation references GPS, and
   work the fix-list from the triage doc.
+
+## POST-CLOSE DELTA (same conversation, 2026-08-29 afternoon)
+
+The close docs were written while #1098 was still open, and both it and the close PR
+itself merged minutes later, so the fragment above described a state that stopped being
+true almost immediately. That is the row-referencing-an-open-PR trap this scorecard
+already names; correcting it is what this delta is for.
+
+- **#1098 merged (`37df332b`) and #1099 merged (`84607f4a`).** Both were brought current
+  with master first, an advertising PR having landed in between, re-gated at tsc 0,
+  lint 0 errors, vitest 9278 across 530 files, CI green on the exact head, merged
+  pinned to that SHA. Prod serves `37df332b`, the last code change.
+- **A second wrap ran a delta-verify on the merged fix, which nothing had reviewed.**
+  This repo's rule is that a fix round on a money seam gets its own adversarial pass;
+  #1098 was itself a fix round and merged without one. The pass found a MED and proved
+  it by running code: the audit-first ordering has a mirror case, where the audit row
+  lands and the delete then loses its CAS race, leaving the trail permanently asserting
+  a removal that never happened. My own commit message had named that tradeoff and
+  then left it uncorrected.
+- **PR #1100, open at the time of writing:** a second append-only entry,
+  `shift-manual-void-aborted`, records that the removal did not happen, for both the
+  lost race and a failed delete. Append-only, because correcting the first entry in
+  place would be rewriting an audit trail. Log-not-throw, because the caller is already
+  throwing the real refusal. Also logs the cause behind an `audit-failed` refusal,
+  which was otherwise an opaque "try again" loop with nothing to diagnose from.
+  Mutation-probed; gates tsc 0, lint 0 errors, vitest 9279.
+- **The lesson, and it is the same one twice in one day:** the first review found that
+  the void could destroy a row without recording it; the delta-verify found that the
+  fix could record a destruction that never happened. Both are the audit trail lying
+  about payroll, from opposite ends. A fix that names its own tradeoff in a commit
+  message has not handled that tradeoff.
+- **Process note for whoever reconciles it:** the wrap skill on this machine says a
+  close PR touching the root `CLAUDE.md` cannot auto-merge, while the AGENTS.md
+  auto-merge allowlist says `CLAUDE.md` is the journal every close appends to and must
+  never be an auto-merge-off trigger. The two contradict each other. #1099 was held for
+  an explicit go rather than resolving it unilaterally, and the same fork will appear
+  at the next close.
 
 # S79 (Naldo) — 2026-08-29 — the marketing site: accessibility to 100, agentic audit cleared, and a paid speed tool that had silently stopped working
 
@@ -3668,4 +3795,57 @@ live-surface changes, since there is no git diff to review.
 - **LOW, FIXED in PR #1107:** the workers route claimed `active` gates "login use and pay eligibility". It gates login only: an inactive worker's pending placements can still be accepted and paid, and bulk upload allows inactive workers by design. The comment now says what the code does.
 - **LOW, DEFERRED:** `advertising_activity` is written diligently by every mutator and read by nothing in the product. Three separate code comments justify their CAS design by the audit trail's trustworthiness, and no human can look at it. Worth a viewer on a placement or worker detail eventually; no money moves wrongly today.
 - Gates after the two comment fixes: tsc 0, lint 0 errors, vitest **9322** across 532 files. PR #1107 now carries the HIGH fix and both LOW fixes and still waits for Naldo's go.
+
+### S82 (Naldo), 2026-08-29, Office Tasks gets a page, a nav item and a layout that puts the work first: 3 PRs merged and live. Close PR naldo/s82-close
+
+- **NUMBER:** claimed S77 at start (free everywhere then), and lost it three times while the session ran. S77 went to a concurrent session, then S78, then S79, and S80/S81 landed before close. Settled on **S82**, verified free against master's fragments, every remote branch, every open and merged PR, and the machine-local self-assessment. The durable fix applied mid-session: **stop stamping a session number in PR bodies at all.** The repo convention asks a `claude/*` PR to name its OPERATING DEV, which is what merge authority routes on; the number belongs in the close, where it cannot go stale inside an already-merged body. Both affected bodies were corrected.
+
+- **SHIPPED, all merged, prod-verified by SHA:**
+  - **#1092** (`3ca0c708`): a `/tasks` page (Open work and History tabs, filter by source and assignee, three sort modes), a **Tasks** item in the operator nav with an open-count badge, `GET /api/tasks/count`, and `office_tasks.assigned_to` surfaced as a display label. **No migration needed and that was the finding:** the column already existed and already held the S75 backfill's 9 rep assignments; the read path simply never selected it.
+  - **#1097** (`4a2b0722`): one-click History from the dashboard card, `/tasks?view=history` opening on that tab.
+  - **#1105** (`271d8b67`): Naldo's option A off a mock-up: the list owns the page, the add form becomes a right-hand panel. First task moved from about 600px down to **y=329**; five rows above the fold instead of one.
+
+- **THE NAV ROW WAS THE HARD PART, and only measurement settled it.** The row was already near its limit at 11 items with a recorded history of a 45px overflow. With the 12th item AND both badges showing, the old padding measured **22px of page overflow at 1024px** and **6px at 1280px**. `lg:px-0.5 xl:px-2.5` with `gap-0` closes both: 0 overflow at 1024, 1120, 1280 and 390, with uniform element heights asserted at every width first, because this file's own comments record a false pass where a squeezed multi-word button WRAPPED and hid a real shortfall from a plain scrollWidth read.
+
+- **THREE REVIEW ROUNDS, AND EACH FOUND A REAL DEFECT IN MY OWN WORK.** 8 lens agents, 3 adversarial delta-verifies, 6 mutation probes.
+  - **The delta-verify caught my stale-badge fix REOPENING the bug it closed.** The nav now reads the count on mount and on every mutation, and nothing ordered the two, so a slow mount fetch could resolve last and drag the badge BACKWARDS to a stale red number. Reproduced before fixing (hold the mount response 4s, complete a task: badge 12 to 11 and then **back to 12**), fixed with the sequence token the sibling file already uses, and the same run then ends on 11. Sibling-guard parity, one file away.
+  - **A test of mine passed against the exact regression its name described.** "puts the add form AFTER the list" asserted only that two substrings existed; the lens swapped the two render sites and all 46 tests still passed. My own earlier probe had missed it because it removed the grid CLASS, which the test does check. Now both ordering tests compare positions against the loading box, and that swap fails both.
+  - **The staff lens caught the layout fix creating the same complaint at another width.** Putting the form after the list is what gets tasks first on a phone; it also left the form under the WHOLE list below 1024px, and made a keyboard user tab through every filter and every row's three buttons to reach it. With 22 real tasks the title field sits at **y=2300 on an iPad in portrait**, **y=4092 on a phone**. One control answers both: a visible button below `lg`, and a focus-only skip link above it.
+
+- **THE 401 THAT WASN'T WHAT I SAID IT WAS.** A prod cron logged `401 The token is not authorized for this scope` on the HighLevel users lookup, and the one new call since the backfill has a null `rep_email`. I hypothesised a scope gap between the Vercel key and the local one; Naldo confirmed **the keys are the same**, which killed it. Then my own probe 401'd on all three calls INCLUDING the control, which is the instrument confessing rather than evidence: I had used `rest.gohighlevel.com/v1` instead of the `services.leadconnectorhq.com` + Version header the app actually uses. Corrected, it then failed at the network layer, because **this machine's router resolves that host to an ISP filter address (167.206.37.145) while public DNS returns Cloudflare**, the S75 poisoning, same class, new host. With the address pinned the call returns **200**. So the token is fine and the 401 was transient. The REAL defect is downstream and worse: `getGhlUser` is best-effort, never retries, and nothing backfills, so a one-second blip permanently unassigns a task (ledger 489).
+
+- **MISTAKES:** the badge fix that reopened its own bug · two tests in two consecutive PRs that overclaimed in their names, both caught by a lens rather than by me · spawned a lens round against a **dirty working tree** (my uncommitted test fix; the agent reported it honestly rather than folding it in) · published a wrong root cause for the 401 before checking the account-level facts, twice over · said a probe would print only status codes then printed enough body to include a customer name · my own first jump-control attempt would have painted over the filters at `lg`, caught before testing.
+
+- **DID RIGHT:** measured before designing every time (the 22px overflow, the 2 distinct assignees behind an accepted LOW, the 18-tasks-tip-together finding) · negative-controlled every browser claim, never reporting a fix working without watching it fail with the fix removed · caught two red gates that were NOT my diff (a stale `.next/dev/types` after killing the dev server, and a missing `exifr` after master added it) rather than debugging phantoms · held every merge until master was current, four times.
+
+- **REVIEW AT CLOSE:** one integration lens, scoped to the seams per-PR reviews cannot see. **0 HIGH, 0 MED.** It verified rather than assumed the two that mattered: the calls-notes feature (#1109) never touches `office_tasks`, and `git log` over the nav files since my commit is empty, so nothing disturbed the measured fit.
+
+- **LEDGER:** minted **487-491**, counter now 492. 487 editing a task at all (only status can change today; the database already permits the rest, so no trigger migration), 488 reassignment **HELD by Naldo** with its design recorded, 489 the rep-attribution retry, 490 the assignee-filter display-name limit, 491 whether 24 hours is the right default for a call-derived task.
+
+- **NOT DONE, deliberately:** reassignment, held at Naldo's word. Two cosmetic residuals accepted rather than fixed: the past-due chip can be one paint stale when switching tabs mid-refetch, and a signed-out History link lands on Open work after login because the perimeter's `from` param keeps the path and drops the query (pre-existing, not this session's).
+
+- Gates at close on master `2e1dc016`: tsc 0 · lint 0 errors (21 warnings) · vitest **9433 / 540 files**.
+
+### S83 (Naldo), 2026-08-30, advertising payout settlement: the tool now records that the money was handed over, not only that it was earned. PR #1130, open and awaiting a merge-go
+
+- **NUMBER:** the handoff had no number. Checked at start against master, the archive, every open PR, every remote branch, `git worktree list` and the machine-local self-assessment: S81 was the highest, so S82 looked free. It was not for long. `naldo/s82-close` merged while the build was running, and the check was re-run at that moment rather than at the end, so **nothing had been stamped anywhere** when the number moved to S83. The re-check-on-every-master-resync rule is what caught it.
+
+- **WHAT SHIPPED (PR #1130, three commits, open for review):** a settlement records that a worker was paid, saying WHICH photos it covered rather than a week and an amount. Two new tables (`advertising_settlements`, `advertising_settlement_lines`), a data layer (`payouts.ts`), an admin route, the worker's own history route, Earned / Paid / Unpaid on the pay screen with a Mark paid action, and a payment history on the worker's phone. `placement_id` is UNIQUE across settlement lines, which is the whole safety property: a photo is payable at most once, guaranteed by the database rather than by remembering. Settled and unpaid are derived, never stored.
+
+- **ASKED BEFORE BUILDING, and the answers shaped the design.** Naldo ruled: a paid photo cannot be voided at all (refusing beats a credit concept); payment method is a fixed list, cash / venmo / check / other; Mark paid defaults to everything outstanding; and the worker sees their **full payment history**, not just a running total. The one money question this build deliberately did NOT answer is now ledger row **492**: a payment recorded by mistake has no way back, and whether an admin should be able to delete one is money behaviour, so it was left for him rather than invented.
+
+- **THE REVIEW ROUNDS FOUND MORE THAN THE BUILD DID, AND EVERY FINDING WAS IN MY OWN CODE.** Four lenses returned 1 HIGH, 6 MED, 1 LOW; two adversarial delta-verifies then found 4 MED and 5 LOW in the FIXES, and a third round closed those.
+  - **The HIGH was the promoted guard-versus-copy pitfall, found twice from different questions** (staff and admin lenses), which is what marks it a class. My new guard refuses to void a paid photo; the void confirm still promised "its pay is reversed", and the review route's `isStateRefusal` regex matched my refusal on `cannot be` and rewrote it to "That placement was already reviewed. Reload the queue." False and useless: reloading never makes a paid photo voidable. Both surfaces fixed, with a test pinning the passthrough.
+  - **I guarded one side of my own race.** `recordSettlement` validated `voided_at` from a snapshot taken before the write, so a void landing in that window passed its own guard (no settlement line existed yet when it looked) and left a photo voided AND paid: excluded from earned, included in paid, so unpaid goes negative. The line insert is the serialisation point, so `voided_at` is re-read after the lines land and the payment is unwound if a void won the gap.
+  - **A fail-open read feeding a money total.** `earningsSummary` returns `[]` on a read error by design, so unpaid silently became negative on a healthy 200. My first fix only protected workers who had ALREADY been paid, which the delta-verify correctly called the smaller population; the real fix was at the source, splitting the function into a throwing core for money callers and a fail-open wrapper for the two display routes.
+
+- **THE SECOND DELTA-VERIFY CAUGHT A FALSE CLAIM IN MY OWN COMMIT MESSAGE.** I wrote that all three round-two guards were mutation-probed; the unwind retry was not among them and **could not be**, because the test double's delete always succeeded. An unprobed guard on the one path that needs a human is exactly the shape this repo keeps getting bitten by, so the fixture gained a failing delete and the retry now has both of its outcomes pinned. The same round found the money readers still answered "$0 earned, $0 owed" when the database was not configured, the same confident falsehood through a different door, and that this money route had no test file at all while every sibling admin advertising route has one. It has ten now, four of them mutation-probed, and one of those was passing vacuously until the assertion moved from the status code to the message.
+
+- **MISTAKES worth keeping.** I applied the migration by retyping its comment block into the MCP tool instead of pasting it, and four comment lines drifted; every executable line matched byte for byte, and a per-line hash diff against the applied SQL is what caught it. A commit message of mine claimed a dead variable was gone when I had only planned the removal. And three separate instruments were wrong before the code was: a test helper that dropped a worker whose photos were all voided where the real engine mints them with zeros, a guard that fired on any negative rather than on the failure's signature, and a probe script that died on cp1252 output and left a mutation applied.
+
+- **NOT DONE, and said plainly rather than reported as verified.** No browser drive: the pay screen sits behind an operator password this session will not enter. The substitute was the real money engine run in-process against live data with every invariant asserted, plus a control proving the reader returns non-zero when rows exist. Prod currently holds **no real accepted photo** (16 pending; the only 2 accepted are test rows), so every figure is legitimately $0.00 and the arithmetic is proven by tests, not by production.
+
+- **CI could not verify the final head.** GitHub Actions stopped creating runs repo-wide at 02:00Z, for every branch, while the workflow shows active, which matches the free-plan minutes pitfall. `gates` passed on the first commit; the two later ones have local gates only, stated in the merge-go rather than glossed.
+
+- Gates at close, run locally on the exact tree: tsc 0 · lint 0 errors (21 standing warnings) · vitest **9475 across 542 files**. Twenty guards mutation-probed across the build and three fix rounds (nine, four, three, then four on the new route test): each removal fails exactly one test, the intended one. The one guard that could not be probed at first is why the fixture gained a failing delete. Every CHECK negative-controlled live against prod in both directions, probe rows cleaned to zero. Ledger: 481 marked shipped, 492 minted, counter 493.
 

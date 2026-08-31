@@ -279,6 +279,13 @@ export async function findAcceptedByPhotoHash(
     .eq('worker_id', workerId.trim())
     .eq('campaign_id', campaignId.trim())
     .eq('status', 'accepted')
+    // A VOIDED row is not a duplicate. Void is an overlay that leaves
+    // status='accepted' forever, so without this the office could never
+    // re-do the very work a void exists to undo: the re-upload would be
+    // reported as an already-uploaded duplicate and silently skipped
+    // (close integration lens HIGH — the dedupe shipped before void
+    // existed, so neither PR's own review could see the seam).
+    .is('voided_at', null)
     .eq('photo_hash', photoHash)
     .limit(1);
   if (error) {
@@ -557,12 +564,34 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   return resubmitted;
 }
 
+/** Has this placement already been paid? Read straight from the settlement
+ * lines rather than through payouts.ts, which imports THIS module for the
+ * earnings engine; the guard has to sit at the state change (voidPlacement),
+ * so the one-line read lives here to keep the import one-directional. */
+async function placementIsPaid(db: Db, placementId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from('advertising_settlement_lines')
+    .select('id')
+    .eq('placement_id', placementId)
+    .limit(1);
+  if (error) throw new Error(`voidPlacement: could not check whether this photo was paid — ${error.message}`);
+  return ((data ?? []) as unknown[]).length > 0;
+}
+
 /**
  * VOID a placement (Naldo 2026-08-29): it stops counting anywhere — pay,
  * estimates, sign allotments, stock counts, duplicate flags — while the row,
  * its status history, and its stamped rate remain as the record. There is no
  * un-void; a wrongly voided sign gets re-submitted. CAS on voided_at IS NULL:
  * the first void wins and a retry returns it unchanged.
+ *
+ * A PAID photo cannot be voided at all (Naldo's ruling, 2026-08-30): the
+ * money has already been handed over, and voiding it would take the row out
+ * of earned while the settlement still counts it as paid — which is how
+ * "unpaid" goes negative on the pay screen. The check runs before the write
+ * AND again after it, because a settlement landing in the gap would produce
+ * exactly that state; if it does, this void is unwound (our own write, not
+ * an un-void) and the caller gets a named conflict.
  */
 export async function voidPlacement(
   id: string,
@@ -576,10 +605,17 @@ export async function voidPlacement(
   const voidReason = reason.trim();
   if (!voidReason) throw new Error('voidPlacement: a reason is required');
 
+  if (await placementIsPaid(db, placementId)) {
+    throw new Error(
+      `voidPlacement: this photo has already been paid and cannot be voided — settle the difference with the worker instead`,
+    );
+  }
+
+  const voidedAt = new Date().toISOString();
   const { data, error } = await db
     .from('advertising_placements')
     .update({
-      voided_at: new Date().toISOString(),
+      voided_at: voidedAt,
       voided_by: voidedBy,
       void_reason: voidReason,
     })
@@ -594,6 +630,26 @@ export async function voidPlacement(
     if (!current) throw new Error(`voidPlacement: no placement found for id ${placementId}`);
     if (current.voided_at) return toPlacement(current); // idempotent: first void stands
     throw new Error(`voidPlacement: placement ${placementId} could not be voided`);
+  }
+
+  // A settlement that landed while this update was in flight would leave the
+  // row both paid and voided — paid counts it, earned does not, and the pay
+  // screen reads a negative unpaid figure. Unwind OUR write (CAS on the
+  // exact stamp, so a later legitimate void is never touched) and refuse.
+  if (await placementIsPaid(db, placementId)) {
+    const { error: revertError } = await db
+      .from('advertising_placements')
+      .update({ voided_at: null, voided_by: null, void_reason: null })
+      .eq('id', placementId)
+      .eq('voided_at', voidedAt);
+    if (revertError) {
+      throw new Error(
+        `voidPlacement: photo ${placementId} was paid while this void was being written AND the void could not be undone (${revertError.message}) — fix this row by hand before paying again`,
+      );
+    }
+    throw new Error(
+      `voidPlacement: this photo was paid while the void was being recorded — the void was undone, nothing changed`,
+    );
   }
 
   const voided = toPlacement(data as Row);
@@ -740,12 +796,15 @@ export function summarizeEarnings(
  * under the old never-pays rule, kept under pay-per-photo 2026-08-29
  * because the visibility question survives the rule change: the count shows
  * whether workers log door hangers at all, independent of the money
- * figures they now also appear in). Test rows count for nothing, same as
- * everywhere else. */
+ * figures they now also appear in). Test rows count for nothing, and
+ * neither do VOIDED rows: the paged doorHangerCountsByWorker below filters
+ * them at the database, and this function claims to be the tested pin of
+ * the counting rules, so it has to enforce the same ones or the claim is
+ * false (close integration lens LOW, S81). */
 export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const p of placements) {
-    if (p.isTest || p.kind !== 'door_hanger') continue;
+    if (p.isTest || p.voidedAt || p.kind !== 'door_hanger') continue;
     out.set(p.workerId, (out.get(p.workerId) ?? 0) + 1);
   }
   return out;
@@ -782,12 +841,18 @@ export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
   return out;
 }
 
-/** Per-worker earnings: pending estimated cents and accepted earned cents,
- * total plus ET day and week groupings. Scope with workerId for the worker's
- * own view; unscoped for the admin pay summary. */
-export async function earningsSummary(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+/**
+ * Per-worker earnings, THROWING on a failed read. Money callers use this one:
+ * a settlement's "unpaid" is earned minus paid, so an earnings read that
+ * quietly returns nothing turns earned into 0 and unpaid into a negative
+ * number, which is the money screen stating a confident falsehood rather than
+ * admitting it could not load. (Delta-verify, PR #1130: the first cut of this
+ * only protected workers who had already been paid, which is the smaller
+ * population and not the one most likely to be misread.)
+ */
+export async function earningsSummaryOrThrow(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
   const db = getSupabaseServiceClient();
-  if (!db) return [];
+  if (!db) throw new Error('earningsSummaryOrThrow: Supabase service role not configured');
 
   // Page to completeness: a pay total computed from a silently truncated
   // read is exactly the wrong-money class this repo's history warns about.
@@ -804,8 +869,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) {
-      console.error('earningsSummary placements error:', error);
-      return [];
+      throw new Error(`earningsSummary: could not read placements — ${error.message}`);
     }
     const rows = (data ?? []) as Row[];
     placements.push(...rows.map((row) => toPlacement(row)));
@@ -821,8 +885,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (campaignsError) {
-      console.error('earningsSummary campaigns error:', campaignsError);
-      return [];
+      throw new Error(`earningsSummary: could not read campaigns — ${campaignsError.message}`);
     }
     const rows = (campaigns ?? []) as { id: string; rate_cents: number }[];
     for (const c of rows) rateByCampaign.set(c.id, c.rate_cents);
@@ -830,6 +893,22 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   }
 
   return summarizeEarnings(placements, rateByCampaign);
+}
+
+/**
+ * The DISPLAY wrapper: same numbers, but a failed read degrades to an empty
+ * list rather than an exception, which is what the two earnings routes have
+ * always done. Anything deriving money from this (a settlement's unpaid
+ * figure) must call earningsSummaryOrThrow instead, so a read failure
+ * surfaces as a refusal instead of a wrong number.
+ */
+export async function earningsSummary(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+  try {
+    return await earningsSummaryOrThrow(opts);
+  } catch (error) {
+    console.error('earningsSummary error:', error);
+    return [];
+  }
 }
 
 // --- Simple Crew replica additions (Naldo, 2026-08-29) ------------------------

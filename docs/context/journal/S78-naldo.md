@@ -43,7 +43,7 @@
     carrying no address at all.
 - **PR #1095, merged: the ledger rows corrected** so 455 and 458 read as shipped and
   456 and 457 stay open for the parts that are still a person's job, not code.
-- **PR #1098, OPEN at close, awaiting Naldo's go: the wrap review's own HIGH fix.**
+- **PR #1098, merged and live: the wrap review's own HIGH fix.** Merged after the close docs were written, which is why the post-close delta below exists.
 
 ## The wrap review, and what it found in my own merged code
 
@@ -111,3 +111,40 @@ errors, vitest 9268.
   the change.
 - Naldo: send the crew GPS notice before any hours conversation references GPS, and
   work the fix-list from the triage doc.
+
+## POST-CLOSE DELTA (same conversation, 2026-08-29 afternoon)
+
+The close docs were written while #1098 was still open, and both it and the close PR
+itself merged minutes later, so the fragment above described a state that stopped being
+true almost immediately. That is the row-referencing-an-open-PR trap this scorecard
+already names; correcting it is what this delta is for.
+
+- **#1098 merged (`37df332b`) and #1099 merged (`84607f4a`).** Both were brought current
+  with master first, an advertising PR having landed in between, re-gated at tsc 0,
+  lint 0 errors, vitest 9278 across 530 files, CI green on the exact head, merged
+  pinned to that SHA. Prod serves `37df332b`, the last code change.
+- **A second wrap ran a delta-verify on the merged fix, which nothing had reviewed.**
+  This repo's rule is that a fix round on a money seam gets its own adversarial pass;
+  #1098 was itself a fix round and merged without one. The pass found a MED and proved
+  it by running code: the audit-first ordering has a mirror case, where the audit row
+  lands and the delete then loses its CAS race, leaving the trail permanently asserting
+  a removal that never happened. My own commit message had named that tradeoff and
+  then left it uncorrected.
+- **PR #1100, open at the time of writing:** a second append-only entry,
+  `shift-manual-void-aborted`, records that the removal did not happen, for both the
+  lost race and a failed delete. Append-only, because correcting the first entry in
+  place would be rewriting an audit trail. Log-not-throw, because the caller is already
+  throwing the real refusal. Also logs the cause behind an `audit-failed` refusal,
+  which was otherwise an opaque "try again" loop with nothing to diagnose from.
+  Mutation-probed; gates tsc 0, lint 0 errors, vitest 9279.
+- **The lesson, and it is the same one twice in one day:** the first review found that
+  the void could destroy a row without recording it; the delta-verify found that the
+  fix could record a destruction that never happened. Both are the audit trail lying
+  about payroll, from opposite ends. A fix that names its own tradeoff in a commit
+  message has not handled that tradeoff.
+- **Process note for whoever reconciles it:** the wrap skill on this machine says a
+  close PR touching the root `CLAUDE.md` cannot auto-merge, while the AGENTS.md
+  auto-merge allowlist says `CLAUDE.md` is the journal every close appends to and must
+  never be an auto-merge-off trigger. The two contradict each other. #1099 was held for
+  an explicit go rather than resolving it unilaterally, and the same fork will appear
+  at the next close.

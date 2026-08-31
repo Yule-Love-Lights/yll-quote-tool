@@ -355,3 +355,37 @@ Everything below was completed and verified on 2026-08-28. Nothing here is pendi
 > branch of PR #1032 *after* that PR had already merged, so they sat orphaned on a dead
 > branch and never reached master. The S73 close review caught it. If you edit this file,
 > check which branch you are on and whether its pull request is still open.
+## Error tracking alerting: the state after S77 (2026-08-29)
+
+The S73 setup above turned exception CAPTURE on and wired one alert. S77 found that the
+alerting around it was decorative and made it functional. Current state:
+
+- **Three alerts, all enabled, all delivering to the same Telegram destination**: issue
+  created (S73), issue **spiking** (S77), issue **reopened** (S77). The two new ones were
+  cloned server-side from the existing destination, so the webhook URL has still never been
+  read by an assistant.
+- **Spike detection retuned.** It shipped at PostHog's defaults, where the minimum
+  threshold is 500 exceptions in a 5-minute window. The largest 5-minute bucket this
+  project has ever recorded is 23, so the spiking trigger could never have fired. Now:
+  minimum threshold **10**, multiplier **10** (unchanged), snooze **60 minutes** (was 10),
+  which matches the 1-hour rolling baseline PostHog computes.
+- **The message bodies now say something.** All three alerts shipped with a STATIC text
+  ("new error on Yule Love Lights" plus a link to the issue list) and no template tokens,
+  so a firing alert named neither the error nor the issue. The two S77 alerts now carry
+  `{event.properties.name}`, `{event.properties.description}`, a direct link built from
+  `{project.url}` and `{event.distinct_id}`, and for spiking the current bucket value
+  against the computed baseline. **The issue-created alert still has the old static text**:
+  it is Naldo's and it works, so it was left alone. Worth the same treatment next time
+  someone is in here.
+- **What is still unproven** (ledger row 471): both new alerts were fire-tested through
+  PostHog's synthetic invocation, which bypasses the trigger and filter pipeline. Nothing
+  has yet shown that a REAL spike or reopen produces a message. The first genuine alert
+  closes that row.
+- **Baseline semantics, from PostHog's docs**, because it decides whether a threshold is
+  sane: the baseline is the issue's own activity over the past hour, falling back to an
+  average across other issues when an issue is too new. A spike therefore inflates the
+  baseline for the following hour only.
+
+Spike thresholds are **project-wide**, and this project covers both `yulelovelights.com`
+and `quote.yulelovelights.com`. The alert text does not currently name which host an error
+came from; row 471 carries that.

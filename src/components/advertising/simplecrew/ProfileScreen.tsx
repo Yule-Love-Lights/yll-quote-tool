@@ -32,22 +32,54 @@ type Campaign = { id: string; name: string };
 type Earnings = { total: { pendingEstimatedCents: number; acceptedEarnedCents: number } };
 type EarningsPayload = { summary: Earnings; rateChangedSincePending?: boolean };
 
+type Settlement = {
+  id: string;
+  totalCents: number;
+  method: 'cash' | 'venmo' | 'check' | 'other';
+  note: string | null;
+  paidAt: string;
+  lineCount: number;
+};
+type PayoutSummary = { earnedCents: number; settledCents: number; unpaidCents: number };
+type PayoutsPayload = { summary: PayoutSummary; settlements: Settlement[] };
+
+const METHOD_LABEL: Record<Settlement['method'], string> = {
+  cash: 'Cash',
+  venmo: 'Venmo',
+  check: 'Check',
+  other: 'Paid',
+};
+
+function paidOn(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '';
+  return at.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'America/New_York',
+  });
+}
+
 export default function ProfileScreen({ displayName, email }: { displayName: string; email: string | null }) {
   const [view, setView] = useState<'feed' | 'map'>('feed');
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
   const [rateChanged, setRateChanged] = useState(false);
+  const [payouts, setPayouts] = useState<PayoutsPayload | null>(null);
+  const [payoutsFailed, setPayoutsFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [pRes, cRes, eRes] = await Promise.all([
+        const [pRes, cRes, eRes, sRes] = await Promise.all([
           fetch('/api/advertising/placements'),
           fetch('/api/advertising/campaigns'),
           fetch('/api/advertising/earnings'),
+          fetch('/api/advertising/settlements'),
         ]);
         if (cancelled) return;
         if (pRes.ok) setPlacements(((await pRes.json()) as { placements: Placement[] }).placements);
@@ -57,6 +89,10 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
           setEarnings(payload.summary);
           setRateChanged(payload.rateChangedSincePending === true);
         }
+        // A failed payments read must SAY so: rendering an empty history
+        // would tell a worker they have never been paid.
+        if (sRes.ok) setPayouts((await sRes.json()) as PayoutsPayload);
+        else setPayoutsFailed(true);
       } catch {
         /* cards render what loaded */
       } finally {
@@ -123,6 +159,51 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
         <p className="mx-5 mt-2 text-center text-xs" style={{ color: SC.muted }}>
           A campaign&apos;s rate changed after some of these were placed, so the pending estimate
           moved. Accepted photos always pay the rate from the moment they were approved.
+        </p>
+      )}
+
+      {/* What has actually been handed over (ledger row 481, Naldo
+          2026-08-30: the worker sees every payment, not just a total — it is
+          what settles a "you never paid me for that week" conversation). */}
+      {payouts && (
+        <div className="mx-5 mt-3 rounded-2xl bg-white p-4 shadow-sm">
+          <div className="flex items-baseline justify-between">
+            <span className="text-base font-semibold" style={{ color: SC.text }}>
+              Paid to you
+            </span>
+            <span className="text-xl font-bold" style={{ color: SC.text }}>
+              {dollars(payouts.summary.settledCents)}
+            </span>
+          </div>
+          <p className="mt-1 text-sm" style={{ color: SC.muted }}>
+            {payouts.summary.unpaidCents > 0
+              ? `${dollars(payouts.summary.unpaidCents)} of your accepted photos have not been paid yet.`
+              : 'Everything accepted so far has been paid.'}
+          </p>
+          {payouts.settlements.length > 0 && (
+            <div className="mt-3 border-t pt-2" style={{ borderColor: '#F1EBDB' }}>
+              {payouts.settlements.map((s) => (
+                <div key={s.id} className="flex justify-between gap-3 py-1 text-sm">
+                  <span style={{ color: SC.muted }}>
+                    {paidOn(s.paidAt)} · {METHOD_LABEL[s.method]}
+                    {s.note ? ` · ${s.note}` : ''}
+                  </span>
+                  <span className="whitespace-nowrap" style={{ color: SC.text }}>
+                    {dollars(s.totalCents)}
+                    <span style={{ color: SC.muted }}>
+                      {' '}
+                      ({s.lineCount} {s.lineCount === 1 ? 'photo' : 'photos'})
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {payoutsFailed && (
+        <p className="mx-5 mt-3 rounded-xl bg-red-50 px-4 py-3 text-sm" style={{ color: SC.danger }}>
+          Could not load your payments right now. This is a display problem, not a change to what you are owed.
         </p>
       )}
 
