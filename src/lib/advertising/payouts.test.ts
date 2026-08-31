@@ -22,6 +22,9 @@ const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker, earningsS
       // When set, the NEXT settlement_lines insert drops this many rows
       // silently — models a write that lands partially.
       dropLinesOnce: 0,
+      // Fires ONCE as the settlement lines land, before the write verifies
+      // itself — models a void winning the gap after the placements were read.
+      onLinesInsertOnce: null as null | (() => void),
       seq: 0,
     },
   },
@@ -137,6 +140,14 @@ function makeDb() {
           const landed = drop > 0 ? incoming.slice(0, Math.max(0, incoming.length - drop)) : incoming;
           rowsFor(table).push(...landed);
 
+          if (table === 'advertising_settlement_lines') {
+            const hook = stateRef.current.onLinesInsertOnce;
+            if (hook) {
+              stateRef.current.onLinesInsertOnce = null;
+              hook();
+            }
+          }
+
           const result = { data: Array.isArray(payload) ? landed : (landed[0] ?? null), error: null };
           return {
             select: () => ({
@@ -199,8 +210,15 @@ function seedPlacement(over: AnyRow = {}): AnyRow {
 function earnedFromSeed() {
   const byWorker = new Map<string, number>();
   for (const p of stateRef.current.placements) {
-    if (p.is_test || p.voided_at || p.status !== 'accepted') continue;
+    if (p.is_test) continue;
+    // summarizeEarnings MINTS an entry for every real placement's worker
+    // before it skips voided or unaccepted rows, so a worker whose photos are
+    // all voided still appears with zeros instead of vanishing. Modelled here
+    // because the difference between "zero earned" and "no row at all" is
+    // what the empty-earnings-read guard keys on.
     const worker = String(p.worker_id);
+    if (!byWorker.has(worker)) byWorker.set(worker, 0);
+    if (p.voided_at || p.status !== 'accepted') continue;
     byWorker.set(worker, (byWorker.get(worker) ?? 0) + Number(p.accepted_rate_cents ?? 0));
   }
   return [...byWorker.entries()].map(([workerId, cents]) => ({
@@ -218,6 +236,7 @@ beforeEach(() => {
   stateRef.current.lines = [];
   stateRef.current.placementWrites = 0;
   stateRef.current.dropLinesOnce = 0;
+  stateRef.current.onLinesInsertOnce = null;
   stateRef.current.seq = 0;
   dbRef.current = makeDb();
   getAdvertisingWorker.mockImplementation(async (workerId: string) => ({
@@ -420,6 +439,42 @@ describe('trap 8 — the lines always sum to the settlement total', () => {
 
     expect(stateRef.current.settlements).toHaveLength(0);
     expect(stateRef.current.lines).toHaveLength(0);
+  });
+});
+
+describe('a void racing the payment (technical lens, PR #1130)', () => {
+  it('refuses and unwinds when a photo is voided while the payment is being written', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const b = seedPlacement({ accepted_rate_cents: 300 });
+
+    // voidPlacement's own guard passes at that instant: no settlement line
+    // exists yet. Only the settle side can catch this direction.
+    stateRef.current.onLinesInsertOnce = () => {
+      a.voided_at = '2026-08-30T18:00:00.000Z';
+    };
+
+    await expect(
+      recordSettlement('worker-1', [String(a.id), String(b.id)], 'admin-1', { method: 'cash' }),
+    ).rejects.toThrow(/voided/i);
+
+    // Nothing recorded: the photo is voided and NOT paid, so earned and
+    // settled stay consistent and unpaid cannot go negative.
+    expect(stateRef.current.settlements).toHaveLength(0);
+    expect(stateRef.current.lines).toHaveLength(0);
+  });
+});
+
+describe('a money read that fails must not render as a number', () => {
+  it('refuses to report a negative unpaid rather than showing one', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+
+    // earningsSummary fails OPEN: on a read error it logs and returns [],
+    // so earned silently reads 0 while settled is 250.
+    earningsSummary.mockResolvedValue([]);
+
+    await expect(getWorkerPayoutSummary('worker-1')).rejects.toThrow(/could not be read/i);
+    await expect(listPayoutSummaries()).rejects.toThrow(/could not be read/i);
   });
 });
 

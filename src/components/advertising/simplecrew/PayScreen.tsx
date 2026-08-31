@@ -110,8 +110,15 @@ export default function PayScreen() {
         }),
       });
       if (!res.ok) {
+        // The amount on this sheet is now suspect: a 409 means the payable
+        // set moved under us. Close the sheet, refetch, and put the reason
+        // where the corrected numbers are, rather than leaving a stale
+        // dollar figure sitting on a Record button. (Staff lens, PR #1130.)
         const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-        setPayError(payload?.error ?? 'Could not record the payment.');
+        setPayFor(null);
+        setNotice(null);
+        setError(payload?.error ?? 'Could not record the payment.');
+        setTick((t) => t + 1);
         return;
       }
       setNotice(`Recorded ${dollars(payFor.payableTotalCents)} paid to ${payFor.displayName}.`);
@@ -125,6 +132,21 @@ export default function PayScreen() {
       setBusy(false);
     }
   }, [payFor, method, note]);
+
+  // The earnings list drives the cards, but a worker who has been PAID and
+  // has no live accepted rows left would not appear in it at all, taking
+  // their payment history off the screen with them. Render the union.
+  const rows: WorkerSummary[] = [
+    ...workers,
+    ...[...payouts.values()]
+      .filter((p) => !workers.some((w) => w.workerId === p.workerId))
+      .map((p) => ({
+        workerId: p.workerId,
+        displayName: p.displayName,
+        total: { pendingEstimatedCents: 0, acceptedEarnedCents: p.earnedCents },
+        byWeek: [],
+      })),
+  ];
 
   return (
     <div className="pb-6">
@@ -149,12 +171,12 @@ export default function PayScreen() {
         </p>
       )}
 
-      {loaded && workers.length === 0 && !error && (
+      {loaded && rows.length === 0 && !error && (
         <EmptyState kind="photos" title="No pay yet" hint="Accepted photos will land here, worker by worker." />
       )}
 
       <div className="flex flex-col gap-4 px-4">
-        {workers.map((w) => {
+        {rows.map((w) => {
           const payout = payouts.get(w.workerId);
           const lastPaid = paidOn(payout?.lastPaidAt ?? null);
           return (
@@ -202,7 +224,11 @@ export default function PayScreen() {
                   {payout.payableCount > 0 ? (
                     <PrimaryButton
                       onClick={() => {
+                        // Start clean every time: a note typed for one worker
+                        // must never ride onto another worker's payment.
                         setPayError(null);
+                        setNote('');
+                        setMethod('cash');
                         setPayFor(payout);
                       }}
                     >
@@ -252,6 +278,9 @@ export default function PayScreen() {
                 Covers {payFor.payableCount} accepted photo{payFor.payableCount === 1 ? '' : 's'} that have not
                 been paid yet. This records money you have already handed over; it does not send anything.
               </p>
+              <p className="mt-2 text-sm font-semibold" style={{ color: SC.danger }}>
+                There is no undo. Once recorded, these photos are paid for good and can no longer be voided.
+              </p>
             </div>
 
             <div>
@@ -278,7 +307,7 @@ export default function PayScreen() {
 
             <label className="flex flex-col gap-1">
               <span className="text-sm font-semibold" style={{ color: SC.text }}>
-                Note (optional)
+                Note (optional) <span style={{ color: SC.muted }}>&mdash; the worker sees this</span>
               </span>
               <input
                 value={note}

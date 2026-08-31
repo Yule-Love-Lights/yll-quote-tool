@@ -291,6 +291,7 @@ export async function getWorkerPayoutSummary(workerId: string): Promise<WorkerPa
   ]);
   const earnedCents = summaries.find((s) => s.workerId === id)?.total.acceptedEarnedCents ?? 0;
   const settledCents = settled.settledCents.get(id) ?? 0;
+  assertEarningsWereRead(summaries.length, settledCents);
   return {
     workerId: id,
     earnedCents,
@@ -330,6 +331,7 @@ export async function listPayoutSummaries(): Promise<WorkerPayoutSummary[]> {
     .map((workerId) => {
       const earnedCents = summaries.find((s) => s.workerId === workerId)?.total.acceptedEarnedCents ?? 0;
       const settledCents = settled.settledCents.get(workerId) ?? 0;
+      assertEarningsWereRead(summaries.length, settledCents);
       return {
         workerId,
         earnedCents,
@@ -339,6 +341,31 @@ export async function listPayoutSummaries(): Promise<WorkerPayoutSummary[]> {
         payableCount: payableCount.get(workerId) ?? 0,
       };
     });
+}
+
+/**
+ * earningsSummary fails OPEN by design: on a read error it logs and returns
+ * [], because a display should degrade rather than explode. Building a money
+ * total on that silently turns earned into 0, and unpaid into a NEGATIVE
+ * number rendered on a 200 response — the money screen telling a confident
+ * lie, and on the worker's own screen it would flip "everything has been
+ * paid" on while they are still owed.
+ *
+ * An empty earnings read while real money has been paid is that failure's
+ * exact signature: paying someone requires accepted photos, so the two
+ * cannot both be true. Refuse it, and let the routes answer "Could not load
+ * pay", which is honest. Deliberately NOT a blanket negative check: a photo
+ * that is paid AND voided is a different situation (only reachable by an
+ * out-of-band database edit now that both sides guard the race) and one
+ * corrupt row must not take the whole pay screen down. (Technical lens,
+ * PR #1130.)
+ */
+function assertEarningsWereRead(earningsRowCount: number, settledCents: number): void {
+  if (earningsRowCount === 0 && settledCents > 0) {
+    throw new Error(
+      `payouts: money has been paid (${dollars(settledCents)}) but the earnings read came back empty, so earned and unpaid could not be read`,
+    );
+  }
 }
 
 function toSettlement(row: SettlementRow, lineCount: number): AdvertisingSettlement {
@@ -521,6 +548,40 @@ export async function recordSettlement(
     await unwind();
     throw new Error(
       `recordSettlement: the payment's lines did not land in full (${stored.length} of ${ids.length}, ${dollars(storedSum)} of ${dollars(totalCents)}) — nothing was recorded`,
+    );
+  }
+
+  // The void side of this race, closed from the settle side (technical lens,
+  // PR #1130). Everything above was validated against a snapshot read before
+  // the insert. A void landing in that window passes ITS OWN guard, because
+  // no settlement line existed yet when it looked — leaving the photo voided
+  // (so it counts nothing toward earned) AND paid (so it counts toward
+  // settled), which is exactly how unpaid goes negative.
+  //
+  // The line insert is the serialisation point: once a line exists, any
+  // later void is refused by placementIsPaid. So re-reading voided_at HERE,
+  // after the lines have landed, catches every ordering. If a void won the
+  // gap, unwind the payment and refuse: the photo stays voided and unpaid,
+  // and the two figures stay consistent.
+  const afterWrite: PlacementRow[] = [];
+  for (const part of chunk(ids, ID_CHUNK)) {
+    const { data, error } = await db
+      .from('advertising_placements')
+      .select('id, voided_at')
+      .in('id', part)
+      .order('id', { ascending: true })
+      .range(0, PAGE - 1);
+    if (error) {
+      await unwind();
+      throw new Error(`recordSettlement: could not confirm the photos were still live — nothing was recorded`);
+    }
+    afterWrite.push(...((data ?? []) as PlacementRow[]));
+  }
+  const votedAfter = afterWrite.filter((row) => row.voided_at);
+  if (votedAfter.length > 0) {
+    await unwind();
+    throw new Error(
+      `recordSettlement: ${votedAfter.map((r) => r.id).join(', ')} was voided while this payment was being written — nothing was recorded`,
     );
   }
   void insertedLines;

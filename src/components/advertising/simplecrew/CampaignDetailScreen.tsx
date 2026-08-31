@@ -411,7 +411,7 @@ export default function CampaignDetailScreen({
                             onClick={() => {
                               const reason = window.prompt(
                                 p.status === 'accepted'
-                                  ? 'Void this ACCEPTED placement? Its pay is reversed and it stops counting for allotments and stock. Why? (required, permanent record)'
+                                  ? 'Void this ACCEPTED placement? It stops counting for pay, allotments and stock. If this photo has already been PAID it cannot be voided at all. Why? (required, permanent record)'
                                   : 'Void this placement? It stops counting for pay, allotments and stock. Why? (required, permanent record)',
                               );
                               if (reason && reason.trim()) {
