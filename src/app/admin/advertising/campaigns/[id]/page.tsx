@@ -29,7 +29,7 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
       }}
       placementsUrl={`/api/admin/advertising/campaigns/${campaign.id}/placements`}
       backHref="/admin/advertising"
-      captureHref="/admin/advertising/capture"
+      captureHref={`/admin/advertising/capture?campaign=${encodeURIComponent(campaign.id)}`}
       reviewUrl="/api/admin/advertising/review"
     />
   );

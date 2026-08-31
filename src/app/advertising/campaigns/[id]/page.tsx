@@ -27,7 +27,7 @@ export default async function WorkerCampaignDetailPage({ params }: { params: Pro
       campaign={{ id: campaign.id, name: campaign.name, kind: campaign.kind, notes: campaign.notes }}
       placementsUrl={`/api/advertising/placements?campaignId=${campaign.id}`}
       backHref="/advertising"
-      captureHref="/advertising/capture"
+      captureHref={`/advertising/capture?campaign=${encodeURIComponent(campaign.id)}`}
     />
   );
 }
