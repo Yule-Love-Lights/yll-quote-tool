@@ -4,7 +4,7 @@
 // decision itself, independent of the camera UI.
 
 import { describe, expect, it } from 'vitest';
-import { decideCampaign, MEMORY_FRESH_MS, type RememberedCampaign } from './campaignMemory';
+import { decideCampaign, MEMORY_FRESH_MS, shouldAnnounceCarryOver, type RememberedCampaign } from './campaignMemory';
 
 const CAMPAIGNS = [
   { id: 'c1', name: 'Fall Signs' },
@@ -121,8 +121,10 @@ describe('the confirm state always has something to name', () => {
 // yesterday's campaign with no signal at all). These pin which decisions
 // are the announceable ones.
 describe('which decisions the camera must announce', () => {
-  const announceable = (d: { campaignId: string | null; needsConfirm: boolean }, fromPage: string | null) =>
-    d.campaignId !== null && !d.needsConfirm && !fromPage;
+  // The rule lives in the SOURCE, not here: a predicate redefined in the
+  // test would pass while the camera did something else entirely
+  // (delta-verify MED).
+  const announceable = shouldAnnounceCarryOver;
 
   it('a silent memory carry-over is announced', () => {
     const d = decideCampaign({ fromPageCampaignId: null, remembered: remembered(), campaigns: CAMPAIGNS, now: NOW });

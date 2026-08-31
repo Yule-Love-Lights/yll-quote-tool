@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
 
-import { getSessionRole } from '@/lib/auth/sessionRole';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import CameraScreen from '@/components/advertising/simplecrew/CameraScreen';
 
@@ -15,12 +14,13 @@ export default async function AdminCapturePage({
   searchParams: Promise<{ campaign?: string }>;
 }) {
   const { campaign } = await searchParams;
-  const role = await getSessionRole();
-  if (role !== 'admin') redirect('/');
-  // Scope the campaign memory to THIS admin: several of us may share a
-  // device, and the memory must not carry one person's campaign into
-  // another's session (technical + staff lens MED).
+  // ONE auth call, deliberately: the role check and the id that scopes the
+  // campaign memory come from the same response, so they cannot diverge.
+  // Two calls meant a transient failure on the second could leave every
+  // admin sharing one memory bucket, which is the bug this scoping exists
+  // to prevent (delta-verify HIGH).
   const operator = await getOperator();
+  if (operator?.role !== 'admin') redirect('/');
 
   return (
     <CameraScreen
@@ -28,7 +28,7 @@ export default async function AdminCapturePage({
       submitUrl="/api/admin/advertising/capture"
       noteBase="/api/admin/advertising/placements"
       backHref="/admin/advertising"
-      memoryScope={`admin:${operator?.id ?? "unknown"}`}
+      memoryScope={`admin:${operator.id}`}
       fromPageCampaignId={campaign ?? null}
     />
   );

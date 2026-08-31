@@ -27,6 +27,19 @@ export type CampaignDecision = {
   needsConfirm: boolean;
 };
 
+/** PURE. Should the camera SAY that it carried a campaign over? Only for a
+ * silent memory carry-over: a campaign named by the page was already named
+ * by the screen the worker came from, and a stale one gets the blocking
+ * confirm instead. The camera tab carries no campaign, so without this a
+ * worker running two campaigns in an afternoon could shoot into the wrong
+ * one with no signal at all (staff lens HIGH). */
+export function shouldAnnounceCarryOver(
+  decision: CampaignDecision,
+  fromPageCampaignId: string | null,
+): boolean {
+  return decision.campaignId !== null && !decision.needsConfirm && !fromPageCampaignId;
+}
+
 /** PURE. Which campaign the camera opens on, and whether it has to ask. */
 export function decideCampaign(input: {
   /** A campaign the worker navigated in from, if any. */

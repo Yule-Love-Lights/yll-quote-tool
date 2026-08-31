@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 import { chipStateFor, GPS_TICK_MS, isFixFresh, type GpsPermission } from './cameraGps';
-import { decideCampaign, readRememberedCampaign, rememberCampaign } from './campaignMemory';
+import { decideCampaign, readRememberedCampaign, rememberCampaign, shouldAnnounceCarryOver } from './campaignMemory';
 import { CloseIcon, FlashOffIcon, FlipCameraIcon, SearchIcon } from './icons';
 import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
 
@@ -118,9 +118,8 @@ export default function CameraScreen({
           const chosen = body.campaigns.find((c) => c.id === decision.campaignId) ?? null;
           setCampaign(chosen);
           setNeedsConfirm(decision.needsConfirm);
-          // Silent preselects are the ones worth announcing: the confirm
-          // bar already names the other case.
-          if (chosen && !decision.needsConfirm && !fromPageCampaignId) setCarriedOver(chosen.name);
+          // shouldAnnounceCarryOver owns this rule so a test can pin it.
+          if (chosen && shouldAnnounceCarryOver(decision, fromPageCampaignId)) setCarriedOver(chosen.name);
         }
       } catch {
         /* picker shows empty; capture still guards */
