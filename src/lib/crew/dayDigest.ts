@@ -11,6 +11,13 @@ export type CrewDayJob = {
   jobNumber: number | null;
   address: string | null;
   status: string | null;
+  /** Whose house it is (Naldo, 2026-08-31). Null when the job has no linked
+   * customer, or the lookup failed: the line then carries the address alone
+   * rather than a blank gap. */
+  customerName: string | null;
+  /** The OTHER crew on this job today. A shared job otherwise appears under
+   * each person with no sign anyone else is coming. */
+  otherCrew: string[];
 };
 
 export type CrewDayGroup = {
@@ -50,16 +57,24 @@ function humanDate(date: string): string {
   return dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
+/** "Jason" / "Jason and Little James" / "Jason, Naldo and Little James" */
+function nameList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
 function jobLine(job: CrewDayJob): string {
   const number = job.jobNumber === null ? 'Job' : `#${job.jobNumber}`;
+  const who = job.customerName?.trim() ? `${job.customerName.trim()}, ` : '';
   const where = job.address?.trim() || 'address not on file';
+  const withWhom = job.otherCrew.length ? ` (with ${nameList(job.otherCrew)})` : '';
   const flag =
     job.status && CALLED_OFF.has(job.status)
       ? job.status === 'cancelled'
         ? '  ← CANCELLED, do not go'
         : '  ← already finished, do not go'
       : '';
-  return `${number} ${where}${flag}`;
+  return `${number} ${who}${where}${withWhom}${flag}`;
 }
 
 /**

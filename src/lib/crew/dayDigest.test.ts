@@ -5,6 +5,8 @@ const job = (over: Partial<CrewDayJob> = {}): CrewDayJob => ({
   jobNumber: 1046,
   address: '123 Birch Hill Rd, Locust Valley, NY',
   status: 'to_schedule',
+  customerName: null,
+  otherCrew: [],
   ...over,
 });
 const group = (over: Partial<CrewDayGroup> = {}): CrewDayGroup => ({
@@ -126,5 +128,43 @@ describe('the character budget covers the WHOLE message', () => {
     const msg = crewDayDigestMessage('2026-08-29', [group({ crewName: 'Field Crew One' })], []);
     expect(msg).toContain('Field Crew One — 1 job');
     expect(msg).not.toMatch(/shown\)/);
+  });
+});
+// Naldo, 2026-08-31: the customer's name belongs in the message, and a crew
+// member should see who else is on the job with them.
+describe('customer name and who else is on the job', () => {
+  it('puts the customer name on the line, with the address', () => {
+    const msg = crewDayDigestMessage('2026-08-29', [group({ jobs: [job({ customerName: 'Kristie Tibbetts' })] })], []);
+    expect(msg).toContain('Kristie Tibbetts');
+    expect(msg).toContain('123 Birch Hill Rd, Locust Valley, NY');
+  });
+
+  it('says nothing extra when the customer name is missing, rather than a blank gap', () => {
+    const msg = crewDayDigestMessage('2026-08-29', [group({ jobs: [job({ customerName: null })] })], []);
+    expect(msg).not.toMatch(/undefined|null|\s{2,}—/);
+    expect(msg).toContain('#1046');
+  });
+
+  it('names the other crew on a shared job', () => {
+    const msg = crewDayDigestMessage(
+      '2026-08-29',
+      [group({ crewName: 'Naldo', jobs: [job({ otherCrew: ['Jason', 'Little James'] })] })],
+      [],
+    );
+    expect(msg).toMatch(/with Jason and Little James/);
+  });
+
+  it('says nothing about other crew on a solo job', () => {
+    const msg = crewDayDigestMessage('2026-08-29', [group({ jobs: [job({ otherCrew: [] })] })], []);
+    expect(msg).not.toMatch(/with /);
+  });
+
+  it('still carries no money once the name is on the line', () => {
+    const msg = crewDayDigestMessage(
+      '2026-08-29',
+      [group({ jobs: [job({ customerName: 'Kristie Tibbetts', otherCrew: ['Jason'] })] })],
+      [],
+    );
+    expect(msg).not.toMatch(/\$|cents|rate|pay/i);
   });
 });

@@ -36,9 +36,9 @@ beforeEach(() => {
   getCrewDay.mockResolvedValue({
     date: '2026-08-29',
     groups: [
-      { crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: '123 Birch Hill Rd', status: 'to_schedule' }] },
+      { crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: '123 Birch Hill Rd', status: 'to_schedule', customerName: null, otherCrew: [] }] },
     ],
-    unassigned: [{ jobNumber: 1051, address: '12 Oak Rd', status: 'to_schedule' }],
+    unassigned: [{ jobNumber: 1051, address: '12 Oak Rd', status: 'to_schedule', customerName: null, otherCrew: [] }],
     jobCount: 2,
     errors: [],
   });
@@ -93,7 +93,7 @@ describe('GET /api/ops/crew-day-digest', () => {
   it('still sends on a partial read, and reports what was incomplete', async () => {
     getCrewDay.mockResolvedValue({
       date: '2026-08-29',
-      groups: [{ crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: null, status: null }] }],
+      groups: [{ crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: null, status: null, customerName: null, otherCrew: [] }] }],
       unassigned: [],
       jobCount: 1,
       errors: ['property lookup: boom'],
@@ -122,7 +122,7 @@ describe('GET /api/ops/crew-day-digest', () => {
   it('warns inside the MESSAGE on a partial read, not only in the JSON', async () => {
     getCrewDay.mockResolvedValue({
       date: '2026-08-29',
-      groups: [{ crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: null, status: null }] }],
+      groups: [{ crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: null, status: null, customerName: null, otherCrew: [] }] }],
       unassigned: [],
       jobCount: 1,
       errors: ['property lookup: boom'],
@@ -135,8 +135,8 @@ describe('GET /api/ops/crew-day-digest', () => {
     getCrewDay.mockResolvedValue({
       date: '2026-08-29',
       groups: [
-        { crewName: 'A', jobs: [{ jobNumber: 1046, address: 'x', status: null }] },
-        { crewName: 'B', jobs: [{ jobNumber: 1046, address: 'x', status: null }] },
+        { crewName: 'A', jobs: [{ jobNumber: 1046, address: 'x', status: null, customerName: null, otherCrew: [] }] },
+        { crewName: 'B', jobs: [{ jobNumber: 1046, address: 'x', status: null, customerName: null, otherCrew: [] }] },
       ],
       unassigned: [],
       jobCount: 1,

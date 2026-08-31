@@ -41,11 +41,12 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
   const addressByJob = new Map<string, string | null>();
   const { data: jobRows, error: jobErr } = await db
     .from('jobs')
-    .select('id, property_id')
+    .select('id, property_id, customer_id')
     .in('id', jobIds);
   if (jobErr) errors.push(`job lookup: ${jobErr.message}`);
 
-  const rows = (jobRows as unknown as { id: string; property_id: string | null }[] | null) ?? [];
+  const rows =
+    (jobRows as unknown as { id: string; property_id: string | null; customer_id: string | null }[] | null) ?? [];
   const propertyIds = [...new Set(rows.map((r) => r.property_id).filter((v): v is string => !!v))];
   if (propertyIds.length) {
     const { data: props, error: propErr } = await db
@@ -61,6 +62,25 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
     }
   }
 
+  // Whose house it is (Naldo, 2026-08-31). A failed lookup leaves the name off
+  // the line rather than dropping the job, and lands in errors so the message
+  // says it may be incomplete.
+  const nameByJob = new Map<string, string | null>();
+  const customerIds = [...new Set(rows.map((r) => r.customer_id).filter((v): v is string => !!v))];
+  if (customerIds.length) {
+    const { data: custs, error: custErr } = await db
+      .from('customers')
+      .select('id, name')
+      .in('id', customerIds);
+    if (custErr) errors.push(`customer lookup: ${custErr.message}`);
+    const nameById = new Map(
+      ((custs as unknown as { id: string; name: string | null }[] | null) ?? []).map((c) => [c.id, c.name]),
+    );
+    for (const r of rows) {
+      nameByJob.set(r.id, r.customer_id ? (nameById.get(r.customer_id) ?? null) : null);
+    }
+  }
+
   let crewNames = new Map<string, string>();
   try {
     crewNames = new Map((await listActiveCrewMembers()).map((c) => [c.id, c.displayName]));
@@ -68,10 +88,16 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
     errors.push(`crew lookup: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const asJob = (j: (typeof scheduled)[number]): CrewDayJob => ({
+  const crewLabel = (crewId: string): string => crewNames.get(crewId) ?? `Crew ${crewId.slice(0, 8)}`;
+
+  // `forCrew` is who this copy of the line is FOR, so the others are named.
+  // Undefined for the unassigned section, where there is nobody to exclude.
+  const asJob = (j: (typeof scheduled)[number], forCrew?: string): CrewDayJob => ({
     jobNumber: j.jobNumber,
     address: addressByJob.get(j.jobId) ?? null,
     status: j.status,
+    customerName: nameByJob.get(j.jobId) ?? null,
+    otherCrew: j.crewMemberIds.filter((id) => id !== forCrew).map(crewLabel),
   });
 
   const byCrew = new Map<string, CrewDayJob[]>();
@@ -83,7 +109,7 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
     }
     for (const crewId of j.crewMemberIds) {
       const list = byCrew.get(crewId) ?? [];
-      list.push(asJob(j));
+      list.push(asJob(j, crewId));
       byCrew.set(crewId, list);
     }
   }
@@ -94,7 +120,7 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
     // A missing name is either a deactivated crew member or a FAILED roster
     // read. Either way the id keeps two unnamed sections apart, which a single
     // shared "Unnamed crew member" heading would not (technical lens).
-    .map(([crewId, jobs]) => ({ crewName: crewNames.get(crewId) ?? `Crew ${crewId.slice(0, 8)}`, jobs }))
+    .map(([crewId, jobs]) => ({ crewName: crewLabel(crewId), jobs }))
     .sort((a, b) => a.crewName.localeCompare(b.crewName));
 
   return { date, groups, unassigned, jobCount: scheduled.length, errors };
