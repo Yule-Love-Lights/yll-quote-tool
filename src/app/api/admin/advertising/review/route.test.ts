@@ -177,6 +177,26 @@ describe('POST void', () => {
     expect(bad.status).toBe(400);
     expect(voidPlacement).toHaveBeenCalledTimes(1);
   });
+
+  // A PAID photo can never be voided (payouts, ledger row 481). That refusal
+  // is permanent, so the generic "already reviewed, reload the queue" message
+  // would be both false and useless here: reloading changes nothing. The
+  // isStateRefusal regex matches this message too (on "cannot be"), so
+  // without an explicit branch ahead of it the real guidance is swallowed.
+  it('passes the paid-photo refusal through instead of saying "already reviewed"', async () => {
+    voidPlacement.mockRejectedValueOnce(
+      new Error(
+        'voidPlacement: this photo has already been paid and cannot be voided — settle the difference with the worker instead',
+      ),
+    );
+
+    const res = await POST(makeReq({ action: 'void', placementId: 'p1', reason: 'duplicate' }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/already been paid/i);
+    expect(body.error).not.toMatch(/already reviewed/i);
+    expect(body.error).not.toMatch(/voidPlacement:/); // no function name at the staffer
+  });
 });
 
 describe('POST bulk-accept', () => {
