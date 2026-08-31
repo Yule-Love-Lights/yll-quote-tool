@@ -150,6 +150,29 @@ describe('isPublicPath — customer-facing allowlist', () => {
     }
   });
 
+  // Branded booking pages (src/app/book/[slug]). Without this entry the
+  // perimeter serves the operator LOGIN SHELL to a customer who clicked a
+  // booking link, which looks like a working page and is not.
+  it('treats the branded booking pages as public', () => {
+    for (const p of [
+      '/book',
+      '/book/virtual-hot-chocolate',
+      '/book/virtual-hot-chocolate/',
+      '/book/not-a-real-calendar',
+    ]) {
+      expect(isPublicPath(p), p).toBe(true);
+    }
+  });
+
+  // Prefix match, so a POST to a booking path is public too. That is fine and
+  // deliberate: there is no API under /book, only a page, so the widest thing
+  // this can admit is a request to a route that does not exist.
+  it('keeps the booking allowlist to the /book prefix and nothing adjacent', () => {
+    expect(isPublicPath('/booking')).toBe(false);
+    expect(isPublicPath('/bookkeeping')).toBe(false);
+    expect(isPublicPath('/api/book')).toBe(false);
+  });
+
   it('allows POST /api/referrals/submit (referral landing page lead form) but keeps other methods operator-only (#41)', () => {
     const p = '/api/referrals/submit';
     expect(isPublicPath(p, 'POST')).toBe(true);

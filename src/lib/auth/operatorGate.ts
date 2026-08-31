@@ -193,6 +193,19 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // code in the URL (a bad/unknown code just 404s inside the page itself).
   if (path === '/refer' || path.startsWith('/refer/')) return true;
 
+  // Branded booking pages (/book/<slug>, src/app/book/[slug]). Public: these
+  // wrap a GoHighLevel calendar widget on a Yule Love Lights page so a customer
+  // booking a call does not land on GoHighLevel's unbranded one. The page reads
+  // no customer record and no database at all. Everything on it is a constant in
+  // its own folder plus completed-install photos that already ship in
+  // public/references, which is why it is safe to serve signed out.
+  //
+  // Prefix match, unlike the exact matches used for /estimate and /install
+  // above: every /book/<slug> is public by design, and the slug is checked
+  // against a registry inside the page, so an unknown one 404s rather than
+  // reaching anything. Bare /book has no page and 404s too.
+  if (path === '/book' || path.startsWith('/book/')) return true;
+
   // Customer self-serve estimate (ledger self-serve, Phase A) — the public
   // "type your address, get an instant range" front door. The page + its two
   // APIs self-gate on the SELF_SERVE_ESTIMATE_ENABLED flag (404 when off) and
