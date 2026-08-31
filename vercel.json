@@ -58,15 +58,15 @@
     },
     {
       "path": "/api/cron/calls-sync",
-      "schedule": "12 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/calls-extract",
-      "schedule": "27 * * * *"
+      "schedule": "5,20,35,50 * * * *"
     },
     {
       "path": "/api/cron/calls-note",
-      "schedule": "42 * * * *"
+      "schedule": "10,25,40,55 * * * *"
     }
   ]
 }
