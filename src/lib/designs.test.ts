@@ -589,6 +589,39 @@ describe('extra street photos (#13)', () => {
     expect(items.map(i => i.id)).toEqual(['unrelated']);
   });
 
+  // #13 x #240 (fix round item 4a): a group and its TWIN never bill twice —
+  // the twin is a render-only depiction. If a photo delete orphans BOTH the
+  // canonical group and its twin in the same edit, the staff banner must
+  // report exactly ONE lost group, not two (which would overstate the
+  // damage as double the strings).
+  it('reports exactly ONE pruned group when a photo delete orphans BOTH a canonical group and its twin (#13 x #240)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 's1', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' },
+          { id: 's2', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' },
+          { id: 'g1', kind: 'miniGroup', memberIds: ['s1', 's2'], surface: 'railing', stringCount: 8 },
+          // The twin lives on the BASE photo — its members are twins of the
+          // canonical members, so deleting photo A cascades to remove them
+          // too, orphaning the twin group in the SAME edit.
+          { id: 't1', kind: 'strand', linkedToId: 's1', groupId: 'g1-twin' },
+          { id: 't2', kind: 'strand', linkedToId: 's2', groupId: 'g1-twin' },
+          { id: 'g1-twin', kind: 'miniGroup', memberIds: ['t1', 't2'], linkedToId: 'g1', surface: 'railing', stringCount: 8 },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+    expect(result.ok).toBe(true);
+    // Exactly one entry — the twin's loss is not double-counted.
+    expect(result.prunedMiniGroups).toEqual([{ surface: 'railing', stringCount: 8 }]);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items).toEqual([]);
+  });
+
   it('removeDesignExtraPhoto keeps a miniGroup with a surviving member elsewhere (partial orphan bills normally) (#227)', async () => {
     const { client, state } = makeExtrasSb({
       extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],

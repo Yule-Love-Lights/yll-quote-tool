@@ -30,6 +30,7 @@
 // gated "Charge remaining balance" step.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isMigratedQuote } from '@/lib/quoteStatus';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import {
@@ -219,9 +220,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (Math.abs(amendment.delta) < 0.005) {
     return NextResponse.json(
       {
-        error:
-          'No price change detected — edit the order in the builder (Calculate) first, then record the amendment.',
-        code: 'no-change',
+        // Row 444, S57 wrap (staff lens): on a home.works-migrated order the
+        // delta is ALWAYS zero, because /api/quote refuses to move
+        // quote.result — so this branch is the permanent outcome for those 20,
+        // and "edit in the builder first" points at the very action that is
+        // blocked. Say the true thing instead.
+        error: isMigratedQuote(quote?.approval_snapshot)
+          ? 'This order came from home.works and cannot be re-priced in this tool, so an amendment cannot be computed for it. Agree the new figures with Jason and record them directly.'
+          : 'No price change detected — edit the order in the builder (Calculate) first, then record the amendment.',
+        code: isMigratedQuote(quote?.approval_snapshot) ? 'migrated-quote-locked' : 'no-change',
       },
       { status: 409 },
     );
