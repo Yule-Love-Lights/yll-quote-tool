@@ -75,8 +75,8 @@ describe('OperatorNav — Tasks nav item (Naldo, 2026-08-29)', () => {
     // use the brand colour three times", which is not a defect anyone cares
     // about.
     const active = (html.match(/<a[^>]*background:var\(--brand-evergreen\)[^>]*>/g) ?? []).length;
-    // Two hits are expected: the active tab and the "+ New quote" CTA, which
-    // is styled as a CTA rather than a tab.
+    // Two hits are expected: the active tab and the "+ Quote" CTA, which is
+    // styled as a CTA rather than a tab.
     expect(active).toBe(2);
     expect(html).toMatch(/background:var\(--brand-evergreen\)[^>]*>Tasks</);
   });
@@ -174,24 +174,28 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
   // IS testable here is that the fix's load-bearing pieces are actually
   // present in the markup, so a future "cleanup" can't silently remove them
   // and reopen either failure mode (the overflow, or the invisible wrap).
-  // RE-MEASURED 2026-08-29 for the 12th item (Tasks) and its badge. With BOTH
-  // badges showing (Inbox and Tasks, the widest the row ever gets) the old
-  // lg:px-1.5 xl:px-3 measured a 22px page overflow at 1024px BEFORE the badge
-  // even rendered, and 6px at 1280px with it. lg:px-0.5 xl:px-2.5 closes both.
-  // Measured in headless Chromium, fonts-ready, uniform element heights
-  // confirmed at every width so nothing hid behind a silent wrap:
-  //   1024px: 0 overflow, 16px margin
-  //   1120px: 0 overflow, 16px margin
-  //   1280px: 0 overflow
-  it('forces the 12 top-level tab links to a single line at every breakpoint (lg:px-0.5 xl:px-2.5)', () => {
+  // RE-MEASURED 2026-08-30 for the header search box. The row is `max-w-6xl`,
+  // so its usable width tops out at 1152px however wide the monitor is: a
+  // bigger screen buys the header nothing, which is why the desktop treatment
+  // is now the SAME at every width (YLL wordmark, "+ Quote", initials-only
+  // account) and why xl:px-2.5 had to come down to xl:px-1.5 to pay for the
+  // 160px search box. With BOTH badges injected at two digits (Inbox and
+  // Tasks, the widest this row ever gets), headless Chromium, fonts-ready,
+  // and zero wrapped elements confirmed at every width:
+  //   1024px: 0 page overflow, 0 row overflow, 94px slack
+  //   1120px: 0 page overflow, 0 row overflow, 190px slack
+  //   1280px: 0 page overflow, 0 row overflow, 66px slack
+  //   1600px: 0 page overflow, 0 row overflow, 66px slack (the 1152px cap)
+  // Before the padding step, 1280px and 1600px each overflowed the row by 30px.
+  it('forces the 12 top-level tab links to a single line at every breakpoint (lg:px-0.5 xl:px-1.5)', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     const linkMatch = html.match(/<a[^>]*href="\/admin\/jobs"[^>]*>/);
     expect(linkMatch).not.toBeNull();
     expect(linkMatch![0]).toContain('lg:px-0.5');
-    expect(linkMatch![0]).toContain('xl:px-2.5');
-    // The tab links carry whitespace-nowrap too now: "+ New quote" and "Sign
-    // out" were not the only multi-word elements once a badge started sitting
-    // beside a label.
+    expect(linkMatch![0]).toContain('xl:px-1.5');
+    // The tab links carry whitespace-nowrap too: the CTA and the account
+    // trigger were not the only elements that could wrap once a badge started
+    // sitting beside a label.
     expect(linkMatch![0]).toContain('whitespace-nowrap');
   });
 
@@ -200,7 +204,7 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
     expect(html).toContain('hidden lg:flex items-center gap-0 text-sm');
   });
 
-  it('forces the "+ New quote" CTA and the account trigger to stay single-line (whitespace-nowrap) so neither can hide behind a silent wrap', () => {
+  it('forces the "+ Quote" CTA and the account trigger to stay single-line (whitespace-nowrap) so neither can hide behind a silent wrap', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     const ctaMatch = html.match(/<a[^>]*href="\/quote\/new"[^>]*>/);
     expect(ctaMatch).not.toBeNull();
@@ -210,13 +214,14 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
     expect(accountMatch![0]).toContain('whitespace-nowrap');
   });
 
-  it('shortens the CTA label and the wordmark between 1024 and 1279px, which is what pays for the search box', () => {
+  it('shortens the CTA label and the wordmark at every desktop width, which is what pays for the search box', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
-    // "+ New" always, "quote" only at xl.
-    expect(html).toMatch(/\+ New<span class="hidden xl:inline">/);
-    // "Yule Love Lights" hides exactly in the lg band; "YLL" shows only there.
-    expect(html).toContain('<span class="lg:hidden xl:inline">Yule Love Lights</span>');
-    expect(html).toContain('<span class="hidden lg:inline xl:hidden">YLL</span>');
+    // Deliberately NOT restored at xl: the row's usable width is capped at
+    // 1152px, so no viewport ever makes the longer forms affordable.
+    expect(html).toContain('+ Quote');
+    expect(html).not.toContain('+ New quote<');
+    expect(html).toContain('<span class="lg:hidden">Yule Love Lights</span>');
+    expect(html).toContain('<span class="hidden lg:inline">YLL</span>');
   });
 
   it('renders the search box in both the desktop row and the mobile bar, at a narrow width in the tight band', () => {
@@ -225,6 +230,6 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
     expect(html).toContain('id="header-search-mobile"');
     // The desktop wrapper stays narrow at lg and widens at xl. If this ever
     // grows without the row being re-measured, the 1024px fit is a guess.
-    expect(html).toContain('hidden lg:block lg:w-28 xl:w-52 shrink-0');
+    expect(html).toContain('hidden lg:block lg:w-28 xl:w-40 shrink-0');
   });
 });

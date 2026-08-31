@@ -10,8 +10,8 @@
 // MOVED into this menu rather than disappearing; taking it away would strand a
 // staffer on a shared computer with no way out.
 //
-// The trigger is initials-only below 1280px and prints the name at 1280px and
-// up, which is the same lg/xl step the nav links use.
+// The trigger shows initials; the name is inside the menu. See the comment on
+// the trigger below for why it is not printed in the bar.
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
@@ -69,9 +69,12 @@ export function AccountMenu({
         >
           {initials(identity)}
         </span>
-        {/* The name itself only at xl. Below that the row has no width for it,
-            and the initials plus the aria-label carry the identity. */}
-        <span className="hidden xl:inline max-w-[7rem] truncate text-sm">{name}</span>
+        {/* The trigger is initials only, at EVERY width. Measured, not a
+            taste call: the header row is `max-w-6xl`, so its usable width
+            tops out at 1152px on any monitor, and printing the name there
+            costs 80px the row does not have once the search box is in it.
+            The name is one click away in the menu below, and the aria-label
+            carries it for screen readers meanwhile. */}
         <span aria-hidden className="text-xs">
           ▾
         </span>

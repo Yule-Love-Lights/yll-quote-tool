@@ -47,8 +47,16 @@ describe('AccountMenu — closed initial render', () => {
     expect(trigger![0]).toContain('whitespace-nowrap');
   });
 
-  it('prints the name only at xl, where the header row has width for it', () => {
-    expect(html).toContain('hidden xl:inline max-w-[7rem] truncate text-sm');
+  it('keeps the trigger to initials at every width, because the header row never gains room', () => {
+    // The row is max-w-6xl, so its usable width tops out at 1152px on any
+    // monitor. Printing the name in the bar costs 80px that is not there once
+    // the search box is in the row, and it was MEASURED to overflow. The name
+    // stays in the dropdown and in the aria-label.
+    const trigger = html.match(/<button[^>]*aria-haspopup[^>]*>[\s\S]*?<\/button>/);
+    expect(trigger).not.toBeNull();
+    // The visible text of the trigger is the initials and the caret, nothing more.
+    expect(trigger![0]).toContain('>NV<');
+    expect(trigger![0]).not.toContain('Naldo Vengeance<');
   });
 });
 

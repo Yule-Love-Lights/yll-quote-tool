@@ -207,7 +207,18 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
           id={listId}
           role="listbox"
           aria-label="Search results"
-          className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[70vh] overflow-y-auto rounded-lg border shadow-lg py-1 lg:w-80 lg:left-auto lg:right-0"
+          // Anchored to the LEFT edge of the box on desktop, not the right.
+          // The box sits near the start of the header row, so a 320px panel
+          // right-aligned to a 160px input hangs off the left of the viewport:
+          // measured at 1280px it started at x = -7, clipping the first
+          // character of every result. Growing rightwards has room at every
+          // width the row supports.
+          // On a phone the input itself is only about 170px wide (it shares the
+          // bar with the wordmark and the hamburger), and a 170px results
+          // panel is unreadable, so the panel is sized to the viewport rather
+          // than to its input. It is right-anchored there because the input
+          // sits mid-bar and a left-anchored 85vw panel runs off the screen.
+          className="absolute right-0 top-full z-50 mt-1 w-[80vw] max-w-sm max-h-[70vh] overflow-y-auto rounded-lg border shadow-lg py-1 lg:w-80 lg:left-0 lg:right-auto"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
           {tooShort && (

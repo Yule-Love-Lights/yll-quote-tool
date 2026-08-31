@@ -268,18 +268,19 @@ export function OperatorNav({
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
       <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
-        {/* The wordmark shortens to YLL between 1024 and 1279px (Naldo,
-            2026-08-30). That band is where the row is tightest, and the full
-            name is the least functional thing in it — the search box that
-            replaced its width is the reason the 11 nav items all kept their
-            slots. Full name returns at 1280px and below 1024px, where the nav
-            is a hamburger and there is room to spare. */}
+        {/* The wordmark reads YLL at 1024px and up (Naldo, 2026-08-30).
+            MEASURED, not guessed: this row is `max-w-6xl`, so its usable
+            width tops out at 1152px and NEVER grows past it, however wide the
+            monitor. A wider screen therefore buys nothing, and the full name
+            costs 109px of a budget the search box now shares. The full name
+            still renders below 1024px, where the nav collapses to a hamburger
+            and the row has room to spare. */}
         <span
           className="text-xs font-semibold uppercase tracking-widest shrink-0"
           style={{ color: 'var(--brand-evergreen-3)' }}
         >
-          <span className="lg:hidden xl:inline">Yule Love Lights</span>
-          <span className="hidden lg:inline xl:hidden">YLL</span>
+          <span className="lg:hidden">Yule Love Lights</span>
+          <span className="hidden lg:inline">YLL</span>
         </span>
 
         {/* Tablet-portrait and phone: the search box takes the width the nav
@@ -288,9 +289,11 @@ export function OperatorNav({
           <HeaderSearch variant="mobile" />
         </div>
 
-        {/* Desktop: a deliberately narrow box at 1024px, widening at 1280px
-            with the rest of the row. Ctrl+K and Cmd+K focus this one. */}
-        <div className="hidden lg:block lg:w-28 xl:w-52 shrink-0">
+        {/* Desktop: 112px at 1024px, 160px at 1280px and up. Both numbers
+            come from the measured budget above, not from taste: at 1280px the
+            row has 41px of slack left with this box at 160px. Ctrl+K and
+            Cmd+K focus this one. */}
+        <div className="hidden lg:block lg:w-28 xl:w-40 shrink-0">
           <HeaderSearch variant="desktop" />
         </div>
 
@@ -333,7 +336,7 @@ export function OperatorNav({
         <ul className="hidden lg:flex items-center gap-0 text-sm">
           {items.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="lg:px-0.5 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
+              <Link href={item.href} className="lg:px-0.5 xl:px-1.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
                 {item.label}
                 {badgeFor(item)}
               </Link>
@@ -353,16 +356,17 @@ export function OperatorNav({
                 width — that's the false-pass trap the lg:px-1.5 comment above
                 explains. Forcing single-line makes its true width count
                 toward the overflow check instead of hiding behind a wrap. */}
-            {/* "+ New" between 1024 and 1279px, "+ New quote" at 1280px and
-                up (Naldo, 2026-08-30): the shorter label is part of what pays
-                for the search box in the tight band. Same destination either
-                way, and both single-line. */}
+            {/* "+ Quote" at every desktop width (Naldo, 2026-08-30): the
+                shorter label is part of what pays for the search box, and the
+                row's width does not grow past 1152px, so there is no width at
+                which the longer label becomes affordable. The mobile menu
+                below still spells out "+ New quote", where there is room. */}
             <Link
               href="/quote/new"
               className="whitespace-nowrap lg:px-2 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
-              + New<span className="hidden xl:inline">&nbsp;quote</span>
+              + Quote
             </Link>
           </li>
           {/* Always mounted (ledger #347 fix round) — reserves its layout
