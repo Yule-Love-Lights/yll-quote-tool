@@ -222,11 +222,15 @@ async function main(): Promise<void> {
     const summary = summarizeEarnings(rows, new Map([[campaign.id, campaign.rateCents]]));
     const mine = summary.find((w) => w.workerId === worker.id);
     check('pure money math: accepted yard sign earns 250', mine?.total.acceptedEarnedCents === 250, JSON.stringify(mine?.total));
-    check('pure money math: resubmitted yard sign pends 250 at the current rate', mine?.total.pendingEstimatedCents === 250);
+    // Pay is per accepted PHOTO of any kind (Naldo 2026-08-29, PR #1077),
+    // so BOTH open rows estimate at the campaign's current rate: the
+    // resubmitted yard sign and the still-pending door hanger, 250 each.
+    check('pure money math: the resubmitted yard sign and the pending door hanger each pend 250 at the current rate',
+      mine?.total.pendingEstimatedCents === 500, JSON.stringify(mine?.total));
     const doorOnly = summarizeEarnings(rows.filter((r) => r.kind === 'door_hanger'), new Map([[campaign.id, 250]]));
     const door = doorOnly.find((w) => w.workerId === worker.id);
-    check('pure money math: the door hanger exists in the summary and earns/pends 0 (permanently unpaid)',
-      !!door && door.total.acceptedEarnedCents === 0 && door.total.pendingEstimatedCents === 0, JSON.stringify(door?.total));
+    check('pure money math: the pending door hanger pends 250 and has earned nothing yet (pending, not excluded)',
+      !!door && door.total.acceptedEarnedCents === 0 && door.total.pendingEstimatedCents === 250, JSON.stringify(door?.total));
 
     // ---- duplicates: same-population rule (the advertising session's own
     // live E2E moved this from never-for-test to within-population, so test
@@ -256,6 +260,20 @@ async function main(): Promise<void> {
     check('duplicate reasons name the distance and the shared address',
       pureDups.some((d) => d.reasons.some((r) => r.endsWith('m away'))) &&
       pureDups.some((d) => d.reasons.includes('same suggested address')));
+
+    // ---- the per-photo rule, proven against the real database ----
+    // Run last so nothing above sees a changed status. Before #1077's
+    // migration the DATABASE itself refused this write (a door hanger could
+    // carry no rate stamp), so this leg is the standing regression guard for
+    // the generalized CHECK pair, not just for the TypeScript math.
+    const acceptedHanger = await acceptPlacement(p2.id, reviewerId);
+    check('a door hanger accepts and stamps the campaign rate — pay is per accepted PHOTO, whatever the kind',
+      acceptedHanger.status === 'accepted' && acceptedHanger.acceptedRateCents === 250,
+      `status=${acceptedHanger.status} acceptedRateCents=${acceptedHanger.acceptedRateCents}`);
+    const finalRows = (await Promise.all(cleanup.placementIds.map((id) => getPlacement(id)))).map((p) => ({ ...p!, isTest: false }));
+    const finalMine = summarizeEarnings(finalRows, new Map([[campaign.id, campaign.rateCents]])).find((w) => w.workerId === worker.id);
+    check('two accepted photos (a yard sign and a door hanger) earn 500, and only the resubmitted sign still pends 250',
+      finalMine?.total.acceptedEarnedCents === 500 && finalMine?.total.pendingEstimatedCents === 250, JSON.stringify(finalMine?.total));
   } finally {
     // ---- cleanup: everything this run created, then re-count ----
     // Activity FIRST, while the placements still exist: the FK nulls on

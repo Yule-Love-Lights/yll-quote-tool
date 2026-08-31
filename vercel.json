@@ -59,6 +59,10 @@
     {
       "path": "/api/cron/calls-extract",
       "schedule": "27 * * * *"
+    },
+    {
+      "path": "/api/cron/calls-note",
+      "schedule": "42 * * * *"
     }
   ]
 }

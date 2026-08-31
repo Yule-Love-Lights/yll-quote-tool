@@ -5,9 +5,10 @@ import { logAdvertisingActivity } from '@/lib/advertising/activity';
 // Placements: one row per yard sign (or door hanger batch) placed, plus the
 // review transitions and the earnings math. The money rules (Naldo
 // 2026-08-27, pay basis updated by Naldo 2026-08-29): the campaign rate is
-// paid PER ACCEPTED PHOTO, whatever the kind — the campaign's NAME says
-// whether it is a yard-sign or door-hanger campaign, and the kind on the row
-// records which it was. The rate is stamped at acceptance
+// paid PER ACCEPTED PHOTO, whatever the kind. The campaign carries its own
+// `kind` column (yard_sign | door_hanger) and the placement takes its kind
+// from THAT, never from the request body; the campaign's name is how a human
+// tells the campaigns apart, not how the code decides. The rate is stamped at acceptance
 // (accepted_rate_cents) so later rate changes never move history; pending
 // and rejected placements never count for pay; a
 // rejected-then-resubmitted-then-accepted placement pays exactly once.
@@ -37,6 +38,13 @@ export type AdvertisingPlacement = {
   propertyId: string | null;
   rejectionReason: string | null;
   workerNote: string | null;
+  /** Perceptual dHash of the proof photo (photoHash.ts); null before hashing shipped. */
+  photoHash: string | null;
+  /** Void overlay (Naldo 2026-08-29): a voided row counts for NOTHING but
+   * its history stays. All three travel together; reason required. */
+  voidedAt: string | null;
+  voidedBy: string | null;
+  voidReason: string | null;
   acceptedRateCents: number | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -62,6 +70,10 @@ type Row = {
   property_id: string | null;
   rejection_reason: string | null;
   worker_note: string | null;
+  photo_hash: string | null;
+  voided_at: string | null;
+  voided_by: string | null;
+  void_reason: string | null;
   accepted_rate_cents: number | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -71,7 +83,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
+  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, photo_hash, voided_at, voided_by, void_reason, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
 
 function toPlacement(row: Row): AdvertisingPlacement {
   return {
@@ -91,6 +103,10 @@ function toPlacement(row: Row): AdvertisingPlacement {
     propertyId: row.property_id,
     rejectionReason: row.rejection_reason,
     workerNote: row.worker_note,
+    photoHash: row.photo_hash,
+    voidedAt: row.voided_at,
+    voidedBy: row.voided_by,
+    voidReason: row.void_reason,
     acceptedRateCents: row.accepted_rate_cents,
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
@@ -173,6 +189,7 @@ export async function submitPlacement(input: {
   neighborhood?: string | null;
   propertyId?: string | null;
   workerNote?: string | null;
+  photoHash?: string | null;
   isTest?: boolean;
 }): Promise<AdvertisingPlacement> {
   const db = getSupabaseServiceClient();
@@ -207,6 +224,7 @@ export async function submitPlacement(input: {
       neighborhood: input.neighborhood?.trim() || null,
       property_id: input.propertyId ?? null,
       worker_note: input.workerNote?.trim() || null,
+      photo_hash: input.photoHash ?? null,
       is_test: input.isTest ?? false,
     })
     .select(SELECT)
@@ -221,6 +239,143 @@ export async function submitPlacement(input: {
     placementId: placement.id,
     workerId: placement.workerId,
     detail: { kind: placement.kind },
+  });
+  return placement;
+}
+
+/** Thrown when the DB's own uniqueness guard refuses a second accepted row
+ * for the same worker, campaign and photo hash. The pre-check above can
+ * lose a race (two admin tabs); this is the authority that cannot. */
+export class DuplicatePlacementError extends Error {
+  constructor() {
+    super('This photo is already uploaded and accepted for this worker and campaign.');
+    this.name = 'DuplicatePlacementError';
+  }
+}
+
+/**
+ * Bulk-upload dedupe (technical lens HIGH, PR #1093): an exact re-upload of
+ * an already-accepted photo must never mint a second paid row. Exact hash
+ * equality only (never the hamming-distance similarity the review flags
+ * use), scoped to the same worker and campaign. Best-effort: a null hash
+ * matches nothing, and a read error reports null rather than blocking the
+ * upload path.
+ */
+export async function findAcceptedByPhotoHash(
+  workerId: string,
+  campaignId: string,
+  photoHash: string | null,
+): Promise<AdvertisingPlacement | null> {
+  if (!photoHash) return null;
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  // limit(1), never maybeSingle: PostgREST answers a multi-row maybeSingle
+  // with PGRST116 and NULL data, which a catch-all null return reads as
+  // "no duplicate" — disarming this guard exactly where duplicates already
+  // exist (delta-verify HIGH, PR #1093).
+  const { data, error } = await db
+    .from('advertising_placements')
+    .select(SELECT)
+    .eq('worker_id', workerId.trim())
+    .eq('campaign_id', campaignId.trim())
+    .eq('status', 'accepted')
+    .eq('photo_hash', photoHash)
+    .limit(1);
+  if (error) {
+    console.error('findAcceptedByPhotoHash error:', error);
+    return null;
+  }
+  const rows = (data ?? []) as Row[];
+  return rows.length > 0 ? toPlacement(rows[0]) : null;
+}
+
+/**
+ * Admin bulk upload (Naldo, 2026-08-29): a photo backfilled for work done
+ * BEFORE the tool existed lands directly ACCEPTED, stamped with the rate
+ * the caller read from the campaign at upload time and reviewed by the
+ * uploading admin. GPS is optional (camera-roll files often carry none)
+ * but never one-sided: a lat without a lng is corrupt, not partial. This
+ * is a pay-creating write, so every guard here is a money guard.
+ */
+export async function submitAcceptedPlacement(input: {
+  campaignId: string;
+  workerId: string;
+  kind: PlacementKind;
+  rateCents: number;
+  reviewedBy: string;
+  lat: number | null;
+  lng: number | null;
+  capturedAt?: string | null;
+  photoPath: string;
+  suggestedAddress?: string | null;
+  photoHash?: string | null;
+  isTest?: boolean;
+}): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const photoPath = input.photoPath.trim();
+  if (!photoPath) throw new Error('submitAcceptedPlacement: a proof photo is required');
+  if (!Number.isInteger(input.rateCents) || input.rateCents < 0) {
+    throw new Error(
+      `submitAcceptedPlacement: invalid rate ${String(input.rateCents)}: must be a non-negative integer number of cents`,
+    );
+  }
+  const reviewedBy = input.reviewedBy.trim();
+  if (!reviewedBy) throw new Error('submitAcceptedPlacement: the reviewing admin is required');
+  if ((input.lat === null) !== (input.lng === null)) {
+    throw new Error('submitAcceptedPlacement: one-sided GPS refused (lat and lng must come together)');
+  }
+  if (input.lat !== null && input.lng !== null) {
+    if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates must be numbers');
+    }
+    if (input.lat < -90 || input.lat > 90 || input.lng < -180 || input.lng > 180) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates out of range');
+    }
+  }
+  if (input.kind !== 'yard_sign' && input.kind !== 'door_hanger') {
+    throw new Error(`submitAcceptedPlacement: unknown kind ${String(input.kind)}`);
+  }
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .insert({
+      campaign_id: input.campaignId.trim(),
+      worker_id: input.workerId.trim(),
+      kind: input.kind,
+      status: 'accepted',
+      lat: input.lat,
+      lng: input.lng,
+      accuracy_m: null,
+      captured_at: input.capturedAt ?? new Date().toISOString(),
+      photo_path: photoPath,
+      suggested_address: input.suggestedAddress?.trim() || null,
+      photo_hash: input.photoHash ?? null,
+      accepted_rate_cents: input.rateCents,
+      reviewed_by: reviewedBy,
+      reviewed_at: new Date().toISOString(),
+      is_test: input.isTest ?? false,
+    })
+    .select(SELECT)
+    .maybeSingle();
+  if (error) {
+    // 23505: the partial unique index on (worker_id, campaign_id,
+    // photo_hash) where status='accepted' refused a second paid row. This
+    // is the guard that survives a lost race, so it reports as a duplicate
+    // rather than a failure.
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`submitAcceptedPlacement: ${error.message}`);
+  }
+  if (!data) throw new Error('submitAcceptedPlacement: no row returned');
+
+  const placement = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: reviewedBy,
+    action: 'accepted',
+    placementId: placement.id,
+    workerId: placement.workerId,
+    detail: { kind: placement.kind, acceptedRateCents: placement.acceptedRateCents, bulkUpload: true },
   });
   return placement;
 }
@@ -243,6 +398,7 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
   const placementId = id.trim();
   const row = await getPlacementRow(db, placementId);
   if (!row) throw new Error(`acceptPlacement: no placement found for id ${placementId}`);
+  if (row.voided_at) throw new Error('acceptPlacement: placement is voided and cannot be reviewed');
   if (row.status === 'accepted') return toPlacement(row); // idempotent retry
   if (row.status === 'rejected') {
     throw new Error('acceptPlacement: placement is rejected — it must be resubmitted before it can be accepted');
@@ -279,13 +435,24 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     })
     .eq('id', placementId)
     .in('status', ['pending', 'resubmitted'])
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`acceptPlacement: ${error.message}`);
+  if (error) {
+    // The accepted-photo unique index guards the TRANSITION into accepted,
+    // not just inserts: accepting a second copy of a photo already accepted
+    // for this worker and campaign is refused here. Report it as the
+    // duplicate it is rather than a raw 500 (delta-verify, PR #1093).
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`acceptPlacement: ${error.message}`);
+  }
 
   if (!data) {
     // Lost the CAS race: someone else reviewed it between our read and write.
     const current = await getPlacementRow(db, placementId);
+    if (current?.voided_at) {
+      throw new Error('acceptPlacement: placement was voided before this accept landed');
+    }
     if (current?.status === 'accepted') return toPlacement(current);
     throw new Error(
       `acceptPlacement: placement ${placementId} moved to '${current?.status ?? 'missing'}' before this accept landed`,
@@ -330,6 +497,7 @@ export async function rejectPlacement(
     })
     .eq('id', placementId)
     .in('status', ['pending', 'resubmitted'])
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`rejectPlacement: ${error.message}`);
@@ -337,6 +505,7 @@ export async function rejectPlacement(
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`rejectPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) throw new Error('rejectPlacement: placement is voided and cannot be reviewed');
     if (current.status === 'rejected') return toPlacement(current); // idempotent retry
     throw new Error(`rejectPlacement: placement ${placementId} is '${current.status}' and cannot be rejected`);
   }
@@ -365,6 +534,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
     .update({ status: 'resubmitted' })
     .eq('id', placementId)
     .eq('status', 'rejected')
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`resubmitPlacement: ${error.message}`);
@@ -372,6 +542,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`resubmitPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) throw new Error('resubmitPlacement: placement is voided and cannot be resubmitted');
     if (current.status === 'resubmitted') return toPlacement(current); // idempotent retry
     throw new Error(`resubmitPlacement: placement ${placementId} is '${current.status}', only rejected placements can be resubmitted`);
   }
@@ -384,6 +555,61 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
     workerId: resubmitted.workerId,
   });
   return resubmitted;
+}
+
+/**
+ * VOID a placement (Naldo 2026-08-29): it stops counting anywhere — pay,
+ * estimates, sign allotments, stock counts, duplicate flags — while the row,
+ * its status history, and its stamped rate remain as the record. There is no
+ * un-void; a wrongly voided sign gets re-submitted. CAS on voided_at IS NULL:
+ * the first void wins and a retry returns it unchanged.
+ */
+export async function voidPlacement(
+  id: string,
+  voidedBy: string,
+  reason: string,
+): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const placementId = id.trim();
+  const voidReason = reason.trim();
+  if (!voidReason) throw new Error('voidPlacement: a reason is required');
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({
+      voided_at: new Date().toISOString(),
+      voided_by: voidedBy,
+      void_reason: voidReason,
+    })
+    .eq('id', placementId)
+    .is('voided_at', null)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`voidPlacement: ${error.message}`);
+
+  if (!data) {
+    const current = await getPlacementRow(db, placementId);
+    if (!current) throw new Error(`voidPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) return toPlacement(current); // idempotent: first void stands
+    throw new Error(`voidPlacement: placement ${placementId} could not be voided`);
+  }
+
+  const voided = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: voidedBy,
+    action: 'placement_voided',
+    placementId: voided.id,
+    workerId: voided.workerId,
+    detail: {
+      reason: voidReason,
+      priorStatus: voided.status,
+      acceptedRateCents: voided.acceptedRateCents,
+      kind: voided.kind,
+    },
+  });
+  return voided;
 }
 
 // --- Earnings -----------------------------------------------------------------
@@ -460,6 +686,10 @@ export function summarizeEarnings(
       byWorker.set(p.workerId, acc);
     }
 
+    // Voided rows count for NOTHING (Naldo 2026-08-29) — but their worker
+    // still shows up with zeros rather than vanishing.
+    if (p.voidedAt) continue;
+
     let earned = 0;
     let estimated = 0;
     let at: string | null = null;
@@ -467,7 +697,12 @@ export function summarizeEarnings(
     if (p.status === 'accepted') {
       if (p.acceptedRateCents == null) continue; // unstorable by CHECK; belt-and-braces
       earned = p.acceptedRateCents;
-      at = p.reviewedAt ?? p.createdAt;
+      // Bucket by the day the WORK happened (capturedAt), matching the
+      // pending buckets and Naldo's date-taken ruling for backfill (PR
+      // #1093): a photo's pay week no longer jumps when review happens,
+      // and a backfilled batch lands in its historical weeks instead of
+      // spiking the upload day. Totals are unaffected; this is grouping.
+      at = p.capturedAt ?? p.reviewedAt ?? p.createdAt;
     } else if (p.status === 'pending' || p.status === 'resubmitted') {
       estimated = currentRateCentsByCampaign.get(p.campaignId) ?? 0;
       at = p.capturedAt ?? p.createdAt;
@@ -532,6 +767,7 @@ export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
       .select('worker_id')
       .eq('kind', 'door_hanger')
       .eq('is_test', false)
+      .is('voided_at', null)
       .order('created_at', { ascending: true })
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
@@ -649,7 +885,8 @@ export async function campaignActivitySummary(campaignIds: string[]): Promise<Ma
         .from('advertising_placements')
         .select('id', { count: 'exact', head: true })
         .eq('campaign_id', campaignId)
-        .eq('is_test', false);
+        .eq('is_test', false)
+        .is('voided_at', null); // voided rows count for nothing
       if (countError) console.error('campaignActivitySummary count error:', countError);
 
       const { data: rows, error: rowsError } = await db
@@ -657,6 +894,7 @@ export async function campaignActivitySummary(campaignIds: string[]): Promise<Ma
         .select('worker_id, created_at, status')
         .eq('campaign_id', campaignId)
         .eq('is_test', false)
+        .is('voided_at', null)
         .order('created_at', { ascending: false })
         .range(0, 999);
       if (rowsError) console.error('campaignActivitySummary rows error:', rowsError);

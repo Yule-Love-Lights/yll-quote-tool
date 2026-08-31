@@ -8,20 +8,21 @@
 
 import { type ReactNode } from 'react';
 
-// The replica's palette, derived from globals.css brand tokens: primary =
-// evergreen-3 on light surfaces, strong CTAs on deep evergreen, gold as the
-// warm accent, soft evergreen tints where Simple Crew used lavender.
+// The replica's palette, matched to the quote tool's operator surface
+// (globals.css --op-* tokens, Naldo's device round 2026-08-29: follow the
+// normal quote tool colors): off-cream page background, evergreen text and
+// CTAs, gold accent, cream tints where Simple Crew used lavender.
 export const SC = {
-  primary: '#2E3D34',
-  primaryDeep: '#0B140F',
-  tint: '#E9F0EB',
-  tint2: '#D5E3D9',
-  gold: '#E8B862',
-  bg: '#F6F7F5',
+  primary: '#2E3D34', // --brand-evergreen-3
+  primaryDeep: '#0B140F', // --brand-evergreen
+  tint: '#F4ECD8', // --brand-cream
+  tint2: '#E0D7C1', // --brand-cream-2
+  gold: '#E8B862', // --brand-gold
+  bg: '#FAF6EC', // --op-bg
   card: '#FFFFFF',
-  text: '#161B17',
-  muted: '#7B857E',
-  danger: '#C8313D',
+  text: '#0B140F', // --op-text
+  muted: '#6E7466',
+  danger: '#C8313D', // --brand-red
   ok: '#2E7D4F',
 };
 
@@ -85,7 +86,7 @@ export function PillToggle<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex rounded-full border p-0.5" style={{ borderColor: '#E3E6E2', background: SC.card }}>
+    <div className="flex rounded-full border p-0.5" style={{ borderColor: '#E3DCC6', background: SC.card }}>
       {options.map((o) => (
         <button
           key={o.value}
@@ -112,7 +113,7 @@ export function TabBar({ items }: { items: TabItem[] }) {
   return (
     <nav
       className="fixed inset-x-0 bottom-0 z-40 flex items-center justify-around border-t px-2 pb-[max(env(safe-area-inset-bottom),8px)] pt-2"
-      style={{ background: SC.card, borderColor: '#ECEEEB' }}
+      style={{ background: SC.card, borderColor: '#EDE6D2' }}
     >
       {items.map((t) => (
         <a
@@ -120,7 +121,7 @@ export function TabBar({ items }: { items: TabItem[] }) {
           href={t.href}
           aria-label={t.key}
           className="flex h-12 min-w-[64px] items-center justify-center rounded-full px-5"
-          style={t.active ? { background: '#EFF1EE', color: SC.primary } : { color: '#3A423C' }}
+          style={t.active ? { background: '#F1EAD8', color: SC.primary } : { color: '#3A423C' }}
         >
           {t.icon}
         </a>
@@ -139,7 +140,7 @@ export function Sheet({ open, onClose, children }: { open: boolean; onClose: () 
         className="absolute inset-x-0 bottom-0 max-h-[85svh] overflow-y-auto rounded-t-3xl p-4 pb-[max(env(safe-area-inset-bottom),16px)]"
         style={{ background: SC.card }}
       >
-        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full" style={{ background: '#D8DBD7' }} />
+        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full" style={{ background: '#D9D1BC' }} />
         {children}
       </div>
     </div>
@@ -159,7 +160,7 @@ export function PrimaryButton({
   type?: 'button' | 'submit';
   tone?: 'primary' | 'danger' | 'quiet';
 }) {
-  const bg = tone === 'danger' ? SC.danger : tone === 'quiet' ? '#E7EAE6' : SC.primaryDeep;
+  const bg = tone === 'danger' ? SC.danger : tone === 'quiet' ? '#EDE6D4' : SC.primaryDeep;
   const fg = tone === 'quiet' ? SC.text : '#F4EFE6';
   return (
     <button

@@ -29,6 +29,8 @@ export type DetailPlacement = {
   rejectionReason: string | null;
   workerNote: string | null;
   acceptedRateCents: number | null;
+  voidedAt?: string | null;
+  voidReason?: string | null;
   photoUrl: string | null;
   duplicates?: { id: string; status: string; workerName: string; reasons: string[] }[];
 };
@@ -36,7 +38,7 @@ export type DetailPlacement = {
 type Campaign = { id: string; name: string; kind: string; notes?: string | null; rateCents?: number };
 
 const STATUS_CHIP: Record<DetailPlacement['status'], { text: string; bg: string; fg: string }> = {
-  pending: { text: 'Pending', bg: '#EFF1EE', fg: '#3A423C' },
+  pending: { text: 'Pending', bg: '#F1EAD8', fg: '#3A423C' },
   resubmitted: { text: 'Resubmitted', bg: '#FDF3DF', fg: '#8a6d1f' },
   accepted: { text: 'Accepted', bg: '#E4F2E8', fg: '#2E7D4F' },
   rejected: { text: 'Rejected', bg: '#FBE7E7', fg: '#B3383F' },
@@ -145,7 +147,7 @@ export default function CampaignDetailScreen({
       id: p.id,
       lat: p.lat!,
       lng: p.lng!,
-      status: p.status,
+      status: p.voidedAt ? 'voided' : p.status,
       label: p.suggestedAddress ?? undefined,
     }));
 
@@ -192,12 +194,12 @@ export default function CampaignDetailScreen({
 
       {/* sheet */}
       <div className="relative z-10 -mt-4 flex-1 rounded-t-3xl bg-white pb-28">
-        <div className="mx-auto mt-2 h-1.5 w-12 rounded-full" style={{ background: '#D8DBD7' }} />
+        <div className="mx-auto mt-2 h-1.5 w-12 rounded-full" style={{ background: '#D9D1BC' }} />
         <div className="px-5 pt-3">
           <h1 className="text-2xl font-bold" style={{ color: SC.text }}>
             {campaign.name}
           </h1>
-          <div className="mt-2 flex gap-6 border-b" style={{ borderColor: '#EDEFEC' }}>
+          <div className="mt-2 flex gap-6 border-b" style={{ borderColor: '#EFE9D8' }}>
             {(['description', 'photos'] as const).map((t) => (
               <button
                 key={t}
@@ -212,7 +214,7 @@ export default function CampaignDetailScreen({
               >
                 {t}
                 {t === 'photos' && (
-                  <span className="rounded-full px-2 py-0.5 text-sm" style={{ background: '#F0F2EF', color: SC.muted }}>
+                  <span className="rounded-full px-2 py-0.5 text-sm" style={{ background: '#F1EBDB', color: SC.muted }}>
                     {placements.length}
                   </span>
                 )}
@@ -249,16 +251,16 @@ export default function CampaignDetailScreen({
                   <span className="text-xl font-bold" style={{ color: SC.text }}>
                     {g.label}
                   </span>
-                  <span className="rounded-full px-3 py-1 text-sm" style={{ background: '#F0F2EF', color: SC.muted }}>
+                  <span className="rounded-full px-3 py-1 text-sm" style={{ background: '#F1EBDB', color: SC.muted }}>
                     {g.items.length} photos
                   </span>
                 </div>
                 {g.items.map((p) => (
-                  <div key={p.id} className="mb-4 overflow-hidden rounded-2xl border bg-white shadow-sm" style={{ borderColor: '#EDEFEC' }}>
+                  <div key={p.id} className="mb-4 overflow-hidden rounded-2xl border bg-white shadow-sm" style={{ borderColor: '#EFE9D8' }}>
                     <div className="flex items-center gap-3 px-4 py-3">
                       <span
                         className="flex h-11 w-11 items-center justify-center rounded-full text-lg font-semibold"
-                        style={{ background: '#EFF1EE', color: SC.muted }}
+                        style={{ background: '#F1EAD8', color: SC.muted }}
                       >
                         {(p.workerName ?? 'W').slice(0, 1)}
                       </span>
@@ -270,9 +272,23 @@ export default function CampaignDetailScreen({
                           {fmtStamp(p)}
                         </span>
                       </span>
-                      <span className="rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: STATUS_CHIP[p.status].bg, color: STATUS_CHIP[p.status].fg }}>
-                        {STATUS_CHIP[p.status].text}
-                        {p.status === 'accepted' && p.acceptedRateCents !== null && ` · ${dollars(p.acceptedRateCents)}`}
+                      <span
+                        className="rounded-full px-2.5 py-1 text-xs font-medium"
+                        style={
+                          p.voidedAt
+                            ? { background: '#ECEAE4', color: SC.muted }
+                            : { background: STATUS_CHIP[p.status].bg, color: STATUS_CHIP[p.status].fg }
+                        }
+                      >
+                        {/* The money suffix is gated on voidedAt too, not just
+                            the label above it: a voided-accepted row rendered
+                            "Voided · $2.50" because this second conditional
+                            was left untouched when the label was fixed. */}
+                        {p.voidedAt ? 'Voided' : STATUS_CHIP[p.status].text}
+                        {!p.voidedAt &&
+                          p.status === 'accepted' &&
+                          p.acceptedRateCents !== null &&
+                          ` · ${dollars(p.acceptedRateCents)}`}
                       </span>
                       <DotsIcon size={20} className="shrink-0" />
                     </div>
@@ -280,7 +296,7 @@ export default function CampaignDetailScreen({
                       // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL
                       <img src={p.photoUrl} alt="Placement proof" className="max-h-[420px] w-full object-cover" />
                     ) : (
-                      <div className="flex h-40 items-center justify-center" style={{ background: '#F0F2EF', color: SC.muted }}>
+                      <div className="flex h-40 items-center justify-center" style={{ background: '#F1EBDB', color: SC.muted }}>
                         photo unavailable
                       </div>
                     )}
@@ -310,7 +326,31 @@ export default function CampaignDetailScreen({
                           </div>
                         );
                       })()}
-                      {mode === 'admin' && (p.status === 'pending' || p.status === 'resubmitted') && (
+                      {/* Undo for a wrong accept (bulk-upload mistakes most
+                          of all) is master's VOID, not a second mechanism:
+                          it keeps the row and its stamped rate as history,
+                          records why, and makes the row count for nothing. */}
+                      {mode === 'admin' && !p.voidedAt && p.status === 'accepted' && (
+                        <div className="mt-1">
+                          <button
+                            type="button"
+                            disabled={busy === p.id}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                'Void this photo? It stops counting for pay and keeps this reason as the permanent record of why:',
+                                'uploaded by mistake',
+                              );
+                              if (reason === null || !reason.trim()) return;
+                              void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);
+                            }}
+                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Void (stops the pay)
+                          </button>
+                        </div>
+                      )}
+                      {mode === 'admin' && !p.voidedAt && (p.status === 'pending' || p.status === 'resubmitted') && (
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <button
                             type="button"
@@ -329,7 +369,7 @@ export default function CampaignDetailScreen({
                                 onChange={(e) => setReasons((prev) => ({ ...prev, [p.id]: e.target.value }))}
                                 placeholder="Why? The worker sees this."
                                 className="min-w-0 flex-1 rounded-full border px-3 py-2 text-sm"
-                                style={{ borderColor: '#DFE3DE' }}
+                                style={{ borderColor: '#DCD4BE' }}
                               />
                               <button
                                 type="button"
@@ -348,15 +388,42 @@ export default function CampaignDetailScreen({
                               type="button"
                               onClick={() => setRejecting(p.id)}
                               className="rounded-full border px-4 py-2 text-sm"
-                              style={{ borderColor: '#DFE3DE', color: SC.text }}
+                              style={{ borderColor: '#DCD4BE', color: SC.text }}
                             >
                               Reject…
                             </button>
                           )}
                         </div>
                       )}
-                      {mode === 'worker' && p.status === 'rejected' && (
+                      {mode === 'worker' && p.status === 'rejected' && !p.voidedAt && (
                         <ResubmitButton placementId={p.id} onDone={reload} />
+                      )}
+                      {/* Void is available on EVERY live row, not just the
+                          unreviewed ones: the case it exists for is a
+                          mis-tapped Accept or a duplicate caught after
+                          acceptance (delta-verify caught this button nested
+                          inside the pending-only block). */}
+                      {mode === 'admin' && !p.voidedAt && (
+                        <div className="mt-1">
+                          <button
+                            type="button"
+                            disabled={busy === p.id}
+                            onClick={() => {
+                              const reason = window.prompt(
+                                p.status === 'accepted'
+                                  ? 'Void this ACCEPTED placement? Its pay is reversed and it stops counting for allotments and stock. Why? (required, permanent record)'
+                                  : 'Void this placement? It stops counting for pay, allotments and stock. Why? (required, permanent record)',
+                              );
+                              if (reason && reason.trim()) {
+                                void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);
+                              }
+                            }}
+                            className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Void…
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -370,7 +437,7 @@ export default function CampaignDetailScreen({
       {/* the detail screen's own bottom nav: Map | Capture | My photos */}
       <nav
         className="fixed inset-x-0 bottom-0 z-40 flex items-start justify-around border-t px-2 pb-[max(env(safe-area-inset-bottom),10px)] pt-2"
-        style={{ background: '#fff', borderColor: '#ECEEEB' }}
+        style={{ background: '#fff', borderColor: '#EDE6D2' }}
       >
         <DetailNavButton
           label="Map"
@@ -422,7 +489,7 @@ function DetailNavButton({
       type="button"
       onClick={onClick}
       className="flex flex-col items-center gap-1 rounded-2xl px-4 py-1"
-      style={active ? { color: SC.primary, background: '#EFF1EE' } : { color: '#3A423C' }}
+      style={active ? { color: SC.primary, background: '#F1EAD8' } : { color: '#3A423C' }}
     >
       {icon}
       <span className="text-sm">{label}</span>
@@ -457,7 +524,7 @@ function ResubmitButton({ placementId, onDone }: { placementId: string; onDone: 
         disabled={busy}
         onClick={() => void resubmit()}
         className="rounded-full border px-4 py-2 text-sm disabled:opacity-50"
-        style={{ borderColor: '#DFE3DE', color: SC.text }}
+        style={{ borderColor: '#DCD4BE', color: SC.text }}
       >
         {busy ? 'Sending…' : 'Ask for another look'}
       </button>

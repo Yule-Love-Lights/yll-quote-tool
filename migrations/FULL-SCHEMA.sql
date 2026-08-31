@@ -3981,6 +3981,32 @@ create index if not exists call_transcripts_pending_commitment_extraction_idx
   where commitments_extracted_at is null
     and commitment_extraction_quarantined_at is null;
 
+-- Post-call HighLevel notes (migrations/2026-08-29-call-notes.sql). Kept as
+-- an alter block rather than folded into the create table above so this
+-- file mirrors the migration that produced it line for line. Deliberately
+-- carries no CHECK constraints: adding one to an already-populated table is
+-- outside AGENTS.md's safe-to-apply allowlist, so the same invariants live
+-- in src/lib/calls/postNotes.ts and its tests instead.
+alter table public.call_transcripts
+  add column if not exists summary                   text,
+  add column if not exists summary_model             text,
+  add column if not exists summary_generated_at      timestamptz,
+  add column if not exists ghl_note_posted_at        timestamptz,
+  add column if not exists ghl_note_id               text,
+  add column if not exists ghl_note_claimed_at       timestamptz,
+  add column if not exists ghl_note_attempts         integer not null default 0,
+  add column if not exists ghl_note_last_attempt_at  timestamptz,
+  add column if not exists ghl_note_last_failure_code text,
+  add column if not exists ghl_note_skip_reason      text,
+  add column if not exists ghl_note_quarantined_at   timestamptz;
+
+-- The note worker's batch picker: calls still owed a note.
+create index if not exists call_transcripts_note_pending_idx
+  on public.call_transcripts (called_at)
+  where ghl_note_posted_at is null
+    and ghl_note_skip_reason is null
+    and ghl_note_quarantined_at is null;
+
 alter table public.call_transcripts enable row level security;
 
 alter table public.call_recordings
@@ -4459,8 +4485,10 @@ grant execute on function public.record_commitment_extraction_failure(uuid, text
 --     delete it. wholesale_cost stays NULL: signs are not purchased through
 --     the Thunder PO flow, and a NULL cost keeps them out of any cost math.
 --   * inventory_on_hand: the stock row at qty 0. The office counts the real
---     pile and sets the number on /admin/advertising/people (or the
---     existing /inventory/stock page, where this SKU now also appears).
+--     pile and sets the number on the advertising admin surface (and on the
+--     existing /inventory/stock page, where this SKU also appears). The
+--     exact admin route moved with the Simple Crew UI rebuild; the SKU and
+--     the stock row are what this migration pins, not a page path.
 --
 -- NO auto-decrement on placement acceptance — deliberately. Phase 2 is
 -- MANUAL reconciliation: the admin page shows accepted-sign counts beside
@@ -4596,5 +4624,136 @@ begin
     alter table public.advertising_placements
       add constraint advertising_placements_rate_only_when_accepted
       check (accepted_rate_cents is null or status = 'accepted');
+  end if;
+end $$;
+
+
+-- ---------------------------------------------------------------------
+-- sign issuances + photo hash (2026-08-29,
+-- migrations/2026-08-29-sign-issuances-and-photo-hash.sql). Content
+-- below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Sign issuances + photo hashes (Naldo's 2026-08-29 rulings).
+--
+-- advertising_sign_issuances: the append-only ledger of signs HANDED to a
+-- worker ("I'll give a team member 50 per week, and that's how we know how
+-- many they have"). A worker's remaining count is DERIVED in the data layer
+-- (signs issued minus yard-sign photos taken, any status), so nothing here
+-- stores a balance that could drift. Issuing also draws the warehouse
+-- inventory_on_hand pile down in the data layer, floored at zero, with an
+-- audited prior/new.
+--
+-- advertising_placements.photo_hash: a 16-hex-char perceptual dHash of the
+-- proof photo (photoHash.ts), stamped at capture. Feeds the review queue's
+-- duplicate flags with a "very similar photo" reason — assistance only, the
+-- human decides. Nullable: rows captured before hashing simply carry no
+-- signal, and the flag logic treats a missing hash as never-similar.
+--
+-- RLS ENABLED, ZERO POLICIES on the new table (service-role only, the
+-- advertising default). HOW TO APPLY: safe/additive per AGENTS.md (new
+-- table, nullable column-add, indexes that cannot collide, RLS-enable on a
+-- brand-new table).
+-- =====================================================================
+
+create table if not exists public.advertising_sign_issuances (
+  id          uuid primary key default gen_random_uuid(),
+  worker_id   uuid not null references public.advertising_workers(id),
+  qty         integer not null check (qty > 0),
+  issued_by   uuid references auth.users(id) on delete set null,
+  note        text,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists advertising_sign_issuances_worker_idx
+  on public.advertising_sign_issuances (worker_id, created_at desc);
+
+alter table public.advertising_sign_issuances enable row level security;
+
+alter table public.advertising_placements
+  add column if not exists photo_hash text
+  check (photo_hash is null or photo_hash ~ '^[0-9a-f]{16}$');
+
+
+-- ---------------------------------------------------------------------
+-- bulk-upload dedupe index (2026-08-29,
+-- migrations/2026-08-29-bulk-upload-dedupe-index.sql) - the DB backstop
+-- behind admin mass upload. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- ==============================================================
+
+-- ---------------------------------------------------------------------
+-- One accepted photo per (worker, campaign, photo hash) — the DB-level
+-- backstop for admin bulk upload (PR #1093, delta-verify HIGH).
+--
+-- The application checks for an existing accepted row before inserting,
+-- but a check-then-insert can lose a race (two admin tabs uploading the
+-- same camera roll), and every sibling mutator in that file uses a CAS
+-- while this path could not. This index is the authority that cannot be
+-- raced: a second accepted row for the same photo is refused by Postgres
+-- with 23505, which the data layer reports as a duplicate skip rather
+-- than a failure.
+--
+-- Partial on purpose:
+--   * status = 'accepted' only — pending/rejected/resubmitted rows pay
+--     nothing, and a worker legitimately resubmitting the same photo
+--     after a rejection must stay possible.
+--   * photo_hash is not null — a photo whose perceptual hash could not be
+--     computed carries no identity to dedupe on, and must still upload.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (a partial unique index that
+-- cannot collide with existing data). Verified before applying: zero
+-- (worker_id, campaign_id, photo_hash) groups with more than one accepted
+-- row exist in production.
+-- =====================================================================
+
+create unique index if not exists advertising_placements_accepted_photo_unique
+  on public.advertising_placements (worker_id, campaign_id, photo_hash)
+  where status = 'accepted' and photo_hash is not null;
+-- placement void (2026-08-29, migrations/2026-08-29-placement-void.sql).
+-- Content below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Placement VOID (Naldo's 2026-08-29 go, closing the duplicate-overcount
+-- deferral from the allotments round): an admin can void a placement so it
+-- stops counting ANYWHERE — pay, pending estimates, a worker's sign
+-- allotment, warehouse-facing accepted counts, and duplicate flags — while
+-- the row itself, its status history, and its stamped rate stay intact as
+-- the record of what happened. Void is an OVERLAY (three nullable columns),
+-- not a status: nothing in the existing state machine changes shape, and
+-- there is still no delete path.
+--
+-- Rules, enforced here: who and when travel together, and a void always
+-- carries its reason (an unexplained reversal of pay is worse than none).
+-- Un-voiding does not exist; a wrongly voided sign gets re-submitted.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md — three nullable column-adds
+-- whose CHECKs are trivially satisfied by every existing row (all NULL).
+-- =====================================================================
+
+alter table public.advertising_placements
+  add column if not exists voided_at timestamptz,
+  add column if not exists voided_by uuid references auth.users(id) on delete set null,
+  add column if not exists void_reason text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'advertising_placements_void_pair'
+  ) then
+    alter table public.advertising_placements
+      add constraint advertising_placements_void_pair
+      check ((voided_by is null) = (voided_at is null));
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'advertising_placements_void_has_reason'
+  ) then
+    alter table public.advertising_placements
+      add constraint advertising_placements_void_has_reason
+      check (voided_at is null or void_reason is not null);
   end if;
 end $$;

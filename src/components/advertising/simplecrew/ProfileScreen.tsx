@@ -15,6 +15,8 @@ type Placement = {
   campaignId: string;
   kind: 'yard_sign' | 'door_hanger';
   status: 'pending' | 'accepted' | 'rejected' | 'resubmitted';
+  voidedAt?: string | null;
+  voidReason?: string | null;
   lat: number | null;
   lng: number | null;
   capturedAt: string | null;
@@ -76,14 +78,14 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
 
   const markers = placements
     .filter((p) => p.lat !== null && p.lng !== null)
-    .map((p) => ({ id: p.id, lat: p.lat!, lng: p.lng!, status: p.status, label: p.suggestedAddress ?? undefined }));
+    .map((p) => ({ id: p.id, lat: p.lat!, lng: p.lng!, status: p.voidedAt ? 'voided' : p.status, label: p.suggestedAddress ?? undefined }));
 
   return (
     <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>
       <div className="flex flex-col items-center px-5 pt-[max(env(safe-area-inset-top),40px)]">
         <span
           className="flex h-28 w-28 items-center justify-center rounded-full text-4xl font-semibold"
-          style={{ background: '#E4E7E3', color: '#9AA29B' }}
+          style={{ background: '#EDE6D3', color: '#A89F87' }}
         >
           {displayName.slice(0, 1)}
         </span>
@@ -174,7 +176,7 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
                     // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL
                     <img src={p.photoUrl} alt="Placement" className="max-h-[420px] w-full object-cover" />
                   ) : (
-                    <div className="flex h-40 items-center justify-center" style={{ background: '#F0F2EF', color: SC.muted }}>
+                    <div className="flex h-40 items-center justify-center" style={{ background: '#F1EBDB', color: SC.muted }}>
                       photo unavailable
                     </div>
                   )}
@@ -189,13 +191,18 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
                   )}
                   <div className="flex items-center justify-between px-4 py-2.5">
                     <span className="truncate text-sm" style={{ color: SC.muted }}>
-                      {p.suggestedAddress ?? 'Location recorded'}
+                      {p.suggestedAddress ?? (p.lat !== null ? 'Location recorded' : 'No location in this photo')}
                     </span>
                     <StatusChip p={p} />
                   </div>
                   {p.status === 'rejected' && p.rejectionReason && (
                     <p className="px-4 pb-3 text-sm" style={{ color: SC.danger }}>
                       {p.rejectionReason}
+                    </p>
+                  )}
+                  {p.voidedAt && p.voidReason && (
+                    <p className="px-4 pb-3 text-sm" style={{ color: SC.muted }}>
+                      Voided: {p.voidReason}
                     </p>
                   )}
                 </div>
@@ -209,8 +216,17 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
 }
 
 function StatusChip({ p }: { p: Placement }) {
+  // A voided row counts for nothing (Naldo 2026-08-29) — its chip must never
+  // look like live pay, whatever status history it carries.
+  if (p.voidedAt) {
+    return (
+      <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: '#ECEAE4', color: SC.muted }}>
+        Voided
+      </span>
+    );
+  }
   const map = {
-    pending: { text: 'Pending', bg: '#EFF1EE', fg: '#3A423C' },
+    pending: { text: 'Pending', bg: '#F1EAD8', fg: '#3A423C' },
     resubmitted: { text: 'Resubmitted', bg: '#FDF3DF', fg: '#8a6d1f' },
     accepted: { text: p.acceptedRateCents !== null ? `Accepted · ${dollars(p.acceptedRateCents)}` : 'Accepted', bg: '#E4F2E8', fg: '#2E7D4F' },
     rejected: { text: 'Rejected', bg: '#FBE7E7', fg: '#B3383F' },
