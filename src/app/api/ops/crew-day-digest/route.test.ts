@@ -39,6 +39,7 @@ beforeEach(() => {
       { crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: '123 Birch Hill Rd', status: 'to_schedule' }] },
     ],
     unassigned: [{ jobNumber: 1051, address: '12 Oak Rd', status: 'to_schedule' }],
+    jobCount: 2,
     errors: [],
   });
 });
@@ -49,7 +50,8 @@ describe('GET /api/ops/crew-day-digest', () => {
     expect(res.status).toBe(200);
     expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
     const [audience, text] = notifyTelegramAudience.mock.calls[0]!;
-    expect(audience).toBe('jobs');
+    // NOT 'jobs': that audience also carries installment-run charge summaries.
+    expect(audience).toBe('crew');
     expect(text).toContain('Field Crew One');
     expect(text).toContain('#1046');
     expect(text).toContain('123 Birch Hill Rd');
@@ -83,7 +85,7 @@ describe('GET /api/ops/crew-day-digest', () => {
 
   // Silence must always mean the cron failed, never "nothing today".
   it('still sends an all-clear on an empty day', async () => {
-    getCrewDay.mockResolvedValue({ date: '2026-08-29', groups: [], unassigned: [], errors: [] });
+    getCrewDay.mockResolvedValue({ date: '2026-08-29', groups: [], unassigned: [], jobCount: 0, errors: [] });
     await GET(req());
     expect(notifyTelegramAudience.mock.calls[0]![1]).toContain('Nothing on the schedule');
   });
@@ -93,10 +95,53 @@ describe('GET /api/ops/crew-day-digest', () => {
       date: '2026-08-29',
       groups: [{ crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: null, status: null }] }],
       unassigned: [],
+      jobCount: 1,
       errors: ['property lookup: boom'],
     });
     const body = await (await GET(req())).json();
     expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
     expect(body.errors).toEqual(['property lookup: boom']);
+  });
+
+  // The failure mode that matters most: a total read failure empties the day,
+  // and an all-clear on a busy morning is worse than no message at all.
+  it('never announces an all-clear when the read failed', async () => {
+    getCrewDay.mockResolvedValue({
+      date: '2026-08-29',
+      groups: [],
+      unassigned: [],
+      jobCount: 0,
+      errors: ['assignment scan: connection reset'],
+    });
+    await GET(req());
+    const text = notifyTelegramAudience.mock.calls[0]![1] as string;
+    expect(text).not.toContain('Nothing on the schedule');
+    expect(text).toMatch(/could not read the schedule/i);
+  });
+
+  it('warns inside the MESSAGE on a partial read, not only in the JSON', async () => {
+    getCrewDay.mockResolvedValue({
+      date: '2026-08-29',
+      groups: [{ crewName: 'Field Crew One', jobs: [{ jobNumber: 1046, address: null, status: null }] }],
+      unassigned: [],
+      jobCount: 1,
+      errors: ['property lookup: boom'],
+    });
+    await GET(req());
+    expect(notifyTelegramAudience.mock.calls[0]![1]).toMatch(/may be incomplete/i);
+  });
+
+  it('reports DISTINCT jobs, so a two-crew job is not counted twice', async () => {
+    getCrewDay.mockResolvedValue({
+      date: '2026-08-29',
+      groups: [
+        { crewName: 'A', jobs: [{ jobNumber: 1046, address: 'x', status: null }] },
+        { crewName: 'B', jobs: [{ jobNumber: 1046, address: 'x', status: null }] },
+      ],
+      unassigned: [],
+      jobCount: 1,
+      errors: [],
+    });
+    expect((await (await GET(req())).json()).jobCount).toBe(1);
   });
 });

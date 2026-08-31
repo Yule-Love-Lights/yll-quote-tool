@@ -21,6 +21,8 @@ export type CrewDayData = {
   date: string;
   groups: CrewDayGroup[];
   unassigned: CrewDayJob[];
+  /** DISTINCT jobs on the day: a job with two crew is listed under both. */
+  jobCount: number;
   errors: string[];
 };
 
@@ -30,7 +32,7 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
 
   const { jobsByDate, errors } = await getSchedule(date, date);
   const scheduled = jobsByDate[date] ?? [];
-  if (!scheduled.length) return { date, groups: [], unassigned: [], errors };
+  if (!scheduled.length) return { date, groups: [], unassigned: [], jobCount: 0, errors };
 
   // Addresses, via each job's property. A job whose property or address is
   // missing still appears; the message says the address is not on file rather
@@ -89,8 +91,11 @@ export async function getCrewDay(date: string): Promise<CrewDayData> {
   const groups: CrewDayGroup[] = [...byCrew.entries()]
     // A crew member missing from the roster read still gets their jobs listed
     // under a placeholder: losing a name must never lose a job.
-    .map(([crewId, jobs]) => ({ crewName: crewNames.get(crewId) ?? 'Unnamed crew member', jobs }))
+    // A missing name is either a deactivated crew member or a FAILED roster
+    // read. Either way the id keeps two unnamed sections apart, which a single
+    // shared "Unnamed crew member" heading would not (technical lens).
+    .map(([crewId, jobs]) => ({ crewName: crewNames.get(crewId) ?? `Crew ${crewId.slice(0, 8)}`, jobs }))
     .sort((a, b) => a.crewName.localeCompare(b.crewName));
 
-  return { date, groups, unassigned, errors };
+  return { date, groups, unassigned, jobCount: scheduled.length, errors };
 }

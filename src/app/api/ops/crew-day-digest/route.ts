@@ -4,6 +4,9 @@
 // hour across DST like every other cron in that file.
 // CRON-ONLY: same Bearer CRON_SECRET guard as the other cron routes.
 //
+// Goes to the 'crew' audience, NOT 'jobs': the jobs audience also carries
+// installment-run charge summaries, and this message goes to a chat full of
+// field crew.
 // Tells the crew what is on today: each crew member with their jobs and
 // addresses, plus anything nobody is assigned to yet. Reuses getSchedule() --
 // the SAME function the schedule page reads -- so the message and the page can
@@ -32,15 +35,20 @@ export async function GET(req: NextRequest) {
   }
 
   const date = businessToday();
-  const { groups, unassigned, errors } = await getCrewDay(date);
-  const message = crewDayDigestMessage(date, groups, unassigned);
-  await notifyTelegramAudience('jobs', message);
+  const { groups, unassigned, errors, jobCount } = await getCrewDay(date);
+  // errors go into the MESSAGE, not just this response: a read failure that
+  // only shows up in JSON nobody watches is how a busy day gets announced as
+  // "nothing on the schedule" (technical and staff lenses converged here).
+  const message = crewDayDigestMessage(date, groups, unassigned, errors);
+  await notifyTelegramAudience('crew', message);
 
   return NextResponse.json({
     ok: true,
     date,
     crewCount: groups.length,
-    jobCount: groups.reduce((n, g) => n + g.jobs.length, 0) + unassigned.length,
+    // DISTINCT jobs: a job with two crew is listed under both of them, so
+    // summing the groups double-counts it.
+    jobCount,
     unassignedCount: unassigned.length,
     // Surfaced, not swallowed: a partial read still sends, and the response
     // says what was incomplete so a bad day is visible in the cron log.

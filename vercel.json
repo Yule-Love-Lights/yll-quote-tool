@@ -38,7 +38,7 @@
     },
     {
       "path": "/api/ops/crew-day-digest",
-      "schedule": "0 11 * * *"
+      "schedule": "0 12 * * *"
     },
     {
       "path": "/api/jobs/completing-today",
