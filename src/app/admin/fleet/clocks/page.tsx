@@ -23,7 +23,10 @@ export default async function FleetClocksPage({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const role = await getSessionRole();
-  if (role !== 'admin') redirect('/admin/fleet');
+  // Straight to the schedule, not to /admin/fleet: that route is itself a
+  // redirect as of 2026-08-31, and a non-admin arriving here should land in
+  // one hop rather than two.
+  if (role !== 'admin') redirect('/admin/schedule');
 
   const params = (await searchParams) ?? {};
   const raw = Array.isArray(params.date) ? params.date[0] : params.date;

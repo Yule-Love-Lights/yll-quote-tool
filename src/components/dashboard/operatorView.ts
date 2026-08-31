@@ -32,31 +32,33 @@ export type NavItem = { label: string; href: string; match: OperatorArea[] };
 const OFFICE_ITEMS: NavItem[] = [
   { label: 'Home', href: '/', match: ['home'] },
   { label: 'Inbox', href: '/inbox', match: ['inbox'] },
+  // Tasks sits beside Inbox (Naldo, 2026-08-31): the two things waiting on a
+  // person belong together, ahead of the record areas.
+  { label: 'Tasks', href: '/tasks', match: ['tasks'] },
   // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
-  // page and everything behind it stay live — reachable by URL and from any
-  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
+  // page and everything behind it stay live -- reachable by URL and from any
+  // in-app links -- it just doesn't earn a top-level slot. Visiting it renders
   // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
   // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
-  { label: 'Customers', href: '/customers', match: ['customers'] },
+  //
+  // Customers left the bar the same way (Naldo, 2026-08-31): /customers and
+  // every link into it stay exactly as they were, and the header search box
+  // is now the faster way to a customer than the tab was.
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
-  // Schedule shares the jobs area: src/app/admin/schedule/page.tsx and
-  // loading.tsx both render OperatorShell active="jobs" ("Schedule lives under
-  // the Jobs nav item" per loading.tsx's own comment). Naldo approved this nav
-  // item 2026-08-27.
-  { label: 'Schedule', href: '/admin/schedule', match: ['jobs'] },
-  // Fleet is its own area (Naldo, 2026-08-28: Jobs and Fleet lighting up
-  // together was a bug, not an accepted cost).
-  { label: 'Fleet', href: '/admin/fleet', match: ['fleet'] },
+  // Schedule has its OWN area as of 2026-08-31. It used to declare match:
+  // ['jobs'] and the page rendered OperatorShell active="jobs", so Jobs and
+  // Schedule lit up together -- the exact co-highlighting Naldo ruled a bug
+  // for Jobs/Fleet on 2026-08-28, still live one tab over.
+  { label: 'Schedule', href: '/admin/schedule', match: ['schedule'] },
+  // Fleet lost its tab on 2026-08-31: the whole page now renders as the right
+  // column of the Schedule page, and /admin/fleet redirects there.
   { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
-  // Office Tasks (Naldo, 2026-08-29). The dashboard card is a glance at the
-  // next few; this is the whole list, its history, and the filters. Placed
-  // after Invoices so the daily-work items (Inbox through Invoices) stay
-  // together ahead of the reference areas.
-  { label: 'Tasks', href: '/tasks', match: ['tasks'] },
   { label: 'Inventory', href: '/inventory', match: ['inventory'] },
-  { label: 'Insights', href: '/insights', match: ['insights'] },
-  { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
+  // Insights and Settings moved into the header account menu (Naldo,
+  // 2026-08-31). Settings was reachable from two places at once, which was
+  // the complaint; Insights came along so the bar holds the day's work and
+  // the menu holds everything about you. Both pages keep their URLs.
 ];
 
 // The admin advertising surfaces (#1061). Distinct match areas so each tab

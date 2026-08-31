@@ -183,10 +183,11 @@ export default async function BouncieSettingsPage({
           <h2 className="text-sm font-semibold text-gray-900 mb-3">Where the data shows up</h2>
           <ul className="space-y-1">
             <li>
-              <a href="/admin/fleet" className="underline">
-                Fleet page
+              <a href="/admin/schedule" className="underline">
+                Schedule page
               </a>{' '}
-              — live positions and the day&apos;s two clocks.
+              — live positions, beside the day&apos;s jobs. The fleet view moved here on
+              2026-08-31 and shows on today only.
             </li>
             <li>
               <a href="/admin/geocoding" className="underline">
