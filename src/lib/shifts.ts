@@ -668,6 +668,10 @@ export async function adminVoidShift(input: { shiftId: string; actor: string }):
     deleted: true,
   });
   if (auditError) {
+    // The cause is logged, never shown: a persistent failure here (an RLS
+    // misconfiguration, a constraint) would otherwise be an opaque "try
+    // again" loop with nothing to diagnose it from.
+    console.error('adminVoidShift: audit insert refused the void:', auditError.message);
     throw new ManualShiftRefusedError(
       'audit-failed',
       'The activity log could not record this removal, so nothing was removed. Try again.',
@@ -681,8 +685,12 @@ export async function adminVoidShift(input: { shiftId: string; actor: string }):
     .eq('updated_at', row.updated_at)
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`adminVoidShift: ${error.message}`);
+  if (error) {
+    await recordVoidAborted(db, input.actor, shiftId, 'delete-failed');
+    throw new Error(`adminVoidShift: ${error.message}`);
+  }
   if (!data) {
+    await recordVoidAborted(db, input.actor, shiftId, 'edit-race');
     throw new ManualShiftRefusedError(
       'edit-race',
       'This shift changed while you were looking at it. Reload and try again.',
@@ -725,5 +733,39 @@ async function assertNoChildren(
   if (segError) throw refuse('Could not check this shift for job time. Nothing was removed.');
   if (((segData as unknown as { id: string }[]) ?? []).length > 0) {
     throw refuse('This shift has job time on it, so it records real work. Correct the times instead.');
+  }
+}
+
+/**
+ * Corrects the activity trail when the audit row landed but the delete did
+ * not (S78 wrap delta-verify).
+ *
+ * The void writes its record FIRST so a deleted row can never go unrecorded.
+ * That ordering has a mirror case: the entry says a shift was removed and
+ * then the delete is refused, which leaves the trail asserting something
+ * false about payroll. A second append-only entry says so, rather than
+ * leaving the reader to infer it from a shift that is still there.
+ *
+ * Log-not-throw on purpose: the caller is already throwing the real refusal,
+ * and a failure to write the correction must not replace it with a different
+ * error.
+ */
+async function recordVoidAborted(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  actor: string,
+  shiftId: string,
+  reason: 'edit-race' | 'delete-failed',
+): Promise<void> {
+  try {
+    const { error } = await db.from('dashboard_activity').insert({
+      actor,
+      action: 'shift-manual-void-aborted',
+      detail: { shiftId, reason, note: 'The shift was NOT removed. The entry above did not happen.' },
+    });
+    if (error) {
+      console.error('recordVoidAborted: could not correct the trail:', error.message);
+    }
+  } catch (thrown) {
+    console.error('recordVoidAborted: could not correct the trail:', thrown);
   }
 }

@@ -8,6 +8,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
 import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPanel';
+import { CustomerCallNotesPanel } from '@/components/dashboard/CustomerCallNotesPanel';
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
 import { CustomerTenureEditor } from '@/components/dashboard/CustomerTenureEditor';
@@ -81,6 +82,15 @@ export default async function CustomerDetailPage({
   // live panel + "View in HighLevel" still work.
   const hlContactId: string | null =
     quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id ?? null;
+
+  // EVERY HL contact id this customer's quotes have ever carried, not just
+  // the one above. A merge or re-match can leave a customer's real quotes
+  // spread across two different HL ids over time (the same reason
+  // getCustomerTenure below queries both customerId and hlContactId rather
+  // than trusting one) — this is what the call-notes panel queries, so a
+  // customer's older calls under a since-replaced HL id are not silently
+  // dropped from their own profile.
+  const hlContactIds = [...new Set(quotes.map(q => q.highlevel_contact_id).filter((id): id is string => !!id))];
 
   // Activity feed: per-view events (best-effort — a missing quote_view_events
   // table never breaks the page) merged with each quote's lifecycle timestamps.
@@ -458,6 +468,10 @@ export default async function CustomerDetailPage({
             </div>
           )}
         </section>
+
+        {/* Call notes (2026-08-30): the same summary + tasks posted to
+            HighLevel, read back for staff without leaving the quote tool. */}
+        <CustomerCallNotesPanel ghlContactIds={hlContactIds} />
 
         {/* Referral program (#41): this customer's own referral link, credit
             balance, history, and the staff photo opt-out switch. */}
