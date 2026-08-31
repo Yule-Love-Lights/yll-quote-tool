@@ -40,14 +40,30 @@ describe('GET /api/auth/session', () => {
     getOperatorMock.mockResolvedValue({ id: 'u1', email: 'a@x.com', role: 'admin', name: null });
     const res = await GET();
     const json = await res.json();
-    expect(json).toEqual({ signedIn: true, role: 'admin' });
+    expect(json).toEqual({ signedIn: true, role: 'admin', name: null, email: 'a@x.com' });
 
     getOperatorMock.mockResolvedValue({ id: 'u2', email: 'b@x.com', role: 'operator', name: null });
     const json2 = await (await GET()).json();
-    expect(json2).toEqual({ signedIn: true, role: 'operator' });
+    expect(json2).toEqual({ signedIn: true, role: 'operator', name: null, email: 'b@x.com' });
   });
 
-  it('never includes a role when signed out', async () => {
+  // The header account menu (Naldo, 2026-08-30) names who is signed in. Both
+  // fields were already on the Operator record; this route simply never
+  // returned them. It is the caller's OWN identity, answered only for a
+  // caller who already holds the session.
+  it("includes the caller's own name and email when signed in", async () => {
+    getOperatorMock.mockResolvedValue({
+      id: 'u3',
+      email: 'naldo@example.com',
+      role: 'admin',
+      name: 'Naldo Vengeance',
+    });
+    const json = await (await GET()).json();
+    expect(json.name).toBe('Naldo Vengeance');
+    expect(json.email).toBe('naldo@example.com');
+  });
+
+  it('never includes a role, a name or an email when signed out', async () => {
     getOperatorMock.mockResolvedValue(null);
     const json = await (await GET()).json();
     expect(json).toEqual({ signedIn: false });

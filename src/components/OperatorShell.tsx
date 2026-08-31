@@ -9,6 +9,13 @@ export type OperatorArea =
   | 'insights'
   | 'quotes'
   | 'jobs'
+  // Schedule owns its own area as of 2026-08-31 (Naldo). It used to render
+  // active="jobs", which lit BOTH tabs at once; that is the same defect ruled
+  // a bug for Jobs/Fleet on 2026-08-28.
+  | 'schedule'
+  // 'fleet' matches no nav item any more: the fleet view is the right column
+  // of the Schedule page and /admin/fleet redirects there. The area stays so
+  // /admin/fleet/clocks keeps a valid one, the leads precedent below.
   | 'fleet'
   | 'invoices'
   | 'leads'

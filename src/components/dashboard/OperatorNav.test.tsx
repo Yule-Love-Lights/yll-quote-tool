@@ -13,6 +13,7 @@
 // invented test" the brief warned against. Left unverified by an automated
 // test; covered instead by the reasoning in the review report.
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 
@@ -21,25 +22,38 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: () => {}, refre
 import { OperatorNav } from './OperatorNav';
 
 describe('OperatorNav — Sign-out slot on initial render (before the session check resolves)', () => {
-  it('mounts the Sign-out control unconditionally, so its layout width is always reserved', () => {
+  it('mounts the account control unconditionally, so its layout width is always reserved', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
-    // Both the desktop copy and (once the mobile menu opens) the dropdown
-    // copy share this markup; only the desktop one renders closed-by-default,
-    // so this exercises that one. It must be present in the DOM tree, not
-    // conditionally absent — that's the difference from the pre-fix version,
-    // which used `{signedIn && <li>...}` and only mounted the element once
-    // a session was confirmed.
-    expect(html).toContain('Sign out');
+    // The slot holds the ACCOUNT MENU as of 2026-08-30 (Sign out moved inside
+    // it). The property under test is unchanged: the element must be present
+    // in the DOM tree, not conditionally absent — that's the difference from
+    // the pre-fix version, which used `{signedIn && <li>...}` and only
+    // mounted the element once a session was confirmed.
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('Account menu for');
   });
 
-  it('does not render the Sign-out slot as hidden before the session check answers ("unknown" reads as visible, not signedOut)', () => {
+  it('does not render the account slot as hidden before the session check answers ("unknown" reads as visible, not signedOut)', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
-    // The <li> wrapping the button carries visibility:hidden ONLY once
+    // The <li> wrapping the control carries visibility:hidden ONLY once
     // sessionState === 'signedOut'. On the very first render (before the
     // effect has had any chance to run) sessionState is 'unknown', which
     // must NOT be styled hidden — that's the bias-toward-visible fix for the
     // LOW (never silently strand a signed-in staffer with no control).
-    expect(html).not.toMatch(/visibility:\s*hidden[^>]*>\s*<button[^>]*>\s*Sign out/);
+    expect(html).not.toMatch(/visibility:\s*hidden[^>]*>\s*<div[^>]*>\s*<button[^>]*aria-haspopup/);
+  });
+
+  it('keeps Sign out reachable by moving it inside the account menu, not by deleting it', () => {
+    // The dropdown is closed in a static render, so its contents are out of
+    // the tree — which is exactly why this asserts against the SOURCE that
+    // the item still exists. Without it, "Sign out is gone from the header"
+    // and "Sign out was removed from the app" look identical here.
+    const source = readFileSync(
+      new URL('./AccountMenu.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('Sign out');
+    expect(source).toContain('onSignOut()');
   });
 });
 
@@ -55,10 +69,15 @@ describe('OperatorNav — Tasks nav item (Naldo, 2026-08-29)', () => {
     // The active tab is the one carrying the evergreen background. Exactly
     // one link may carry it: the Jobs/Fleet co-lighting bug was ruled a
     // defect, not an accepted cost (Naldo, 2026-08-28).
-    const active = html.match(/background:var\(--brand-evergreen\)/g) ?? [];
+    // Scoped to ANCHORS on purpose: the account menu's initials badge is a
+    // <span> carrying the same evergreen, and counting every occurrence would
+    // turn this from "exactly one tab is active" into "the header happens to
+    // use the brand colour three times", which is not a defect anyone cares
+    // about.
+    const active = (html.match(/<a[^>]*background:var\(--brand-evergreen\)[^>]*>/g) ?? []).length;
     // Two hits are expected: the active tab and the "+ New quote" CTA, which
     // is styled as a CTA rather than a tab.
-    expect(active.length).toBe(2);
+    expect(active).toBe(2);
     expect(html).toMatch(/background:var\(--brand-evergreen\)[^>]*>Tasks</);
   });
 
@@ -70,31 +89,58 @@ describe('OperatorNav — Tasks nav item (Naldo, 2026-08-29)', () => {
   });
 });
 
-describe('OperatorNav — Schedule nav item (Naldo, 2026-08-27)', () => {
-  it('renders a Schedule link between Jobs and Fleet, pointing at /admin/schedule', () => {
+describe('OperatorNav — Schedule nav item', () => {
+  it('renders a Schedule link after Jobs, pointing at /admin/schedule', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     const jobsIdx = html.indexOf('>Jobs<');
     const scheduleIdx = html.indexOf('>Schedule<');
-    const fleetIdx = html.indexOf('>Fleet<');
     expect(jobsIdx).toBeGreaterThan(-1);
-    expect(scheduleIdx).toBeGreaterThan(-1);
-    expect(fleetIdx).toBeGreaterThan(-1);
-    expect(jobsIdx).toBeLessThan(scheduleIdx);
-    expect(scheduleIdx).toBeLessThan(fleetIdx);
+    expect(scheduleIdx).toBeGreaterThan(jobsIdx);
     expect(html).toContain('href="/admin/schedule"');
   });
 
-  it("highlights under the Jobs area (match: ['jobs']) rather than a nonexistent 'schedule' OperatorArea", () => {
-    // src/app/admin/schedule/page.tsx and loading.tsx both render
-    // OperatorShell active="jobs" — this nav item must agree, or visiting
-    // /admin/schedule would light up no tab at all.
+  it('does NOT highlight Schedule when the Jobs area is active (Naldo, 2026-08-31)', () => {
+    // Until 2026-08-31 Schedule declared match: ['jobs'] and its page rendered
+    // OperatorShell active="jobs", so the two tabs lit up together. That is
+    // the same co-highlighting ruled a bug for Jobs/Fleet on 2026-08-28.
     const html = renderToStaticMarkup(<OperatorNav active="jobs" />);
-    // Both the Jobs and Schedule (and Fleet) links share the same
-    // active-highlight style object, so all three should carry the
-    // evergreen background when active="jobs".
-    const scheduleLinkMatch = html.match(/<a[^>]*href="\/admin\/schedule"[^>]*>/);
-    expect(scheduleLinkMatch).not.toBeNull();
-    expect(scheduleLinkMatch![0]).toContain('background:var(--brand-evergreen)');
+    const scheduleLink = html.match(/<a[^>]*href="\/admin\/schedule"[^>]*>/);
+    expect(scheduleLink).not.toBeNull();
+    expect(scheduleLink![0]).not.toContain('background:var(--brand-evergreen)');
+  });
+
+  it('highlights Schedule alone on its own area', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="schedule" />);
+    const scheduleLink = html.match(/<a[^>]*href="\/admin\/schedule"[^>]*>/);
+    expect(scheduleLink![0]).toContain('background:var(--brand-evergreen)');
+    const jobsLink = html.match(/<a[^>]*href="\/admin\/jobs"[^>]*>/);
+    expect(jobsLink![0]).not.toContain('background:var(--brand-evergreen)');
+    // Exactly one tab plus the CTA, the same count the Tasks test asserts.
+    const active = (html.match(/<a[^>]*background:var\(--brand-evergreen\)[^>]*>/g) ?? []).length;
+    expect(active).toBe(2);
+  });
+});
+
+describe('OperatorNav — the four tabs that left the bar (Naldo, 2026-08-31)', () => {
+  it('renders no Customers, Fleet, Insights or Settings tab', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).not.toContain('href="/customers"');
+    expect(html).not.toContain('href="/admin/fleet"');
+    expect(html).not.toContain('>Insights<');
+    // /settings still appears in the mobile account block below, so this
+    // checks the TAB is gone rather than every mention of the word.
+    expect(html).not.toContain('>Settings<');
+  });
+
+  it('keeps Settings and Insights reachable in the mobile account block', () => {
+    // The desktop door is the account menu, whose dropdown is closed in a
+    // static render. The mobile dropdown is closed too, so this asserts the
+    // shared link list exists in the source rather than the markup: with the
+    // tabs gone, these two are the only doors left and must not be dropped.
+    const source = readFileSync(new URL('./OperatorNav.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("{ label: 'Settings', href: '/settings' }");
+    expect(source).toContain("{ label: 'Insights', href: '/insights' }");
+    expect(source).toContain('ACCOUNT_LINKS.map');
   });
 });
 
@@ -104,12 +150,11 @@ describe('OperatorNav — admin View-as control (ops hub workstream A slice 2)',
     // in effects this static render never runs, so this pins the safe
     // default: a plain operator, a signed-out browser, and the pre-role
     // state all see no View-as control, only the plain Sign-out button. The
-    // admin-positive branch (the slot swapping to the header menu) is not
-    // statically reachable — it is covered by ViewAsMenu.test.tsx at
-    // component level plus the PR's browser leg, which drives the swap,
-    // the dropdown contents, and the 1024px fit with a stubbed admin
-    // session (same reason the Sign-out flip is not asserted here: no DOM
-    // environment to resolve the effects in).
+    // admin-positive branch (the View-as section inside the account menu) is
+    // not statically reachable — the dropdown is closed, and the role arrives
+    // in an effect this render never runs. It is covered by
+    // AccountMenu.test.tsx plus the PR's browser leg, which drives the open
+    // menu, the View-as rows and the 1024px fit with a real admin session.
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     expect(html).not.toContain('View as');
   });
@@ -156,24 +201,28 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
   // IS testable here is that the fix's load-bearing pieces are actually
   // present in the markup, so a future "cleanup" can't silently remove them
   // and reopen either failure mode (the overflow, or the invisible wrap).
-  // RE-MEASURED 2026-08-29 for the 12th item (Tasks) and its badge. With BOTH
-  // badges showing (Inbox and Tasks, the widest the row ever gets) the old
-  // lg:px-1.5 xl:px-3 measured a 22px page overflow at 1024px BEFORE the badge
-  // even rendered, and 6px at 1280px with it. lg:px-0.5 xl:px-2.5 closes both.
-  // Measured in headless Chromium, fonts-ready, uniform element heights
-  // confirmed at every width so nothing hid behind a silent wrap:
-  //   1024px: 0 overflow, 16px margin
-  //   1120px: 0 overflow, 16px margin
-  //   1280px: 0 overflow
-  it('forces the 12 top-level tab links to a single line at every breakpoint (lg:px-0.5 xl:px-2.5)', () => {
+  // RE-MEASURED 2026-08-31, after Customers, Fleet, Insights and Settings left
+  // the bar. The row is `max-w-6xl`, so its usable width tops out at 1152px
+  // however wide the monitor is: a bigger screen buys the header nothing, and
+  // that cap is why the 2026-08-30 plan of shortening labels at 1024 and
+  // restoring them at 1280 could not work. Four fewer tabs bought the full
+  // wordmark, the full "+ New quote" label, roomier tab padding and a wider
+  // search box all at once. With BOTH badges injected at two digits (Inbox and
+  // Tasks, the widest this row ever gets), headless Chromium, fonts-ready, and
+  // zero wrapped elements confirmed at every width:
+  //   1024px: 0 page overflow, 0 row overflow, 58px slack
+  //   1120px: 0 page overflow, 0 row overflow, 154px slack
+  //   1280px: 0 page overflow, 0 row overflow, 46px slack
+  //   1600px: 0 page overflow, 0 row overflow, 46px slack (the 1152px cap)
+  it('forces the top-level tab links to a single line at every breakpoint (lg:px-1.5 xl:px-2.5)', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     const linkMatch = html.match(/<a[^>]*href="\/admin\/jobs"[^>]*>/);
     expect(linkMatch).not.toBeNull();
-    expect(linkMatch![0]).toContain('lg:px-0.5');
+    expect(linkMatch![0]).toContain('lg:px-1.5');
     expect(linkMatch![0]).toContain('xl:px-2.5');
-    // The tab links carry whitespace-nowrap too now: "+ New quote" and "Sign
-    // out" were not the only multi-word elements once a badge started sitting
-    // beside a label.
+    // The tab links carry whitespace-nowrap too: the CTA and the account
+    // trigger were not the only elements that could wrap once a badge started
+    // sitting beside a label.
     expect(linkMatch![0]).toContain('whitespace-nowrap');
   });
 
@@ -182,15 +231,31 @@ describe('OperatorNav — 1024px overflow fix (premerge staff MED, advertising-r
     expect(html).toContain('hidden lg:flex items-center gap-0 text-sm');
   });
 
-  it('forces the "+ New quote" CTA and "Sign out" to stay single-line (whitespace-nowrap) so neither can hide behind a silent wrap', () => {
+  it('forces the "+ New quote" CTA and the account trigger to stay single-line (whitespace-nowrap) so neither can hide behind a silent wrap', () => {
     const html = renderToStaticMarkup(<OperatorNav active="home" />);
     const ctaMatch = html.match(/<a[^>]*href="\/quote\/new"[^>]*>/);
     expect(ctaMatch).not.toBeNull();
     expect(ctaMatch![0]).toContain('whitespace-nowrap');
-    const signOutMatch = html.match(/<button[^>]*>\s*Sign out/);
-    expect(signOutMatch).not.toBeNull();
-    // The className attribute sits before the closing '>' of the opening tag.
-    const signOutOpenTag = html.slice(0, html.indexOf('Sign out')).split('<button').pop();
-    expect(signOutOpenTag).toContain('whitespace-nowrap');
+    const accountMatch = html.match(/<button[^>]*aria-haspopup="menu"[^>]*>/);
+    expect(accountMatch).not.toBeNull();
+    expect(accountMatch![0]).toContain('whitespace-nowrap');
+  });
+
+  it('carries the full wordmark and the full CTA label, which four fewer tabs paid for', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).toContain('+ New quote');
+    expect(html).toContain('Yule Love Lights');
+    // No responsive label swapping left: one treatment at every width, which
+    // is only affordable because the row lost four tabs.
+    expect(html).not.toContain('>YLL<');
+  });
+
+  it('renders the search box in both the desktop row and the mobile bar, at a narrow width in the tight band', () => {
+    const html = renderToStaticMarkup(<OperatorNav active="home" />);
+    expect(html).toContain('id="header-search-desktop"');
+    expect(html).toContain('id="header-search-mobile"');
+    // The desktop wrapper stays narrow at lg and widens at xl. If this ever
+    // grows without the row being re-measured, the 1024px fit is a guess.
+    expect(html).toContain('hidden lg:block lg:w-40 xl:w-56 shrink-0');
   });
 });
