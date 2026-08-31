@@ -132,15 +132,18 @@ describe('OperatorNav — the four tabs that left the bar (Naldo, 2026-08-31)', 
     expect(html).not.toContain('>Settings<');
   });
 
-  it('keeps Settings and Insights reachable in the mobile account block', () => {
+  it('keeps the account pages reachable in the mobile account block', () => {
     // The desktop door is the account menu, whose dropdown is closed in a
     // static render. The mobile dropdown is closed too, so this asserts the
     // shared link list exists in the source rather than the markup: with the
     // tabs gone, these two are the only doors left and must not be dropped.
     const source = readFileSync(new URL('./OperatorNav.tsx', import.meta.url), 'utf8');
-    expect(source).toContain("{ label: 'Settings', href: '/settings' }");
-    expect(source).toContain("{ label: 'Insights', href: '/insights' }");
-    expect(source).toContain('ACCOUNT_LINKS.map');
+    // The SHARED, role-filtered list, not a local copy: a second copy is how
+    // the two menus drift apart, and an unfiltered one would show a plain
+    // operator the admin-only Leads row.
+    expect(source).toContain('accountLinksFor(role).map');
+    expect(source).toContain("from './accountLinks'");
+    expect(source).not.toContain("{ label: 'Settings', href: '/settings' }");
   });
 });
 

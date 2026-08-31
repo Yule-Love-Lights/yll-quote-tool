@@ -6,8 +6,8 @@
 // its width at 1024px, where the row had about 12px to spare.
 //
 // What it shows: who is signed in (name, falling back to email), their role,
-// links to Settings and Insights, the View-as switcher for admins, and Sign
-// out. Sign out MOVED into this menu rather than disappearing; taking it away
+// the ACCOUNT_LINKS rows (Settings, Insights, Call recordings, Leads), the
+// View-as switcher for admins, and Sign out. Sign out MOVED into this menu rather than disappearing; taking it away
 // would strand a staffer on a shared computer with no way out.
 //
 // Settings and Insights moved here from the top bar (Naldo, 2026-08-31).
@@ -25,6 +25,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
+import { accountLinksFor } from './accountLinks';
 import { displayName, initials, roleLabel, type AccountIdentity } from './accountIdentity';
 import { OPERATOR_VIEWS } from './operatorView';
 import { useViewSwitcher } from './useViewSwitcher';
@@ -127,26 +128,21 @@ export function AccountMenu({
             )}
           </div>
 
-          {/* Both are plain links for EVERY role, admin or not. They are the
-              only doors to these two pages now that the tabs are gone. */}
-          <Link
-            href="/settings"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="block px-3 py-1.5 text-sm hover:bg-black/5"
-            style={{ color: 'var(--op-text-2)' }}
-          >
-            Settings
-          </Link>
-          <Link
-            href="/insights"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="block px-3 py-1.5 text-sm hover:bg-black/5"
-            style={{ color: 'var(--op-text-2)' }}
-          >
-            Insights
-          </Link>
+          {/* Plain links for EVERY role, admin or not. They are the only
+              doors to these pages now that the tabs are gone, and the list is
+              shared with the mobile hamburger so the two cannot drift. */}
+          {accountLinksFor(identity.role).map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="block px-3 py-1.5 text-sm hover:bg-black/5"
+              style={{ color: 'var(--op-text-2)' }}
+            >
+              {link.label}
+            </Link>
+          ))}
 
           {isAdmin && (
             <>

@@ -114,9 +114,32 @@ describe('AccountMenu — the items the dropdown must carry', () => {
     expect(SOURCE).toContain('onSignOut()');
   });
 
-  it('links to Settings and Insights, the two pages that lost their tabs', () => {
-    expect(SOURCE).toContain('href="/settings"');
-    expect(SOURCE).toContain('href="/insights"');
+  it('renders every row of the shared account list, not a hardcoded pair', () => {
+    // The desktop menu and the mobile hamburger used to hold SEPARATE copies,
+    // so adding a page was two edits and forgetting one made it reachable on
+    // a phone and not on a desktop. Both map over ACCOUNT_LINKS now.
+    expect(SOURCE).toContain('accountLinksFor(identity.role).map');
+    expect(SOURCE).not.toContain('href="/settings"');
+  });
+
+  it('shows an admin the Leads row and a plain operator not', () => {
+    const asAdmin = renderToStaticMarkup(
+      <AccountMenu
+        identity={{ name: 'A', email: null, role: 'admin' }}
+        onSignOut={() => {}}
+      />,
+    );
+    const asOperator = renderToStaticMarkup(
+      <AccountMenu
+        identity={{ name: 'B', email: null, role: 'operator' }}
+        onSignOut={() => {}}
+      />,
+    );
+    // The dropdown is closed in a static render, so neither contains the rows;
+    // what this pins is that the menu asks the role-aware helper at all.
+    expect(asAdmin).toContain('aria-haspopup="menu"');
+    expect(asOperator).toContain('aria-haspopup="menu"');
+    expect(SOURCE).toContain('accountLinksFor(identity.role)');
   });
 
   it('shows the View-as switcher to admins only', () => {

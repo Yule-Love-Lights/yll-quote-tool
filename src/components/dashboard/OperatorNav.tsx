@@ -8,6 +8,7 @@ import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { readRoleHint, writeRoleHint } from './roleHint';
 import { AccountMenu } from './AccountMenu';
+import { accountLinksFor } from './accountLinks';
 import { displayName, roleLabel } from './accountIdentity';
 import { HeaderSearch } from './HeaderSearch';
 import { useViewSwitcher } from './useViewSwitcher';
@@ -44,14 +45,6 @@ function NavBadge({ count, overdue, label }: { count: number; overdue: boolean; 
 // it (via CSS visibility, which keeps the reserved space AND drops the
 // button from hit-testing/tab order — no separate disabled handling needed).
 type SessionState = 'unknown' | 'signedIn' | 'signedOut';
-
-// The pages that live in the account menu rather than the tab row (Naldo,
-// 2026-08-31). Shared by the desktop menu's siblings in AccountMenu.tsx and
-// the mobile dropdown below, so the two copies cannot drift apart.
-const ACCOUNT_LINKS: ReadonlyArray<{ label: string; href: string }> = [
-  { label: 'Settings', href: '/settings' },
-  { label: 'Insights', href: '/insights' },
-];
 
 export function OperatorNav({
   active,
@@ -466,11 +459,11 @@ export function OperatorNav({
               {roleLabel(role) ?? 'Signed in'}
             </p>
           </li>
-          {/* Settings and Insights left the tab list on 2026-08-31 and live in
-              the desktop account menu. This dropdown IS the account menu on a
-              phone, so they have to appear here too, or the two pages would be
-              unreachable below 1024px. */}
-          {ACCOUNT_LINKS.map(link => (
+          {/* These pages left the tab list and live in the desktop account
+              menu. This dropdown IS the account menu on a phone, so they have
+              to appear here too, or they would be unreachable below 1024px.
+              Same array both places, so a row added in one is added in both. */}
+          {accountLinksFor(role).map(link => (
             <li key={link.href}>
               <Link
                 href={link.href}
