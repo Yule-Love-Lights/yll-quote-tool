@@ -53,6 +53,7 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 // builder-specific title text, not those components' migration-specific
 // copy — see the chip strip's own comment.
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { QuoteBuilderCallNotesDrawer } from '@/components/quote/QuoteBuilderCallNotesDrawer';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
 import dynamic from 'next/dynamic';
@@ -8926,6 +8927,11 @@ Send anyway?`,
         )}
 
       </div>
+
+      {/* Call-notes drawer (2026-08-31): a sibling of the centered column
+          above, not nested inside it — fixed positioning, so it can never
+          affect that column's width or reflow. */}
+      <QuoteBuilderCallNotesDrawer ghlContactId={form.highlevelContactId} />
     </OperatorShell>
   );
 }
