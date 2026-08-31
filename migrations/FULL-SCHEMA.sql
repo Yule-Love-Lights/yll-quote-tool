@@ -4884,3 +4884,62 @@ create index if not exists advertising_settlement_lines_settlement_idx
 
 alter table public.advertising_settlements enable row level security;
 alter table public.advertising_settlement_lines enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 2026-08-29: the crew door (row 466) — single-use entry links + access audit
+-- ---------------------------------------------------------------------------
+-- The crew door (ledger row 466), pre-merge review round on PR #1094.
+--
+-- Two findings from that round, both about a link being a bearer credential
+-- that travels through a chat app:
+--
+-- 1. Link tokens were replayable inside their 15-minute window (technical LOW
+--    and admin MED, converging). `last_link_jti` makes a link SINGLE USE: the
+--    mint stamps a fresh id, the entry route consumes it with a compare-and-set,
+--    and a second redemption of the same link finds nothing to consume. It also
+--    means minting a new link invalidates the previous one, so an office
+--    staffer who re-sends a link has revoked the old one by doing so.
+--
+-- 2. Nothing recorded who was sent a link or who walked through the door
+--    (admin MED). `crew_access_events` is the same audit shape the rest of the
+--    repo already uses (dashboard_activity, advertising_activity): append-only,
+--    actor + action + detail, and the crew FK nulls on delete so removing a
+--    crew member never erases the history of their access.
+
+alter table public.crew_members
+  add column if not exists last_link_jti text;
+
+create table if not exists public.crew_access_events (
+  id             uuid primary key default gen_random_uuid(),
+  crew_member_id uuid references public.crew_members(id) on delete set null,
+  actor          text not null,                -- auth.users id (as text), or 'crew'
+  action         text not null check (action in ('link_minted', 'entered', 'entry_refused')),
+  detail         jsonb,
+  created_at     timestamptz not null default now()
+);
+
+create index if not exists crew_access_events_crew_member_idx
+  on public.crew_access_events (crew_member_id, created_at desc);
+
+alter table public.crew_access_events enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 2026-08-29: crew sessions bind to a rotatable epoch, not the Telegram id
+-- ---------------------------------------------------------------------------
+-- The crew door, delta-verify round on PR #1094.
+--
+-- The first fix bound a crew session to the crew member's telegram_user_id and
+-- the PR claimed that unlinking and relinking was a per-person "sign out
+-- everywhere". That claim was FALSE for the realistic case: the office's
+-- remediation for a leaked link is to unlink and relink the SAME Telegram
+-- account, which restores the same id, so the leaked session's binding matched
+-- again and the stolen cookie came back to life for the rest of its 30 days.
+--
+-- `session_epoch` is a value whose only job is to CHANGE. Sessions are bound to
+-- it, and it is rotated whenever the office does anything that should end a
+-- crew member's sessions: linking or unlinking Telegram, deactivating them, or
+-- pressing Sign out everywhere. Rotating it invalidates every session issued
+-- before, for that one person, and touches nobody else.
+
+alter table public.crew_members
+  add column if not exists session_epoch text;
