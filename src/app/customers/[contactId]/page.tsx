@@ -83,6 +83,15 @@ export default async function CustomerDetailPage({
   const hlContactId: string | null =
     quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id ?? null;
 
+  // EVERY HL contact id this customer's quotes have ever carried, not just
+  // the one above. A merge or re-match can leave a customer's real quotes
+  // spread across two different HL ids over time (the same reason
+  // getCustomerTenure below queries both customerId and hlContactId rather
+  // than trusting one) — this is what the call-notes panel queries, so a
+  // customer's older calls under a since-replaced HL id are not silently
+  // dropped from their own profile.
+  const hlContactIds = [...new Set(quotes.map(q => q.highlevel_contact_id).filter((id): id is string => !!id))];
+
   // Activity feed: per-view events (best-effort — a missing quote_view_events
   // table never breaks the page) merged with each quote's lifecycle timestamps.
   const viewEvents = await getViewEventsForQuotes(quotes.map(q => q.id));
@@ -462,7 +471,7 @@ export default async function CustomerDetailPage({
 
         {/* Call notes (2026-08-30): the same summary + tasks posted to
             HighLevel, read back for staff without leaving the quote tool. */}
-        <CustomerCallNotesPanel ghlContactId={hlContactId} />
+        <CustomerCallNotesPanel ghlContactIds={hlContactIds} />
 
         {/* Referral program (#41): this customer's own referral link, credit
             balance, history, and the staff photo opt-out switch. */}

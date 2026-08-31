@@ -10,17 +10,63 @@
 // see what a call was about. Voicemails are included on purpose, same
 // ruling as the HighLevel note; do not add a junk filter here without
 // checking first.
+//
+// FIX ROUND (staff-lens findings): a task now shows its REAL office_tasks
+// status (a completed/dismissed task reads as such, permanently, instead
+// of a bare bullet that never changes) and the note badge distinguishes a
+// call still waiting on the hourly cron from one that permanently failed —
+// conflating the two made a broken call look identical to a normal one.
 
-import { getCallNotesForCustomer } from '@/lib/calls/customerCallNotes';
+import { getCallNotesForCustomer, type CustomerCallNoteStatus, type CustomerCallTask } from '@/lib/calls/customerCallNotes';
 import { formatPromisedAt } from '@/lib/calls/noteBody';
+import type { OfficeTaskStatus } from '@/lib/officeTasks';
 
 function fmtCalledAt(iso: string | null): string {
   if (!iso) return 'unknown time';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export async function CustomerCallNotesPanel({ ghlContactId }: { ghlContactId: string | null }) {
-  const calls = await getCallNotesForCustomer(ghlContactId);
+// This cron runs hourly (src/app/api/cron/calls-note/route.ts), so "not
+// yet posted" is the NORMAL state for any call from the last hour or so —
+// the title text says that plainly rather than leaving a rep to guess
+// whether something is broken.
+const NOTE_STATUS: Record<Exclude<CustomerCallNoteStatus, 'posted'>, { label: string; title: string; color: string }> = {
+  pending: {
+    label: 'Not yet in HighLevel',
+    title: 'The hourly job that posts this to HighLevel has not reached this call yet. Normal for a recent call.',
+    color: 'var(--op-text-dim)',
+  },
+  quarantined: {
+    label: 'Failed to post to HighLevel',
+    title: 'This call could not be posted to HighLevel after repeated tries and will not be retried automatically. See /admin/calls.',
+    color: '#b91c1c',
+  },
+};
+
+const TASK_STATUS_LABEL: Record<OfficeTaskStatus, string> = {
+  open: '',
+  blocked: 'Blocked',
+  completed: 'Done',
+  dismissed: 'Dismissed',
+};
+
+function TaskRow({ task }: { task: CustomerCallTask }) {
+  const when = formatPromisedAt(task.promisedAt);
+  const done = task.status === 'completed' || task.status === 'dismissed';
+  const statusLabel = task.status ? TASK_STATUS_LABEL[task.status] : null;
+  return (
+    <li
+      className="text-xs"
+      style={{ color: 'var(--op-text-dim)', textDecoration: done ? 'line-through' : 'none' }}
+    >
+      • {task.detail}{when ? ` (by ${when})` : ''}
+      {statusLabel && <span className="ml-1.5 font-semibold uppercase tracking-wide text-[10px]">{statusLabel}</span>}
+    </li>
+  );
+}
+
+export async function CustomerCallNotesPanel({ ghlContactIds }: { ghlContactIds: string[] }) {
+  const calls = await getCallNotesForCustomer(ghlContactIds);
   if (calls.length === 0) return null; // No call history yet — nothing to show, no empty card either.
 
   return (
@@ -31,31 +77,31 @@ export async function CustomerCallNotesPanel({ ghlContactId }: { ghlContactId: s
       <h2 className="text-sm font-semibold px-4 pt-4 pb-2" style={{ color: 'var(--op-text)' }}>Call notes</h2>
 
       <div className="px-4 pb-4 flex flex-col gap-4">
-        {calls.map(call => (
-          <div key={call.transcriptId} className="rounded border p-3" style={{ borderColor: 'var(--op-border)' }}>
-            <div className="flex items-center justify-between gap-2 mb-1.5">
-              <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{fmtCalledAt(call.calledAt)}</span>
-              {!call.posted && (
-                <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--op-text-dim)' }}>
-                  Not yet in HighLevel
-                </span>
+        {calls.map(call => {
+          const badge = call.noteStatus === 'posted' ? null : NOTE_STATUS[call.noteStatus];
+          return (
+            <div key={call.transcriptId} className="rounded border p-3" style={{ borderColor: 'var(--op-border)' }}>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{fmtCalledAt(call.calledAt)}</span>
+                {badge && (
+                  <span
+                    className="text-[10px] font-semibold uppercase tracking-wide"
+                    style={{ color: badge.color }}
+                    title={badge.title}
+                  >
+                    {badge.label}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm" style={{ color: 'var(--op-text)' }}>{call.summary}</p>
+              {call.tasks.length > 0 && (
+                <ul className="mt-2 flex flex-col gap-0.5">
+                  {call.tasks.map((task, i) => <TaskRow key={i} task={task} />)}
+                </ul>
               )}
             </div>
-            <p className="text-sm" style={{ color: 'var(--op-text)' }}>{call.summary}</p>
-            {call.tasks.length > 0 && (
-              <ul className="mt-2 flex flex-col gap-0.5">
-                {call.tasks.map((task, i) => {
-                  const when = formatPromisedAt(task.promisedAt);
-                  return (
-                    <li key={i} className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
-                      • {task.detail}{when ? ` (by ${when})` : ''}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
