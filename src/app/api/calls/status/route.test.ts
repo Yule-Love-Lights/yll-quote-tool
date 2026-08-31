@@ -34,6 +34,7 @@ function fakeSupabase(opts: {
     | {
         ghl_note_posted_at: string | null;
         ghl_note_id: string | null;
+        ghl_comment_posted_at: string | null;
         ghl_note_skip_reason: string | null;
         ghl_note_quarantined_at: string | null;
         ghl_note_last_failure_code: string | null;
@@ -106,11 +107,11 @@ describe('GET /api/calls/status', () => {
     getSupabaseServiceClientMock.mockReturnValue(
       fakeSupabase({
         noteRows: [
-          { ghl_note_posted_at: '2026-08-29T10:00:00.000Z', ghl_note_id: 'n1', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
-          { ghl_note_posted_at: '2026-08-29T12:00:00.000Z', ghl_note_id: 'n2', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
-          { ghl_note_posted_at: null, ghl_note_id: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
-          { ghl_note_posted_at: null, ghl_note_id: null, ghl_note_skip_reason: 'is_test', ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
-          { ghl_note_posted_at: null, ghl_note_id: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: '2026-08-29T13:00:00.000Z', ghl_note_last_failure_code: 'highlevel_post_failed' },
+          { ghl_note_posted_at: '2026-08-29T10:00:00.000Z', ghl_note_id: 'n1', ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: '2026-08-29T12:00:00.000Z', ghl_note_id: 'n2', ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: null, ghl_note_id: null, ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: null, ghl_note_id: null, ghl_comment_posted_at: null, ghl_note_skip_reason: 'is_test', ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: null, ghl_note_id: null, ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: '2026-08-29T13:00:00.000Z', ghl_note_last_failure_code: 'highlevel_post_failed' },
         ],
       }),
     );
@@ -123,6 +124,7 @@ describe('GET /api/calls/status', () => {
       skipped: 1,
       quarantined: 1,
       untraceable: 0,
+      commented: 0,
       lastPostedAt: '2026-08-29T12:00:00.000Z',
       lastFailureCode: 'highlevel_post_failed',
     });
@@ -134,8 +136,8 @@ describe('GET /api/calls/status', () => {
     getSupabaseServiceClientMock.mockReturnValue(
       fakeSupabase({
         noteRows: [
-          { ghl_note_posted_at: '2026-08-29T10:00:00.000Z', ghl_note_id: 'note-1', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
-          { ghl_note_posted_at: '2026-08-29T11:00:00.000Z', ghl_note_id: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: '2026-08-29T10:00:00.000Z', ghl_note_id: 'note-1', ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: '2026-08-29T11:00:00.000Z', ghl_note_id: null, ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
         ],
       }),
     );
@@ -144,6 +146,22 @@ describe('GET /api/calls/status', () => {
 
     expect(json.notes.posted).toBe(2);
     expect(json.notes.untraceable).toBe(1);
+  });
+
+  it('counts a posted note that also got its internal comment separately from one that did not', async () => {
+    getSupabaseServiceClientMock.mockReturnValue(
+      fakeSupabase({
+        noteRows: [
+          { ghl_note_posted_at: '2026-08-30T10:00:00.000Z', ghl_note_id: 'n1', ghl_comment_posted_at: '2026-08-30T10:00:01.000Z', ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+          { ghl_note_posted_at: '2026-08-30T11:00:00.000Z', ghl_note_id: 'n2', ghl_comment_posted_at: null, ghl_note_skip_reason: null, ghl_note_quarantined_at: null, ghl_note_last_failure_code: null },
+        ],
+      }),
+    );
+
+    const json = await (await GET()).json();
+
+    expect(json.notes.posted).toBe(2);
+    expect(json.notes.commented).toBe(1);
   });
 
   it('degrades the note section to null before its migration is applied, without taking the page down', async () => {

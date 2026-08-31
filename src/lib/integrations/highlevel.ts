@@ -874,6 +874,27 @@ export async function createContactNote(contactId: string, body: string): Promis
   });
 }
 
+// ─── Internal comment ───────────────────────────────────────────────────
+// POST /conversations/messages with type InternalComment — a DIFFERENT
+// surface from a contact Note. A Note lives on the contact's own Notes tab;
+// an InternalComment is posted INTO that contact's message/conversation
+// timeline, staff-only, interleaved with their calls/texts/emails. Naldo
+// asked for both (2026-08-30): the note is the durable record, the comment
+// is what a rep sees while they are already looking at the conversation.
+//
+// `mentions` is documented by HighLevel as required for this message type;
+// an empty array is what this repo sends when nobody is tagged, and the
+// live probe run before this shipped confirmed HighLevel accepts it rather
+// than rejecting an empty array outright.
+type InternalCommentResult = { conversationId?: string; messageId?: string; msg?: string; [k: string]: unknown };
+
+export async function createInternalComment(contactId: string, message: string): Promise<InternalCommentResult> {
+  return ghlFetch<InternalCommentResult>('/conversations/messages', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'InternalComment', contactId, message, mentions: [] }),
+  });
+}
+
 // ─── Mapper: HighLevel → CrmContact ───────────────────────────────────────
 // Centralized so a schema drift on GHL's side only breaks here, not in
 // every consumer. Audit fix: redaction is now the DEFAULT — the public
