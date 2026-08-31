@@ -128,6 +128,16 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Could not record the payment';
     console.error('POST /api/admin/advertising/settlements:', message);
+
+    // The one outcome that needs a person rather than a retry: the payment
+    // was recorded, a photo was voided underneath it, and the unwind could
+    // not remove the row. Paid and earned now disagree for that worker until
+    // someone fixes it, so say exactly that and name the row. "Try again"
+    // would be useless advice here. (Delta-verify, PR #1130.)
+    if (/reconciled by hand/i.test(message)) {
+      return NextResponse.json({ error: message.replace(/^recordSettlement:\s*/, '') }, { status: 500 });
+    }
+
     const conflict = /already been paid|paid a moment ago|nothing to pay|test worker|voided/i.test(message);
     return NextResponse.json(
       {

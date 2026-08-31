@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type AnyRow = Record<string, unknown>;
 
-const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker, earningsSummary } = vi.hoisted(() => ({
+const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker, earningsSummaryOrThrow } = vi.hoisted(() => ({
   dbRef: { current: null as unknown },
   stateRef: {
     current: {
@@ -30,13 +30,13 @@ const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker, earningsS
   },
   logAdvertisingActivity: vi.fn(),
   getAdvertisingWorker: vi.fn(),
-  earningsSummary: vi.fn(),
+  earningsSummaryOrThrow: vi.fn(),
 }));
 
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => dbRef.current }));
 vi.mock('@/lib/advertising/activity', () => ({ logAdvertisingActivity }));
 vi.mock('@/lib/advertising/workers', () => ({ getAdvertisingWorker }));
-vi.mock('@/lib/advertising/placements', () => ({ earningsSummary }));
+vi.mock('@/lib/advertising/placements', () => ({ earningsSummaryOrThrow }));
 
 import {
   getWorkerPayoutSummary,
@@ -248,7 +248,7 @@ beforeEach(() => {
     createdAt: 'x',
     updatedAt: 'x',
   }));
-  earningsSummary.mockImplementation(async (opts?: { workerId?: string }) => {
+  earningsSummaryOrThrow.mockImplementation(async (opts?: { workerId?: string }) => {
     const all = earnedFromSeed();
     return opts?.workerId ? all.filter((s) => s.workerId === opts.workerId) : all;
   });
@@ -465,16 +465,28 @@ describe('a void racing the payment (technical lens, PR #1130)', () => {
 });
 
 describe('a money read that fails must not render as a number', () => {
-  it('refuses to report a negative unpaid rather than showing one', async () => {
+  it('refuses rather than reporting a total built on a failed earnings read', async () => {
     const a = seedPlacement({ accepted_rate_cents: 250 });
     await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
 
-    // earningsSummary fails OPEN: on a read error it logs and returns [],
-    // so earned silently reads 0 while settled is 250.
-    earningsSummary.mockResolvedValue([]);
+    // The money path reads earnings through the THROWING variant, so a read
+    // failure surfaces as a refusal instead of silently becoming 0 earned and
+    // a negative unpaid. The routes turn this into "Could not load pay".
+    earningsSummaryOrThrow.mockRejectedValue(new Error('earningsSummary: could not read placements'));
 
-    await expect(getWorkerPayoutSummary('worker-1')).rejects.toThrow(/could not be read/i);
-    await expect(listPayoutSummaries()).rejects.toThrow(/could not be read/i);
+    await expect(getWorkerPayoutSummary('worker-1')).rejects.toThrow(/could not read/i);
+    await expect(listPayoutSummaries()).rejects.toThrow(/could not read/i);
+  });
+
+  it('protects a worker who has EARNED but never been paid, not only a paid one', async () => {
+    seedPlacement({ accepted_rate_cents: 250 }); // earned, never settled
+    earningsSummaryOrThrow.mockRejectedValue(new Error('earningsSummary: could not read placements'));
+
+    // The first cut of this guard only fired once money had been paid, which
+    // left the larger population, workers still owed, reading as $0 owed on a
+    // 200 response (delta-verify, PR #1130).
+    await expect(getWorkerPayoutSummary('worker-1')).rejects.toThrow(/could not read/i);
+    await expect(listPayoutSummaries()).rejects.toThrow(/could not read/i);
   });
 });
 

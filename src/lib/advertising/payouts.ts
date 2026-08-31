@@ -1,6 +1,6 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { logAdvertisingActivity } from '@/lib/advertising/activity';
-import { earningsSummary } from '@/lib/advertising/placements';
+import { earningsSummaryOrThrow } from '@/lib/advertising/placements';
 import { getAdvertisingWorker } from '@/lib/advertising/workers';
 
 // Advertising payout settlement (ledger row 481, Naldo's rulings 2026-08-30).
@@ -285,13 +285,12 @@ export async function getWorkerPayoutSummary(workerId: string): Promise<WorkerPa
   if (!db) return empty;
 
   const [summaries, settled, accepted] = await Promise.all([
-    earningsSummary({ workerId: id }),
+    earningsSummaryOrThrow({ workerId: id }),
     settledTotals(db, id),
     readAcceptedPlacements(db, id),
   ]);
   const earnedCents = summaries.find((s) => s.workerId === id)?.total.acceptedEarnedCents ?? 0;
   const settledCents = settled.settledCents.get(id) ?? 0;
-  assertEarningsWereRead(summaries.length, settledCents);
   return {
     workerId: id,
     earnedCents,
@@ -307,7 +306,7 @@ export async function listPayoutSummaries(): Promise<WorkerPayoutSummary[]> {
   const db = getSupabaseServiceClient();
   if (!db) return [];
   const [summaries, settled, accepted] = await Promise.all([
-    earningsSummary(),
+    earningsSummaryOrThrow(),
     settledTotals(db),
     readAcceptedPlacements(db),
   ]);
@@ -331,8 +330,7 @@ export async function listPayoutSummaries(): Promise<WorkerPayoutSummary[]> {
     .map((workerId) => {
       const earnedCents = summaries.find((s) => s.workerId === workerId)?.total.acceptedEarnedCents ?? 0;
       const settledCents = settled.settledCents.get(workerId) ?? 0;
-      assertEarningsWereRead(summaries.length, settledCents);
-      return {
+          return {
         workerId,
         earnedCents,
         settledCents,
@@ -341,31 +339,6 @@ export async function listPayoutSummaries(): Promise<WorkerPayoutSummary[]> {
         payableCount: payableCount.get(workerId) ?? 0,
       };
     });
-}
-
-/**
- * earningsSummary fails OPEN by design: on a read error it logs and returns
- * [], because a display should degrade rather than explode. Building a money
- * total on that silently turns earned into 0, and unpaid into a NEGATIVE
- * number rendered on a 200 response — the money screen telling a confident
- * lie, and on the worker's own screen it would flip "everything has been
- * paid" on while they are still owed.
- *
- * An empty earnings read while real money has been paid is that failure's
- * exact signature: paying someone requires accepted photos, so the two
- * cannot both be true. Refuse it, and let the routes answer "Could not load
- * pay", which is honest. Deliberately NOT a blanket negative check: a photo
- * that is paid AND voided is a different situation (only reachable by an
- * out-of-band database edit now that both sides guard the race) and one
- * corrupt row must not take the whole pay screen down. (Technical lens,
- * PR #1130.)
- */
-function assertEarningsWereRead(earningsRowCount: number, settledCents: number): void {
-  if (earningsRowCount === 0 && settledCents > 0) {
-    throw new Error(
-      `payouts: money has been paid (${dollars(settledCents)}) but the earnings read came back empty, so earned and unpaid could not be read`,
-    );
-  }
 }
 
 function toSettlement(row: SettlementRow, lineCount: number): AdvertisingSettlement {
@@ -506,18 +479,31 @@ export async function recordSettlement(
   if (!created) throw new Error('recordSettlement: the payment could not be recorded');
   const settlement = created as SettlementRow;
 
-  /** Unwind our own half-written payment. The lines cascade with it. */
-  const unwind = async () => {
-    const { error } = await db.from('advertising_settlements').delete().eq('id', settlement.id);
-    if (error) {
-      console.error('recordSettlement unwind failed:', error.message);
-      throw new Error(
-        `recordSettlement: the payment could not be recorded AND settlement ${settlement.id} could not be removed — check it by hand before paying again`,
-      );
+  /**
+   * Unwind our own half-written payment. The lines cascade with it.
+   *
+   * Retried, because this is the only thing standing between a failed write
+   * and a bad state, and the stakes differ by call site (delta-verify, PR
+   * #1130). Before the lines land, a leftover settlement row contributes
+   * nothing: settled money is summed from LINES, not from total_cents. After
+   * they land, a failed delete leaves a photo genuinely voided AND paid, so
+   * the message has to name the row and ask for it by hand rather than say
+   * "try again", which would be useless advice.
+   */
+  const unwind = async (linesLanded = false) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { error } = await db.from('advertising_settlements').delete().eq('id', settlement.id);
+      if (!error) return;
+      console.error(`recordSettlement unwind attempt ${attempt + 1} failed:`, error.message);
     }
+    throw new Error(
+      linesLanded
+        ? `recordSettlement: settlement ${settlement.id} was recorded and could NOT be removed after a photo was voided mid-payment — this worker's paid and earned figures will disagree until settlement ${settlement.id} is reconciled by hand`
+        : `recordSettlement: the payment could not be recorded AND settlement ${settlement.id} could not be removed — check it by hand before paying again`,
+    );
   };
 
-  const { data: insertedLines, error: linesError } = await db
+  const { error: linesError } = await db
     .from('advertising_settlement_lines')
     .insert(
       ids.map((placementId) => ({
@@ -572,19 +558,18 @@ export async function recordSettlement(
       .order('id', { ascending: true })
       .range(0, PAGE - 1);
     if (error) {
-      await unwind();
+      await unwind(true);
       throw new Error(`recordSettlement: could not confirm the photos were still live — nothing was recorded`);
     }
     afterWrite.push(...((data ?? []) as PlacementRow[]));
   }
   const votedAfter = afterWrite.filter((row) => row.voided_at);
   if (votedAfter.length > 0) {
-    await unwind();
+    await unwind(true);
     throw new Error(
       `recordSettlement: ${votedAfter.map((r) => r.id).join(', ')} was voided while this payment was being written — nothing was recorded`,
     );
   }
-  void insertedLines;
 
   await logAdvertisingActivity({
     actor: paidBy,

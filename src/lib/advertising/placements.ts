@@ -831,12 +831,18 @@ export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
   return out;
 }
 
-/** Per-worker earnings: pending estimated cents and accepted earned cents,
- * total plus ET day and week groupings. Scope with workerId for the worker's
- * own view; unscoped for the admin pay summary. */
-export async function earningsSummary(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+/**
+ * Per-worker earnings, THROWING on a failed read. Money callers use this one:
+ * a settlement's "unpaid" is earned minus paid, so an earnings read that
+ * quietly returns nothing turns earned into 0 and unpaid into a negative
+ * number, which is the money screen stating a confident falsehood rather than
+ * admitting it could not load. (Delta-verify, PR #1130: the first cut of this
+ * only protected workers who had already been paid, which is the smaller
+ * population and not the one most likely to be misread.)
+ */
+export async function earningsSummaryOrThrow(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
   const db = getSupabaseServiceClient();
-  if (!db) return [];
+  if (!db) throw new Error('earningsSummaryOrThrow: Supabase service role not configured');
 
   // Page to completeness: a pay total computed from a silently truncated
   // read is exactly the wrong-money class this repo's history warns about.
@@ -853,8 +859,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) {
-      console.error('earningsSummary placements error:', error);
-      return [];
+      throw new Error(`earningsSummary: could not read placements — ${error.message}`);
     }
     const rows = (data ?? []) as Row[];
     placements.push(...rows.map((row) => toPlacement(row)));
@@ -870,8 +875,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (campaignsError) {
-      console.error('earningsSummary campaigns error:', campaignsError);
-      return [];
+      throw new Error(`earningsSummary: could not read campaigns — ${campaignsError.message}`);
     }
     const rows = (campaigns ?? []) as { id: string; rate_cents: number }[];
     for (const c of rows) rateByCampaign.set(c.id, c.rate_cents);
@@ -879,6 +883,22 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   }
 
   return summarizeEarnings(placements, rateByCampaign);
+}
+
+/**
+ * The DISPLAY wrapper: same numbers, but a failed read degrades to an empty
+ * list rather than an exception, which is what the two earnings routes have
+ * always done. Anything deriving money from this (a settlement's unpaid
+ * figure) must call earningsSummaryOrThrow instead, so a read failure
+ * surfaces as a refusal instead of a wrong number.
+ */
+export async function earningsSummary(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+  try {
+    return await earningsSummaryOrThrow(opts);
+  } catch (error) {
+    console.error('earningsSummary error:', error);
+    return [];
+  }
 }
 
 // --- Simple Crew replica additions (Naldo, 2026-08-29) ------------------------

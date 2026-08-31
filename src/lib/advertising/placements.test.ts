@@ -576,6 +576,43 @@ describe('rejectPlacement / resubmitPlacement', () => {
   });
 });
 
+describe('earningsSummary: display degrades, money refuses', () => {
+  // Settlement derives unpaid as earned minus paid (ledger row 481), so an
+  // earnings read that quietly returns nothing turns earned into 0 and unpaid
+  // into a negative number on a 200 response. The display wrapper keeps its
+  // old fail-open behaviour for the two earnings routes; the money path reads
+  // through the throwing variant. Both halves are pinned here because the
+  // whole guard rests on this one function actually throwing.
+  it('throws on a failed placements read, while the display wrapper still returns []', async () => {
+    const { earningsSummary, earningsSummaryOrThrow } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    seedPlacement({ campaign_id: campaign.id, worker_id: worker.id, status: 'accepted', accepted_rate_cents: 250 });
+
+    stateRef.current.selectError = { message: 'connection reset by peer' };
+
+    await expect(earningsSummaryOrThrow()).rejects.toThrow(/could not read placements/i);
+    await expect(earningsSummary()).resolves.toEqual([]);
+  });
+
+  it('returns the same numbers as the display wrapper when the read succeeds', async () => {
+    const { earningsSummary, earningsSummaryOrThrow } = await import('./placements');
+    const campaign = seedCampaign({ rate_cents: 250 });
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+
+    expect(await earningsSummaryOrThrow()).toEqual(await earningsSummary());
+    expect((await earningsSummaryOrThrow())[0].total.acceptedEarnedCents).toBe(250);
+  });
+});
+
 describe('voidPlacement (Naldo 2026-08-29: the duplicate-overcount fix)', () => {
   /** A paid photo cannot be voided (Naldo 2026-08-30). Voiding it would drop
    * the row out of EARNED while the settlement still counts it as PAID, and
