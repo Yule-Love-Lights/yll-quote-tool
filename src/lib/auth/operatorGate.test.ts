@@ -404,3 +404,17 @@ describe('the advertising surface is NOT public — it needs a session, just an 
     }
   });
 });
+
+// A cron path missing from this list 401s at the perimeter before it ever
+// reaches its own CRON_SECRET check, which is how the #666 prep digest shipped
+// silently dead. Same guard, same PR, for the crew day digest.
+describe('the daily crew schedule cron', () => {
+  it('is allowlisted so the cron can reach its own secret check', () => {
+    expect(isPublicPath('/api/ops/crew-day-digest')).toBe(true);
+  });
+
+  it('does not open the rest of the ops namespace by accident', () => {
+    expect(isPublicPath('/api/ops/schedule', 'POST')).toBe(false);
+    expect(isPublicPath('/api/ops/crew-day-digest/extra')).toBe(false);
+  });
+});
