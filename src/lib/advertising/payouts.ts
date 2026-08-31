@@ -22,8 +22,13 @@ import { getAdvertisingWorker } from '@/lib/advertising/workers';
 // a derived one cannot.
 //
 // A PAID PHOTO CANNOT BE VOIDED (Naldo's ruling, 2026-08-30: "refuse the
-// void once paid"). The guard lives in voidPlacement, at the state change;
-// this module owns the question it asks (isPlacementSettled).
+// void once paid"), unless the payment itself has been voided. That guard
+// lives in voidPlacement, at the state change, and asks its own question
+// against advertising_settlement_lines: placements.ts cannot import this
+// module, which imports IT for the earnings engine. This module deliberately
+// exposes no second copy of that check. An earlier one sat here unused, and
+// a test reached for it instead of the real guard, which is how the guard
+// shipped without the voided filter (four-lens round, PR #1136).
 
 /** How the money physically moved. Naldo 2026-08-30: a fixed short list, so
  * "how much did we pay in cash this month" stays answerable. Anything else
@@ -289,18 +294,6 @@ export async function listPayablePlacements(workerId: string): Promise<PayablePl
   const id = workerId.trim();
   const [accepted, settled] = await Promise.all([readAcceptedPlacements(db, id), settledTotals(db)]);
   return accepted.filter((row) => !settled.paidPlacementIds.has(row.id)).map(toPayable);
-}
-
-/** Has this placement been paid? The void guard's question — a paid photo
- * cannot be voided, because the money has already left. */
-export async function isPlacementSettled(placementId: string): Promise<boolean> {
-  const db = getSupabaseServiceClient();
-  if (!db) return false;
-  const lines = await readLinesForPlacements(db, [placementId.trim()]);
-  // Only a LIVE line is a claim. Once the payment covering a photo is voided
-  // the money is back on the books as unpaid, so the photo can be voided
-  // itself again (ledger row 492).
-  return lines.some((line) => !line.voided_at);
 }
 
 /** One worker's money at a glance: earned (history), paid, still owed. */

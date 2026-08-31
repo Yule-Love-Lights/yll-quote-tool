@@ -47,7 +47,6 @@ vi.mock('@/lib/advertising/placements', () => ({ earningsSummaryOrThrow }));
 
 import {
   getWorkerPayoutSummary,
-  isPlacementSettled,
   voidSettlement,
   listPayablePlacements,
   listSettlements,
@@ -629,17 +628,6 @@ describe('row 492: a payment recorded by mistake can be undone', () => {
     const second = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'venmo' });
     expect(second.totalCents).toBe(250);
     expect((await getWorkerPayoutSummary('worker-1')).settledCents).toBe(250);
-  });
-
-  it('a photo released by a voided payment can be voided itself again', async () => {
-    const a = seedPlacement({ accepted_rate_cents: 250 });
-    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
-    expect(await isPlacementSettled(String(a.id))).toBe(true);
-
-    await voidSettlement(settlement.id, 'admin-2', 'mistake');
-
-    // Nothing live claims it any more, so the placement void guard lets go.
-    expect(await isPlacementSettled(String(a.id))).toBe(false);
   });
 
   it('requires a reason and is idempotent, the first void standing', async () => {

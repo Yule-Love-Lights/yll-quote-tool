@@ -648,10 +648,11 @@ describe('voidPlacement (Naldo 2026-08-29: the duplicate-overcount fix)', () => 
   });
 
   // The claim the migration and the PR body both make: "a photo whose payment
-  // was voided can be voided itself again". The existing test for that
-  // asserted isPlacementSettled, which is a DIFFERENT function in a different
-  // module, so the real guard was never exercised and shipped still refusing.
-  // Both the technical and admin lenses caught it. This drives voidPlacement.
+  // was voided can be voided itself again". The original test for that called
+  // an unused twin of this guard that lived in payouts.ts, so the real guard
+  // was never exercised and shipped still refusing. Both the technical and
+  // admin lenses caught it; the twin has since been deleted. This test drives
+  // voidPlacement, which is the thing the office actually hits.
   it('lets a photo be voided once the payment covering it has been voided', async () => {
     const { voidPlacement } = await import('./placements');
     const campaign = seedCampaign();

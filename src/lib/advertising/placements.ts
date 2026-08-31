@@ -574,8 +574,9 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
  * lines are stamped too, the money goes back to unpaid, and the photo is
  * released, so it can be voided again. Missing that filter kept a released
  * photo locked forever while the pay screen said it was unpaid, which is the
- * state this whole overlay exists to avoid. It has to stay in step with
- * isPlacementSettled in payouts.ts: two readers of one rule. */
+ * state this whole overlay exists to avoid. This is the ONLY reader of that
+ * rule now: payouts.ts used to expose an unused twin, and a test reaching
+ * for the twin is exactly why this one shipped without the filter. */
 async function placementIsPaid(db: Db, placementId: string): Promise<boolean> {
   const { data, error } = await db
     .from('advertising_settlement_lines')
