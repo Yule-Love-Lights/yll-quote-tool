@@ -44,6 +44,8 @@ vi.mock('@/lib/advertising/placements', () => ({ earningsSummaryOrThrow }));
 
 import {
   getWorkerPayoutSummary,
+  isPlacementSettled,
+  voidSettlement,
   listPayablePlacements,
   listSettlements,
   listPayoutSummaries,
@@ -99,6 +101,13 @@ function makeDb() {
               const all = rowsFor(table).filter((r) => preds.every((p) => p(r)));
               return Promise.resolve({ data: all[0] ?? null, error: null });
             },
+            // An ARRAY read. Deliberately used over maybeSingle where two
+            // matches are possible, since PostgREST answers that with an
+            // error and null data rather than the first row.
+            limit(n: number) {
+              const all = rowsFor(table).filter((r) => preds.every((p) => p(r)));
+              return Promise.resolve({ data: all.slice(0, n), error: null });
+            },
           };
           return b;
         },
@@ -116,7 +125,12 @@ function makeDb() {
 
           // The unique index on advertising_settlement_lines.placement_id.
           if (table === 'advertising_settlement_lines') {
-            const taken = new Set(stateRef.current.lines.map((r) => r.placement_id));
+            // The unique index is PARTIAL: live lines only (row 492). A
+            // voided payment releases its photos, so a mock that still
+            // blocked them could not express the ruling.
+            const taken = new Set(
+              stateRef.current.lines.filter((r) => r.voided_at == null).map((r) => r.placement_id),
+            );
             const seen = new Set<unknown>();
             for (const row of incoming) {
               if (taken.has(row.placement_id) || seen.has(row.placement_id)) {
@@ -160,6 +174,35 @@ function makeDb() {
             }),
             then: (resolve: (v: unknown) => void) => Promise.resolve(result).then(resolve),
           };
+        },
+        update(payload: AnyRow) {
+          const preds: Pred[] = [];
+          const ub = {
+            eq(col: string, val: unknown) {
+              preds.push((r) => r[col] === val);
+              return ub;
+            },
+            is(col: string, val: unknown) {
+              preds.push((r) => (val === null ? r[col] == null : r[col] === val));
+              return ub;
+            },
+            apply(): AnyRow[] {
+              const hit = rowsFor(table).filter((r) => preds.every((pr) => pr(r)));
+              for (const row of hit) Object.assign(row, payload);
+              return hit;
+            },
+            select() {
+              return {
+                maybeSingle: () => Promise.resolve({ data: ub.apply()[0] ?? null, error: null }),
+                then: (resolve: (v: unknown) => void) =>
+                  Promise.resolve({ data: ub.apply(), error: null }).then(resolve),
+              };
+            },
+            then(resolve: (v: { data: AnyRow[]; error: null }) => void) {
+              return Promise.resolve({ data: ub.apply(), error: null }).then(resolve);
+            },
+          };
+          return ub;
         },
         delete() {
           const preds: Pred[] = [];
@@ -528,6 +571,141 @@ describe('a money read that fails must not render as a number', () => {
     // 200 response (delta-verify, PR #1130).
     await expect(getWorkerPayoutSummary('worker-1')).rejects.toThrow(/could not read/i);
     await expect(listPayoutSummaries()).rejects.toThrow(/could not read/i);
+  });
+});
+
+describe('row 492: a payment recorded by mistake can be undone', () => {
+  it('stops counting as paid, and hands the money back to unpaid', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    seedPlacement({ accepted_rate_cents: 300 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    expect((await getWorkerPayoutSummary('worker-1')).settledCents).toBe(250);
+
+    await voidSettlement(settlement.id, 'admin-2', 'recorded against the wrong worker');
+
+    const after = await getWorkerPayoutSummary('worker-1');
+    expect(after.settledCents).toBe(0);
+    expect(after.earnedCents).toBe(550); // earned is history and never moves
+    expect(after.unpaidCents).toBe(550);
+  });
+
+  it('keeps the row as history, with who undid it and why', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+
+    const voided = await voidSettlement(settlement.id, 'admin-2', 'paid the wrong person');
+    expect(voided.voidedAt).toBeTruthy();
+    expect(voided.voidedBy).toBe('admin-2');
+    expect(voided.voidReason).toBe('paid the wrong person');
+    expect(voided.totalCents).toBe(250); // what was recorded still reads as recorded
+    expect(stateRef.current.settlements).toHaveLength(1); // nothing deleted
+    expect(stateRef.current.lines).toHaveLength(1);
+  });
+
+  it('releases the photos so they can be paid again', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    expect(await listPayablePlacements('worker-1')).toHaveLength(0);
+
+    await voidSettlement(settlement.id, 'admin-2', 'mistake');
+
+    const payable = await listPayablePlacements('worker-1');
+    expect(payable.map((p) => p.id)).toEqual([String(a.id)]);
+
+    // And paying again really works: the partial unique index only guards
+    // LIVE lines, so the released photo is not blocked by the voided one.
+    const second = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'venmo' });
+    expect(second.totalCents).toBe(250);
+    expect((await getWorkerPayoutSummary('worker-1')).settledCents).toBe(250);
+  });
+
+  it('a photo released by a voided payment can be voided itself again', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    expect(await isPlacementSettled(String(a.id))).toBe(true);
+
+    await voidSettlement(settlement.id, 'admin-2', 'mistake');
+
+    // Nothing live claims it any more, so the placement void guard lets go.
+    expect(await isPlacementSettled(String(a.id))).toBe(false);
+  });
+
+  it('requires a reason and is idempotent, the first void standing', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+
+    await expect(voidSettlement(settlement.id, 'admin-2', '   ')).rejects.toThrow(/reason/i);
+
+    const first = await voidSettlement(settlement.id, 'admin-2', 'first reason');
+    const second = await voidSettlement(settlement.id, 'admin-3', 'second reason');
+    expect(second.voidedAt).toBe(first.voidedAt);
+    expect(second.voidedBy).toBe('admin-2');
+    expect(second.voidReason).toBe('first reason');
+  });
+
+  it('clears the last paid date when the only payment is undone', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    expect((await getWorkerPayoutSummary('worker-1')).lastPaidAt).not.toBeNull();
+
+    await voidSettlement(settlement.id, 'admin-2', 'mistake');
+
+    // "Last paid" must not point at a payment that was undone: the office
+    // would read it as money this worker has had.
+    expect((await getWorkerPayoutSummary('worker-1')).lastPaidAt).toBeNull();
+  });
+
+  it('does not write a second audit row when an already-voided payment is voided again', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    await voidSettlement(settlement.id, 'admin-2', 'first');
+    const afterFirst = logAdvertisingActivity.mock.calls.filter(
+      (c) => (c[0] as { action?: string }).action === 'settlement_voided',
+    ).length;
+
+    await voidSettlement(settlement.id, 'admin-3', 'second');
+
+    // The trail must not claim a void that never happened.
+    const afterSecond = logAdvertisingActivity.mock.calls.filter(
+      (c) => (c[0] as { action?: string }).action === 'settlement_voided',
+    ).length;
+    expect(afterFirst).toBe(1);
+    expect(afterSecond).toBe(1);
+  });
+
+  it('audits the void with the total it reverses and the acting admin', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    await voidSettlement(settlement.id, 'admin-2', 'wrong worker');
+
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'admin-2',
+        action: 'settlement_voided',
+        workerId: 'worker-1',
+        detail: expect.objectContaining({ settlementId: settlement.id, totalCents: 250, lineCount: 1, reason: 'wrong worker' }),
+      }),
+    );
+  });
+
+  it('refuses a settlement that does not exist', async () => {
+    await expect(voidSettlement('no-such-id', 'admin-1', 'nope')).rejects.toThrow(/no settlement/i);
+  });
+
+  it('keeps a voided payment in the history, marked, and out of the total', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const b = seedPlacement({ accepted_rate_cents: 300 });
+    const first = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+    await recordSettlement('worker-1', [String(b.id)], 'admin-1', { method: 'check' });
+    await voidSettlement(first.id, 'admin-2', 'mistake');
+
+    const history = await listSettlements('worker-1');
+    expect(history).toHaveLength(2); // the voided one is still shown
+    const voided = history.find((h) => h.id === first.id);
+    expect(voided?.voidedAt).toBeTruthy();
+    expect(voided?.voidReason).toBe('mistake');
+    // but it contributes nothing to what the worker has actually been paid
+    expect((await getWorkerPayoutSummary('worker-1')).settledCents).toBe(300);
   });
 });
 

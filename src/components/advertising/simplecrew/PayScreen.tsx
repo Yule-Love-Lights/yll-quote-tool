@@ -24,6 +24,17 @@ type WorkerSummary = {
   doorHangerCount?: number;
 };
 
+type Settlement = {
+  id: string;
+  totalCents: number;
+  method: 'cash' | 'venmo' | 'check' | 'other';
+  note: string | null;
+  paidAt: string;
+  lineCount: number;
+  voidedAt: string | null;
+  voidReason: string | null;
+};
+
 type PayoutSummary = {
   workerId: string;
   displayName: string;
@@ -33,6 +44,7 @@ type PayoutSummary = {
   lastPaidAt: string | null;
   payableCount: number;
   payableTotalCents: number;
+  settlements: Settlement[];
 };
 
 const METHODS = [
@@ -92,6 +104,34 @@ export default function PayScreen() {
       cancelled = true;
     };
   }, [tick]);
+
+  const undoPayment = useCallback(async (worker: PayoutSummary, settlement: Settlement) => {
+    // A money reversal states its number and asks, the same as recording one.
+    const reason = window.prompt(
+      `Undo the ${dollars(settlement.totalCents)} payment to ${worker.displayName}? The record stays and shows it was undone, and its ${settlement.lineCount} photo${settlement.lineCount === 1 ? '' : 's'} can be paid again. Why? (required)`,
+    );
+    if (!reason || !reason.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/advertising/settlements/${settlement.id}/void`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+        setError(payload?.error ?? 'Could not undo the payment.');
+        return;
+      }
+      setNotice(`Undid ${dollars(settlement.totalCents)} paid to ${worker.displayName}.`);
+    } catch {
+      setError('Could not undo the payment.');
+    } finally {
+      setBusy(false);
+      setTick((t) => t + 1);
+    }
+  }, []);
 
   const submitPayment = useCallback(async () => {
     if (!payFor) return;
@@ -244,6 +284,48 @@ export default function PayScreen() {
                       Last paid {lastPaid}
                     </p>
                   )}
+                </div>
+              )}
+
+              {payout && payout.settlements.length > 0 && (
+                <div className="mt-3 border-t pt-2" style={{ borderColor: '#F1EBDB' }}>
+                  <p className="pb-1 text-xs uppercase tracking-wide" style={{ color: SC.muted }}>
+                    Payments
+                  </p>
+                  {payout.settlements.slice(0, 6).map((st) => (
+                    <div key={st.id} className="flex items-center justify-between gap-2 py-1 text-sm">
+                      <span style={{ color: SC.muted }}>
+                        {paidOn(st.paidAt)} · {st.method}
+                        {st.voidedAt && (
+                          <span style={{ color: SC.danger }}>
+                            {' '}
+                            · undone{st.voidReason ? `: ${st.voidReason}` : ''}
+                          </span>
+                        )}
+                      </span>
+                      <span className="flex items-center gap-2 whitespace-nowrap">
+                        <span
+                          style={{
+                            color: st.voidedAt ? SC.muted : SC.text,
+                            textDecoration: st.voidedAt ? 'line-through' : undefined,
+                          }}
+                        >
+                          {dollars(st.totalCents)}
+                        </span>
+                        {!st.voidedAt && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void undoPayment(payout, st)}
+                            className="rounded-full border px-3 py-1 text-xs disabled:opacity-40"
+                            style={{ borderColor: '#DCD4BE', color: SC.muted }}
+                          >
+                            Undo…
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )}
 

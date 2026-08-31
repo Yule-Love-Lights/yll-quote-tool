@@ -66,11 +66,18 @@ export async function GET(req: NextRequest) {
     const summaries = await listPayoutSummaries();
     const workersOut = await Promise.all(
       summaries.map(async (summary) => {
-        const payable = await listPayablePlacements(summary.workerId);
+        const [payable, settlements] = await Promise.all([
+          listPayablePlacements(summary.workerId),
+          listSettlements(summary.workerId),
+        ]);
         return {
           ...summary,
           displayName: nameById.get(summary.workerId) ?? '(unknown worker)',
           payableTotalCents: payable.reduce((sum, p) => sum + p.amountCents, 0),
+          // The payments themselves, so the screen can show what was paid
+          // and offer to undo one (ledger row 492). Voided ones are included
+          // and marked; they count for nothing but the record survives.
+          settlements,
         };
       }),
     );
