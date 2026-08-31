@@ -10,7 +10,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
-import { chipStateFor, GPS_TICK_MS, isFixFresh, type GpsPermission } from './cameraGps';
+import {
+  chipStateFor,
+  decideSend,
+  GPS_TICK_MS,
+  isFixFresh,
+  MAX_SEND_ATTEMPTS,
+  retryDelayMs,
+  type GpsPermission,
+  type SendOutcome,
+} from './cameraGps';
 import { decideCampaign, readRememberedCampaign, rememberCampaign, shouldAnnounceCarryOver } from './campaignMemory';
 import { CloseIcon, FlashOffIcon, FlipCameraIcon, SearchIcon } from './icons';
 import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
@@ -20,7 +29,15 @@ type Campaign = { id: string; name: string; kind: 'yard_sign' | 'door_hanger'; l
 type QueueItem = {
   key: string;
   previewUrl: string;
-  status: 'uploading' | 'uploaded' | 'failed';
+  /** The photo itself. Held so a failure can be RETRIED rather than
+   * discarded: a worker in the field must never have to walk back to a
+   * house and shoot a sign twice (Naldo, live incident 2026-08-31). */
+  blob: Blob;
+  /** waiting: the shot is held because there was no GPS fix yet or the
+   * upload failed, and it retries itself. */
+  status: 'uploading' | 'uploaded' | 'waiting' | 'failed';
+  /** How many times this shot has been sent. */
+  attempts: number;
   address: string | null;
   placementId: string | null;
   note: string;
@@ -258,6 +275,98 @@ export default function CameraScreen({
     [],
   );
 
+  // Sending a shot, with the photo kept so a failure is recoverable. The
+  // rule this exists for (Naldo, live incident 2026-08-31: a worker mid-run
+  // losing roughly one shot in five): a photo that has been TAKEN is never
+  // thrown away by the app. No GPS yet, no signal, a server hiccup, all of
+  // it becomes "waiting" and retries itself, and the only way a photo
+  // leaves the queue unsent is the worker deliberately discarding it.
+  const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
+
+  /** One attempt at sending a shot. Returns what happened; decideSend
+   * (cameraGps.ts, tested) decides what that means. */
+  const attemptSend = useCallback(
+    async (blob: Blob, campaignId: string): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
+      try {
+        const gps = await getGps();
+        if (!gps) return { outcome: { kind: 'no_gps', denied: gpsStatusRef.current === 'denied' } };
+        const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' });
+        const { blob: sized } = await downscaleForUploadAsBlob(file);
+        if (sized.size > MULTIPART_SIZE_LIMIT_BYTES) return { outcome: { kind: 'too_large' } };
+        const fd = new FormData();
+        fd.set('campaignId', campaignId);
+        fd.set('lat', String(gps.lat));
+        fd.set('lng', String(gps.lng));
+        if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
+        fd.set('capturedAt', new Date().toISOString());
+        fd.set('photo', sized, 'proof.jpg');
+        const res = await fetch(submitUrl, { method: 'POST', body: fd });
+        const body = (await res.json().catch(() => ({}))) as {
+          placement?: { id: string; suggestedAddress: string | null };
+          error?: string;
+        };
+        if (res.ok && body.placement) return { outcome: { kind: 'ok' }, placement: body.placement };
+        return { outcome: { kind: 'refused', status: res.status, message: body.error } };
+      } catch {
+        return { outcome: { kind: 'network' } };
+      }
+    },
+    [submitUrl],
+  );
+
+  // Sending a shot, with the photo KEPT so a failure is recoverable. The
+  // rule this exists for (Naldo, live incident 2026-08-31: a worker mid-run
+  // losing roughly one shot in five, every lost photo thrown away and
+  // re-shot): a photo that has been taken is never discarded by the app.
+  const sendShot = useCallback(
+    async (key: string, blob: Blob, campaignId: string): Promise<void> => {
+      const set = (patch: Partial<QueueItem>) =>
+        setQueue((q) => q.map((it) => (it.key === key ? { ...it, ...patch } : it)));
+
+      for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
+        set({ status: 'uploading', attempts: attempt, error: undefined });
+        const { outcome, placement } = await attemptSend(blob, campaignId);
+        const decision = decideSend(outcome, attempt);
+
+        if (decision.action === 'done' && !placement) {
+          // The send succeeded but we never saw the placement back. It may
+          // have landed, so do NOT retry it silently: a second copy of a
+          // photo is a second pay claim. Hand it to the worker to check.
+          set({
+            status: 'failed',
+            attempts: attempt,
+            error: 'Sent, but no confirmation came back. Check the campaign before sending again.',
+          });
+          return;
+        }
+        if (decision.action === 'done' && placement) {
+          set({
+            status: 'uploaded',
+            attempts: attempt,
+            error: undefined,
+            placementId: placement.id,
+            address: placement.suggestedAddress,
+          });
+          // Remember only what actually LANDED: a failed upload should not
+          // teach the camera anything.
+          rememberCampaign(memoryScope, campaignId, Date.now());
+          return;
+        }
+        if (decision.action === 'retry') {
+          set({ status: 'waiting', attempts: attempt, error: decision.reason });
+          await sleep(retryDelayMs(attempt));
+          continue;
+        }
+        if (decision.action === 'hold') {
+          // Kept, not dropped: the worker taps to send it again.
+          set({ status: 'failed', attempts: attempt, error: decision.reason });
+        }
+        return;
+      }
+    },
+    [attemptSend, memoryScope],
+  );
+
   const shoot = useCallback(async () => {
     if (!campaign) {
       setGuardOpen(true);
@@ -283,51 +392,21 @@ export default function CameraScreen({
     const key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const previewUrl = URL.createObjectURL(blob);
     urlsRef.current.push(previewUrl);
-    setQueue((q) => [{ key, previewUrl, status: 'uploading', address: null, placementId: null, note: '', noteSaved: '' }, ...q]);
+    setQueue((q) => [
+      { key, previewUrl, blob, status: 'uploading', attempts: 0, address: null, placementId: null, note: '', noteSaved: '' },
+      ...q,
+    ]);
+    void sendShot(key, blob, campaign.id);
+  }, [campaign, needsConfirm, submitUrl, gpsFailMessage, memoryScope, sendShot]);
 
-    // Background upload — the shutter stays live.
-    void (async () => {
-      const fail = (message: string) =>
-        setQueue((q) => q.map((it) => (it.key === key ? { ...it, status: 'failed', error: message } : it)));
-      try {
-        const gps = await getGps();
-        if (!gps) return fail(gpsFailMessage());
-        const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' });
-        const { blob: sized } = await downscaleForUploadAsBlob(file);
-        if (sized.size > MULTIPART_SIZE_LIMIT_BYTES) return fail('Photo too large even after compression.');
-        const fd = new FormData();
-        fd.set('campaignId', campaign.id);
-        fd.set('lat', String(gps.lat));
-        fd.set('lng', String(gps.lng));
-        if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
-        fd.set('capturedAt', new Date().toISOString());
-        fd.set('photo', sized, 'proof.jpg');
-        const res = await fetch(submitUrl, { method: 'POST', body: fd });
-        const body = (await res.json().catch(() => ({}))) as {
-          placement?: { id: string; suggestedAddress: string | null };
-          error?: string;
-        };
-        if (!res.ok || !body.placement) return fail(body.error ?? 'Upload failed. Retry.');
-        setQueue((q) =>
-          q.map((it) =>
-            it.key === key
-              ? { ...it, status: 'uploaded', placementId: body.placement!.id, address: body.placement!.suggestedAddress }
-              : it,
-          ),
-        );
+  const retryShot = useCallback((item: QueueItem) => {
+    if (!campaign) return;
+    setQueue((q) => q.map((it) => (it.key === item.key ? { ...it, status: 'uploading', error: undefined } : it)));
+    void sendShot(item.key, item.blob, campaign.id);
+  }, [campaign, sendShot]);
 
-        // Remember only what actually LANDED: a failed upload should not
-        // teach the camera anything.
-        rememberCampaign(memoryScope, campaign.id, Date.now());
-      } catch {
-        fail('Upload failed. Check your connection and retry.');
-      }
-    })();
-  }, [campaign, needsConfirm, submitUrl, gpsFailMessage, memoryScope]);
-
-  const retry = (item: QueueItem) => {
-    // A failed shot never made a placement; drop it and let the worker
-    // reshoot (the sign is right in front of them).
+  const discard = (item: QueueItem) => {
+    if (!window.confirm('Throw this photo away? You would have to go back and shoot the sign again.')) return;
     URL.revokeObjectURL(item.previewUrl);
     urlsRef.current = urlsRef.current.filter((u) => u !== item.previewUrl);
     setQueue((q) => q.filter((it) => it.key !== item.key));
@@ -412,6 +491,14 @@ export default function CameraScreen({
                       </svg>
                     </span>
                   )}
+                  {item.status === 'waiting' && (
+                    <span
+                      className="absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-full text-xs"
+                      style={{ background: SC.gold, color: '#0B140F' }}
+                    >
+                      ⏳
+                    </span>
+                  )}
                   {item.status === 'failed' && (
                     <span className="absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-full" style={{ background: SC.danger }}>
                       !
@@ -421,13 +508,18 @@ export default function CameraScreen({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <p className="truncate text-lg font-medium">
-                      {item.status === 'failed'
-                        ? (item.error ?? 'Upload failed')
+                      {item.status === 'waiting' || item.status === 'failed'
+                        ? `${item.error ?? 'Waiting'} Photo saved.`
                         : (item.address ?? 'Looking up address…')}
                     </p>
                     {item.status === 'failed' && (
-                      <button type="button" onClick={() => retry(item)} className="text-sm underline">
-                        dismiss
+                      <button type="button" onClick={() => retryShot(item)} className="text-sm underline">
+                        try now
+                      </button>
+                    )}
+                    {(item.status === 'waiting' || item.status === 'failed') && (
+                      <button type="button" onClick={() => discard(item)} className="text-sm underline opacity-70">
+                        discard
                       </button>
                     )}
                   </div>
