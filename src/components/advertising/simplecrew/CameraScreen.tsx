@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 import {
   chipStateFor,
+  COLD_FIX_OPTIONS,
   decideSend,
   GPS_TICK_MS,
   isFixFresh,
@@ -130,6 +131,13 @@ export default function CameraScreen({
   // Object URLs accumulate over a long shooting session; revoke on unmount
   // (and on dismiss below) so a 50-shot canvass cannot bloat the tab.
   const urlsRef = useRef<string[]>([]);
+  // Photos the worker threw away, and the in-flight request for each live
+  // shot. Without these, a discard removed the photo from the screen while
+  // its retry loop kept running and uploaded it anyway: binned work still
+  // became a paid placement, and the durable "a discarded photo cannot
+  // come back" promise was false (technical lens HIGH).
+  const discardedRef = useRef<Set<string>>(new Set());
+  const abortRef = useRef<Map<string, AbortController>>(new Map());
   useEffect(() => {
     return () => {
       urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
@@ -278,7 +286,7 @@ export default function CameraScreen({
             accuracyM: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
           }),
         () => resolve(null),
-        { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 },
+        COLD_FIX_OPTIONS,
       );
     });
   };
@@ -309,7 +317,7 @@ export default function CameraScreen({
   /** One attempt at sending a shot. Returns what happened; decideSend
    * (cameraGps.ts, tested) decides what that means. */
   const attemptSend = useCallback(
-    async (blob: Blob, campaignId: string): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
+    async (blob: Blob, campaignId: string, key: string): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
       try {
         const gps = await getGps();
         if (!gps) return { outcome: { kind: 'no_gps', denied: gpsStatusRef.current === 'denied' } };
@@ -323,7 +331,14 @@ export default function CameraScreen({
         if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
         fd.set('capturedAt', new Date().toISOString());
         fd.set('photo', sized, 'proof.jpg');
-        const res = await fetch(submitUrl, { method: 'POST', body: fd });
+        const controller = new AbortController();
+        abortRef.current.set(key, controller);
+        let res: Response;
+        try {
+          res = await fetch(submitUrl, { method: 'POST', body: fd, signal: controller.signal });
+        } finally {
+          abortRef.current.delete(key);
+        }
         const body = (await res.json().catch(() => ({}))) as {
           placement?: { id: string; suggestedAddress: string | null };
           error?: string;
@@ -360,6 +375,9 @@ export default function CameraScreen({
         });
 
       for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
+        // Checked before every attempt and after every await below, so a
+        // discard landing mid-flight stops the next one.
+        if (discardedRef.current.has(key)) return;
         set({ status: 'uploading', attempts: attempt, error: undefined });
         // Written BEFORE the network call starts, and waited on: if the app
         // dies mid-request, storage must already say "this might be
@@ -367,7 +385,8 @@ export default function CameraScreen({
         // plain, safe-to-resend failure (photoQueueRestore.ts owns that
         // call; a photo that has really landed must never be sent twice).
         await persistStatus('uploading', attempt);
-        const { outcome, placement } = await attemptSend(blob, stable.campaignId);
+        const { outcome, placement } = await attemptSend(blob, stable.campaignId, key);
+        if (discardedRef.current.has(key)) return;
         const decision = decideSend(outcome, attempt);
 
         if (decision.action === 'done' && !placement) {
@@ -403,6 +422,7 @@ export default function CameraScreen({
           set({ status: 'waiting', attempts: attempt, error: decision.reason });
           await persistStatus('waiting', attempt, decision.reason);
           await sleep(retryDelayMs(attempt));
+        if (discardedRef.current.has(key)) return;
           continue;
         }
         if (decision.action === 'hold') {
@@ -546,7 +566,19 @@ export default function CameraScreen({
   );
 
   const discard = (item: QueueItem) => {
-    if (!window.confirm('Throw this photo away? You would have to go back and shoot the sign again.')) return;
+    // The question is different for a photo that may already have reached
+    // the office: throwing that one away does NOT mean a walk back, and
+    // this is the one place the copy must not be wrong (staff lens MED).
+    const mayHaveLanded = (item.error ?? '').includes('may have already');
+    const question = mayHaveLanded
+      ? 'Throw this photo away? If it already reached the office it stays there. If it did not, this sign goes unrecorded.'
+      : 'Throw this photo away? You would have to go back and shoot the sign again.';
+    if (!window.confirm(question)) return;
+    // Registered BEFORE anything else, and the request aborted, so an
+    // in-flight retry stops now instead of landing after the bin.
+    discardedRef.current.add(item.key);
+    abortRef.current.get(item.key)?.abort();
+    abortRef.current.delete(item.key);
     URL.revokeObjectURL(item.previewUrl);
     urlsRef.current = urlsRef.current.filter((u) => u !== item.previewUrl);
     setQueue((q) => q.filter((it) => it.key !== item.key));
@@ -661,11 +693,14 @@ export default function CameraScreen({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-lg font-medium">
-                      {item.status === 'waiting' || item.status === 'failed'
-                        ? `${item.error ?? 'Waiting'} Photo saved.`
-                        : (item.address ?? 'Looking up address…')}
-                    </p>
+                    {item.status === 'waiting' || item.status === 'failed' ? (
+                      // Deliberately NOT truncated: the instruction sits at
+                      // the end of this sentence, and a phone row cut it off
+                      // after a dozen characters (staff lens MED).
+                      <p className="text-base font-medium">Photo saved. {item.error ?? 'Waiting.'}</p>
+                    ) : (
+                      <p className="truncate text-lg font-medium">{item.address ?? 'Looking up address…'}</p>
+                    )}
                     {item.status === 'failed' && (
                       <button type="button" onClick={() => retryShot(item)} className="text-sm underline">
                         try now
@@ -677,6 +712,9 @@ export default function CameraScreen({
                       </button>
                     )}
                   </div>
+                  {(item.status === 'waiting' || item.status === 'failed') && (
+                    <p className="mt-0.5 text-sm text-white/70">For {item.campaignName}</p>
+                  )}
                   <input
                     value={item.note}
                     onChange={(e) =>

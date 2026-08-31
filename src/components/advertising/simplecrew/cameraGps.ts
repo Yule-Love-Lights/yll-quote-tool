@@ -66,6 +66,21 @@ export const GPS_FRESH_MS = 5_000;
 // second.
 export const GPS_TICK_MS = 1_000;
 
+// Options for the one-shot fix the shutter falls back to when the watch
+// has not produced anything fresh. maximumAge is deliberately tied to
+// GPS_FRESH_MS rather than left at 0: asking the OS for a brand new fix
+// refuses a cached one that is a single second old, which is STRICTER
+// than our own money rule, since the fast path already trusts anything
+// under GPS_FRESH_MS. Near a roofline that pointless strictness is what
+// times out and costs the worker a wait (Naldo, field incident
+// 2026-08-31). A cached fix inside the same window is exactly as
+// trustworthy as a streamed one of the same age.
+export const COLD_FIX_OPTIONS: PositionOptions = {
+  enableHighAccuracy: true,
+  timeout: 12_000,
+  maximumAge: GPS_FRESH_MS,
+};
+
 export type GpsPermission = 'starting' | 'ready' | 'denied' | 'no_signal' | 'unsupported';
 export type GpsChip = 'ready' | 'locating' | 'blocked' | 'unsupported';
 

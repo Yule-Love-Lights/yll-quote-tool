@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   chipStateFor,
+  COLD_FIX_OPTIONS,
   decideSend,
   GPS_FRESH_MS,
   isFixFresh,
@@ -129,5 +130,21 @@ describe('decideSend — a photo that has been taken is never thrown away', () =
     expect(retryDelayMs(1)).toBe(2000);
     expect(retryDelayMs(3)).toBe(6000);
     expect(retryDelayMs(50)).toBe(15000);
+  });
+});
+
+describe('COLD_FIX_OPTIONS — the fallback never accepts a fix the fast path would refuse', () => {
+  it('allows a cached fix exactly as old as the freshness window, and no older', () => {
+    // Tied to the same constant on purpose: if someone widens the trust
+    // window without thinking, this stays coherent; if someone loosens
+    // maximumAge on its own, this fails.
+    expect(COLD_FIX_OPTIONS.maximumAge).toBe(GPS_FRESH_MS);
+    expect(isFixFresh(1_000_000 - (COLD_FIX_OPTIONS.maximumAge ?? 0), 1_000_000)).toBe(false);
+    expect(isFixFresh(1_000_000 - (COLD_FIX_OPTIONS.maximumAge ?? 0) + 1, 1_000_000)).toBe(true);
+  });
+
+  it('still asks for a high accuracy fix and still gives up rather than hanging', () => {
+    expect(COLD_FIX_OPTIONS.enableHighAccuracy).toBe(true);
+    expect(COLD_FIX_OPTIONS.timeout).toBeGreaterThan(0);
   });
 });
