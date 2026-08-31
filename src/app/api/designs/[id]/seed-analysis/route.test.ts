@@ -163,6 +163,36 @@ describe('POST /api/designs/[id]/seed-analysis — pruned mini-group reporting (
     );
     expect(data.prunedMiniGroups).toHaveLength(2);
   });
+
+  // #13 x #240 (fix round item 4a): a group and its TWIN never bill twice —
+  // if a re-analyze orphans BOTH in the same call, the report must count
+  // exactly ONE lost group, not two (which would overstate the damage).
+  it('reports exactly ONE pruned group when a re-analyze orphans BOTH a canonical group and its twin', async () => {
+    const before = {
+      yardsticks: [],
+      items: [
+        // Canonical: its only member ('seed-mini-2') is NOT re-detected by
+        // MINI_DETECTION_SEED (which only regenerates seed-mini-1), so g1
+        // becomes fully orphaned by this re-analyze.
+        mkGroup({ id: 'g1', memberIds: ['seed-mini-2'], surface: 'railing', stringCount: 3 }),
+        // Twin: staff-drawn (not seed-prefixed), so seedSceneFromAnalysis's
+        // own `kept` filter always lets it and its member through — it only
+        // dies via pruneOrphanedMiniGroups once its member's linkedToId
+        // (pointing at the now-dropped 'seed-mini-2') dangles.
+        mkStrand({ id: 'twin-member', linkedToId: 'seed-mini-2', groupId: 'g1-twin' }),
+        mkGroup({ id: 'g1-twin', memberIds: ['twin-member'], linkedToId: 'g1', surface: 'railing', stringCount: 3 }),
+      ],
+    };
+    getDesign.mockResolvedValue(baseRow(before));
+
+    const res = await POST(
+      makeReq({ seed: MINI_DETECTION_SEED }),
+      { params: Promise.resolve({ id: VALID_DESIGN_ID }) },
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.prunedMiniGroups).toEqual([{ surface: 'railing', stringCount: 3 }]);
+  });
 });
 
 // Ledger row 260: this route's write goes through the version this SAME call

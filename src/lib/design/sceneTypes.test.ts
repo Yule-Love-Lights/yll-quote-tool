@@ -112,6 +112,49 @@ describe('pruneOrphanedMiniGroups (#227)', () => {
     const afterRemoval = before.filter((i) => i.id !== 's1' && i.id !== 's2'); // just the group left
     expect(pruneOrphanedMiniGroups(afterRemoval)).toEqual([]);
   });
+
+  // #13 x #240 (fix round on twin-group-stamp-and-ordinals, item 1): a
+  // TWINNED group's canonical can vanish through a path that never touches
+  // the twin's OWN members at all (Ungroup filters the canonical by id
+  // directly, with no twin-awareness) — the existing member-survival rule
+  // above can't see this, because the twin group's own members are alive.
+  it('drops a TWIN group whose canonical no longer exists, even though its own members are alive, and clears the members\' groupId', () => {
+    const items: SceneItem[] = [
+      mkArea({ id: 'tm1', groupId: 'twin-g' }),
+      mkArea({ id: 'tm2', groupId: 'twin-g' }),
+      mkGroup({ id: 'twin-g', memberIds: ['tm1', 'tm2'], linkedToId: 'canonical-g-that-is-gone' }),
+    ];
+    const after = pruneOrphanedMiniGroups(items);
+    expect(after.find((i) => i.id === 'twin-g')).toBeUndefined();
+    // Members survive standalone, groupId cleared (mirrors what Ungroup does
+    // for the canonical side) rather than secretly still tagged to a group
+    // that no longer exists.
+    expect(after.find((i) => i.id === 'tm1')).toMatchObject({ id: 'tm1' });
+    expect((after.find((i) => i.id === 'tm1') as MiniAreaItem).groupId).toBeUndefined();
+    expect((after.find((i) => i.id === 'tm2') as MiniAreaItem).groupId).toBeUndefined();
+  });
+
+  it('keeps a TWIN group whose canonical DOES exist (linkedToId resolves)', () => {
+    const items: SceneItem[] = [
+      mkStrand({ id: 'c1' }),
+      mkGroup({ id: 'canonical-g', memberIds: ['c1'] }),
+      mkArea({ id: 'tm1', groupId: 'twin-g' }),
+      mkGroup({ id: 'twin-g', memberIds: ['tm1'], linkedToId: 'canonical-g' }),
+    ];
+    expect(pruneOrphanedMiniGroups(items)).toEqual(items);
+  });
+
+  it('drops a dangling SINGLE-ITEM twin (not a group) whose canonical no longer exists', () => {
+    // Generalizes beyond groups: before this fix, #227's own rule only ever
+    // inspected miniGroup items, so a dangling single-item twin (e.g. a
+    // wreath whose canonical died via an un-cascaded delete path) was
+    // equally orphaned and equally invisible to any existing check.
+    const items: SceneItem[] = [
+      mkStrand({ id: 'dangling-twin-strand', linkedToId: 'dead-canonical-id' }),
+      mkStrand({ id: 'healthy' }),
+    ];
+    expect(pruneOrphanedMiniGroups(items)).toEqual([items[1]]);
+  });
 });
 
 // #741 defect 1 (round 2): removeItemsForPhoto is the ONE filter shared by

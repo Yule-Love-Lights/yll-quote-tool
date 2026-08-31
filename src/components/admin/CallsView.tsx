@@ -42,6 +42,19 @@ type ExtractionProgress = {
 };
 type CommitmentSummary = { counts: CommitmentCounts; extraction: ExtractionProgress } | null;
 
+// Post-call HighLevel note progress. Null means the note columns are not
+// migrated yet, in which case the section renders nothing at all rather
+// than an error, same posture as the commitments section.
+type NoteSummary = {
+  posted: number;
+  pending: number;
+  skipped: number;
+  quarantined: number;
+  untraceable: number;
+  lastPostedAt: string | null;
+  lastFailureCode: string | null;
+} | null;
+
 type CallsResponse = {
   configured: boolean;
   migrated?: boolean;
@@ -51,6 +64,7 @@ type CallsResponse = {
   counts?: Counts;
   recordings?: Recording[];
   commitments?: CommitmentSummary;
+  notes?: NoteSummary;
 };
 
 type ExtractResponse = {
@@ -230,6 +244,35 @@ export function CallsView() {
             <StatTile label="Retrying" value={data.commitments.extraction.retrying} />
             <StatTile label="Extracted" value={data.commitments.extraction.extracted} />
             <StatTile label="Quarantined" value={data.commitments.extraction.quarantined} />
+          </div>
+        </div>
+      )}
+
+      {data.notes && (
+        <div className="flex flex-col gap-3 border-t border-gray-200 pt-6">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-sm font-semibold text-gray-700">HighLevel call notes</h2>
+            <span className="text-sm text-gray-500">
+              {data.notes.lastPostedAt
+                ? `Last note posted ${new Date(data.notes.lastPostedAt).toLocaleString()}`
+                : 'No note posted yet'}
+            </span>
+            {data.notes.lastFailureCode && (
+              <span className="text-sm text-red-600">Last failure: {data.notes.lastFailureCode}</span>
+            )}
+            {data.notes.untraceable > 0 && (
+              <span className="text-sm text-red-600">
+                {data.notes.untraceable} posted with no HighLevel id, so they cannot be found again automatically
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:max-w-2xl">
+            <StatTile label="Notes posted" value={data.notes.posted} />
+            <StatTile label="Awaiting a note" value={data.notes.pending} />
+            <StatTile label="Skipped" value={data.notes.skipped} />
+            <StatTile label="Quarantined" value={data.notes.quarantined} />
+            <StatTile label="Untraceable" value={data.notes.untraceable} />
           </div>
         </div>
       )}

@@ -114,6 +114,11 @@ const PUBLIC_API_EXACT = new Set([
   // carries no operator session, so it must be allowlisted here to reach its
   // own CRON_SECRET check. Also gated by its own CALLS_EXTRACT_ENABLED flag
   // (default off) inside the route, per decision 5.
+  '/api/cron/calls-note', // Vercel Cron (CRON_SECRET-guarded, the post-call HighLevel
+  // note, 2026-08-29), same reason as every other cron above: a scheduled request
+  // carries no operator session, so it must be allowlisted here to reach its own
+  // CRON_SECRET check. Its own CALLS_NOTES_ENABLED flag defaults ON (Naldo asked for
+  // notes to run automatically on merge), so this entry is what the schedule needs.
   '/api/ops/installment-run', // The installment runner (row 448). NOT in vercel.json yet — no
   // cron is armed (Jason's call 2026-08-28, dry-run first) — but the entry lands
   // WITH the route rather than with the schedule, because the failure this list
@@ -196,6 +201,27 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // a future `/estimate/<something>` must be allowlisted deliberately, never
   // shipped public by a prefix (defense-in-depth, review 2026-07-20).
   if (path === '/estimate') return true;
+
+  // The home-screen install page (naldo/mobile-app-branding). It lists the two
+  // installable apps — the quote tool and the advertising capture — with a QR
+  // code and add-to-home-screen steps for each, so Naldo can text one URL to a
+  // new staffer instead of walking them through it. It reads no customer record
+  // and no database at all: the only thing on it is two of our own URLs, which
+  // is why it is safe signed-out. EXACT match, mirroring /estimate above, so a
+  // future /install/<something> must be allowlisted deliberately.
+  if (path === '/install') return true;
+
+  // The two web manifests those installs read. These MUST be public even though
+  // both apps behind them are operator-only: a <link rel="manifest"> is fetched
+  // with credentials omitted, so a gated manifest 401s for a SIGNED-IN operator
+  // too, and iOS then falls back to a screenshot of the page — the black square
+  // this whole change exists to fix. They contain nothing but app names, colours
+  // and icon paths. Note the middleware matcher already excludes .png, so the
+  // icon files themselves never reach this gate; .webmanifest is not on that
+  // extension list, which is why these two need naming here.
+  if (path === '/manifest-quote.webmanifest' || path === '/manifest-advertising.webmanifest') {
+    return true;
+  }
 
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;

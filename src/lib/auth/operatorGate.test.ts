@@ -238,6 +238,26 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/estimate/anything')).toBe(false);
   });
 
+  // naldo/mobile-app-branding. The install page and the two manifests behind it
+  // are the whole public surface this change adds.
+  it('treats the home-screen install page as public — EXACT match only', () => {
+    expect(isPublicPath('/install')).toBe(true);
+    expect(isPublicPath('/install/')).toBe(true); // single trailing slash is normalized
+    // Same defense-in-depth as /estimate above: a sub-path is not public by prefix.
+    expect(isPublicPath('/install/anything')).toBe(false);
+  });
+
+  // These MUST be public even though both apps behind them are operator-only: a
+  // <link rel="manifest"> is fetched with credentials omitted, so a gated
+  // manifest 401s for a signed-in operator too and the install silently falls
+  // back to an iOS screenshot instead of the YLL icon.
+  it('treats both web manifests as public', () => {
+    expect(isPublicPath('/manifest-quote.webmanifest')).toBe(true);
+    expect(isPublicPath('/manifest-advertising.webmanifest')).toBe(true);
+    // Only these two by name — no .webmanifest wildcard.
+    expect(isPublicPath('/manifest-anything-else.webmanifest')).toBe(false);
+  });
+
   it('allows POST /api/estimate + /api/estimate/contact + /api/estimate/upload but keeps other methods operator-only (self-serve Phase A)', () => {
     for (const p of ['/api/estimate', '/api/estimate/contact', '/api/estimate/upload']) {
       expect(isPublicPath(p, 'POST'), p).toBe(true);

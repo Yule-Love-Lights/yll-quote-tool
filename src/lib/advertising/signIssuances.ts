@@ -223,6 +223,14 @@ export async function getWorkerSignBalance(workerId: string): Promise<WorkerSign
   if (!db) return { workerId: id, issuedTotal: 0, signsUsed: 0, remaining: 0 };
 
   const issued = await issuedTotal(id);
+  // NO is_test filter here, deliberately, and this is the one counter in the
+  // subsystem without one: every sibling counts ACROSS workers and must keep
+  // test rows out of a real total, while this one is already scoped to a
+  // single worker. A placement inherits its worker's is_test flag at capture,
+  // so the rows can never be mixed — and filtering would zero a TEST worker's
+  // own balance during a device check, which is exactly when the number is
+  // being read. (Integration lens, S80 close: flagged as a consistency gap;
+  // kept as-is with the reason written down instead.)
   const { count, error } = await db
     .from('advertising_placements')
     .select('id', { count: 'exact', head: true })
