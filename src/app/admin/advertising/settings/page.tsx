@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 
 import { getSessionRole } from '@/lib/auth/sessionRole';
 import PayScreen from '@/components/advertising/simplecrew/PayScreen';
+import SignAllotmentSection from '@/components/advertising/simplecrew/SignAllotmentSection';
 import SettingsScreen from '@/components/advertising/simplecrew/SettingsScreen';
 import { AdminTabs } from '@/components/advertising/simplecrew/Tabs';
 
@@ -21,6 +22,7 @@ export default async function AdminAdvertisingSettingsPage() {
         passwordUrl="/api/account/password"
         logoutUrl="/api/auth/logout"
         paySection={<PayScreen />}
+        extraSection={<SignAllotmentSection />}
         extraRows={[
           { label: 'Back to the quote tool', href: '/' },
           { label: 'Inventory stock (yard-sign SKU)', href: '/inventory/stock' },
