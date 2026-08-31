@@ -1120,3 +1120,46 @@ describe('the accepted-photo unique index also guards UPDATES (delta-verify roun
     await expect(acceptPlacement(String(p.id), REVIEWER)).rejects.toBeInstanceOf(DuplicatePlacementError);
   });
 });
+
+describe('dedupe vs VOID (close integration lens HIGH: the two shipped a day apart and never met)', () => {
+  it('a VOIDED accepted row is not a duplicate: the same photo can be uploaded and paid again', async () => {
+    // Void is an overlay, not a status change, so a voided row keeps
+    // status='accepted' forever. Without a voided_at filter the dedupe
+    // reports the voided row as an existing duplicate and the office can
+    // never re-do the work the void exists to undo.
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+      photo_hash: 'eeee555566667777',
+      voided_at: '2026-08-29T18:00:00.000Z',
+      voided_by: REVIEWER,
+      void_reason: 'uploaded to the wrong worker',
+    });
+    expect(await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'eeee555566667777')).toBeNull();
+  });
+
+  it('a LIVE accepted row is still a duplicate (the guard is narrowed, not removed)', async () => {
+    const { findAcceptedByPhotoHash } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: 'x',
+      photo_hash: 'ffff888899990000',
+      voided_at: null,
+    });
+    const hit = await findAcceptedByPhotoHash(String(worker.id), String(campaign.id), 'ffff888899990000');
+    expect(hit?.photoHash).toBe('ffff888899990000');
+  });
+});

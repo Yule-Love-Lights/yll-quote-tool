@@ -932,6 +932,32 @@ describe('adminVoidShift', () => {
     expect(stateRef.current.deleted).toHaveLength(0);
   });
 
+  it('corrects the trail when the audit lands but the delete loses its race', async () => {
+    // The audit row is written first on purpose, so the mirror case is real:
+    // the entry says a shift was removed and then the delete is refused. An
+    // uncorrected entry is an audit trail that lies about payroll, which is
+    // the same class the audit-first ordering exists to prevent (S78 wrap
+    // delta-verify, which proved this empirically).
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.afterSelect = () => {
+      stateRef.current.rows[0] = { ...MANUAL_SHIFT, updated_at: '2026-08-09T22:00:00.000Z' };
+    };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'edit-race',
+    );
+
+    expect(stateRef.current.rows).toHaveLength(1);
+    const actions = stateRef.current.activityInserts.map((e) => e.action);
+    expect(actions).toEqual(['shift-manual-void', 'shift-manual-void-aborted']);
+    const correction = stateRef.current.activityInserts[1] as {
+      detail: { shiftId: string; reason: string };
+    };
+    expect(correction.detail.shiftId).toBe('shift-manual-1');
+    expect(correction.detail.reason).toBe('edit-race');
+  });
+
   it('refuses when the child lookup fails, rather than deleting blind', async () => {
     stateRef.current.rows = [MANUAL_SHIFT];
     stateRef.current.childReadError = { message: 'db down' };
