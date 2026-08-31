@@ -164,13 +164,15 @@ describe('isPublicPath — customer-facing allowlist', () => {
     }
   });
 
-  // Prefix match, so a POST to a booking path is public too. That is fine and
-  // deliberate: there is no API under /book, only a page, so the widest thing
-  // this can admit is a request to a route that does not exist.
-  it('keeps the booking allowlist to the /book prefix and nothing adjacent', () => {
+  // One segment only. A bare startsWith('/book/') would hand public access to
+  // any future nested route with nothing forcing a re-review, which is the
+  // defense-in-depth reasoning /estimate and /install already encode.
+  it('keeps the booking allowlist to one URL segment and nothing adjacent', () => {
     expect(isPublicPath('/booking')).toBe(false);
     expect(isPublicPath('/bookkeeping')).toBe(false);
     expect(isPublicPath('/api/book')).toBe(false);
+    expect(isPublicPath('/book/virtual-hot-chocolate/admin')).toBe(false);
+    expect(isPublicPath('/book/anything/deeper/still')).toBe(false);
   });
 
   it('allows POST /api/referrals/submit (referral landing page lead form) but keeps other methods operator-only (#41)', () => {

@@ -14,7 +14,12 @@
 
 import { MOCK_GALLERY_ITEMS } from '@/components/portal/mockQuote';
 
-export type BackdropPhoto = { id: string; src: string; alt: string };
+// No alt text here on purpose. The photos are decorative: they sit behind a
+// scrim, carry no information the heading does not already give, and the
+// backdrop is aria-hidden, so BookingBackdrop renders alt="". Carrying the
+// gallery's descriptive alt through to here would be a field nothing reads,
+// and a privacy test guarding a string no visitor can ever see.
+export type BackdropPhoto = { id: string; src: string };
 
 const BACKDROP_IDS = [
   'g5', // Roslyn estate at dusk, wrapped driveway trees
@@ -33,4 +38,4 @@ export const BACKDROP_PHOTOS: BackdropPhoto[] = BACKDROP_IDS.map((id) =>
   MOCK_GALLERY_ITEMS.find((item) => item.id === id),
 )
   .filter((item): item is (typeof MOCK_GALLERY_ITEMS)[number] => item !== undefined)
-  .map((item) => ({ id: item.id, src: item.src, alt: item.alt }));
+  .map((item) => ({ id: item.id, src: item.src }));

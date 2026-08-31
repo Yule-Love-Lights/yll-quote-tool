@@ -43,15 +43,37 @@ describe('booking page backdrop photos', () => {
     expect(BACKDROP_PHOTOS).toHaveLength(5);
     for (const photo of BACKDROP_PHOTOS) {
       expect(photo.src.startsWith('/references/'), photo.id).toBe(true);
-      expect(photo.alt.length, photo.id).toBeGreaterThan(0);
     }
   });
 
-  // The page names no customer, and these alt strings are the one place on it
-  // where free text from another file gets rendered.
-  it('carries no street number in any alt text', () => {
+  // The image URL is the only text from these photos that actually ships: the
+  // backdrop renders alt="" because the photos are decorative, so the filename
+  // is the one string about them a stranger can read. It must never carry a
+  // street address, which is exactly the shape the source photos are named in
+  // before anyone renames them for the web.
+  const STREET = new RegExp(
+    String.raw`\d+[-_\s]+(?:[a-z0-9]+[-_\s]+)*(street|st|road|rd|avenue|ave|lane|ln|drive|dr|court|ct|place|pl|blvd)(?=[-_.\s]|$)`,
+    'i',
+  );
+
+  // Pins that the pattern above can actually fire. Without this the privacy
+  // test below passes just as happily against a pattern that matches nothing,
+  // which is a guard that only looks like one.
+  it('recognises an address-shaped filename', () => {
+    for (const bad of [
+      '/references/40-glen-cove-rd.webp',
+      '/references/6_Carman_Mill_Dr.webp',
+      '/references/391-15th-st.webp',
+      '/references/12-oak-street.webp',
+      '/references/208 Wyngate Dr.jpg',
+    ]) {
+      expect(STREET.test(bad), bad).toBe(true);
+    }
+  });
+
+  it('carries no street address in any image filename', () => {
     for (const photo of BACKDROP_PHOTOS) {
-      expect(photo.alt, photo.id).not.toMatch(/\d+\s+\w+\s+(Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr)\b/i);
+      expect(photo.src, photo.id).not.toMatch(STREET);
     }
   });
 });

@@ -24,6 +24,7 @@ import {
   findBookingCalendar,
 } from './calendars';
 import { BACKDROP_PHOTOS } from './backdropPhotos';
+import { MARKETING_SITE_URL, OFFICE_PHONE, OFFICE_TEL_HREF } from './contact';
 import { BookingBackdrop } from './BookingBackdrop';
 
 type Params = { slug: string };
@@ -43,6 +44,11 @@ export async function generateMetadata({
   return {
     title: `${calendar.heading} | Yule Love Lights`,
     description: calendar.subheading,
+    // Not indexed, matching src/app/forms/[type] and src/app/refer/[code]. This
+    // is a link we hand to one person at a time, and it is a thin page whose
+    // only real content belongs to GoHighLevel. Letting a search engine rank it
+    // would put it in competition with the marketing site for the same terms.
+    robots: { index: false, follow: false },
   };
 }
 
@@ -68,14 +74,18 @@ export default async function BookingPage({ params }: { params: Promise<Params> 
           taller than its container overflows in both directions, which puts the
           top of the card above the scroll origin where nobody can reach it. */}
       <main className="relative mx-auto flex w-full max-w-2xl flex-col items-center px-4 pt-72 pb-16 md:pt-16 md:pb-20">
-        <Image
-          src="/yule-site-logo-2.png"
-          alt="Yule Love Lights"
-          width={598}
-          height={385}
-          priority
-          className="h-auto w-40 drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)] sm:w-48"
-        />
+        {/* The logo is the way back to the rest of the business, which is the
+            only navigation a single-purpose page like this needs. */}
+        <a href={MARKETING_SITE_URL} className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+          <Image
+            src="/yule-site-logo-2.png"
+            alt="Yule Love Lights"
+            width={598}
+            height={385}
+            priority
+            className="h-auto w-40 drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)] sm:w-48"
+          />
+        </a>
 
         <h1 className="mt-6 text-center text-3xl font-semibold tracking-tight drop-shadow-[0_2px_10px_rgba(0,0,0,0.7)] sm:text-4xl">
           {calendar.heading}
@@ -94,14 +104,36 @@ export default async function BookingPage({ params }: { params: Promise<Params> 
             src={bookingWidgetSrc(calendar.calendarId)}
             title={calendar.heading}
             allow="payment"
-            scrolling="no"
-            // A real starting height, unlike GoHighLevel's own snippet, which
-            // starts at zero and shows nothing at all until the script has
-            // loaded and measured. form_embed.js overwrites this inline height
-            // as soon as it runs.
-            style={{ width: '100%', border: 'none', overflow: 'hidden', height: 720 }}
+            // Deliberately NOT scrolling="no", which is what GoHighLevel's own
+            // snippet uses. That is safe only while form_embed.js is alive to
+            // size the frame exactly. If the script is blocked, slow, or the
+            // vendor is down, a fixed height plus no scrolling means everything
+            // past the fold is unreachable and the customer cannot book at all.
+            // Leaving the frame scrollable costs nothing on the happy path,
+            // because the script sets the exact height and no overflow remains.
+            //
+            // The starting height is a guess for the same reason: GoHighLevel's
+            // snippet starts at zero and shows nothing until measured. Real
+            // measured heights are 926 on desktop and 983 on a phone, so this is
+            // deliberately short of both and the scroll is what covers the gap.
+            style={{ width: '100%', border: 'none', height: 720 }}
           />
         </div>
+
+        {/* Always visible, not conditional on the widget failing. There is no
+            reliable way to detect a cross-origin iframe rendering nothing, and
+            a booking page whose only path forward is a third-party script is a
+            dead end the moment that script is blocked by an ad blocker or the
+            vendor has an outage. */}
+        <p className="mt-6 text-center text-sm text-white/70 drop-shadow-[0_1px_6px_rgba(0,0,0,0.7)]">
+          Prefer to talk it through?{' '}
+          <a
+            href={OFFICE_TEL_HREF}
+            className="font-semibold text-white underline underline-offset-4 hover:text-white/90"
+          >
+            Call us at {OFFICE_PHONE}
+          </a>
+        </p>
       </main>
 
       <Script src={GHL_FORM_EMBED_SCRIPT} strategy="afterInteractive" />

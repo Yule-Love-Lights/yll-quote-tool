@@ -200,11 +200,13 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // its own folder plus completed-install photos that already ship in
   // public/references, which is why it is safe to serve signed out.
   //
-  // Prefix match, unlike the exact matches used for /estimate and /install
-  // above: every /book/<slug> is public by design, and the slug is checked
-  // against a registry inside the page, so an unknown one 404s rather than
-  // reaching anything. Bare /book has no page and 404s too.
-  if (path === '/book' || path.startsWith('/book/')) return true;
+  // ONE URL segment only, never a bare prefix. Every /book/<slug> is public by
+  // design and the slug is checked against a registry inside the page, so an
+  // unknown one 404s rather than reaching anything. But a bare startsWith would
+  // hand public access to any FUTURE route added under /book, with nothing
+  // forcing a re-review, which is the same defense-in-depth reasoning that made
+  // /estimate and /install exact matches above. Bare /book has no page and 404s.
+  if (path === '/book' || /^\/book\/[^/]+$/.test(path)) return true;
 
   // Customer self-serve estimate (ledger self-serve, Phase A) — the public
   // "type your address, get an instant range" front door. The page + its two
