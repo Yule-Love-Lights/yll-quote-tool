@@ -51,6 +51,7 @@ type NoteSummary = {
   skipped: number;
   quarantined: number;
   untraceable: number;
+  commented: number;
   lastPostedAt: string | null;
   lastFailureCode: string | null;
 } | null;
@@ -273,7 +274,16 @@ export function CallsView() {
             <StatTile label="Skipped" value={data.notes.skipped} />
             <StatTile label="Quarantined" value={data.notes.quarantined} />
             <StatTile label="Untraceable" value={data.notes.untraceable} />
+            <StatTile label="Comments posted" value={data.notes.commented} />
           </div>
+          {/* The comment feature (2026-08-30) has no backfill: every note posted
+              before it shipped will show as "not commented" forever, correctly.
+              Named here so this number never has to be read as a live failure
+              rate without that context. */}
+          <p className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+            Comments posted will always trail Notes posted: notes from before this feature shipped never get one.
+            Watch for it falling behind going forward, not for it matching the total.
+          </p>
         </div>
       )}
 
