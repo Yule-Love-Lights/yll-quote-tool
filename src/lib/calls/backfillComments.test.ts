@@ -13,12 +13,16 @@ import { backfillMissingComments, type CommentBackfillPreview } from './backfill
 
 type Update = { patch: Record<string, unknown>; filters: [string, unknown][] };
 
+const NOW = new Date('2026-08-31T12:00:00.000Z');
+
 function transcript(over: Record<string, unknown> = {}) {
   return {
     id: 't1',
-    called_at: '2026-08-22T14:21:18.403Z',
+    called_at: '2026-08-31T11:00:00.000Z', // 1 hour before NOW: not stale
     ghl_contact_id: 'contact-1',
     summary: 'Robert asked about roofline lighting.',
+    customer_name: 'Robert Gelo',
+    is_test: false,
     ...over,
   };
 }
@@ -26,6 +30,7 @@ function transcript(over: Record<string, unknown> = {}) {
 function fakeSupabase(
   transcripts: Record<string, unknown>[],
   commitmentsByTranscript: Record<string, { kind: string; detail: string; promised_at: string | null }[]> = {},
+  opts: { failUpdate?: boolean } = {},
 ) {
   const updates: Update[] = [];
   const filters: [string, unknown[]][] = [];
@@ -47,7 +52,8 @@ function fakeSupabase(
               record.filters.push([column, value]);
               return uq;
             },
-            then(resolve: (v: { data: null; error: null }) => void) {
+            then(resolve: (v: { data: null; error: unknown }) => void) {
+              if (opts.failUpdate) return resolve({ data: null, error: { message: 'db down' } });
               resolve({ data: null, error: null });
             },
           };
@@ -79,7 +85,7 @@ beforeEach(() => {
 describe('backfillMissingComments', () => {
   it('only selects rows with a posted note and no comment yet', async () => {
     const { supabase, filters } = fakeSupabase([transcript()]);
-    await backfillMissingComments(supabase);
+    await backfillMissingComments(supabase, undefined, {}, NOW);
     expect(filters).toContainEqual(['not', ['ghl_note_posted_at', 'is', null]]);
     expect(filters).toContainEqual(['is', ['ghl_comment_posted_at', null]]);
   });
@@ -90,9 +96,9 @@ describe('backfillMissingComments', () => {
       { t1: [{ kind: 'send_quote', detail: 'Send the proposal', promised_at: null }] },
     );
 
-    const result = await backfillMissingComments(supabase);
+    const result = await backfillMissingComments(supabase, undefined, {}, NOW);
 
-    expect(result).toEqual({ commented: 1, failed: 0, previewed: 0 });
+    expect(result).toEqual({ commented: 1, failed: 0, previewed: 0, skippedTest: 0, postedButNotRecorded: 0 });
     expect(createInternalCommentMock).toHaveBeenCalledTimes(1);
     const [contactId, body] = createInternalCommentMock.mock.calls[0];
     expect(contactId).toBe('contact-1');
@@ -113,9 +119,21 @@ describe('backfillMissingComments', () => {
       transcript({ id: 't2', ghl_contact_id: 'contact-2' }),
     ]);
 
-    const result = await backfillMissingComments(supabase);
+    const result = await backfillMissingComments(supabase, undefined, {}, NOW);
 
-    expect(result).toEqual({ commented: 1, failed: 1, previewed: 0 });
+    expect(result.commented).toBe(1);
+    expect(result.failed).toBe(1);
+  });
+
+  it('never posts a comment for a test row, and counts it separately from an ordinary failure', async () => {
+    // The candidate query should already exclude these, but this script does
+    // not trust that upstream guarantee to hold forever.
+    const { supabase, updates } = fakeSupabase([transcript({ is_test: true })]);
+    const result = await backfillMissingComments(supabase, undefined, {}, NOW);
+    expect(createInternalCommentMock).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+    expect(result.skippedTest).toBe(1);
+    expect(result.failed).toBe(0);
   });
 
   it('skips a row with no summary via its OWN named guard, not by crashing into the catch block', async () => {
@@ -128,7 +146,7 @@ describe('backfillMissingComments', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { supabase, updates } = fakeSupabase([transcript({ summary: null })]);
 
-    const result = await backfillMissingComments(supabase);
+    const result = await backfillMissingComments(supabase, undefined, {}, NOW);
 
     expect(createInternalCommentMock).not.toHaveBeenCalled();
     expect(updates).toHaveLength(0);
@@ -137,7 +155,39 @@ describe('backfillMissingComments', () => {
     errorSpy.mockRestore();
   });
 
-  it('dry run posts nothing and writes nothing, but hands back the real body', async () => {
+  it('counts a comment that posted but could not be recorded SEPARATELY from an ordinary failure, and warns loudly against a blind re-run', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { supabase, updates } = fakeSupabase([transcript()], {}, { failUpdate: true });
+
+    const result = await backfillMissingComments(supabase, undefined, {}, NOW);
+
+    expect(createInternalCommentMock).toHaveBeenCalledTimes(1);
+    expect(result.postedButNotRecorded).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.commented).toBe(0);
+    expect(updates).toHaveLength(1); // the attempt was made even though it failed
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Do not re-run this script'),
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('prefixes an old call with its real date, so the comment does not read as if it just happened', async () => {
+    const { supabase } = fakeSupabase([transcript({ called_at: '2026-08-20T14:00:00.000Z' })]); // 11 days before NOW
+    await backfillMissingComments(supabase, undefined, {}, NOW);
+    const [, body] = createInternalCommentMock.mock.calls[0];
+    expect(body).toContain('this call happened on Aug 20, 2026');
+  });
+
+  it('a recent call gets no backdated prefix', async () => {
+    const { supabase } = fakeSupabase([transcript()]); // 1 hour before NOW
+    await backfillMissingComments(supabase, undefined, {}, NOW);
+    const [, body] = createInternalCommentMock.mock.calls[0];
+    expect(body).not.toContain('Backfilled');
+  });
+
+  it('dry run posts nothing and writes nothing, but hands back the real body and the customer name', async () => {
     const previews: CommentBackfillPreview[] = [];
     const { supabase, updates } = fakeSupabase(
       [transcript()],
@@ -147,12 +197,13 @@ describe('backfillMissingComments', () => {
     const result = await backfillMissingComments(supabase, 10, {
       dryRun: true,
       onPreview: p => previews.push(p),
-    });
+    }, NOW);
 
     expect(createInternalCommentMock).not.toHaveBeenCalled();
     expect(updates).toHaveLength(0);
-    expect(result).toEqual({ commented: 0, failed: 0, previewed: 1 });
+    expect(result).toEqual({ commented: 0, failed: 0, previewed: 1, skippedTest: 0, postedButNotRecorded: 0 });
     expect(previews[0].contactId).toBe('contact-1');
+    expect(previews[0].customerName).toBe('Robert Gelo');
     expect(previews[0].body).toContain('- Call back tomorrow');
   });
 });

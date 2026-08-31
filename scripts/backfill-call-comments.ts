@@ -78,6 +78,7 @@ async function main(): Promise<void> {
     onPreview: preview => {
       console.log('='.repeat(72));
       console.log(`transcript : ${preview.transcriptId}`);
+      console.log(`customer   : ${preview.customerName ?? '(name unknown)'}`);
       console.log(`called at  : ${preview.calledAt ?? 'unknown'}`);
       console.log('endpoint   : POST /conversations/messages, type InternalComment');
       console.log(`contact    : ${preview.contactId}`);
