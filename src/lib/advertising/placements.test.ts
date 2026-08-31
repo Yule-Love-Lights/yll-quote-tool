@@ -22,6 +22,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
         advertising_campaigns: [] as AnyRow[],
         advertising_placements: [] as AnyRow[],
         advertising_activity: [] as AnyRow[],
+        advertising_settlement_lines: [] as AnyRow[],
       } as Record<string, AnyRow[]>,
       updates: [] as { table: string; payload: AnyRow }[],
       inserted: [] as { table: string; payload: AnyRow }[],
@@ -32,6 +33,9 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       // the live row, then clears — models a stale read racing a concurrent
       // writer, so the CAS guards can actually be exercised.
       staleReadOnce: null as AnyRow | null,
+      // Fires ONCE immediately after an update lands, before the caller
+      // reads anything back — models another writer winning the gap.
+      afterUpdateOnce: null as null | (() => void),
     },
   },
 }));
@@ -203,22 +207,34 @@ function makeDb() {
               filters.push({ kind: 'is', col, val });
               return ub;
             },
+            apply(): { data: AnyRow | null; error: DbError | null } {
+              // An UPDATE can violate a unique index too (the accepted
+              // photo index applies to a row TRANSITIONING into
+              // accepted, not only to inserts).
+              if (stateRef.current.updateError) {
+                return { data: null, error: stateRef.current.updateError };
+              }
+              const idx = rows().findIndex((r) => rowMatches(r, filters));
+              if (idx === -1) return { data: null, error: null };
+              stateRef.current.updates.push({ table, payload });
+              rows()[idx] = { ...rows()[idx], ...payload, updated_at: new Date().toISOString() };
+              const landed = rows()[idx];
+              const hook = stateRef.current.afterUpdateOnce;
+              if (hook) {
+                stateRef.current.afterUpdateOnce = null;
+                hook();
+              }
+              return { data: landed, error: null };
+            },
             select(_cols?: string) {
               return {
-                maybeSingle: () => {
-                  // An UPDATE can violate a unique index too (the accepted
-                  // photo index applies to a row TRANSITIONING into
-                  // accepted, not only to inserts).
-                  if (stateRef.current.updateError) {
-                    return Promise.resolve({ data: null, error: stateRef.current.updateError });
-                  }
-                  const idx = rows().findIndex((r) => rowMatches(r, filters));
-                  if (idx === -1) return Promise.resolve({ data: null, error: null });
-                  stateRef.current.updates.push({ table, payload });
-                  rows()[idx] = { ...rows()[idx], ...payload, updated_at: new Date().toISOString() };
-                  return Promise.resolve({ data: rows()[idx], error: null });
-                },
+                maybeSingle: () => Promise.resolve(ub.apply()),
               };
+            },
+            // A bare update with no .select() is a thenable reporting only
+            // whether the write failed — the shape voidPlacement's unwind uses.
+            then(resolve: (v: { data: AnyRow | null; error: DbError | null }) => void) {
+              return Promise.resolve(ub.apply()).then(resolve);
             },
           };
           return ub;
@@ -304,12 +320,14 @@ beforeEach(() => {
   stateRef.current.tables.advertising_campaigns = [];
   stateRef.current.tables.advertising_placements = [];
   stateRef.current.tables.advertising_activity = [];
+  stateRef.current.tables.advertising_settlement_lines = [];
   stateRef.current.updates = [];
   stateRef.current.inserted = [];
   stateRef.current.selectError = null;
   stateRef.current.insertError = null;
   stateRef.current.updateError = null;
   stateRef.current.staleReadOnce = null;
+  stateRef.current.afterUpdateOnce = null;
   dbRef.current = makeDb();
 });
 
@@ -559,6 +577,68 @@ describe('rejectPlacement / resubmitPlacement', () => {
 });
 
 describe('voidPlacement (Naldo 2026-08-29: the duplicate-overcount fix)', () => {
+  /** A paid photo cannot be voided (Naldo 2026-08-30). Voiding it would drop
+   * the row out of EARNED while the settlement still counts it as PAID, and
+   * unpaid = earned - settled would go negative on the pay screen. */
+  it('refuses to void a photo that has already been paid, and writes nothing', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    stateRef.current.tables.advertising_settlement_lines.push({
+      id: 'line-1',
+      settlement_id: 'settlement-1',
+      placement_id: p.id,
+      amount_cents: 250,
+    });
+
+    await expect(voidPlacement(String(p.id), 'admin-1', 'duplicate')).rejects.toThrow(/already been paid/i);
+    expect(placementUpdates()).toHaveLength(0);
+    expect(stateRef.current.tables.advertising_placements[0].voided_at).toBeNull();
+  });
+
+  it('a payment landing mid-void unwinds the void instead of leaving the row paid AND voided', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+
+    // The settlement lands in the gap between the pre-check and the write.
+    stateRef.current.afterUpdateOnce = () => {
+      stateRef.current.tables.advertising_settlement_lines.push({
+        id: 'line-1',
+        settlement_id: 'settlement-1',
+        placement_id: p.id,
+        amount_cents: 250,
+      });
+    };
+
+    await expect(voidPlacement(String(p.id), 'admin-1', 'duplicate')).rejects.toThrow(
+      /paid while the void was being recorded/i,
+    );
+    // The void was UNDONE: the row is live again, so the money math still
+    // sees exactly one accepted photo behind exactly one payment, instead of
+    // a row that is paid and voided at once (unpaid would read negative).
+    const row = stateRef.current.tables.advertising_placements[0];
+    expect(row.voided_at).toBeNull();
+    expect(row.voided_by).toBeNull();
+    expect(row.void_reason).toBeNull();
+  });
+
   it('voids any placement with a required reason, stamping who and when, and audits it', async () => {
     const { voidPlacement } = await import('./placements');
     const campaign = seedCampaign();

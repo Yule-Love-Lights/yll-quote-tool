@@ -557,12 +557,34 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   return resubmitted;
 }
 
+/** Has this placement already been paid? Read straight from the settlement
+ * lines rather than through payouts.ts, which imports THIS module for the
+ * earnings engine; the guard has to sit at the state change (voidPlacement),
+ * so the one-line read lives here to keep the import one-directional. */
+async function placementIsPaid(db: Db, placementId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from('advertising_settlement_lines')
+    .select('id')
+    .eq('placement_id', placementId)
+    .limit(1);
+  if (error) throw new Error(`voidPlacement: could not check whether this photo was paid — ${error.message}`);
+  return ((data ?? []) as unknown[]).length > 0;
+}
+
 /**
  * VOID a placement (Naldo 2026-08-29): it stops counting anywhere — pay,
  * estimates, sign allotments, stock counts, duplicate flags — while the row,
  * its status history, and its stamped rate remain as the record. There is no
  * un-void; a wrongly voided sign gets re-submitted. CAS on voided_at IS NULL:
  * the first void wins and a retry returns it unchanged.
+ *
+ * A PAID photo cannot be voided at all (Naldo's ruling, 2026-08-30): the
+ * money has already been handed over, and voiding it would take the row out
+ * of earned while the settlement still counts it as paid — which is how
+ * "unpaid" goes negative on the pay screen. The check runs before the write
+ * AND again after it, because a settlement landing in the gap would produce
+ * exactly that state; if it does, this void is unwound (our own write, not
+ * an un-void) and the caller gets a named conflict.
  */
 export async function voidPlacement(
   id: string,
@@ -576,10 +598,17 @@ export async function voidPlacement(
   const voidReason = reason.trim();
   if (!voidReason) throw new Error('voidPlacement: a reason is required');
 
+  if (await placementIsPaid(db, placementId)) {
+    throw new Error(
+      `voidPlacement: this photo has already been paid and cannot be voided — settle the difference with the worker instead`,
+    );
+  }
+
+  const voidedAt = new Date().toISOString();
   const { data, error } = await db
     .from('advertising_placements')
     .update({
-      voided_at: new Date().toISOString(),
+      voided_at: voidedAt,
       voided_by: voidedBy,
       void_reason: voidReason,
     })
@@ -594,6 +623,26 @@ export async function voidPlacement(
     if (!current) throw new Error(`voidPlacement: no placement found for id ${placementId}`);
     if (current.voided_at) return toPlacement(current); // idempotent: first void stands
     throw new Error(`voidPlacement: placement ${placementId} could not be voided`);
+  }
+
+  // A settlement that landed while this update was in flight would leave the
+  // row both paid and voided — paid counts it, earned does not, and the pay
+  // screen reads a negative unpaid figure. Unwind OUR write (CAS on the
+  // exact stamp, so a later legitimate void is never touched) and refuse.
+  if (await placementIsPaid(db, placementId)) {
+    const { error: revertError } = await db
+      .from('advertising_placements')
+      .update({ voided_at: null, voided_by: null, void_reason: null })
+      .eq('id', placementId)
+      .eq('voided_at', voidedAt);
+    if (revertError) {
+      throw new Error(
+        `voidPlacement: photo ${placementId} was paid while this void was being written AND the void could not be undone (${revertError.message}) — fix this row by hand before paying again`,
+      );
+    }
+    throw new Error(
+      `voidPlacement: this photo was paid while the void was being recorded — the void was undone, nothing changed`,
+    );
   }
 
   const voided = toPlacement(data as Row);
