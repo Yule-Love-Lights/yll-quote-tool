@@ -62,6 +62,14 @@ export default function CameraScreen({
   // freshness window: the name is shown and the shutter stays blocked
   // until the worker confirms it (Naldo's ruling, 2026-08-29).
   const [needsConfirm, setNeedsConfirm] = useState(false);
+  // Set when the shutter is tapped while the campaign is unconfirmed: the
+  // bar turns urgent instead of the tap doing nothing (staff lens HIGH).
+  const [confirmNudge, setConfirmNudge] = useState(false);
+  // A campaign carried over silently from the last hour still gets NAMED
+  // for a few seconds, because the camera tab does not say which campaign
+  // it resumed and a worker switching campaigns could otherwise shoot into
+  // the wrong one without a signal (staff lens HIGH).
+  const [carriedOver, setCarriedOver] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -107,8 +115,12 @@ export default function CameraScreen({
           now: Date.now(),
         });
         if (decision.campaignId) {
-          setCampaign(body.campaigns.find((c) => c.id === decision.campaignId) ?? null);
+          const chosen = body.campaigns.find((c) => c.id === decision.campaignId) ?? null;
+          setCampaign(chosen);
           setNeedsConfirm(decision.needsConfirm);
+          // Silent preselects are the ones worth announcing: the confirm
+          // bar already names the other case.
+          if (chosen && !decision.needsConfirm && !fromPageCampaignId) setCarriedOver(chosen.name);
         }
       } catch {
         /* picker shows empty; capture still guards */
@@ -253,8 +265,12 @@ export default function CameraScreen({
       return;
     }
     // A campaign carried over from more than an hour ago has to be
-    // confirmed first: it decides what the photo is worth.
-    if (needsConfirm) return;
+    // confirmed first: it decides what the photo is worth. The tap is never
+    // swallowed silently, it points at the bar (staff lens HIGH).
+    if (needsConfirm) {
+      setConfirmNudge(true);
+      return;
+    }
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) return;
 
@@ -436,13 +452,20 @@ export default function CameraScreen({
       {/* Carried-over campaign, older than an hour: name it and block the
           shutter until the worker says yes. */}
       {campaign && needsConfirm && (
-        <div className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-2xl bg-white/95 px-4 py-3">
+        <div
+          className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-2xl bg-white/95 px-4 py-3"
+          style={confirmNudge ? { outline: `2px solid ${SC.danger}` } : undefined}
+        >
           <span className="min-w-0 flex-1 text-sm" style={{ color: SC.text }}>
-            Still shooting <span className="font-semibold">{campaign.name}</span>?
+            {confirmNudge ? 'Answer this before you shoot: still ' : 'Still shooting '}
+            <span className="font-semibold">{campaign.name}</span>?
           </span>
           <button
             type="button"
-            onClick={() => setNeedsConfirm(false)}
+            onClick={() => {
+              setNeedsConfirm(false);
+              setConfirmNudge(false);
+            }}
             className="rounded-full px-4 py-2 text-sm font-semibold text-white"
             style={{ background: SC.primaryDeep }}
           >
@@ -458,6 +481,37 @@ export default function CameraScreen({
             style={{ borderColor: '#DCD4BE', color: SC.text }}
           >
             Change
+          </button>
+        </div>
+      )}
+
+      {/* A campaign resumed from the last hour: say so, briefly, so the
+          camera tab never shoots into yesterday's campaign unannounced. */}
+      {carriedOver && !needsConfirm && (
+        <div className="mx-4 mb-1 flex items-center gap-2 rounded-2xl bg-white/95 px-4 py-2">
+          <span className="min-w-0 flex-1 text-sm" style={{ color: SC.text }}>
+            Continuing <span className="font-semibold">{carriedOver}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setCarriedOver(null);
+              setPickerChoice(campaign?.id ?? null);
+              setPickerOpen(true);
+            }}
+            className="rounded-full border px-3 py-1.5 text-sm"
+            style={{ borderColor: '#DCD4BE', color: SC.text }}
+          >
+            Change
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setCarriedOver(null)}
+            className="rounded-full px-2 py-1.5 text-sm"
+            style={{ color: SC.muted }}
+          >
+            OK
           </button>
         </div>
       )}
@@ -496,8 +550,11 @@ export default function CameraScreen({
         <button
           type="button"
           aria-label="Take photo"
+          aria-disabled={needsConfirm}
           onClick={() => void shoot()}
-          className="h-[74px] w-[74px] rounded-full border-4 border-white/70 bg-white active:scale-95"
+          className={`h-[74px] w-[74px] rounded-full border-4 bg-white ${
+            needsConfirm ? 'border-white/30 opacity-40' : 'border-white/70 active:scale-95'
+          }`}
         />
         <button
           type="button"
@@ -588,6 +645,8 @@ export default function CameraScreen({
                 const chosen = campaigns.find((c) => c.id === pickerChoice) ?? null;
                 setCampaign(chosen);
                 setNeedsConfirm(false);
+                setConfirmNudge(false);
+                setCarriedOver(null);
                 setPickerOpen(false);
               }}
             >

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { getSessionRole } from '@/lib/auth/sessionRole';
+import { getOperator } from '@/lib/auth/supabaseServer';
 import CameraScreen from '@/components/advertising/simplecrew/CameraScreen';
 
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,10 @@ export default async function AdminCapturePage({
   const { campaign } = await searchParams;
   const role = await getSessionRole();
   if (role !== 'admin') redirect('/');
+  // Scope the campaign memory to THIS admin: several of us may share a
+  // device, and the memory must not carry one person's campaign into
+  // another's session (technical + staff lens MED).
+  const operator = await getOperator();
 
   return (
     <CameraScreen
@@ -23,7 +28,7 @@ export default async function AdminCapturePage({
       submitUrl="/api/admin/advertising/capture"
       noteBase="/api/admin/advertising/placements"
       backHref="/admin/advertising"
-      memoryScope="admin"
+      memoryScope={`admin:${operator?.id ?? "unknown"}`}
       fromPageCampaignId={campaign ?? null}
     />
   );

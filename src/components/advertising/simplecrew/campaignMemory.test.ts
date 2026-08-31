@@ -115,3 +115,38 @@ describe('the confirm state always has something to name', () => {
     }
   });
 });
+
+// The camera announces a SILENT carry-over (staff lens HIGH: the camera tab
+// carries no campaign, so within the hour it would otherwise resume
+// yesterday's campaign with no signal at all). These pin which decisions
+// are the announceable ones.
+describe('which decisions the camera must announce', () => {
+  const announceable = (d: { campaignId: string | null; needsConfirm: boolean }, fromPage: string | null) =>
+    d.campaignId !== null && !d.needsConfirm && !fromPage;
+
+  it('a silent memory carry-over is announced', () => {
+    const d = decideCampaign({ fromPageCampaignId: null, remembered: remembered(), campaigns: CAMPAIGNS, now: NOW });
+    expect(announceable(d, null)).toBe(true);
+  });
+
+  it('a campaign chosen by the page is NOT announced: that page already said it', () => {
+    const d = decideCampaign({ fromPageCampaignId: 'c2', remembered: null, campaigns: CAMPAIGNS, now: NOW });
+    expect(announceable(d, 'c2')).toBe(false);
+  });
+
+  it('a stale carry-over is NOT announced this way: it gets the blocking confirm instead', () => {
+    const d = decideCampaign({
+      fromPageCampaignId: null,
+      remembered: remembered({ at: NOW - MEMORY_FRESH_MS * 4 }),
+      campaigns: CAMPAIGNS,
+      now: NOW,
+    });
+    expect(announceable(d, null)).toBe(false);
+    expect(d.needsConfirm).toBe(true);
+  });
+
+  it('no campaign at all announces nothing', () => {
+    const d = decideCampaign({ fromPageCampaignId: null, remembered: null, campaigns: CAMPAIGNS, now: NOW });
+    expect(announceable(d, null)).toBe(false);
+  });
+});
