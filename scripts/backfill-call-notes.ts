@@ -11,7 +11,7 @@
  * the real output before anything reaches the live CRM. That is this repo's
  * standing rule for a one-off script that writes to production.
  *
- * It drives the SAME function the hourly cron drives
+ * It drives the SAME function the live calls-note cron drives
  * (src/lib/calls/postNotes.ts), not a copy of it, so what the preview shows
  * is what the cron would post.
  */

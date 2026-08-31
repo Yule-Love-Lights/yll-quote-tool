@@ -14,7 +14,7 @@
 // FIX ROUND (staff-lens findings): a task now shows its REAL office_tasks
 // status (a completed/dismissed task reads as such, permanently, instead
 // of a bare bullet that never changes) and the note badge distinguishes a
-// call still waiting on the hourly cron from one that permanently failed —
+// call still waiting on the calls-note cron from one that permanently failed —
 // conflating the two made a broken call look identical to a normal one.
 
 import { getCallNotesForCustomer, type CustomerCallNoteStatus, type CustomerCallTask } from '@/lib/calls/customerCallNotes';
@@ -26,14 +26,14 @@ function fmtCalledAt(iso: string | null): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// This cron runs hourly (src/app/api/cron/calls-note/route.ts), so "not
-// yet posted" is the NORMAL state for any call from the last hour or so —
-// the title text says that plainly rather than leaving a rep to guess
-// whether something is broken.
+// The three-stage pipeline (sync/extract/note, vercel.json) runs every 15
+// minutes, so "not yet posted" is the NORMAL state for a call from the
+// last 20-25 minutes or so — the title text says that plainly rather than
+// leaving a rep to guess whether something is broken.
 const NOTE_STATUS: Record<Exclude<CustomerCallNoteStatus, 'posted'>, { label: string; title: string; color: string }> = {
   pending: {
     label: 'Not yet in HighLevel',
-    title: 'The hourly job that posts this to HighLevel has not reached this call yet. Normal for a recent call.',
+    title: 'The job that posts this to HighLevel runs every 15 minutes and has not reached this call yet. Normal for a call from the last 20-25 minutes.',
     color: 'var(--op-text-dim)',
   },
   quarantined: {
