@@ -74,8 +74,9 @@ async function loadCommitments(supabase: SupabaseClient, transcriptId: string): 
 
 // How stale a call has to be before the comment names its own age.
 // composeCallNote's body says nothing about when the call happened (it
-// posts within the hour on the live path, so "now" is close enough there
-// not to matter); a backfilled comment can land days after the call, and
+// posts within about 20-25 minutes on the live path, so "now" is close
+// enough there not to matter); a backfilled comment can land days after
+// the call, and
 // an admin-lens review flagged that a comment posted "today" describing a
 // call from over a week ago could read to a rep as if it just happened.
 const STALE_AFTER_MS = 24 * 3_600_000;

@@ -51,7 +51,7 @@ export const CALL_NOTE_MAX_ATTEMPTS = 3;
 
 // How long a claim is honoured before another invocation may reclaim the
 // row. Long enough that a slow-but-alive worker is never raced, short
-// enough that a crashed one is retried the same hour.
+// enough that a crashed one is retried on the next 15-minute tick.
 export const CALL_NOTE_CLAIM_STALE_MS = 10 * 60 * 1000;
 
 export type NoteCandidate = {
@@ -305,9 +305,31 @@ export async function postPendingCallNotes(
         // the Notes tab; a missing note would cost the whole feature.
         try {
           await createInternalComment(contactId, body);
-          await patchRow(supabase, row.id, { ghl_comment_posted_at: new Date().toISOString() });
         } catch (commentErr) {
           console.error(`Posted the HighLevel note for call ${row.id} but the internal comment failed:`, commentErr);
+          continue;
+        }
+        // Separate try/catch from the post above, on purpose (S84 wrap
+        // finding): if the comment posts but THIS write fails, the comment
+        // is already live in HighLevel — logging it under the same "comment
+        // failed" message as an actual post failure would be wrong, and
+        // worse, leaves ghl_comment_posted_at null so the backfill script's
+        // candidate query (a note posted with no comment recorded) picks
+        // this row up again and posts a SECOND comment to the same contact.
+        // One retry on this specific write, not a quarantine (the S82
+        // lesson: a real success left un-retried behind a transient blip
+        // is what turns a one-second hiccup into a permanent, silent drift).
+        // Still no CAS/attempt-counter machinery — a duplicate comment after
+        // two failed writes in a row is the accepted cost of the best-effort
+        // design Naldo asked for above.
+        try {
+          await patchRow(supabase, row.id, { ghl_comment_posted_at: new Date().toISOString() });
+        } catch {
+          try {
+            await patchRow(supabase, row.id, { ghl_comment_posted_at: new Date().toISOString() });
+          } catch (retryErr) {
+            console.error(`Posted the HighLevel internal comment for call ${row.id} but could not record it after a retry — a later backfill run will re-post it:`, retryErr);
+          }
         }
       } catch (markErr) {
         console.error(`Posted the HighLevel note for call ${row.id} but could not record it:`, markErr);

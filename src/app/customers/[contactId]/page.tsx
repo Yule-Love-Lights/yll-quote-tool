@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
-import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
+import { statusOf, matchesCustomerRoute, expandHlContactIds } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
@@ -70,11 +70,14 @@ export default async function CustomerDetailPage({
   const { contactId: routeId } = await params;
   if (!routeId || routeId.length > 200) notFound();
 
+  // Every quote in the dashboard's window, kept around so hlContactIds below
+  // can expand across a customer's full quote history, not just the ones
+  // that happen to match routeId directly (see expandHlContactIds).
+  const allQuotes: DashboardQuote[] = await listQuotesForDashboard(500);
+
   // This customer's quotes (filtered from the same source the list uses), matched
   // by EITHER id kind so a non-CRM customer resolves via their customer_id.
-  const quotes: DashboardQuote[] = (await listQuotesForDashboard(500)).filter(
-    q => matchesCustomerRoute(q, routeId),
-  );
+  const quotes: DashboardQuote[] = allQuotes.filter(q => matchesCustomerRoute(q, routeId));
 
   // The HighLevel contact id for this customer, if any of their quotes carry one.
   // When the route id IS a HL id this is just that id; when the route id is a
@@ -83,14 +86,12 @@ export default async function CustomerDetailPage({
   const hlContactId: string | null =
     quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id ?? null;
 
-  // EVERY HL contact id this customer's quotes have ever carried, not just
-  // the one above. A merge or re-match can leave a customer's real quotes
-  // spread across two different HL ids over time (the same reason
-  // getCustomerTenure below queries both customerId and hlContactId rather
-  // than trusting one) — this is what the call-notes panel queries, so a
+  // EVERY HL contact id this customer has ever carried, not just the one
+  // above — expanded via customer_id over allQuotes (see expandHlContactIds),
+  // not just quotes. This is what the call-notes panel queries, so a
   // customer's older calls under a since-replaced HL id are not silently
   // dropped from their own profile.
-  const hlContactIds = [...new Set(quotes.map(q => q.highlevel_contact_id).filter((id): id is string => !!id))];
+  const hlContactIds = expandHlContactIds(allQuotes, quotes);
 
   // Activity feed: per-view events (best-effort — a missing quote_view_events
   // table never breaks the page) merged with each quote's lifecycle timestamps.
