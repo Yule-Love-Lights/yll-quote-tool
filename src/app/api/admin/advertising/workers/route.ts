@@ -266,8 +266,14 @@ export async function PATCH(req: NextRequest) {
     if (typeof body?.active === 'boolean') {
       const updated = await setAdvertisingWorkerActive(workerId, body.active);
       if (!updated) return NextResponse.json({ error: 'That is not an advertising worker.' }, { status: 404 });
-      // Active gates both login use and pay eligibility going forward — an
-      // audit event, same as granting access.
+      // Active gates LOGIN only, and is audited like granting access. It is
+      // deliberately not a pay gate: an inactive worker's already-pending
+      // placements can still be accepted and paid, and admin bulk upload
+      // allows inactive workers by design (backfilled work predates the
+      // tool, and the person may already have left). Deactivating someone
+      // stops them submitting new work; it never withholds money for work
+      // already done (close integration lens LOW, S81 — the old wording
+      // claimed a pay gate no code enforces).
       await logAdvertisingActivity({
         actor: auth.operator.id,
         action: 'worker_active_changed',

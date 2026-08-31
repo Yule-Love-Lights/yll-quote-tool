@@ -279,6 +279,13 @@ export async function findAcceptedByPhotoHash(
     .eq('worker_id', workerId.trim())
     .eq('campaign_id', campaignId.trim())
     .eq('status', 'accepted')
+    // A VOIDED row is not a duplicate. Void is an overlay that leaves
+    // status='accepted' forever, so without this the office could never
+    // re-do the very work a void exists to undo: the re-upload would be
+    // reported as an already-uploaded duplicate and silently skipped
+    // (close integration lens HIGH — the dedupe shipped before void
+    // existed, so neither PR's own review could see the seam).
+    .is('voided_at', null)
     .eq('photo_hash', photoHash)
     .limit(1);
   if (error) {
@@ -789,12 +796,15 @@ export function summarizeEarnings(
  * under the old never-pays rule, kept under pay-per-photo 2026-08-29
  * because the visibility question survives the rule change: the count shows
  * whether workers log door hangers at all, independent of the money
- * figures they now also appear in). Test rows count for nothing, same as
- * everywhere else. */
+ * figures they now also appear in). Test rows count for nothing, and
+ * neither do VOIDED rows: the paged doorHangerCountsByWorker below filters
+ * them at the database, and this function claims to be the tested pin of
+ * the counting rules, so it has to enforce the same ones or the claim is
+ * false (close integration lens LOW, S81). */
 export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const p of placements) {
-    if (p.isTest || p.kind !== 'door_hanger') continue;
+    if (p.isTest || p.voidedAt || p.kind !== 'door_hanger') continue;
     out.set(p.workerId, (out.get(p.workerId) ?? 0) + 1);
   }
   return out;
