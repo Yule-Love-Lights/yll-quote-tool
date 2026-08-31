@@ -197,6 +197,45 @@ describe('postPendingCallNotes', () => {
     expect(patchesWith(updates, 'ghl_comment_posted_at')).toHaveLength(1);
   });
 
+  it('retries the comment marker write once when the comment itself posted fine', async () => {
+    // S84 wrap finding: createInternalComment and its marker write used to
+    // share one try/catch, so a transient DB blip on JUST the marker write
+    // (the comment already succeeded in HighLevel) fell into the same log
+    // path as an actual comment-post failure and left ghl_comment_posted_at
+    // null forever -- which the backfill script would later read as
+    // "note posted, comment missing" and post a SECOND comment. One retry
+    // is enough to recover from a one-off blip.
+    let markerAttempts = 0;
+    const { supabase, updates } = fakeSupabase([candidate()], undefined, {
+      failUpdateWhen: patch => {
+        if (!('ghl_comment_posted_at' in patch)) return false;
+        markerAttempts++;
+        return markerAttempts === 1; // fail once, succeed on the retry
+      },
+    });
+
+    const result = await postPendingCallNotes(supabase, 6);
+
+    expect(createInternalCommentMock).toHaveBeenCalledTimes(1); // never re-posted the comment itself
+    expect(markerAttempts).toBe(2);
+    expect(patchesWith(updates, 'ghl_comment_posted_at')).toHaveLength(2); // the failed try + the retry
+    expect(result.posted).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  it('gives up after a second failed comment marker write, without touching the note or crashing the batch', async () => {
+    const { supabase, updates } = fakeSupabase([candidate()], undefined, {
+      failUpdateWhen: patch => 'ghl_comment_posted_at' in patch, // always fails
+    });
+
+    const result = await postPendingCallNotes(supabase, 6);
+
+    expect(createInternalCommentMock).toHaveBeenCalledTimes(1);
+    expect(patchesWith(updates, 'ghl_note_posted_at')).toHaveLength(1); // the note itself is unaffected
+    expect(result.posted).toBe(1);
+    expect(result.failed).toBe(0); // best-effort: an unrecorded comment never fails the call
+  });
+
   it('never posts the comment before the note exists', async () => {
     // Ordering matters: the comment references the same content as the
     // note, and there is no reason for it to exist without the note.
