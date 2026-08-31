@@ -13,6 +13,7 @@
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import { isAdvertisingPath } from '@/lib/auth/operatorGate';
 import { safeRedirectTarget } from './redirectTarget';
 
 export function LoginForm() {
@@ -38,11 +39,23 @@ export function LoginForm() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? 'Login failed');
       }
-      // The server names a `home` for populations confined to their own
-      // surface (advertising -> /advertising); it wins over ?from=, which
-      // for them would only bounce off the proxy back to this page.
+      // The server names a `home` for populations confined to their own surface
+      // (advertising -> /advertising); it wins over ?from=, which for them would
+      // only bounce off the proxy back to this page.
+      //
+      // EXCEPT when ?from= is already INSIDE that surface. The advertising app's
+      // home-screen icon opens /advertising/go, which routes straight to the
+      // camera, and blanket-preferring `home` threw that away and landed a crew
+      // member on Campaigns two taps short of the camera the icon promised
+      // (S84 wrap staff lens: the install page's "opens straight into the
+      // camera" was false at first sign-in because of this line). Honouring
+      // `from` only when isAdvertisingPath allows it keeps the confinement
+      // intact: the destination is inside the surface either way, and
+      // safeRedirectTarget still runs on it.
       const body = (await res.json().catch(() => ({}))) as { home?: string };
-      router.replace(safeRedirectTarget(typeof body.home === 'string' ? body.home : from));
+      const home = typeof body.home === 'string' ? body.home : null;
+      const target = home ? (isAdvertisingPath(from) ? from : home) : from;
+      router.replace(safeRedirectTarget(target));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
