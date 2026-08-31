@@ -22,7 +22,12 @@ import {
   sendTelegramMessage,
 } from './telegram';
 
-export const TELEGRAM_AUDIENCES = ['leads', 'jobs', 'inventory', 'ops'] as const;
+// 'crew' is deliberately SEPARATE from 'jobs': the jobs audience also carries
+// installment-run summaries, which are customer charge totals, and the crew
+// schedule message goes to a chat full of field crew. Keeping them apart means
+// routing the crew chat can never put money in front of the crew by accident
+// (staff lens, PR #1129).
+export const TELEGRAM_AUDIENCES = ['leads', 'jobs', 'inventory', 'ops', 'crew'] as const;
 export type TelegramAudience = (typeof TELEGRAM_AUDIENCES)[number];
 
 export const TELEGRAM_AUDIENCE_LABELS: Record<TelegramAudience, string> = {
@@ -30,6 +35,7 @@ export const TELEGRAM_AUDIENCE_LABELS: Record<TelegramAudience, string> = {
   jobs: 'Jobs',
   inventory: 'Inventory',
   ops: 'Ops digest',
+  crew: 'Crew schedule',
 };
 
 export const TELEGRAM_ROUTING_KEY = 'telegram_chat_routing';

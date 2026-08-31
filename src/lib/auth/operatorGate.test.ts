@@ -429,3 +429,32 @@ describe('the advertising surface is NOT public — it needs a session, just an 
     }
   });
 });
+
+// A cron path missing from this list 401s at the perimeter before it ever
+// reaches its own CRON_SECRET check, which is how the #666 prep digest shipped
+// silently dead. Same guard, same PR, for the crew day digest.
+describe('the daily crew schedule cron', () => {
+  it('is allowlisted so the cron can reach its own secret check', () => {
+    expect(isPublicPath('/api/ops/crew-day-digest')).toBe(true);
+  });
+
+  it('does not open the rest of the ops namespace by accident', () => {
+    expect(isPublicPath('/api/ops/schedule', 'POST')).toBe(false);
+    expect(isPublicPath('/api/ops/crew-day-digest/extra')).toBe(false);
+  });
+});
+
+describe('the crew door (row 466)', () => {
+  // The crew session is an httpOnly cookie, not a Supabase session, so the
+  // perimeter cannot see it: these paths pass the gate and the surface itself
+  // refuses without the cookie.
+  it.each(['/crew', '/crew/', '/crew/enter', '/api/crew/today'])('lets %s through to its own crew guard', (p) => {
+    expect(isPublicPath(p)).toBe(true);
+  });
+
+  it('does not open anything outside the crew namespace', () => {
+    expect(isPublicPath('/crewmembers')).toBe(false);
+    expect(isPublicPath('/api/crew')).toBe(false);
+    expect(isPublicPath('/api/admin/crew/abc/link', 'POST')).toBe(false);
+  });
+});
