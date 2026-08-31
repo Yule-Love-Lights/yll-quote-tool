@@ -20,12 +20,41 @@
 // erased at compile time and carries no runtime code into the bundle.
 
 import { useEffect, useRef, useState } from 'react';
-import type { CustomerCallNote, CustomerCallNoteStatus } from '@/lib/calls/customerCallNotes';
+import type { CustomerCallNote, CustomerCallNoteStatus, CustomerCallTask } from '@/lib/calls/customerCallNotes';
+// formatPromisedAt is a real (not type-only) import: noteBody.ts has zero
+// imports of its own, pure date/string logic, safe in a client bundle.
+import { formatPromisedAt } from '@/lib/calls/noteBody';
+import type { OfficeTaskStatus } from '@/lib/officeTasks';
 
 const NOTE_STATUS_LABEL: Record<Exclude<CustomerCallNoteStatus, 'posted'>, string> = {
   pending: 'Not yet in HighLevel',
   quarantined: 'Failed to post to HighLevel',
 };
+
+// Byte-identical convention to CustomerCallNotesPanel.tsx (the
+// /customers/[contactId] page's version of this same list) — staff-lens
+// finding: the first cut of this drawer discarded task.status entirely,
+// reintroducing the exact "a completed task shows as a bare bullet
+// forever" defect that panel's own fix round already closed one day
+// earlier. Two surfaces showing the same data must not disagree about it.
+const TASK_STATUS_LABEL: Record<OfficeTaskStatus, string> = {
+  open: '',
+  blocked: 'Blocked',
+  completed: 'Done',
+  dismissed: 'Dismissed',
+};
+
+function TaskRow({ task }: { task: CustomerCallTask }) {
+  const when = formatPromisedAt(task.promisedAt);
+  const done = task.status === 'completed' || task.status === 'dismissed';
+  const statusLabel = task.status ? TASK_STATUS_LABEL[task.status] : null;
+  return (
+    <li className="text-xs text-gray-500" style={{ textDecoration: done ? 'line-through' : 'none' }}>
+      • {task.detail}{when ? ` (by ${when})` : ''}
+      {statusLabel && <span className="ml-1.5 font-semibold uppercase tracking-wide text-[10px]">{statusLabel}</span>}
+    </li>
+  );
+}
 
 function fmtCalledAt(iso: string | null): string {
   if (!iso) return 'unknown time';
@@ -132,11 +161,7 @@ export function QuoteBuilderCallNotesDrawer({ ghlContactId }: { ghlContactId: st
                     <p className="text-sm text-gray-900">{call.summary}</p>
                     {call.tasks.length > 0 && (
                       <ul className="mt-2 flex flex-col gap-0.5">
-                        {call.tasks.map((task, i) => (
-                          <li key={i} className="text-xs text-gray-500">
-                            • {task.detail}
-                          </li>
-                        ))}
+                        {call.tasks.map((task, i) => <TaskRow key={i} task={task} />)}
                       </ul>
                     )}
                   </div>
