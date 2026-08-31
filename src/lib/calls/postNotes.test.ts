@@ -24,8 +24,10 @@ vi.mock('./summarize', () => ({
 }));
 
 const createContactNoteMock = vi.fn();
+const createInternalCommentMock = vi.fn();
 vi.mock('../integrations/highlevel', () => ({
   createContactNote: (...args: unknown[]) => createContactNoteMock(...args),
+  createInternalComment: (...args: unknown[]) => createInternalCommentMock(...args),
   isHighLevelConfigured: () => true,
 }));
 
@@ -132,8 +134,10 @@ function patchesWith(updates: Update[], key: string): Update[] {
 beforeEach(() => {
   summarizeCallMock.mockReset();
   createContactNoteMock.mockReset();
+  createInternalCommentMock.mockReset();
   summarizeCallMock.mockResolvedValue('Customer asked for a price on roofline lights.');
   createContactNoteMock.mockResolvedValue({ id: 'note-1' });
+  createInternalCommentMock.mockResolvedValue({ conversationId: 'conv-1', messageId: 'msg-1' });
 });
 
 describe('noteIdFrom', () => {
@@ -177,6 +181,60 @@ describe('postPendingCallNotes', () => {
     const posted = patchesWith(updates, 'ghl_note_posted_at');
     expect(posted).toHaveLength(1);
     expect(posted[0].patch.ghl_note_id).toBe('note-1');
+  });
+
+  it('also posts an internal comment carrying the same body, and records it', async () => {
+    const { supabase, updates } = fakeSupabase([candidate()], {
+      'transcript-1': [{ kind: 'send_quote', detail: 'Send the proposal', promised_at: null }],
+    });
+
+    await postPendingCallNotes(supabase, 6);
+
+    expect(createInternalCommentMock).toHaveBeenCalledTimes(1);
+    const [contactId, message] = createInternalCommentMock.mock.calls[0];
+    expect(contactId).toBe('contact-1');
+    expect(message).toContain('- Send the proposal');
+    expect(patchesWith(updates, 'ghl_comment_posted_at')).toHaveLength(1);
+  });
+
+  it('never posts the comment before the note exists', async () => {
+    // Ordering matters: the comment references the same content as the
+    // note, and there is no reason for it to exist without the note.
+    const callOrder: string[] = [];
+    createContactNoteMock.mockImplementationOnce(async () => {
+      callOrder.push('note');
+      return { id: 'note-1' };
+    });
+    createInternalCommentMock.mockImplementationOnce(async () => {
+      callOrder.push('comment');
+      return { conversationId: 'c', messageId: 'm' };
+    });
+    const { supabase } = fakeSupabase([candidate()]);
+
+    await postPendingCallNotes(supabase, 6);
+
+    expect(callOrder).toEqual(['note', 'comment']);
+  });
+
+  it('a failed comment does not block the note, does not fail the call, and is not retried', async () => {
+    // Best-effort by design: the note is the durable record. Retrying the
+    // comment on the next batch would require re-selecting a call whose
+    // note already posted, which the candidate query structurally excludes.
+    createInternalCommentMock.mockRejectedValueOnce(new Error('HighLevel 500'));
+    const { supabase, updates } = fakeSupabase([candidate()]);
+
+    const result = await postPendingCallNotes(supabase, 6);
+
+    expect(result.posted).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(patchesWith(updates, 'ghl_note_posted_at')).toHaveLength(1);
+    expect(patchesWith(updates, 'ghl_comment_posted_at')).toHaveLength(0);
+  });
+
+  it('never posts a comment in dry run', async () => {
+    const { supabase } = fakeSupabase([candidate()]);
+    await postPendingCallNotes(supabase, 3, new Date(), { dryRun: true });
+    expect(createInternalCommentMock).not.toHaveBeenCalled();
   });
 
   it('stores the note id from the shape HighLevel actually returns', async () => {

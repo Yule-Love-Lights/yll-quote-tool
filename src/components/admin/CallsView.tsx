@@ -51,6 +51,7 @@ type NoteSummary = {
   skipped: number;
   quarantined: number;
   untraceable: number;
+  commented: number;
   lastPostedAt: string | null;
   lastFailureCode: string | null;
 } | null;
@@ -273,6 +274,7 @@ export function CallsView() {
             <StatTile label="Skipped" value={data.notes.skipped} />
             <StatTile label="Quarantined" value={data.notes.quarantined} />
             <StatTile label="Untraceable" value={data.notes.untraceable} />
+            <StatTile label="Comments posted" value={data.notes.commented} />
           </div>
         </div>
       )}

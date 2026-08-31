@@ -8,6 +8,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
 import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPanel';
+import { CustomerCallNotesPanel } from '@/components/dashboard/CustomerCallNotesPanel';
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
 import { CustomerTenureEditor } from '@/components/dashboard/CustomerTenureEditor';
@@ -458,6 +459,10 @@ export default async function CustomerDetailPage({
             </div>
           )}
         </section>
+
+        {/* Call notes (2026-08-30): the same summary + tasks posted to
+            HighLevel, read back for staff without leaving the quote tool. */}
+        <CustomerCallNotesPanel ghlContactId={hlContactId} />
 
         {/* Referral program (#41): this customer's own referral link, credit
             balance, history, and the staff photo opt-out switch. */}
