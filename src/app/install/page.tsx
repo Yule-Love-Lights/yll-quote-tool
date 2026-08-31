@@ -53,14 +53,18 @@ const APPS: InstallApp[] = [
     slug: 'advertising',
     name: 'YLL Advertising',
     homeScreenName: 'YLL Ads',
-    audience: 'Field crews. Photographing yard signs and door hangers to get paid.',
-    path: '/advertising/capture',
+    audience: 'Field crews and the owner. Opens straight into the camera for yard signs and door hangers.',
+    // The role router, not either camera directly: it sends a crew login to
+    // /advertising/capture and an admin to /admin/advertising/capture, so one
+    // icon works for both. See src/app/advertising/go/page.tsx.
+    path: '/advertising/go',
     icon: '/icons/yll-advertising-192.png',
-    // iOS reads the manifest of whatever page is on screen. A signed-out worker
-    // is bounced to /login, which carries the QUOTE app's icon and name, so
-    // installing from there would save the wrong app.
+    // iOS reads the manifest of whatever page is ON SCREEN, and /login is a
+    // root-layout page carrying the QUOTE branding, so installing before
+    // signing in still saves the wrong icon. Both cameras carry the
+    // advertising branding, so once the camera is up either one is fine.
     caution:
-      'Sign in first. If you land on the login screen, log in before you add it to your home screen, or you will save the wrong icon.',
+      'Sign in first, and wait until the camera is on screen before you add it to your home screen. If you add it from the login screen you will save the wrong icon.',
   },
 ];
 
