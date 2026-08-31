@@ -25,6 +25,9 @@ const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker, earningsS
       // Fires ONCE as the settlement lines land, before the write verifies
       // itself — models a void winning the gap after the placements were read.
       onLinesInsertOnce: null as null | (() => void),
+      // Fires ONCE after a settlement row is read, before the caller acts on
+      // it: models another admin winning the gap between read and write.
+      onSettlementReadOnce: null as null | (() => void),
       // How many of the next settlement deletes should fail. A delete that
       // can never fail leaves the unwind's retry and its two messages
       // untestable, which is how an unprobed guard ships.
@@ -106,7 +109,15 @@ function makeDb() {
             // error and null data rather than the first row.
             limit(n: number) {
               const all = rowsFor(table).filter((r) => preds.every((p) => p(r)));
-              return Promise.resolve({ data: all.slice(0, n), error: null });
+              const out = all.slice(0, n).map((r) => ({ ...r }));
+              if (table === 'advertising_settlements') {
+                const hook = stateRef.current.onSettlementReadOnce;
+                if (hook) {
+                  stateRef.current.onSettlementReadOnce = null;
+                  hook();
+                }
+              }
+              return Promise.resolve({ data: out, error: null });
             },
           };
           return b;
@@ -288,6 +299,7 @@ beforeEach(() => {
   stateRef.current.placementWrites = 0;
   stateRef.current.dropLinesOnce = 0;
   stateRef.current.onLinesInsertOnce = null;
+  stateRef.current.onSettlementReadOnce = null;
   stateRef.current.failSettlementDeletes = 0;
   stateRef.current.seq = 0;
   dbRef.current = makeDb();
@@ -671,6 +683,34 @@ describe('row 492: a payment recorded by mistake can be undone', () => {
     ).length;
     expect(afterFirst).toBe(1);
     expect(afterSecond).toBe(1);
+  });
+
+  it('writes no audit row when another admin won the race', async () => {
+    const a = seedPlacement({ accepted_rate_cents: 250 });
+    const settlement = await recordSettlement('worker-1', [String(a.id)], 'admin-1', { method: 'cash' });
+
+    // A genuine race: our caller reads the settlement as live, and the other
+    // admin's void lands before our own write. Their stamp wins the CAS.
+    const row = stateRef.current.settlements.find((r) => r.id === settlement.id)!;
+    stateRef.current.onSettlementReadOnce = () => {
+      row.voided_at = '2026-08-31T09:00:00.000Z';
+      row.voided_by = 'admin-other';
+      row.void_reason = 'the other admin got there first';
+      for (const line of stateRef.current.lines) line.voided_at = '2026-08-31T09:00:00.000Z';
+    };
+
+    const result = await voidSettlement(settlement.id, 'admin-2', 'my reason');
+
+    // We report THEIR void, not ours...
+    expect(result.voidedBy).toBe('admin-other');
+    expect(result.voidReason).toBe('the other admin got there first');
+    // ...and we write nothing to the trail, because this call changed
+    // nothing. A second settlement_voided carrying admin-2 and "my reason"
+    // would record a void that never happened.
+    const voids = logAdvertisingActivity.mock.calls.filter(
+      (c) => (c[0] as { action?: string }).action === 'settlement_voided',
+    );
+    expect(voids).toHaveLength(0);
   });
 
   it('audits the void with the total it reverses and the acting admin', async () => {

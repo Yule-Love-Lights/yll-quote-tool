@@ -32,11 +32,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const message = e instanceof Error ? e.message : 'Could not undo the payment';
     console.error('POST /api/admin/advertising/settlements/[id]/void:', message);
     const missing = /no settlement found/i.test(message);
+    // "Nothing was changed" is only true BEFORE the lines are released. Once
+    // they are, the payment already counts as nothing while still reading as
+    // live, and the fix is to run the undo again (technical lens, PR #1136).
+    const halfDone = /run the undo again/i.test(message);
     return NextResponse.json(
       {
         error: missing
           ? 'That payment no longer exists. Reload the pay screen.'
-          : 'Could not undo the payment. Nothing was changed.',
+          : halfDone
+            ? 'The photos were released but the payment still shows as live. Undo it again to finish.'
+            : 'Could not undo the payment. Nothing was changed.',
       },
       { status: missing ? 404 : 500 },
     );

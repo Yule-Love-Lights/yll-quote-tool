@@ -411,8 +411,8 @@ export default function CampaignDetailScreen({
                             onClick={() => {
                               const reason = window.prompt(
                                 p.status === 'accepted'
-                                  ? 'Void this ACCEPTED placement? It stops counting for pay, allotments and stock. If this photo has already been PAID it cannot be voided at all. Why? (required, permanent record)'
-                                  : 'Void this placement? It stops counting for pay, allotments and stock. Why? (required, permanent record)',
+                                  ? 'Void this ACCEPTED placement? It stops counting for pay and stock. The sign still counts against the allotment, because it is in the ground. If the photo has been PAID, undo that payment first. Why? (required, permanent record)'
+                                  : 'Void this placement? It stops counting for pay and stock. The sign still counts against the allotment. Why? (required, permanent record)',
                               );
                               if (reason && reason.trim()) {
                                 void act({ action: 'void', placementId: p.id, reason: reason.trim() }, p.id);

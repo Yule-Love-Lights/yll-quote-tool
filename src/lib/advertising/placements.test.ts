@@ -47,6 +47,11 @@ vi.mock('@/lib/supabase', () => ({
 function rowMatches(row: AnyRow, filters: Filter[]): boolean {
   return filters.every((f) => {
     if (f.kind === 'in') return f.vals.includes(row[f.col]);
+    // `.is(col, null)` must treat a column the fixture never set as NULL,
+    // because that is what the database holds: a column omitted from an
+    // insert is NULL, never undefined. Strict equality here quietly made
+    // every `.is(..., null)` filter match nothing on such a row.
+    if (f.kind === 'is' && f.val === null) return row[f.col] == null;
     return row[f.col] === f.val;
   });
 }
@@ -634,11 +639,68 @@ describe('voidPlacement (Naldo 2026-08-29: the duplicate-overcount fix)', () => 
       settlement_id: 'settlement-1',
       placement_id: p.id,
       amount_cents: 250,
+      voided_at: null, // LIVE, and explicitly so
     });
 
-    await expect(voidPlacement(String(p.id), 'admin-1', 'duplicate')).rejects.toThrow(/already been paid/i);
+    await expect(voidPlacement(String(p.id), 'admin-1', 'duplicate')).rejects.toThrow(/has been paid/i);
     expect(placementUpdates()).toHaveLength(0);
     expect(stateRef.current.tables.advertising_placements[0].voided_at).toBeNull();
+  });
+
+  // The claim the migration and the PR body both make: "a photo whose payment
+  // was voided can be voided itself again". The existing test for that
+  // asserted isPlacementSettled, which is a DIFFERENT function in a different
+  // module, so the real guard was never exercised and shipped still refusing.
+  // Both the technical and admin lenses caught it. This drives voidPlacement.
+  it('lets a photo be voided once the payment covering it has been voided', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    // A payment that has since been VOIDED: its line carries the stamp too.
+    stateRef.current.tables.advertising_settlement_lines.push({
+      id: 'line-1',
+      settlement_id: 'settlement-1',
+      placement_id: p.id,
+      amount_cents: 250,
+      voided_at: '2026-08-31T10:00:00.000Z',
+    });
+
+    const voided = await voidPlacement(String(p.id), 'admin-1', 'duplicate of another photo');
+    expect(voided.voidedAt).toBeTruthy();
+    expect(voided.voidReason).toBe('duplicate of another photo');
+  });
+
+  it('still refuses while the payment covering the photo is LIVE', async () => {
+    const { voidPlacement } = await import('./placements');
+    const campaign = seedCampaign();
+    const worker = seedWorker();
+    const p = seedPlacement({
+      campaign_id: campaign.id,
+      worker_id: worker.id,
+      status: 'accepted',
+      accepted_rate_cents: 250,
+      reviewed_by: REVIEWER,
+      reviewed_at: '2026-08-24T16:00:00.000Z',
+    });
+    stateRef.current.tables.advertising_settlement_lines.push({
+      id: 'line-1',
+      settlement_id: 'settlement-1',
+      placement_id: p.id,
+      amount_cents: 250,
+      voided_at: null,
+    });
+
+    await expect(voidPlacement(String(p.id), 'admin-1', 'duplicate')).rejects.toThrow(/has been paid/i);
+    // and it points at the remedy that actually exists now
+    await expect(voidPlacement(String(p.id), 'admin-1', 'duplicate')).rejects.toThrow(/undo that payment/i);
   });
 
   it('a payment landing mid-void unwinds the void instead of leaving the row paid AND voided', async () => {

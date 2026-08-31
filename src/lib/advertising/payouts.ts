@@ -459,6 +459,8 @@ export async function voidSettlement(
     .eq('settlement_id', id)
     .is('voided_at', null);
   if (linesError) {
+    // Nothing has moved yet: this is the FIRST write, so the payment is
+    // still whole and still counts. Safe to say nothing changed.
     throw new Error(`voidSettlement: the photos could not be released (${linesError.message}), nothing was voided`);
   }
 
@@ -469,12 +471,24 @@ export async function voidSettlement(
     .is('voided_at', null)
     .select(SETTLEMENT_SELECT)
     .maybeSingle();
-  if (error) throw new Error(`voidSettlement: ${error.message}`);
+  if (error) {
+    // The lines ARE already released, so this is NOT "nothing changed": the
+    // payment already counts as $0 while still reading as live. Retrying
+    // this same call heals it (the line update is a no-op second time), so
+    // say that rather than implying the books are untouched.
+    throw new Error(
+      `voidSettlement: the photos were released but settlement ${id} still reads as live (${error.message}) — run the undo again to finish it`,
+    );
+  }
 
-  let voided = data as SettlementRow | null;
+  const voided = data as SettlementRow | null;
   if (!voided) {
-    // Another admin won the race and voided it between our read and our
-    // write. Their stamp stands; the lines are already released either way.
+    // Another admin won the race between our read and our write. Their stamp
+    // stands, and the lines are released either way. Return THEIR row and
+    // write NO audit event: this call changed nothing, and a second
+    // settlement_voided carrying our actor and our reason would put a void
+    // in the trail that never happened, misattributed to the wrong admin.
+    // voidPlacement's own lost-race branch returns early for the same reason.
     const { data: currentRows } = await db
       .from('advertising_settlements')
       .select(SETTLEMENT_SELECT)
@@ -484,7 +498,7 @@ export async function voidSettlement(
     if (!current?.voided_at) {
       throw new Error(`voidSettlement: settlement ${id} could not be voided`);
     }
-    voided = current;
+    return toSettlement(current, lines.filter((line) => !line.voided_at).length);
   }
 
   await logAdvertisingActivity({

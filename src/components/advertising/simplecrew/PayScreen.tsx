@@ -75,6 +75,10 @@ export default function PayScreen() {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
+  // Which payment is being undone, so the feedback appears NEXT TO the button
+  // rather than only in a banner at the top of a scrolled page (staff lens).
+  const [undoing, setUndoing] = useState<string | null>(null);
+  const [undoError, setUndoError] = useState<{ id: string; message: string } | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -112,6 +116,8 @@ export default function PayScreen() {
     );
     if (!reason || !reason.trim()) return;
     setBusy(true);
+    setUndoing(settlement.id);
+    setUndoError(null);
     setError(null);
     try {
       const res = await fetch(`/api/admin/advertising/settlements/${settlement.id}/void`, {
@@ -121,14 +127,18 @@ export default function PayScreen() {
       });
       if (!res.ok) {
         const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-        setError(payload?.error ?? 'Could not undo the payment.');
+        const message = payload?.error ?? 'Could not undo the payment.';
+        setUndoError({ id: settlement.id, message });
+        setError(message);
         return;
       }
       setNotice(`Undid ${dollars(settlement.totalCents)} paid to ${worker.displayName}.`);
     } catch {
+      setUndoError({ id: settlement.id, message: 'Could not undo the payment.' });
       setError('Could not undo the payment.');
     } finally {
       setBusy(false);
+      setUndoing(null);
       setTick((t) => t + 1);
     }
   }, []);
@@ -320,12 +330,17 @@ export default function PayScreen() {
                             className="rounded-full border px-3 py-1 text-xs disabled:opacity-40"
                             style={{ borderColor: '#DCD4BE', color: SC.muted }}
                           >
-                            Undo…
+                            {undoing === st.id ? 'Undoing…' : 'Undo…'}
                           </button>
                         )}
                       </span>
                     </div>
                   ))}
+                  {undoError && payout.settlements.some((st) => st.id === undoError.id) && (
+                    <p className="py-1 text-xs" style={{ color: SC.danger }}>
+                      {undoError.message}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -360,8 +375,9 @@ export default function PayScreen() {
                 Covers {payFor.payableCount} accepted photo{payFor.payableCount === 1 ? '' : 's'} that have not
                 been paid yet. This records money you have already handed over; it does not send anything.
               </p>
-              <p className="mt-2 text-sm font-semibold" style={{ color: SC.danger }}>
-                There is no undo. Once recorded, these photos are paid for good and can no longer be voided.
+              <p className="mt-2 text-sm" style={{ color: SC.muted }}>
+                Recorded payments stay on the books. If this one is wrong you can undo it from this screen,
+                which puts the money back as unpaid and frees the photos again.
               </p>
             </div>
 

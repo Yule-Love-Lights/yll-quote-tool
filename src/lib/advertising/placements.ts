@@ -564,23 +564,35 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   return resubmitted;
 }
 
-/** Has this placement already been paid? Read straight from the settlement
- * lines rather than through payouts.ts, which imports THIS module for the
- * earnings engine; the guard has to sit at the state change (voidPlacement),
- * so the one-line read lives here to keep the import one-directional. */
+/** Has this placement already been paid, RIGHT NOW? Read straight from the
+ * settlement lines rather than through payouts.ts, which imports THIS module
+ * for the earnings engine; the guard has to sit at the state change
+ * (voidPlacement), so the one-line read lives here to keep the import
+ * one-directional.
+ *
+ * Only a LIVE line counts. When a payment is voided (ledger row 492) its
+ * lines are stamped too, the money goes back to unpaid, and the photo is
+ * released, so it can be voided again. Missing that filter kept a released
+ * photo locked forever while the pay screen said it was unpaid, which is the
+ * state this whole overlay exists to avoid. It has to stay in step with
+ * isPlacementSettled in payouts.ts: two readers of one rule. */
 async function placementIsPaid(db: Db, placementId: string): Promise<boolean> {
   const { data, error } = await db
     .from('advertising_settlement_lines')
     .select('id')
     .eq('placement_id', placementId)
+    .is('voided_at', null) // only a LIVE line is a claim (ledger row 492)
     .limit(1);
   if (error) throw new Error(`voidPlacement: could not check whether this photo was paid — ${error.message}`);
   return ((data ?? []) as unknown[]).length > 0;
 }
 
 /**
- * VOID a placement (Naldo 2026-08-29): it stops counting anywhere — pay,
- * estimates, sign allotments, stock counts, duplicate flags — while the row,
+ * VOID a placement (Naldo 2026-08-29): it stops counting for pay, estimates,
+ * stock counts and duplicate flags — but NOT for sign allotments, which keep
+ * counting it (Naldo 2026-08-31, ledger row 479: a placed sign is a used
+ * sign, and the plastic is in the ground whatever happens to the photo)
+ * — while the row,
  * its status history, and its stamped rate remain as the record. There is no
  * un-void; a wrongly voided sign gets re-submitted. CAS on voided_at IS NULL:
  * the first void wins and a retry returns it unchanged.
@@ -607,7 +619,7 @@ export async function voidPlacement(
 
   if (await placementIsPaid(db, placementId)) {
     throw new Error(
-      `voidPlacement: this photo has already been paid and cannot be voided — settle the difference with the worker instead`,
+      `voidPlacement: this photo has been paid and cannot be voided — undo that payment on the pay screen first, then void the photo`,
     );
   }
 
