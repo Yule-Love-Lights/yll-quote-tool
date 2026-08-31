@@ -18,12 +18,16 @@ export default function SettingsScreen({
   logoutUrl,
   extraRows,
   paySection,
+  extraSection,
 }: {
   passwordUrl: string;
   logoutUrl: string;
   extraRows?: { label: string; href: string }[];
   /** Rendered below the Account rows (the admin Pay summary). */
   paySection?: React.ReactNode;
+  /** Rendered after paySection: sign allotments for an admin, the
+   * worker's own remaining count for crew. */
+  extraSection?: React.ReactNode;
 }) {
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState('');
@@ -85,6 +89,8 @@ export default function SettingsScreen({
           <Row key={r.href} label={r.label} icon={<ChevronRightIcon size={20} />} href={r.href} />
         ))}
       </div>
+
+      {extraSection}
 
       {paySection && <div className="mt-8">{paySection}</div>}
 
