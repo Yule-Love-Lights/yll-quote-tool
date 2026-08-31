@@ -76,7 +76,19 @@ export const defaultScheduleDay = (now: Date = new Date()) => etDayKey(now);
 const today = () => defaultScheduleDay();
 const hours = (n: number) => `${Math.round(n * 10) / 10}h`;
 
-export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
+export function ScheduleDay({
+  crew,
+  onDateChange,
+}: {
+  crew: CrewMember[];
+  /**
+   * Called whenever the day picker moves to a different day (2026-08-31).
+   * The Schedule page's fleet column shows only on today, and the date lives
+   * in here, so this is how the sibling column learns about a change. Optional
+   * and side-effect free for every other caller.
+   */
+  onDateChange?: (date: string) => void;
+}) {
   const [date, setDate] = useState(today());
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [capacity, setCapacity] = useState<DayCapacity | null>(null);
@@ -193,6 +205,10 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
             if (next === date) return;
             setLoading(true);
             setDate(next);
+            // After the no-op guard above on purpose: a retyped identical date
+            // is not a change, and telling the sibling column otherwise would
+            // make it re-evaluate for nothing.
+            onDateChange?.(next);
           }}
           className="border border-gray-300 rounded-md px-3 py-1.5 text-sm"
         />

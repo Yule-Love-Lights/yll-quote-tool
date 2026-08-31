@@ -5,10 +5,16 @@
 // identity control instead of two — which is also how the search box pays for
 // its width at 1024px, where the row had about 12px to spare.
 //
-// What it shows: who is signed in (name, falling back to email), their role, a
-// link to Settings, the View-as switcher for admins, and Sign out. Sign out
-// MOVED into this menu rather than disappearing; taking it away would strand a
-// staffer on a shared computer with no way out.
+// What it shows: who is signed in (name, falling back to email), their role,
+// links to Settings and Insights, the View-as switcher for admins, and Sign
+// out. Sign out MOVED into this menu rather than disappearing; taking it away
+// would strand a staffer on a shared computer with no way out.
+//
+// Settings and Insights moved here from the top bar (Naldo, 2026-08-31).
+// Settings was reachable from two places at once, which was the complaint.
+// This is now the ONLY door to it, so nothing here may be conditional on
+// anything: an operator who cannot open this menu cannot reach Settings at
+// all.
 //
 // The trigger shows initials; the name is inside the menu. See the comment on
 // the trigger below for why it is not printed in the bar.
@@ -105,6 +111,8 @@ export function AccountMenu({
             )}
           </div>
 
+          {/* Both are plain links for EVERY role, admin or not. They are the
+              only doors to these two pages now that the tabs are gone. */}
           <Link
             href="/settings"
             role="menuitem"
@@ -113,6 +121,15 @@ export function AccountMenu({
             style={{ color: 'var(--op-text-2)' }}
           >
             Settings
+          </Link>
+          <Link
+            href="/insights"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="block px-3 py-1.5 text-sm hover:bg-black/5"
+            style={{ color: 'var(--op-text-2)' }}
+          >
+            Insights
           </Link>
 
           {isAdmin && (

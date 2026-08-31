@@ -45,6 +45,14 @@ function NavBadge({ count, overdue, label }: { count: number; overdue: boolean; 
 // button from hit-testing/tab order — no separate disabled handling needed).
 type SessionState = 'unknown' | 'signedIn' | 'signedOut';
 
+// The pages that live in the account menu rather than the tab row (Naldo,
+// 2026-08-31). Shared by the desktop menu's siblings in AccountMenu.tsx and
+// the mobile dropdown below, so the two copies cannot drift apart.
+const ACCOUNT_LINKS: ReadonlyArray<{ label: string; href: string }> = [
+  { label: 'Settings', href: '/settings' },
+  { label: 'Insights', href: '/insights' },
+];
+
 export function OperatorNav({
   active,
   inboxOpenLeads = 0,
@@ -268,19 +276,19 @@ export function OperatorNav({
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
       <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
-        {/* The wordmark reads YLL at 1024px and up (Naldo, 2026-08-30).
-            MEASURED, not guessed: this row is `max-w-6xl`, so its usable
-            width tops out at 1152px and NEVER grows past it, however wide the
-            monitor. A wider screen therefore buys nothing, and the full name
-            costs 109px of a budget the search box now shares. The full name
-            still renders below 1024px, where the nav collapses to a hamburger
-            and the row has room to spare. */}
+        {/* The full wordmark at every width. It was shortened to YLL on
+            2026-08-30, when the search box had to be paid for out of a row
+            that already held 12 tabs; dropping Customers, Fleet, Insights and
+            Settings on 2026-08-31 bought that width back with room to spare.
+            The number that governs this row has not changed: it is
+            `max-w-6xl`, so its usable width tops out at 1152px however wide
+            the monitor, and a wider screen buys nothing. Re-measured with both
+            badges showing, the numbers are in OperatorNav.test.tsx. */}
         <span
           className="text-xs font-semibold uppercase tracking-widest shrink-0"
           style={{ color: 'var(--brand-evergreen-3)' }}
         >
-          <span className="lg:hidden">Yule Love Lights</span>
-          <span className="hidden lg:inline">YLL</span>
+          Yule Love Lights
         </span>
 
         {/* Tablet-portrait and phone: the search box takes the width the nav
@@ -289,11 +297,11 @@ export function OperatorNav({
           <HeaderSearch variant="mobile" />
         </div>
 
-        {/* Desktop: 112px at 1024px, 160px at 1280px and up. Both numbers
-            come from the measured budget above, not from taste: at 1280px the
-            row has 41px of slack left with this box at 160px. Ctrl+K and
-            Cmd+K focus this one. */}
-        <div className="hidden lg:block lg:w-28 xl:w-40 shrink-0">
+        {/* Desktop: 160px at 1024px, 224px at 1280px and up. Both numbers
+            come from the measured budget, not from taste: with the four tabs
+            gone the tightest width now leaves 46px of slack. Ctrl+K and Cmd+K
+            focus this one. */}
+        <div className="hidden lg:block lg:w-40 xl:w-56 shrink-0">
           <HeaderSearch variant="desktop" />
         </div>
 
@@ -336,7 +344,7 @@ export function OperatorNav({
         <ul className="hidden lg:flex items-center gap-0 text-sm">
           {items.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="lg:px-0.5 xl:px-1.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
+              <Link href={item.href} className="lg:px-1.5 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
                 {item.label}
                 {badgeFor(item)}
               </Link>
@@ -356,17 +364,17 @@ export function OperatorNav({
                 width — that's the false-pass trap the lg:px-1.5 comment above
                 explains. Forcing single-line makes its true width count
                 toward the overflow check instead of hiding behind a wrap. */}
-            {/* "+ Quote" at every desktop width (Naldo, 2026-08-30): the
-                shorter label is part of what pays for the search box, and the
-                row's width does not grow past 1152px, so there is no width at
-                which the longer label becomes affordable. The mobile menu
-                below still spells out "+ New quote", where there is room. */}
+            {/* Full label again. It was "+ Quote" for one day (2026-08-30)
+                to pay for the search box; the four tabs that left on
+                2026-08-31 covered that cost, so the button says what it does
+                once more. whitespace-nowrap keeps it single-line, which is
+                what stops a silent wrap hiding a real overflow. */}
             <Link
               href="/quote/new"
               className="whitespace-nowrap lg:px-2 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
-              + Quote
+              + New quote
             </Link>
           </li>
           {/* Always mounted (ledger #347 fix round) — reserves its layout
@@ -443,6 +451,22 @@ export function OperatorNav({
               {roleLabel(role) ?? 'Signed in'}
             </p>
           </li>
+          {/* Settings and Insights left the tab list on 2026-08-31 and live in
+              the desktop account menu. This dropdown IS the account menu on a
+              phone, so they have to appear here too, or the two pages would be
+              unreachable below 1024px. */}
+          {ACCOUNT_LINKS.map(link => (
+            <li key={link.href}>
+              <Link
+                href={link.href}
+                onClick={() => setOpen(false)}
+                className="flex items-center px-4 py-3 text-sm font-medium border-b"
+                style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+              >
+                {link.label}
+              </Link>
+            </li>
+          ))}
           {/* "+ New quote" first in the mobile menu — same one-click-access
               ask as the desktop CTA above. */}
           <li>
