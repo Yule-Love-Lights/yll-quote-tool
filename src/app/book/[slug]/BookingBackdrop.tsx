@@ -55,10 +55,13 @@ export function BookingBackdrop({ photos }: { photos: BackdropPhoto[] }) {
           }`}
         />
       ))}
-      {/* Scrim. Heavier at the bottom on a phone so the band blends into the
-          page behind the card; a flatter, overall darkening on desktop, where
-          the card sits in the middle of the picture. */}
-      <div className="absolute inset-0 bg-gradient-to-b from-[#060B0F]/30 via-[#060B0F]/75 to-[#060B0F] md:from-[#060B0F]/70 md:via-[#060B0F]/75 md:to-[#060B0F]/85" />
+      {/* Scrim. On a phone it gets heavier towards the bottom so the band
+          blends into the page behind the card. On desktop it is heaviest at the
+          top, where the heading sits over whatever the sky happens to be, and
+          lightest through the middle, where the house and its lights are. A
+          flat darkening reads the whole photo as grey, and the point of the
+          page is that someone can see the work. */}
+      <div className="absolute inset-0 bg-gradient-to-b from-[#060B0F]/20 via-[#060B0F]/45 to-[#060B0F] md:from-[#060B0F]/80 md:via-[#060B0F]/45 md:to-[#060B0F]/65" />
     </div>
   );
 }

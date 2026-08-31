@@ -52,13 +52,22 @@ export default async function BookingPage({ params }: { params: Promise<Params> 
   if (!calendar) notFound();
 
   return (
-    <div className="relative min-h-screen w-full bg-[#060B0F] text-white">
+    // shrink-0 because the root layout makes <body> a flex column, and a flex
+    // item is shrunk to the container height by default. Without it this div
+    // stays exactly one viewport tall while the booking widget overflows past
+    // it, and the operator surface's cream body background shows through below
+    // the fold.
+    <div className="relative min-h-screen w-full shrink-0 bg-[#060B0F] text-white">
       <BookingBackdrop photos={BACKDROP_PHOTOS} />
 
       {/* pt-72 clears the mobile photo band (h-64) that BookingBackdrop pins to
           the top of the page. From md up the backdrop is fixed behind
-          everything, so the padding goes away and the card centers instead. */}
-      <main className="relative mx-auto flex w-full max-w-2xl flex-col items-center px-4 pt-72 pb-16 md:min-h-screen md:justify-center md:pt-16">
+          everything, so that clearance is not needed and the padding shrinks.
+          Deliberately NOT vertically centred: the booking widget is taller than
+          a laptop viewport once GoHighLevel measures it, and centring content
+          taller than its container overflows in both directions, which puts the
+          top of the card above the scroll origin where nobody can reach it. */}
+      <main className="relative mx-auto flex w-full max-w-2xl flex-col items-center px-4 pt-72 pb-16 md:pt-16 md:pb-20">
         <Image
           src="/yule-site-logo-2.png"
           alt="Yule Love Lights"
