@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { downscaleForUploadAsBlob, MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 import {
   chipStateFor,
+  COLD_FIX_OPTIONS,
   decideSend,
   GPS_TICK_MS,
   isFixFresh,
@@ -22,6 +23,14 @@ import {
 } from './cameraGps';
 import { decideCampaign, readRememberedCampaign, rememberCampaign, shouldAnnounceCarryOver } from './campaignMemory';
 import { CloseIcon, FlashOffIcon, FlipCameraIcon, SearchIcon } from './icons';
+import { describeRestoredBanner } from './photoQueueRestore';
+import {
+  deletePhoto,
+  generatePhotoId,
+  loadPendingPhotosForRestore,
+  writePhoto,
+  type StoredPhoto,
+} from './photoQueueStorage';
 import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
 
 type Campaign = { id: string; name: string; kind: 'yard_sign' | 'door_hanger'; lastPhotoAt: string | null };
@@ -43,7 +52,22 @@ type QueueItem = {
   note: string;
   noteSaved: string;
   error?: string;
+  /** The campaign this shot belongs to, fixed the moment it was taken.
+   * Read from the ITEM, never from whichever campaign happens to be
+   * selected right now: a retry, or a resume after reopening the app,
+   * must always go to the right campaign even if the worker has since
+   * switched campaigns in the top bar (Naldo, 2026-08-31, offline
+   * durability). */
+  campaignId: string;
+  campaignName: string;
+  /** When the shutter fired. Carried through to storage so a restore can
+   * list photos in the order they were taken. */
+  capturedAt: number;
 };
+
+/** The fields that never change for a given shot once it exists, needed
+ * both to talk to the server and to write to durable storage. */
+type ShotIdentity = { campaignId: string; campaignName: string; capturedAt: number };
 
 export default function CameraScreen({
   campaignsUrl,
@@ -107,6 +131,13 @@ export default function CameraScreen({
   // Object URLs accumulate over a long shooting session; revoke on unmount
   // (and on dismiss below) so a 50-shot canvass cannot bloat the tab.
   const urlsRef = useRef<string[]>([]);
+  // Photos the worker threw away, and the in-flight request for each live
+  // shot. Without these, a discard removed the photo from the screen while
+  // its retry loop kept running and uploaded it anyway: binned work still
+  // became a paid placement, and the durable "a discarded photo cannot
+  // come back" promise was false (technical lens HIGH).
+  const discardedRef = useRef<Set<string>>(new Set());
+  const abortRef = useRef<Map<string, AbortController>>(new Map());
   useEffect(() => {
     return () => {
       urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
@@ -255,7 +286,7 @@ export default function CameraScreen({
             accuracyM: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
           }),
         () => resolve(null),
-        { enableHighAccuracy: true, timeout: 12_000, maximumAge: 0 },
+        COLD_FIX_OPTIONS,
       );
     });
   };
@@ -286,7 +317,7 @@ export default function CameraScreen({
   /** One attempt at sending a shot. Returns what happened; decideSend
    * (cameraGps.ts, tested) decides what that means. */
   const attemptSend = useCallback(
-    async (blob: Blob, campaignId: string): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
+    async (blob: Blob, campaignId: string, key: string): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
       try {
         const gps = await getGps();
         if (!gps) return { outcome: { kind: 'no_gps', denied: gpsStatusRef.current === 'denied' } };
@@ -300,7 +331,14 @@ export default function CameraScreen({
         if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
         fd.set('capturedAt', new Date().toISOString());
         fd.set('photo', sized, 'proof.jpg');
-        const res = await fetch(submitUrl, { method: 'POST', body: fd });
+        const controller = new AbortController();
+        abortRef.current.set(key, controller);
+        let res: Response;
+        try {
+          res = await fetch(submitUrl, { method: 'POST', body: fd, signal: controller.signal });
+        } finally {
+          abortRef.current.delete(key);
+        }
         const body = (await res.json().catch(() => ({}))) as {
           placement?: { id: string; suggestedAddress: string | null };
           error?: string;
@@ -319,24 +357,45 @@ export default function CameraScreen({
   // losing roughly one shot in five, every lost photo thrown away and
   // re-shot): a photo that has been taken is never discarded by the app.
   const sendShot = useCallback(
-    async (key: string, blob: Blob, campaignId: string): Promise<void> => {
+    async (key: string, blob: Blob, stable: ShotIdentity): Promise<void> => {
       const set = (patch: Partial<QueueItem>) =>
         setQueue((q) => q.map((it) => (it.key === key ? { ...it, ...patch } : it)));
 
+      const persistStatus = (status: StoredPhoto['status'], attempts: number, error?: string) =>
+        writePhoto({
+          id: key,
+          blob,
+          campaignId: stable.campaignId,
+          campaignName: stable.campaignName,
+          note: '',
+          capturedAt: stable.capturedAt,
+          status,
+          attempts,
+          error,
+        });
+
       for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
+        // Checked before every attempt and after every await below, so a
+        // discard landing mid-flight stops the next one.
+        if (discardedRef.current.has(key)) return;
         set({ status: 'uploading', attempts: attempt, error: undefined });
-        const { outcome, placement } = await attemptSend(blob, campaignId);
+        // Written BEFORE the network call starts, and waited on: if the app
+        // dies mid-request, storage must already say "this might be
+        // sending" so a restore treats it as ambiguous rather than as a
+        // plain, safe-to-resend failure (photoQueueRestore.ts owns that
+        // call; a photo that has really landed must never be sent twice).
+        await persistStatus('uploading', attempt);
+        const { outcome, placement } = await attemptSend(blob, stable.campaignId, key);
+        if (discardedRef.current.has(key)) return;
         const decision = decideSend(outcome, attempt);
 
         if (decision.action === 'done' && !placement) {
           // The send succeeded but we never saw the placement back. It may
           // have landed, so do NOT retry it silently: a second copy of a
           // photo is a second pay claim. Hand it to the worker to check.
-          set({
-            status: 'failed',
-            attempts: attempt,
-            error: 'Sent, but no confirmation came back. Check the campaign before sending again.',
-          });
+          const message = 'Sent, but no confirmation came back. Check the campaign before sending again.';
+          set({ status: 'failed', attempts: attempt, error: message });
+          await persistStatus('failed', attempt, message);
           return;
         }
         if (decision.action === 'done' && placement) {
@@ -347,25 +406,91 @@ export default function CameraScreen({
             placementId: placement.id,
             address: placement.suggestedAddress,
           });
+          // The durable fact of success is written BEFORE we try to
+          // reclaim the space. If the delete below fails (a full quota, the
+          // page dying mid-cleanup), the leftover record is left marked
+          // 'uploaded' rather than looking like pending work: a landed
+          // photo must never come back as something still to send.
+          await persistStatus('uploaded', attempt);
+          void deletePhoto(key);
           // Remember only what actually LANDED: a failed upload should not
           // teach the camera anything.
-          rememberCampaign(memoryScope, campaignId, Date.now());
+          rememberCampaign(memoryScope, stable.campaignId, Date.now());
           return;
         }
         if (decision.action === 'retry') {
           set({ status: 'waiting', attempts: attempt, error: decision.reason });
+          await persistStatus('waiting', attempt, decision.reason);
           await sleep(retryDelayMs(attempt));
+        if (discardedRef.current.has(key)) return;
           continue;
         }
         if (decision.action === 'hold') {
           // Kept, not dropped: the worker taps to send it again.
           set({ status: 'failed', attempts: attempt, error: decision.reason });
+          await persistStatus('failed', attempt, decision.reason);
         }
         return;
       }
     },
     [attemptSend, memoryScope],
   );
+
+  // Bring back anything still unsent from a previous session (Naldo,
+  // 2026-08-31, offline durability): a force-quit, a phone reclaiming the
+  // tab, or a plain reload must not lose a photo that was already taken.
+  // Runs once per mount and does not wait on the campaign list or the
+  // camera stream, since every restored photo already carries its own
+  // campaign.
+  const [restoredBanner, setRestoredBanner] = useState<string | null>(null);
+  const restoredOnceRef = useRef(false);
+  useEffect(() => {
+    if (restoredOnceRef.current) return;
+    restoredOnceRef.current = true;
+    let cancelled = false;
+    (async () => {
+      const restored = await loadPendingPhotosForRestore();
+      if (cancelled || restored.length === 0) return;
+      setQueue((q) => [
+        ...restored.map((r): QueueItem => {
+          const previewUrl = URL.createObjectURL(r.blob);
+          urlsRef.current.push(previewUrl);
+          return {
+            key: r.id,
+            previewUrl,
+            blob: r.blob,
+            status: r.status,
+            attempts: r.attempts,
+            address: null,
+            placementId: null,
+            note: r.note,
+            noteSaved: r.note,
+            error: r.error,
+            campaignId: r.campaignId,
+            campaignName: r.campaignName,
+            capturedAt: r.capturedAt,
+          };
+        }),
+        ...q,
+      ]);
+      setRestoredBanner(describeRestoredBanner(restored));
+      for (const r of restored) {
+        // Only a photo whose last known state was a plain, already-seen
+        // failure resumes on its own. One whose last state was mid-upload
+        // is ambiguous and stays put until the worker checks and taps it.
+        if (r.autoResume) {
+          void sendShot(r.id, r.blob, {
+            campaignId: r.campaignId,
+            campaignName: r.campaignName,
+            capturedAt: r.capturedAt,
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sendShot]);
 
   const shoot = useCallback(async () => {
     if (!campaign) {
@@ -389,27 +514,88 @@ export default function CameraScreen({
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
     if (!blob) return;
 
-    const key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const key = generatePhotoId();
+    const capturedAt = Date.now();
     const previewUrl = URL.createObjectURL(blob);
     urlsRef.current.push(previewUrl);
     setQueue((q) => [
-      { key, previewUrl, blob, status: 'uploading', attempts: 0, address: null, placementId: null, note: '', noteSaved: '' },
+      {
+        key,
+        previewUrl,
+        blob,
+        status: 'uploading',
+        attempts: 0,
+        address: null,
+        placementId: null,
+        note: '',
+        noteSaved: '',
+        campaignId: campaign.id,
+        campaignName: campaign.name,
+        capturedAt,
+      },
       ...q,
     ]);
-    void sendShot(key, blob, campaign.id);
+    // Written the moment the shutter fires, before any upload is
+    // attempted: losing power a second later must not lose the photo
+    // (Naldo, 2026-08-31, offline durability). writePhoto never throws or
+    // hangs (photoQueueStorage.ts), so a phone in private mode or a full
+    // quota still shoots and uploads normally; it just is not durable.
+    await writePhoto({
+      id: key,
+      blob,
+      campaignId: campaign.id,
+      campaignName: campaign.name,
+      note: '',
+      capturedAt,
+      status: 'uploading',
+      attempts: 0,
+    });
+    void sendShot(key, blob, { campaignId: campaign.id, campaignName: campaign.name, capturedAt });
   }, [campaign, needsConfirm, submitUrl, gpsFailMessage, memoryScope, sendShot]);
 
-  const retryShot = useCallback((item: QueueItem) => {
-    if (!campaign) return;
-    setQueue((q) => q.map((it) => (it.key === item.key ? { ...it, status: 'uploading', error: undefined } : it)));
-    void sendShot(item.key, item.blob, campaign.id);
-  }, [campaign, sendShot]);
+  const retryShot = useCallback(
+    (item: QueueItem) => {
+      setQueue((q) => q.map((it) => (it.key === item.key ? { ...it, status: 'uploading', error: undefined } : it)));
+      void sendShot(item.key, item.blob, {
+        campaignId: item.campaignId,
+        campaignName: item.campaignName,
+        capturedAt: item.capturedAt,
+      });
+    },
+    [sendShot],
+  );
 
   const discard = (item: QueueItem) => {
-    if (!window.confirm('Throw this photo away? You would have to go back and shoot the sign again.')) return;
+    // The question is different for a photo that may already have reached
+    // the office: throwing that one away does NOT mean a walk back, and
+    // this is the one place the copy must not be wrong (staff lens MED).
+    const mayHaveLanded = (item.error ?? '').includes('may have already');
+    const question = mayHaveLanded
+      ? 'Throw this photo away? If it already reached the office it stays there. If it did not, this sign goes unrecorded.'
+      : 'Throw this photo away? You would have to go back and shoot the sign again.';
+    if (!window.confirm(question)) return;
+    // Registered BEFORE anything else, and the request aborted, so an
+    // in-flight retry stops now instead of landing after the bin.
+    discardedRef.current.add(item.key);
+    abortRef.current.get(item.key)?.abort();
+    abortRef.current.delete(item.key);
     URL.revokeObjectURL(item.previewUrl);
     urlsRef.current = urlsRef.current.filter((u) => u !== item.previewUrl);
     setQueue((q) => q.filter((it) => it.key !== item.key));
+    // The durable 'discarded' fact is written before the delete. If the
+    // delete then fails (a full quota), the leftover record is left marked
+    // discarded rather than looking like pending work, so a photo the
+    // worker deliberately threw away cannot come back on the next restore.
+    void writePhoto({
+      id: item.key,
+      blob: item.blob,
+      campaignId: item.campaignId,
+      campaignName: item.campaignName,
+      note: item.note,
+      capturedAt: item.capturedAt,
+      status: 'discarded',
+      attempts: item.attempts,
+    }).then(() => deletePhoto(item.key));
   };
 
   const saveNote = async (item: QueueItem) => {
@@ -507,11 +693,14 @@ export default function CameraScreen({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-lg font-medium">
-                      {item.status === 'waiting' || item.status === 'failed'
-                        ? `${item.error ?? 'Waiting'} Photo saved.`
-                        : (item.address ?? 'Looking up address…')}
-                    </p>
+                    {item.status === 'waiting' || item.status === 'failed' ? (
+                      // Deliberately NOT truncated: the instruction sits at
+                      // the end of this sentence, and a phone row cut it off
+                      // after a dozen characters (staff lens MED).
+                      <p className="text-base font-medium">Photo saved. {item.error ?? 'Waiting.'}</p>
+                    ) : (
+                      <p className="truncate text-lg font-medium">{item.address ?? 'Looking up address…'}</p>
+                    )}
                     {item.status === 'failed' && (
                       <button type="button" onClick={() => retryShot(item)} className="text-sm underline">
                         try now
@@ -523,6 +712,9 @@ export default function CameraScreen({
                       </button>
                     )}
                   </div>
+                  {(item.status === 'waiting' || item.status === 'failed') && (
+                    <p className="mt-0.5 text-sm text-white/70">For {item.campaignName}</p>
+                  )}
                   <input
                     value={item.note}
                     onChange={(e) =>
@@ -599,6 +791,27 @@ export default function CameraScreen({
             type="button"
             aria-label="Dismiss"
             onClick={() => setCarriedOver(null)}
+            className="rounded-full px-2 py-1.5 text-sm"
+            style={{ color: SC.muted }}
+          >
+            OK
+          </button>
+        </div>
+      )}
+
+      {/* Photos that were still here from before the app closed (Naldo,
+          2026-08-31, offline durability): said in plain words, so the
+          worker knows nothing was lost, not just that the queue looks
+          different than they expect. */}
+      {restoredBanner && (
+        <div className="mx-4 mb-1 flex items-center gap-2 rounded-2xl bg-white/95 px-4 py-3">
+          <span className="min-w-0 flex-1 text-sm" style={{ color: SC.text }}>
+            {restoredBanner}
+          </span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setRestoredBanner(null)}
             className="rounded-full px-2 py-1.5 text-sm"
             style={{ color: SC.muted }}
           >
