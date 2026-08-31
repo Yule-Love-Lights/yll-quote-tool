@@ -61,3 +61,14 @@ describe('parseAllotments failure handling', () => {
     expect(parseAllotments({ balances: [] })).toEqual([]);
   });
 });
+
+describe('a count is never printed as NaN', () => {
+  it('a non-numeric or missing count degrades to zero rather than NaN', () => {
+    const rows = parseAllotments({
+      balances: [{ workerId: 'w1', displayName: 'Joe', issuedTotal: '12 signs', signsUsed: undefined, remaining: null }],
+    });
+    expect(rows).toEqual([
+      { workerId: 'w1', displayName: 'Joe', active: true, issuedTotal: 0, signsUsed: 0, remaining: 0 },
+    ]);
+  });
+});

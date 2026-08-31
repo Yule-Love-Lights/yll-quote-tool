@@ -17,6 +17,14 @@ export type AllotmentRow = {
 
 type RawRow = Partial<AllotmentRow> & { isTest?: boolean };
 
+/** A count we are willing to print. Number(undefined) is NaN and
+ * Number('12 signs') is NaN, and "NaN left" on a screen is worse than
+ * a zero (delta-verify LOW). */
+function count(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
 /** PURE. Reads the route's payload into rows for display. An unusable body
  * yields null, which the caller must render as a failure rather than as an
  * empty list: "no crew yet" and "the read broke" are different facts. Test
@@ -32,9 +40,9 @@ export function parseAllotments(body: unknown): AllotmentRow[] | null {
       workerId: raw.workerId,
       displayName: typeof raw.displayName === 'string' ? raw.displayName : '(unknown worker)',
       active: raw.active !== false,
-      issuedTotal: Number(raw.issuedTotal ?? 0),
-      signsUsed: Number(raw.signsUsed ?? 0),
-      remaining: Number(raw.remaining ?? 0),
+      issuedTotal: count(raw.issuedTotal),
+      signsUsed: count(raw.signsUsed),
+      remaining: count(raw.remaining),
     });
   }
   return rows;
