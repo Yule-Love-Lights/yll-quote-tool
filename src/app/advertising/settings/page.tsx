@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 
 import { getAdvertisingCaller } from '@/lib/auth/advertisingAuth';
 import BlockedNote from '@/components/advertising/simplecrew/BlockedNote';
+import MySignCount from '@/components/advertising/simplecrew/MySignCount';
 import SettingsScreen from '@/components/advertising/simplecrew/SettingsScreen';
 import { WorkerTabs } from '@/components/advertising/simplecrew/Tabs';
 
@@ -21,6 +22,7 @@ export default async function WorkerSettingsPage() {
       <SettingsScreen
         passwordUrl="/api/advertising/account/password"
         logoutUrl="/api/advertising/account/logout"
+        extraSection={<MySignCount />}
       />
       <WorkerTabs active="settings" />
     </>
