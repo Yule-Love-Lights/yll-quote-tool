@@ -181,6 +181,15 @@ export async function POST(req: NextRequest) {
       // worker and campaign. A refusal the admin can act on, not a crash.
       return NextResponse.json({ error: e.message }, { status: 409 });
     }
+    // A photo that has been PAID can never be voided (payouts, row 481), and
+    // that refusal is permanent — reloading and retrying will never make it
+    // succeed. isStateRefusal's /cannot be/ matches this message too, so
+    // without this branch the staffer is told "already reviewed, reload the
+    // queue", which is both false and useless. Pass the real guidance through
+    // (the data layer writes it for a human), minus the function-name prefix.
+    if (/already been paid/i.test(message)) {
+      return NextResponse.json({ error: message.replace(/^voidPlacement:\s*/, '') }, { status: 409 });
+    }
     if (isStateRefusal(message)) {
       return NextResponse.json(
         { error: 'That placement was already reviewed. Reload the queue.' },
