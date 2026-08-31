@@ -416,6 +416,8 @@ describe('the daily crew schedule cron', () => {
   it('does not open the rest of the ops namespace by accident', () => {
     expect(isPublicPath('/api/ops/schedule', 'POST')).toBe(false);
     expect(isPublicPath('/api/ops/crew-day-digest/extra')).toBe(false);
+  });
+});
 
 describe('the crew door (row 466)', () => {
   // The crew session is an httpOnly cookie, not a Supabase session, so the
