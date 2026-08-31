@@ -158,7 +158,12 @@ export default async function FleetClocksPage({
                     {s.officeEntry && (
                       <>
                         {' · '}
-                        <VoidShiftButton shiftId={s.id} />
+                        <VoidShiftButton
+                          shiftId={s.id}
+                          crewName={s.crewName}
+                          clockInAt={s.clockInAt}
+                          clockOutAt={s.clockOutAt}
+                        />
                       </>
                     )}
                     {s.manualBy && (
@@ -170,8 +175,8 @@ export default async function FleetClocksPage({
             )}
             {fieldCrew === null && (
               <p className="text-xs text-red-700 mt-3">
-                The crew list could not be loaded, so the picker below is empty even if people
-                are on the roster. Reload before typing a shift.
+                The crew list could not be loaded, so the Add a shift form is not showing at
+                all. Reload the page before typing a shift.
               </p>
             )}
             <AddShiftForm crew={crewOptions} defaultDate={date} />

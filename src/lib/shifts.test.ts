@@ -90,6 +90,7 @@ const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
       activityInserts: [] as Record<string, unknown>[],
       deleted: [] as ShiftRow[],
       deleteError: null as DbError | null,
+      activityError: null as DbError | null,
       childReadError: null as DbError | null,
     },
   },
@@ -227,7 +228,10 @@ function makeDb() {
         return {
           insert: (payload: Record<string, unknown>) => {
             stateRef.current.activityInserts.push(payload);
-            return Promise.resolve({ error: null });
+            // Supabase returns { error } rather than throwing, so a test that
+            // only models a thrown insert proves nothing about a real DB
+            // failure (the void audit's whole guard rides on this).
+            return Promise.resolve({ error: stateRef.current.activityError });
           },
         } as never;
       }
@@ -410,6 +414,7 @@ beforeEach(() => {
     activityInserts: [],
     deleted: [],
     deleteError: null,
+    activityError: null,
     childReadError: null,
   };
   dbRef.current = makeDb();
@@ -909,6 +914,48 @@ describe('adminVoidShift', () => {
       'edit-race',
     );
     expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('writes the audit row BEFORE the delete, and refuses the void if it cannot be written', async () => {
+    // The audit entry is the only copy of a deleted payroll row, so it cannot
+    // be best-effort: if it fails, the row must survive. Supabase reports a
+    // failed insert as { error }, it does not throw, so the guard has to read
+    // that field rather than rely on a try/catch.
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.activityError = { message: 'activity insert failed' };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'audit-failed',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+    expect(stateRef.current.deleted).toHaveLength(0);
+  });
+
+  it('corrects the trail when the audit lands but the delete loses its race', async () => {
+    // The audit row is written first on purpose, so the mirror case is real:
+    // the entry says a shift was removed and then the delete is refused. An
+    // uncorrected entry is an audit trail that lies about payroll, which is
+    // the same class the audit-first ordering exists to prevent (S78 wrap
+    // delta-verify, which proved this empirically).
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.afterSelect = () => {
+      stateRef.current.rows[0] = { ...MANUAL_SHIFT, updated_at: '2026-08-09T22:00:00.000Z' };
+    };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'edit-race',
+    );
+
+    expect(stateRef.current.rows).toHaveLength(1);
+    const actions = stateRef.current.activityInserts.map((e) => e.action);
+    expect(actions).toEqual(['shift-manual-void', 'shift-manual-void-aborted']);
+    const correction = stateRef.current.activityInserts[1] as {
+      detail: { shiftId: string; reason: string };
+    };
+    expect(correction.detail.shiftId).toBe('shift-manual-1');
+    expect(correction.detail.reason).toBe('edit-race');
   });
 
   it('refuses when the child lookup fails, rather than deleting blind', async () => {

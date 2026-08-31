@@ -5,7 +5,9 @@ import Konva from "konva";
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
-import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
+import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
+import { backfillStampOrdinals, baseStampLabel, describePrunedItems, numberStampLabels } from "@/lib/design/stampLabels";
+import { itemThumbnailBBox } from "@/lib/design/stampThumbnails";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -256,8 +258,7 @@ export async function renderEditor(
   // ── #13 linked twins — "Place on this photo" ─────────────────────────────
   // Staff re-draw the whole display on every photo; a TWIN is a render-only
   // depiction of a canonical item from another photo (bills once, toggles/
-  // recolors everywhere). Billable per-unit kinds only; mini GROUPS are
-  // excluded (stamp members individually).
+  // recolors everywhere). Billable per-unit kinds only.
   const MINI_WRAP_SURFACES = new Set<string>(["bush", "tree", "column", "railing", "curtain"]);
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
@@ -270,7 +271,13 @@ export async function renderEditor(
       // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
       // roofline, which staff re-draw per photo) so a portal package toggle
       // hides/shows a side's lights on every angle it appears on.
-      (isStrand(i) && i.bulbType === "permanent"));
+      (isStrand(i) && i.bulbType === "permanent") ||
+      // A mini GROUP (a railing/curtain/etc, #240) IS stampable as a whole
+      // unit — twinMiniGroupAt re-places the group AND every live member
+      // together, geometry preserved relative to each other. (A grouped
+      // strand/scattershot MEMBER stays excluded above; the group is the
+      // billable unit, not its members individually.)
+      isMiniGroup(i));
   const stampCandidates = (): SceneItem[] =>
     scene.items.filter((i) => isStampableCanonical(i) && !onActivePhoto(i));
   const photoLabelOf = (i: { photoId?: string | null }): string => {
@@ -280,15 +287,110 @@ export async function renderEditor(
     const idx = extras.findIndex((p) => p.id === pid);
     return extras[idx]?.title || `Photo ${idx + 2}`;
   };
-  const stampLabel = (i: SceneItem): string =>
-    isWreath(i) ? `${i.sizeIn}" wreath`
-      : isBow(i) ? `${i.sizeIn}" bow`
-        : isGarland(i) ? "garland run"
-          : isSpritzer(i) ? `${i.sizeIn}" spritzer`
-            : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
-              : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
-                : isStrand(i) ? `${i.surface ?? "mini"} wrap`
-                  : "item";
+  // The human-facing name for a canonical item — numbered against every OTHER
+  // canonical item sharing the same base label on the same source photo (a
+  // house with 7 wrapped columns reads "column minis 1" … "column minis 7"
+  // instead of 7 identical rows), so staff can tell which twin picker/
+  // billing-link row maps to which drawn item.
+  //
+  // Fix-round item 2a (Jason's ruling): the number is STABLE — a persisted
+  // per-item `stampOrdinal`, assigned once and never reassigned, so deleting
+  // a sibling can never make an existing item's number point at a different
+  // physical thing. backfillStampOrdinals lazily assigns one to any item
+  // that doesn't have one yet (a freshly drawn item, or one from a scene
+  // saved before this field existed) and reports whether the result should
+  // be PERSISTED — this is the one place that happens, since both UI
+  // consumers (the picker + the billing-link dropdown) call stampLabel().
+  // Idempotent — a scene where every displayable item already has an
+  // ordinal is a no-op (same `scene` reference back), so this costs nothing
+  // on the common case.
+  //
+  // Second fix round, HIGH: `stampOrdinal`/`stampOrdinalCounters` are BRAND
+  // NEW fields no existing scene has, so every pre-existing design backfills
+  // on its very first sidebar render — merely OPENING an already-APPROVED
+  // design (locked=true, set synchronously at mount) hit the OLD unconditional
+  // scheduleSave() here with zero staff action taken. scheduleSave() itself
+  // correctly refuses to PERSIST a locked scene, but merely being CALLED
+  // also pops the permanent "your changes are NOT saved" banner as a side
+  // effect — so opening the whole existing approved-design population
+  // showed a false alarm the instant the sidebar first rendered.
+  // backfillStampOrdinals now carries the locked-vs-save POLICY itself
+  // (stampLabels.ts, tested + mutation-probed there) rather than leaving it
+  // to an `if (!locked)` a caller here could forget: it always backfills IN
+  // MEMORY (so the picker still renders correctly — staff still need to
+  // read numbers on an approved quote) but reports `shouldSave: false`
+  // whenever the scene is locked.
+  const stampLabel = (i: SceneItem): string => {
+    const { scene: withOrdinals, shouldSave } = backfillStampOrdinals(scene, locked);
+    scene = withOrdinals;
+    if (shouldSave) scheduleSave();
+    return numberStampLabels(scene.items).get(i.id) ?? baseStampLabel(i);
+  };
+  // Fix-round item 2b (Jason's ruling — the real answer to "which 'column
+  // minis' is the first column in photo 1?"): a small cropped thumbnail of
+  // the item itself, taken from the photo it actually lives on. The source
+  // photo is often NOT the one currently mounted, so its image may not be
+  // loaded at all — cache each distinct photo's Image by URL so re-placing
+  // several items from the same source photo only downloads it once.
+  const stampPhotoImageCache = new Map<string, Promise<HTMLImageElement | null>>();
+  function loadStampPhotoImage(url: string): Promise<HTMLImageElement | null> {
+    let cached = stampPhotoImageCache.get(url);
+    if (!cached) {
+      cached = loadHTMLImage(url).catch(() => null);
+      stampPhotoImageCache.set(url, cached);
+    }
+    return cached;
+  }
+  const STAMP_THUMB_PX = 56;
+  function stampPhotoUrlFor(photoId: string | null | undefined): string | null {
+    if (!photoId) return design.photoUrl;
+    return design.extraPhotos?.find((p) => p.id === photoId)?.url ?? null;
+  }
+  // Crop one item's thumbnail as a data URL, or null if it can't be
+  // produced (no computable bounding box, the source photo has no known
+  // URL, the image failed to load, or the crop itself throws) — every
+  // failure degrades to null so the caller falls back to the plain
+  // numbered text label instead of a broken image. Never throws.
+  async function stampThumbnailDataUrl(item: SceneItem): Promise<string | null> {
+    const box = itemThumbnailBBox(item, scene.items);
+    if (!box || !(box.w > 0) || !(box.h > 0)) return null;
+    const url = stampPhotoUrlFor(item.photoId ?? null);
+    if (!url) return null;
+    const img = await loadStampPhotoImage(url);
+    if (!img) return null;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = STAMP_THUMB_PX;
+      canvas.height = STAMP_THUMB_PX;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      // Letterbox the (usually non-square) crop box into a square thumb,
+      // preserving aspect ratio and centering it — never stretched.
+      const scale = Math.min(STAMP_THUMB_PX / box.w, STAMP_THUMB_PX / box.h);
+      const dw = box.w * scale, dh = box.h * scale;
+      const dx = (STAMP_THUMB_PX - dw) / 2, dy = (STAMP_THUMB_PX - dh) / 2;
+      ctx.drawImage(img, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
+      return canvas.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+  // Kick off (fire-and-forget) an async thumbnail load for every stamp-row
+  // button just rendered, swapping in the cropped image once it resolves.
+  // The sidebar's innerHTML gets fully replaced on the NEXT render (a very
+  // common event — any scene edit, tool change, etc.), so a resolved
+  // thumbnail whose row is no longer in the DOM is silently discarded
+  // rather than applied to a stale/wrong element.
+  function loadStampThumbnails(sb: HTMLElement, items: SceneItem[]) {
+    for (const item of items) {
+      void stampThumbnailDataUrl(item).then((dataUrl) => {
+        if (!dataUrl) return; // stays as the 📌 placeholder — never a broken image
+        const el = sb.querySelector(`.stamp-thumb[data-thumb-id="${item.id}"]`) as HTMLElement | null;
+        if (!el) return; // sidebar re-rendered before this resolved
+        el.innerHTML = `<img src="${dataUrl}" width="${STAMP_THUMB_PX / 2}" height="${STAMP_THUMB_PX / 2}" style="border-radius:3px;vertical-align:middle;object-fit:cover" alt="" />`;
+      });
+    }
+  }
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
@@ -1860,13 +1962,22 @@ export async function renderEditor(
   // dropped and surfaces one notice per group. Every call site below should
   // call THIS, not pruneOrphanedMiniGroups directly.
   function pruneOrphanedMiniGroupsNotify(items: SceneItem[]): SceneItem[] {
-    const before = items.filter(isMiniGroup);
     const after = pruneOrphanedMiniGroups(items);
     if (after.length === items.length) return after; // nothing pruned — the common case
-    const afterIds = new Set(after.filter(isMiniGroup).map((g) => g.id));
-    before.filter((g) => !afterIds.has(g.id)).forEach((g) => {
-      const label = MINI_SURFACE_LABELS[g.surface ?? ""] ?? "group";
-      const n = g.stringCount ?? 1;
+    // #13 x #240 (second fix round, MEDIUM): the WHICH-items-and-why decision
+    // is pure (stampLabels.ts, tested) — pruneOrphanedMiniGroups can drop a
+    // miniGroup with zero surviving members (#227) OR any item (group or
+    // single) whose linkedToId no longer resolves (a dangling twin, item 1's
+    // fix). The old version here only ever diffed isMiniGroup items, so a
+    // dangling SINGLE-ITEM twin was removed with ZERO staff notification —
+    // exactly what this wrapper exists to prevent.
+    describePrunedItems(items, after).forEach((notice) => {
+      if (notice.reason === "linked-copy-gone") {
+        showTransientNotice(`Also removed a linked copy: ${baseStampLabel(notice.item)} — its original is gone`);
+        return;
+      }
+      const label = MINI_SURFACE_LABELS[notice.item.surface ?? ""] ?? "group";
+      const n = notice.item.stringCount ?? 1;
       showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
     });
     return after;
@@ -2006,7 +2117,7 @@ export async function renderEditor(
       <section>
         <h3>Re-place from other photos</h3>
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Click one, then click the photo — a linked copy shows here but bills once (via its original).</div>
-        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:block;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}">📌 ${stampLabel(i)} — ${photoLabelOf(i)}</button>`).join("")}
+        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}"><span class="stamp-thumb" data-thumb-id="${i.id}" style="display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:28px;height:28px;font-size:16px">📌</span><span>${stampLabel(i)} — ${photoLabelOf(i)}</span></button>`).join("")}
       </section>`;
       })()}
       ${tool.category === "poles" ? `
@@ -2381,6 +2492,10 @@ export async function renderEditor(
         renderSidebar();
       }),
     );
+    // Fix-round item 2b: fire off thumbnail crops for whatever stamp
+    // candidates just rendered (a no-op call if the section didn't render
+    // at all — stampCandidates() is cheap and pure).
+    loadStampThumbnails(sb, stampCandidates());
 
     sb.querySelectorAll("#categories button").forEach((b) =>
       b.addEventListener("click", () => {
@@ -4428,11 +4543,16 @@ export async function renderEditor(
       const memberIds = group.memberIds;
       scene = {
         ...scene,
-        items: scene.items
+        // #13 x #240 (fix round): if this group was ever twinned onto
+        // another photo, removing it by id here leaves the twin's
+        // `linkedToId` pointing at nothing — pruneOrphanedMiniGroupsNotify
+        // now also catches THAT (not just an empty-member orphan), so route
+        // through it instead of the bare filter this used to end with.
+        items: pruneOrphanedMiniGroupsNotify(scene.items
           .filter((i) => i.id !== group.id)
           // #240: a member can be a strand OR a scattershot — clear groupId on
           // either kind (mirrors groupSelectedMini's own kind check).
-          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
+          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i))),
       };
       selectedIds = new Set(memberIds); // keep members selected → the right panel returns
       scheduleSave();
@@ -5683,14 +5803,26 @@ export async function renderEditor(
     if (e.target.findAncestor("Transformer", true)) return;
 
     // #13: an armed "Place on this photo" stamp consumes this click — place a
-    // linked twin of the source at the click point, select it, disarm.
+    // linked twin of the source at the click point, select it, disarm. A mini
+    // GROUP source (#240) twins as a WHOLE unit (the group + every live
+    // member, one undo step) via twinMiniGroupAt instead of the single-item
+    // makeTwinAt below.
     if (stampSourceId) {
       const p = imagePoint();
       if (!p || !inPhoto(p)) return;
       const src = scene.items.find((i) => i.id === stampSourceId);
       stampSourceId = null;
       stage.container().style.cursor = toolMode === "select" ? "crosshair" : "";
-      if (src) {
+      if (src && isMiniGroup(src)) {
+        const result = twinMiniGroupAt(scene, src, p, { activePhotoId, idGen: cryptoId });
+        if (result) {
+          scene = result.scene;
+          selectedIds = new Set(result.memberIds);
+          scheduleSave();
+          commit();
+          redrawScene();
+        }
+      } else if (src) {
         const twin = makeTwinAt(src, p);
         scene = { ...scene, items: [...scene.items, twin] };
         selectedIds = new Set([twin.id]);

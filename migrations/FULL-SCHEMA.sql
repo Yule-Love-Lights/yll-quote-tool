@@ -3981,6 +3981,39 @@ create index if not exists call_transcripts_pending_commitment_extraction_idx
   where commitments_extracted_at is null
     and commitment_extraction_quarantined_at is null;
 
+-- Post-call HighLevel notes (migrations/2026-08-29-call-notes.sql). Kept as
+-- an alter block rather than folded into the create table above so this
+-- file mirrors the migration that produced it line for line. Deliberately
+-- carries no CHECK constraints: adding one to an already-populated table is
+-- outside AGENTS.md's safe-to-apply allowlist, so the same invariants live
+-- in src/lib/calls/postNotes.ts and its tests instead.
+alter table public.call_transcripts
+  add column if not exists summary                   text,
+  add column if not exists summary_model             text,
+  add column if not exists summary_generated_at      timestamptz,
+  add column if not exists ghl_note_posted_at        timestamptz,
+  add column if not exists ghl_note_id               text,
+  add column if not exists ghl_note_claimed_at       timestamptz,
+  add column if not exists ghl_note_attempts         integer not null default 0,
+  add column if not exists ghl_note_last_attempt_at  timestamptz,
+  add column if not exists ghl_note_last_failure_code text,
+  add column if not exists ghl_note_skip_reason      text,
+  add column if not exists ghl_note_quarantined_at   timestamptz;
+
+-- The note worker's batch picker: calls still owed a note.
+create index if not exists call_transcripts_note_pending_idx
+  on public.call_transcripts (called_at)
+  where ghl_note_posted_at is null
+    and ghl_note_skip_reason is null
+    and ghl_note_quarantined_at is null;
+
+-- Post-call HighLevel internal comment (migrations/2026-08-30-call-comments.sql).
+-- A different HighLevel surface from the note above (a contact's conversation
+-- thread, not their Notes tab); best-effort, no CAS/quarantine machinery of
+-- its own, see src/lib/calls/postNotes.ts for why.
+alter table public.call_transcripts
+  add column if not exists ghl_comment_posted_at timestamptz;
+
 alter table public.call_transcripts enable row level security;
 
 alter table public.call_recordings
@@ -4459,8 +4492,10 @@ grant execute on function public.record_commitment_extraction_failure(uuid, text
 --     delete it. wholesale_cost stays NULL: signs are not purchased through
 --     the Thunder PO flow, and a NULL cost keeps them out of any cost math.
 --   * inventory_on_hand: the stock row at qty 0. The office counts the real
---     pile and sets the number on /admin/advertising/people (or the
---     existing /inventory/stock page, where this SKU now also appears).
+--     pile and sets the number on the advertising admin surface (and on the
+--     existing /inventory/stock page, where this SKU also appears). The
+--     exact admin route moved with the Simple Crew UI rebuild; the SKU and
+--     the stock row are what this migration pins, not a page path.
 --
 -- NO auto-decrement on placement acceptance — deliberately. Phase 2 is
 -- MANUAL reconciliation: the admin page shows accepted-sign counts beside
@@ -4649,6 +4684,41 @@ alter table public.advertising_placements
 
 
 -- ---------------------------------------------------------------------
+-- bulk-upload dedupe index (2026-08-29,
+-- migrations/2026-08-29-bulk-upload-dedupe-index.sql) - the DB backstop
+-- behind admin mass upload. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- ==============================================================
+
+-- ---------------------------------------------------------------------
+-- One accepted photo per (worker, campaign, photo hash) — the DB-level
+-- backstop for admin bulk upload (PR #1093, delta-verify HIGH).
+--
+-- The application checks for an existing accepted row before inserting,
+-- but a check-then-insert can lose a race (two admin tabs uploading the
+-- same camera roll), and every sibling mutator in that file uses a CAS
+-- while this path could not. This index is the authority that cannot be
+-- raced: a second accepted row for the same photo is refused by Postgres
+-- with 23505, which the data layer reports as a duplicate skip rather
+-- than a failure.
+--
+-- Partial on purpose:
+--   * status = 'accepted' only — pending/rejected/resubmitted rows pay
+--     nothing, and a worker legitimately resubmitting the same photo
+--     after a rejection must stay possible.
+--   * photo_hash is not null — a photo whose perceptual hash could not be
+--     computed carries no identity to dedupe on, and must still upload.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (a partial unique index that
+-- cannot collide with existing data). Verified before applying: zero
+-- (worker_id, campaign_id, photo_hash) groups with more than one accepted
+-- row exist in production.
+-- =====================================================================
+
+create unique index if not exists advertising_placements_accepted_photo_unique
+  on public.advertising_placements (worker_id, campaign_id, photo_hash)
+  where status = 'accepted' and photo_hash is not null;
 -- placement void (2026-08-29, migrations/2026-08-29-placement-void.sql).
 -- Content below is the migration verbatim.
 -- ---------------------------------------------------------------------
@@ -4694,6 +4764,126 @@ begin
       check (voided_at is null or void_reason is not null);
   end if;
 end $$;
+
+
+-- ---------------------------------------------------------------------
+-- dedupe index excludes voided (2026-08-29,
+-- migrations/2026-08-29-dedupe-index-excludes-voided.sql). Supersedes the
+-- predicate created above. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- The bulk-upload dedupe index must ignore VOIDED rows (S81 close
+-- integration lens, HIGH).
+--
+-- Two features shipped a day apart and never met. The dedupe index
+-- (2026-08-29-bulk-upload-dedupe-index.sql) refuses a second ACCEPTED row
+-- for the same worker, campaign and photo hash. Void
+-- (2026-08-29-placement-void.sql) is an OVERLAY: it stamps voided_at and
+-- leaves status = 'accepted' forever, precisely so the history survives.
+--
+-- Together they trap the office. Void a wrongly-accepted photo, then try
+-- to do the work again and the voided row still satisfies the index:
+--   * the worker path fails with a 409 saying the photo is already
+--     accepted, which is false, it is voided and pays nothing;
+--   * the bulk path is worse, reporting a calm "already uploaded,
+--     skipped" 200 and creating nothing, so staff believe a paying row
+--     covers work that pays zero.
+-- The void migration's own remedy for a wrongly voided sign is to
+-- resubmit it, which is exactly what this index was preventing.
+--
+-- The narrowed predicate keeps the guard for LIVE accepted rows and lets
+-- a voided one be redone.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md. The new predicate is a
+-- strict SUBSET of the old one, so it cannot collide with any data the
+-- old index already permitted. Verified before applying: zero
+-- (worker_id, campaign_id, photo_hash) groups hold more than one live
+-- accepted row.
+-- =====================================================================
+
+drop index if exists advertising_placements_accepted_photo_unique;
+
+create unique index if not exists advertising_placements_accepted_photo_unique
+  on public.advertising_placements (worker_id, campaign_id, photo_hash)
+  where status = 'accepted' and voided_at is null and photo_hash is not null;
+
+
+-- =====================================================================
+-- Advertising payout settlement (ledger row 481, Naldo's 2026-08-30
+-- rulings). The tool already knows what every worker has EARNED (the rate
+-- stamped on each accepted photo). Nothing recorded that the money was
+-- HANDED OVER, so the pay screen showed a cumulative earned figure forever.
+--
+-- A settlement says WHICH photos it paid, not just "week of Aug 24, $47.50",
+-- because a photo inside an already-paid week can be accepted days later and
+-- period-only settlement cannot then tell an underpayment from a late
+-- acceptance.
+--
+-- advertising_settlements: one payment handed to one worker. total_cents is
+-- the sum of its lines, asserted in the data layer at write time.
+--   * method (Naldo 2026-08-30): a fixed short list, so "how much did we
+--     pay in cash this month" stays answerable. Free text goes in note.
+--   * total_cents > 0: a $0.00 payment is not a record of anything, and
+--     refusing it at the database means an empty selection can never write
+--     one even if the data layer's own guard were removed.
+--
+-- advertising_settlement_lines: which photos that payment covered.
+--   * placement_id UNIQUE is the whole safety property: a photo can be paid
+--     at MOST ONCE, enforced by the database rather than by remembering. A
+--     double-submitted "Mark paid" loses its race here and surfaces as a
+--     named conflict.
+--   * amount_cents copies the placement's STAMPED accepted_rate_cents at
+--     settle time, so the settlement is its own record even if anything
+--     upstream later changes.
+--   * The placement FK is left at its default (no action / restrict): a
+--     payment record must never lose the subject it paid for. Placements
+--     are voided, never deleted, so nothing in the app hits this.
+--   * The settlement FK cascades: deleting a settlement (which the app
+--     only does to unwind its own failed write) takes its lines with it,
+--     so a half-written payment can never be left behind.
+--
+-- Unpaid is DERIVED, never stored: accepted earned cents minus the sum of
+-- that worker's settlement lines. Same posture as the sign balance and as
+-- `remaining` in signIssuances.ts, so it cannot drift.
+--
+-- RLS ENABLED, ZERO POLICIES on both new tables (service-role only, the
+-- advertising default). HOW TO APPLY: safe/additive per AGENTS.md — two
+-- brand-new tables, indexes that cannot collide with existing data, and
+-- RLS-enable on brand-new tables only.
+-- =====================================================================
+
+create table if not exists public.advertising_settlements (
+  id           uuid primary key default gen_random_uuid(),
+  worker_id    uuid not null references public.advertising_workers(id),
+  total_cents  integer not null check (total_cents > 0),
+  method       text not null check (method in ('cash', 'venmo', 'check', 'other')),
+  note         text,
+  paid_at      timestamptz not null default now(),
+  paid_by      uuid references auth.users(id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists advertising_settlements_worker_idx
+  on public.advertising_settlements (worker_id, paid_at desc);
+
+create table if not exists public.advertising_settlement_lines (
+  id             uuid primary key default gen_random_uuid(),
+  settlement_id  uuid not null references public.advertising_settlements(id) on delete cascade,
+  placement_id   uuid not null references public.advertising_placements(id),
+  amount_cents   integer not null check (amount_cents >= 0),
+  created_at     timestamptz not null default now()
+);
+
+-- A placement is payable at most once. This index IS the guarantee.
+create unique index if not exists advertising_settlement_lines_placement_key
+  on public.advertising_settlement_lines (placement_id);
+
+create index if not exists advertising_settlement_lines_settlement_idx
+  on public.advertising_settlement_lines (settlement_id);
+
+alter table public.advertising_settlements enable row level security;
+alter table public.advertising_settlement_lines enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- 2026-08-29: the crew door (row 466) — single-use entry links + access audit

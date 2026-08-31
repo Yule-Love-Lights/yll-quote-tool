@@ -176,6 +176,104 @@ export function updateMiniGroupMemberColorPatterns(
   return changed ? { ...scene, items } : scene;
 }
 
+// #13 linked twins × #240 mini groups: re-place an ENTIRE grouped railing (or
+// curtain/bush/tree/column group) onto another photo as ONE twinned unit —
+// the group item AND every live member, geometry preserved RELATIVE to each
+// other, anchored at the click point `p`. Mirrors editor.ts's single-item
+// makeTwinAt (chains linkedToId through the TRUE canonical, drops
+// yardstickId/recommended, tags photoId) but computes ONE shared (dx,dy)
+// translation from the combined centroid of every live member instead of a
+// per-item one, so the group's shape doesn't distort. The twinned members
+// belong to a BRAND-NEW group id (never the canonical group's) — getting
+// that backwards would silently move billable members between groups. A
+// group with zero live members (fully orphaned, #227) is a no-op: returns
+// null rather than twinning nothing.
+export function twinMiniGroupAt(
+  scene: Scene,
+  group: MiniGroupItem,
+  point: { x: number; y: number },
+  opts: { activePhotoId: string | null; idGen: () => string },
+): { scene: Scene; groupId: string; memberIds: string[] } | null {
+  const liveMembers = scene.items.filter(
+    (item): item is MiniGroupMember =>
+      group.memberIds.includes(item.id) &&
+      (isStrand(item) || isMiniArea(item)) &&
+      item.groupId === group.id,
+  );
+  if (liveMembers.length === 0) return null;
+
+  // Combined centroid across every live member: EACH member contributes
+  // exactly ONE sample (its own centroid) regardless of how many points it's
+  // drawn with, so a many-point strand can't out-vote a simple box member. A
+  // points-array member (every strand; a polygon miniArea) is averaged down
+  // to its own centroid first; a box miniArea uses its center. One shared
+  // (dx,dy) from the combined centroid to the click point is then applied
+  // identically to every member — a pure translation, so relative geometry
+  // survives untouched.
+  const centroidOfPoints = (pts: number[]): { x: number; y: number } => {
+    const n = pts.length / 2;
+    if (n === 0) return { x: 0, y: 0 };
+    let cx = 0, cy = 0;
+    for (let k = 0; k + 1 < pts.length; k += 2) { cx += pts[k]; cy += pts[k + 1]; }
+    return { x: cx / n, y: cy / n };
+  };
+  const memberCentroid = (member: MiniGroupMember): { x: number; y: number } => {
+    if (isStrand(member)) return centroidOfPoints(member.points);
+    if (member.shape === 'polygon' && Array.isArray(member.points)) return centroidOfPoints(member.points);
+    return { x: (member.x ?? 0) + (member.width ?? 0) / 2, y: (member.y ?? 0) + (member.height ?? 0) / 2 };
+  };
+  let sx = 0, sy = 0;
+  for (const member of liveMembers) {
+    const c = memberCentroid(member);
+    sx += c.x; sy += c.y;
+  }
+  const dx = point.x - sx / liveMembers.length;
+  const dy = point.y - sy / liveMembers.length;
+
+  const shiftGeometry = (member: MiniGroupMember): MiniGroupMember => {
+    if (isStrand(member)) {
+      return { ...member, points: member.points.map((v, k) => (k % 2 === 0 ? v + dx : v + dy)) };
+    }
+    if (member.shape === 'polygon' && Array.isArray(member.points)) {
+      return { ...member, points: member.points.map((v, k) => (k % 2 === 0 ? v + dx : v + dy)) };
+    }
+    return { ...member, x: (member.x ?? 0) + dx, y: (member.y ?? 0) + dy };
+  };
+
+  const newGroupId = opts.idGen();
+  const twinMembers: MiniGroupMember[] = liveMembers.map((member) => {
+    const shifted = shiftGeometry(member);
+    const twin: MiniGroupMember = {
+      ...shifted,
+      id: opts.idGen(),
+      linkedToId: member.linkedToId ?? member.id,
+      groupId: newGroupId,
+      yardstickId: null,
+    };
+    delete twin.recommended;
+    if (opts.activePhotoId) twin.photoId = opts.activePhotoId;
+    else delete twin.photoId;
+    return twin;
+  });
+
+  const twinGroup: MiniGroupItem = {
+    ...group,
+    id: newGroupId,
+    memberIds: twinMembers.map((m) => m.id),
+    linkedToId: group.linkedToId ?? group.id,
+    colorPattern: group.colorPattern ? [...group.colorPattern] : group.colorPattern,
+  };
+  delete twinGroup.recommended;
+  if (opts.activePhotoId) twinGroup.photoId = opts.activePhotoId;
+  else delete twinGroup.photoId;
+
+  return {
+    scene: { ...scene, items: [...scene.items, ...twinMembers, twinGroup] },
+    groupId: newGroupId,
+    memberIds: twinMembers.map((m) => m.id),
+  };
+}
+
 export function updateSelectedColorPatterns(
   scene: Scene,
   selectedIds: ReadonlySet<string>,

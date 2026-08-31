@@ -855,12 +855,43 @@ export async function upsertContact(
 // POST /contacts/{contactId}/notes — attaches a free-text note to the
 // contact's timeline (e.g. the website lead's raw notes / UTM / landing-page
 // context, which don't fit any existing custom field).
-type ContactNoteResult = { id?: string; body?: string; [k: string]: unknown };
+// HighLevel WRAPS the created note rather than returning it bare: six real
+// notes were written with a null id before the database showed it (see
+// noteIdFrom in src/lib/calls/postNotes.ts). The type says so now, so the
+// next caller that wants the id does not inherit the same wrong assumption.
+type ContactNoteResult = {
+  id?: string;
+  note?: { id?: string; body?: string } | null;
+  notes?: { id?: string; body?: string }[] | null;
+  body?: string;
+  [k: string]: unknown;
+};
 
 export async function createContactNote(contactId: string, body: string): Promise<ContactNoteResult> {
   return ghlFetch<ContactNoteResult>(`/contacts/${encodeURIComponent(contactId)}/notes`, {
     method: 'POST',
     body: JSON.stringify({ body }),
+  });
+}
+
+// ─── Internal comment ───────────────────────────────────────────────────
+// POST /conversations/messages with type InternalComment — a DIFFERENT
+// surface from a contact Note. A Note lives on the contact's own Notes tab;
+// an InternalComment is posted INTO that contact's message/conversation
+// timeline, staff-only, interleaved with their calls/texts/emails. Naldo
+// asked for both (2026-08-30): the note is the durable record, the comment
+// is what a rep sees while they are already looking at the conversation.
+//
+// `mentions` is documented by HighLevel as required for this message type;
+// an empty array is what this repo sends when nobody is tagged, and the
+// live probe run before this shipped confirmed HighLevel accepts it rather
+// than rejecting an empty array outright.
+type InternalCommentResult = { conversationId?: string; messageId?: string; msg?: string; [k: string]: unknown };
+
+export async function createInternalComment(contactId: string, message: string): Promise<InternalCommentResult> {
+  return ghlFetch<InternalCommentResult>('/conversations/messages', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'InternalComment', contactId, message, mentions: [] }),
   });
 }
 

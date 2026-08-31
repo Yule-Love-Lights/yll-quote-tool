@@ -37,6 +37,10 @@
       "schedule": "0 13 * * *"
     },
     {
+      "path": "/api/ops/crew-day-digest",
+      "schedule": "0 12 * * *"
+    },
+    {
       "path": "/api/jobs/completing-today",
       "schedule": "0 13 * * *"
     },
@@ -59,6 +63,10 @@
     {
       "path": "/api/cron/calls-extract",
       "schedule": "27 * * * *"
+    },
+    {
+      "path": "/api/cron/calls-note",
+      "schedule": "42 * * * *"
     }
   ]
 }

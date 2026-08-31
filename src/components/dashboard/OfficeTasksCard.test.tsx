@@ -7,8 +7,15 @@
 // therefore keep the retry key alive) plus the display formatting, and a
 // static-render smoke check on the initial (loading) paint.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+// The page variant syncs the view to the URL, so the component now calls
+// next/navigation hooks. Same mock shape OperatorNav.test.tsx uses.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: () => {}, push: () => {}, refresh: () => {} }),
+  usePathname: () => '/tasks',
+}));
 import OfficeTasksCard, {
   applyTaskViewControls,
   assignedLabel,
@@ -17,6 +24,7 @@ import OfficeTasksCard, {
   isAmbiguousMutationFailure,
   personalLabel,
   resolvedTimeFor,
+  sortDefaultFor,
   sourceFilterLabel,
   sourceLabel,
 } from './OfficeTasksCard';
@@ -96,6 +104,25 @@ describe('personalLabel ("everything is shared" ruling)', () => {
   it('shows no personal badge for a non-manual task -- sourceLabel covers those instead', () => {
     expect(personalLabel('call_commitment', null)).toBeNull();
     expect(personalLabel('quote_tool', 'Jason')).toBeNull();
+  });
+});
+
+describe('sortDefaultFor', () => {
+  // One function answers for all three paths that need a default (first
+  // render, a tab click, and a URL that changed underneath us), so they cannot
+  // drift apart. That equivalence is the premerge technical lens's central
+  // question, and this is what makes it true by construction.
+  it('gives the working list soonest-due', () => {
+    expect(sortDefaultFor('active')).toBe('due');
+  });
+
+  it('gives History most-recently-finished', () => {
+    expect(sortDefaultFor('history')).toBe('resolved');
+  });
+
+  it('is a pure mapping, so landing by link and clicking the tab cannot disagree', () => {
+    expect(sortDefaultFor('history')).toBe(sortDefaultFor('history'));
+    expect(sortDefaultFor('active')).not.toBe(sortDefaultFor('history'));
   });
 });
 
@@ -265,6 +292,97 @@ describe('OfficeTasksCard — initial static render', () => {
     expect(html).toContain('Open work');
     // and does not link to itself
     expect(html).not.toContain('See all tasks');
+  });
+
+  it('the card offers a one-click route to History, which slimming it had cost', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('href="/tasks?view=history"');
+    expect(html).toContain('>History<');
+  });
+
+  it('the page opens on History when asked', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" initialView="history" />);
+    // The History heading, not the working-list one. This says nothing about
+    // the SORT: the static render is still in its loading state, so the sort
+    // control has not rendered yet. sortDefaultFor is tested directly below,
+    // which is what the premerge technical lens caught this test overclaiming
+    // (deleting the sort logic entirely left all 39 tests passing).
+    expect(html).toContain('Completed &amp; dismissed');
+    expect(html).not.toContain('New tasks are due 24 hours after creation');
+  });
+
+  it('the page still defaults to the working list with no initialView', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(html).toContain('Open work');
+    expect(html).not.toContain('Completed &amp; dismissed');
+  });
+
+  it('the CARD ignores initialView, because it has no history view to open', () => {
+    // Defence against a future caller passing it through by habit: the card
+    // would otherwise render a history heading with no way back.
+    const html = renderToStaticMarkup(<OfficeTasksCard initialView="history" />);
+    expect(html).not.toContain('Completed &amp; dismissed');
+    expect(html).toContain('Open work');
+  });
+
+  // These two assert DOM ORDER, which is the whole point of the change: below
+  // the lg breakpoint the grid placement is inert, so the order in the markup
+  // is the order on a phone, and it is what a screen reader follows at every
+  // width. The anchor is the LOADING box rather than the task list, because a
+  // static render never gets past loadState 'loading' and so has no list to
+  // order against. An earlier version of these tests checked only that both
+  // strings were present, which a premerge lens proved would pass with the two
+  // render sites swapped.
+  it('puts the add form AFTER the list on the page, so a phone and a screen reader get tasks first', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    const listArea = html.indexOf('Loading tasks');
+    const form = html.indexOf('office-task-title');
+    expect(listArea).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(listArea);
+    // And the grid lifts it into the right column once there is room.
+    expect(html).toContain('lg:col-start-2');
+  });
+
+  it('keeps the add form BEFORE the list on the card, which is how the dashboard has always read', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    const listArea = html.indexOf('Loading tasks');
+    const form = html.indexOf('office-task-title');
+    expect(listArea).toBeGreaterThan(-1);
+    expect(form).toBeGreaterThan(-1);
+    expect(form).toBeLessThan(listArea);
+    // No grid placement leaks onto the dashboard.
+    expect(html).not.toContain('lg:col-start-2');
+  });
+
+  it('the page offers a route to the add form that does not need scrolling past the list', () => {
+    // Two premerge staff-lens MEDs: below the lg breakpoint the form sits under
+    // the whole list, and a keyboard user at any width tabs through every row
+    // to reach it. One control answers both, so it must exist as a BUTTON (the
+    // panel's own heading says "Add a task" too, which is not a route anywhere).
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    expect(html).toMatch(/<button[^>]*>Add a task<\/button>/);
+    // Visible below lg, a focus-revealed skip link above it.
+    expect(html).toContain('lg:sr-only');
+    expect(html).toContain('lg:focus:not-sr-only');
+  });
+
+  it('the card offers no such control, because its form is already the first thing in it', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).not.toMatch(/<button[^>]*>Add a task<\/button>/);
+  });
+
+  it('the page does not paint a second "Open work" heading, because the tab already says it', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard variant="page" />);
+    // The heading still exists, for the region's accessible name, but hidden.
+    expect(html).toMatch(/id="office-tasks-heading"[^>]*class="sr-only"|class="sr-only"[^>]*id="office-tasks-heading"/);
+  });
+
+  it('the card still paints its own heading and eyebrow', () => {
+    const html = renderToStaticMarkup(<OfficeTasksCard />);
+    expect(html).toContain('Office Tasks');
+    expect(html).toContain('Open work');
+    expect(html).not.toContain('sr-only" id="office-tasks-heading"');
   });
 
   it('caps the card at a few tasks, which is the whole reason the page exists', () => {

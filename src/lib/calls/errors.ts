@@ -22,3 +22,15 @@ export function isMissingTableError(err: unknown): boolean {
   const code = (err as { code?: string } | null)?.code;
   return code === '42P01' || code === 'PGRST205' || code === '42883' || code === 'PGRST202';
 }
+
+// The post-call notes phase (migrations/2026-08-29-call-notes.sql) adds
+// COLUMNS to an existing table rather than a new table, so its
+// not-migrated-yet signal is different: Postgres answers 42703
+// (undefined_column) and PostgREST answers PGRST204, neither of which the
+// table-level helper above looks for. Kept separate rather than widening
+// isMissingTableError, because "a column does not exist" is a genuine bug
+// for every OTHER caller and should stay a loud failure there.
+export function isCallNotesSchemaUnavailable(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === '42703' || code === 'PGRST204' || isMissingTableError(err);
+}

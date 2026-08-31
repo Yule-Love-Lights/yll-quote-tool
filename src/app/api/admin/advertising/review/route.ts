@@ -4,6 +4,7 @@ import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import {
   acceptPlacement,
+  DuplicatePlacementError,
   listPlacements,
   rejectPlacement,
   voidPlacement,
@@ -132,6 +133,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'void') {
+      // Also the undo lever for a wrong accept, including a bulk upload to
+      // the wrong worker or campaign: the row keeps its history and stops
+      // counting for pay.
       const placementId = String(body?.placementId ?? '').trim();
       const reason = String(body?.reason ?? '').trim();
       if (!placementId) return NextResponse.json({ error: 'placementId is required' }, { status: 400 });
@@ -172,6 +176,20 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Review action failed';
     console.error('POST /api/admin/advertising/review:', message);
+    if (e instanceof DuplicatePlacementError) {
+      // Accepting a second copy of a photo already accepted for this
+      // worker and campaign. A refusal the admin can act on, not a crash.
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
+    // A photo that has been PAID can never be voided (payouts, row 481), and
+    // that refusal is permanent — reloading and retrying will never make it
+    // succeed. isStateRefusal's /cannot be/ matches this message too, so
+    // without this branch the staffer is told "already reviewed, reload the
+    // queue", which is both false and useless. Pass the real guidance through
+    // (the data layer writes it for a human), minus the function-name prefix.
+    if (/already been paid/i.test(message)) {
+      return NextResponse.json({ error: message.replace(/^voidPlacement:\s*/, '') }, { status: 409 });
+    }
     if (isStateRefusal(message)) {
       return NextResponse.json(
         { error: 'That placement was already reviewed. Reload the queue.' },
