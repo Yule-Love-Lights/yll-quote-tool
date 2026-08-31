@@ -4007,6 +4007,13 @@ create index if not exists call_transcripts_note_pending_idx
     and ghl_note_skip_reason is null
     and ghl_note_quarantined_at is null;
 
+-- Post-call HighLevel internal comment (migrations/2026-08-30-call-comments.sql).
+-- A different HighLevel surface from the note above (a contact's conversation
+-- thread, not their Notes tab); best-effort, no CAS/quarantine machinery of
+-- its own, see src/lib/calls/postNotes.ts for why.
+alter table public.call_transcripts
+  add column if not exists ghl_comment_posted_at timestamptz;
+
 alter table public.call_transcripts enable row level security;
 
 alter table public.call_recordings

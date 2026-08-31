@@ -35,7 +35,7 @@
 // records a reason on that row and the loop moves on, never a batch abort.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { createContactNote } from '../integrations/highlevel';
+import { createContactNote, createInternalComment } from '../integrations/highlevel';
 import { summarizeCall, SUMMARY_MODEL, TerminalSummaryError } from './summarize';
 import { composeCallNote, type NoteCommitment } from './noteBody';
 
@@ -292,6 +292,23 @@ export async function postPendingCallNotes(
           ghl_note_last_failure_code: null,
         });
         result.posted++;
+
+        // THE COMMENT IS BEST-EFFORT, on purpose, and posted after the note
+        // has already been recorded. Naldo asked for both (2026-08-30): the
+        // note is the durable record on the contact's Notes tab, the
+        // comment is the same content posted INTO the conversation thread,
+        // where a rep sees it while already looking at the call/text
+        // history. It has no CAS, no attempt counter, no quarantine — a
+        // failure here is logged and left alone, never retried, because the
+        // candidate query already excludes this call the moment the note
+        // above is posted. A missing comment costs a rep one extra click to
+        // the Notes tab; a missing note would cost the whole feature.
+        try {
+          await createInternalComment(contactId, body);
+          await patchRow(supabase, row.id, { ghl_comment_posted_at: new Date().toISOString() });
+        } catch (commentErr) {
+          console.error(`Posted the HighLevel note for call ${row.id} but the internal comment failed:`, commentErr);
+        }
       } catch (markErr) {
         console.error(`Posted the HighLevel note for call ${row.id} but could not record it:`, markErr);
         result.failed++;
