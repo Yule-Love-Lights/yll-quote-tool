@@ -12,9 +12,12 @@
 //
 // Settings and Insights moved here from the top bar (Naldo, 2026-08-31).
 // Settings was reachable from two places at once, which was the complaint.
-// This is now the ONLY door to it, so nothing here may be conditional on
-// anything: an operator who cannot open this menu cannot reach Settings at
-// all.
+// This is now the ONLY door to both, which is why the menu itself and those
+// two links are unconditional: an operator who cannot open this menu cannot
+// reach Settings at all. Sign out is the one item that IS conditional, on
+// there being a session to sign out of. The first cut of this got that
+// backwards and hid the whole control, Settings included, whenever the
+// session check answered signedOut; the premerge admin lens caught it.
 //
 // The trigger shows initials; the name is inside the menu. See the comment on
 // the trigger below for why it is not printed in the bar.
@@ -29,9 +32,22 @@ import { useViewSwitcher } from './useViewSwitcher';
 export function AccountMenu({
   identity,
   onSignOut,
+  canSignOut = true,
 }: {
   identity: AccountIdentity;
   onSignOut: () => void;
+  /**
+   * Whether there is a session to sign out OF. False only on a POSITIVE
+   * signedOut answer from GET /api/auth/session; the pre-fetch 'unknown'
+   * state passes true, which keeps the same bias-toward-visible the old
+   * Sign-out slot had.
+   *
+   * It gates ONLY the Sign-out item. The menu itself, and the Settings and
+   * Insights links inside it, always render: they are the only doors to
+   * those two pages now, and the premerge admin lens caught the first cut
+   * hiding all three together whenever this went false (2026-08-31).
+   */
+  canSignOut?: boolean;
 }) {
   const { view, choose: chooseView } = useViewSwitcher();
   const [open, setOpen] = useState(false);
@@ -166,19 +182,23 @@ export function AccountMenu({
             </>
           )}
 
-          <div className="my-1 border-t" style={{ borderColor: 'var(--op-border)' }} />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onSignOut();
-            }}
-            className="block w-full text-left px-3 py-1.5 text-sm hover:bg-black/5"
-            style={{ color: 'var(--op-text-2)' }}
-          >
-            Sign out
-          </button>
+          {canSignOut && (
+            <>
+              <div className="my-1 border-t" style={{ borderColor: 'var(--op-border)' }} />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onSignOut();
+                }}
+                className="block w-full text-left px-3 py-1.5 text-sm hover:bg-black/5"
+                style={{ color: 'var(--op-text-2)' }}
+              >
+                Sign out
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

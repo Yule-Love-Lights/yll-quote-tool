@@ -383,7 +383,18 @@ export function OperatorNav({
               unmount) keeps the space, drops it from hit-testing, AND
               removes it from the tab order — no separate disabled handling
               needed. */}
-          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
+          {/* NOT wrapped in the visibility toggle any more (premerge admin
+              lens, 2026-08-31). This slot held the Sign-out button, and
+              hiding it on a confirmed signedOut session was right: there is
+              nothing to sign out of. The account menu is a different thing.
+              It is now the ONLY door to Settings and Insights, so hiding the
+              whole control took those two with it whenever the session check
+              answered signedOut -- which happens for real while the auth gate
+              is deliberately dormant, where pages still render and the
+              session route still answers honestly. The menu therefore always
+              renders and reserves its width; only the Sign-out ITEM inside it
+              is conditional now. */}
+          <li>
             {/* lg:px-2 xl:px-3 + whitespace-nowrap (advertising-role-hardening
                 fix round): same reasoning as the CTA above — "Sign out" has a
                 space and was one of the two elements silently wrapping onto 2
@@ -395,14 +406,18 @@ export function OperatorNav({
 
                 This slot is now the ACCOUNT MENU for everyone (Naldo,
                 2026-08-30), which is the second half of the header search
-                change: it names who is signed in, links to Settings, folds in
-                the admin View-as switcher that used to live here on its own,
-                and keeps Sign out as its last item. Sign out MOVED, it did
-                not disappear — removing it would strand a staffer on a shared
-                computer. The initials-only trigger is also narrower than the
-                "Sign out" text it replaces, which is part of how the search
-                box fits at 1024px. */}
-            <AccountMenu identity={{ name, email, role }} onSignOut={signOut} />
+                change: it names who is signed in, links to Settings and
+                Insights, folds in the admin View-as switcher that used to
+                live here on its own, and keeps Sign out as its last item.
+                Sign out MOVED, it did not disappear — removing it would
+                strand a staffer on a shared computer. The initials-only
+                trigger is also narrower than the "Sign out" text it replaces,
+                which is part of how the search box fits at 1024px. */}
+            <AccountMenu
+              identity={{ name, email, role }}
+              onSignOut={signOut}
+              canSignOut={!hideSignOut}
+            />
           </li>
         </ul>
 

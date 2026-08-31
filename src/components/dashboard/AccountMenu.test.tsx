@@ -74,6 +74,37 @@ describe('AccountMenu — an account with no name', () => {
   });
 });
 
+describe('AccountMenu — Sign out is the only conditional item', () => {
+  // Premerge admin lens, 2026-08-31. The first cut wrapped the whole control
+  // in the visibility toggle the old Sign-out button carried, so a confirmed
+  // signedOut session hid Settings and Insights too. They are the ONLY doors
+  // to those pages now that the tabs are gone.
+  it('renders the trigger even when there is no session to sign out of', () => {
+    const html = renderToStaticMarkup(
+      <AccountMenu
+        identity={{ name: null, email: null, role: null }}
+        onSignOut={() => {}}
+        canSignOut={false}
+      />,
+    );
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('Account menu for Signed in');
+  });
+
+  it('gates only the Sign-out item on the session, never the links', () => {
+    // The gate wraps the Sign-out button alone. If a future edit moves the
+    // links inside that block, this fails.
+    const between = SOURCE.slice(SOURCE.indexOf('{canSignOut && ('));
+    expect(between).toContain('Sign out');
+    expect(between).not.toContain('href="/settings"');
+    expect(between).not.toContain('href="/insights"');
+  });
+
+  it('defaults canSignOut to true, so the pre-fetch state keeps the control', () => {
+    expect(SOURCE).toContain('canSignOut = true');
+  });
+});
+
 describe('AccountMenu — the items the dropdown must carry', () => {
   // The dropdown is closed in a static render, so these assert the source.
   // Without them, "the menu is closed" and "the item was deleted" look
@@ -83,8 +114,9 @@ describe('AccountMenu — the items the dropdown must carry', () => {
     expect(SOURCE).toContain('onSignOut()');
   });
 
-  it('links to Settings', () => {
+  it('links to Settings and Insights, the two pages that lost their tabs', () => {
     expect(SOURCE).toContain('href="/settings"');
+    expect(SOURCE).toContain('href="/insights"');
   });
 
   it('shows the View-as switcher to admins only', () => {

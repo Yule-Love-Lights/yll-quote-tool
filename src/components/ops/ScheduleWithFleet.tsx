@@ -16,9 +16,24 @@
 
 import { useState } from 'react';
 
-import { ScheduleDay, defaultScheduleDay } from './ScheduleDay';
+import { ScheduleDay } from './ScheduleDay';
 
 type CrewMember = { id: string; displayName: string; active: boolean };
+
+/**
+ * Whether the fleet column belongs beside the day on screen. PURE, and lifted
+ * out of the component on purpose: the not-today branch is unreachable in a
+ * static render (the picker's date is client state), so inline it was a branch
+ * no test could fail on. The AGENTS.md rule about lifting logic out of an
+ * untestable screen, applied to four lines.
+ *
+ * Both arguments are ET day keys, and BOTH come from the server for the first
+ * paint. Comparing against a freshly computed browser clock is what produced
+ * the ET-midnight disagreement the premerge staff lens found.
+ */
+export function shouldShowFleet(date: string, todayKey: string): boolean {
+  return date === todayKey;
+}
 
 export function ScheduleWithFleet({
   crew,
@@ -36,15 +51,18 @@ export function ScheduleWithFleet({
   todayKey: string;
 }) {
   const [date, setDate] = useState(todayKey);
-  // Belt and braces: ScheduleDay seeds its own date from the same clock, but
-  // it does so in the BROWSER. A page rendered just before ET midnight and
-  // read just after would otherwise disagree with the server's todayKey.
-  const isToday = date === defaultScheduleDay();
+  // ONE clock, the server's, shared with ScheduleDay via initialDate below.
+  // This used to compare against a freshly computed browser value, which meant
+  // a page rendered just before ET midnight and hydrated just after could show
+  // today's jobs beside a fleet column claiming this is not today (premerge
+  // staff lens, 2026-08-31). Both components now start from the same string,
+  // and only the day picker moves it.
+  const isToday = shouldShowFleet(date, todayKey);
 
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] lg:items-start">
       <div className="min-w-0">
-        <ScheduleDay crew={crew} onDateChange={setDate} />
+        <ScheduleDay crew={crew} onDateChange={setDate} initialDate={todayKey} />
       </div>
       <aside className="min-w-0">
         {isToday ? (

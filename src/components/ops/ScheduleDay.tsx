@@ -79,8 +79,18 @@ const hours = (n: number) => `${Math.round(n * 10) / 10}h`;
 export function ScheduleDay({
   crew,
   onDateChange,
+  initialDate,
 }: {
   crew: CrewMember[];
+  /**
+   * The day to open on, computed on the SERVER (2026-08-31). Without it this
+   * component seeds from the browser clock while its sibling fleet column
+   * seeds from the server's, so a page rendered just before ET midnight and
+   * hydrated just after starts the two on different days: the jobs list shows
+   * today while the fleet column says it is hiding the vans because this is
+   * not today. Optional, and the browser clock remains the fallback.
+   */
+  initialDate?: string;
   /**
    * Called whenever the day picker moves to a different day (2026-08-31).
    * The Schedule page's fleet column shows only on today, and the date lives
@@ -89,7 +99,7 @@ export function ScheduleDay({
    */
   onDateChange?: (date: string) => void;
 }) {
-  const [date, setDate] = useState(today());
+  const [date, setDate] = useState(initialDate ?? today());
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [capacity, setCapacity] = useState<DayCapacity | null>(null);
   const [unscheduled, setUnscheduled] = useState<ScheduledJob[]>([]);

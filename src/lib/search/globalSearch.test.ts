@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
+  MAX_PER_GROUP,
   customerHref,
   displayNumberToken,
   emptyResults,
@@ -176,7 +177,15 @@ function makeSb(queues: Record<string, unknown[][]>, calls: Call[]): SupabaseCli
   };
 
   const make = (table: string) => {
-    const finish = () => Promise.resolve({ data: next(table), error: null });
+    // The fake HONOURS limit (it used to ignore it). Without that, a mutation
+    // probe removing the `+1` that makes truncation detectable still passed
+    // every test, because the fake handed back the whole queued array
+    // regardless. The fake was the thing under test, not the code.
+    let cap: number | null = null;
+    const finish = () => {
+      const rows = next(table);
+      return Promise.resolve({ data: cap == null ? rows : rows.slice(0, cap), error: null });
+    };
     const builder: Record<string, unknown> = {};
     Object.assign(builder, {
       select: (cols: string) => {
@@ -196,7 +205,11 @@ function makeSb(queues: Record<string, unknown[][]>, calls: Call[]): SupabaseCli
         return finish();
       },
       order: () => builder,
-      limit: () => finish(),
+      limit: (n: number) => {
+        cap = n;
+        calls.push({ table, op: 'limit', arg: String(n) });
+        return finish();
+      },
     });
     return builder;
   };
@@ -250,7 +263,7 @@ describe('globalSearch', () => {
             },
           ],
         ],
-        quotes: [[QUOTE_ROW]],
+        quotes: [[QUOTE_ROW], [QUOTE_ROW]],
         jobs: [
           [
             {
@@ -302,8 +315,150 @@ describe('globalSearch', () => {
 
   it('excludes test quotes', async () => {
     const calls: Call[] = [];
-    await globalSearch(makeSb({ quotes: [[]] }, calls), 'Kristie');
+    await globalSearch(makeSb({ quotes: [[], []] }, calls), 'Kristie');
     expect(calls).toContainEqual({ table: 'quotes', op: 'eq', arg: 'is_test=false' });
+  });
+
+  // Premerge technical lens, 2026-08-31. The database applies `limit` BEFORE
+  // this module's active-first sort, so one read ordered by recency can fill
+  // every row with newer CLOSED quotes and drop an older OPEN one. A second
+  // read restricted to the live states is what makes "nothing is unfindable"
+  // true rather than merely claimed.
+  it('reads the live quotes separately so a busy customer cannot bury an open one', async () => {
+    const calls: Call[] = [];
+    const closedRecent = Array.from({ length: 12 }, (_, i) => ({
+      ...QUOTE_ROW,
+      id: `closed${i}`,
+      quote_number: 2000 + i,
+      status: 'declined',
+      created_at: `2026-08-${String(10 + i).padStart(2, '0')}T00:00:00Z`,
+    }));
+    const olderOpen = {
+      ...QUOTE_ROW,
+      id: 'openOld',
+      quote_number: 1001,
+      status: 'sent',
+      created_at: '2026-01-01T00:00:00Z',
+    };
+    const sb = makeSb(
+      {
+        customers: [[]],
+        // First read (recency only) returns the 12 newest, all closed. Second
+        // read is the live-only one and is the ONLY place the old open quote
+        // appears.
+        quotes: [closedRecent, [olderOpen]],
+        jobs: [[]],
+        invoices: [[]],
+      },
+      calls,
+    );
+
+    const out = await globalSearch(sb, 'Kristie');
+    expect(out.quotes[0].key).toBe('quote:openOld');
+    expect(out.quotes[0].active).toBe(true);
+
+    const orCalls = calls.filter((c) => c.table === 'quotes' && c.op === 'or').map((c) => c.arg);
+    expect(orCalls.some((a) => a?.includes('status.not.in.(declined,cancelled,abandoned)'))).toBe(true);
+    // Legacy rows carry a null status and read as active, so they must be in
+    // the live set too or the hole reopens one row-shape over.
+    expect(orCalls.some((a) => a?.includes('status.is.null'))).toBe(true);
+  });
+
+  // Found independently by the premerge technical AND admin lenses.
+  it('drops a job found by number when its quote is a test quote', async () => {
+    const calls: Call[] = [];
+    const sb = makeSb(
+      {
+        customers: [[]],
+        quotes: [[], [], [{ id: 'qTest', customer_name: 'Test Harness', is_test: true }]],
+        jobs: [
+          [
+            {
+              id: 'jTest',
+              job_number: 1000,
+              quote_id: 'qTest',
+              status: 'scheduled',
+              install_date: null,
+              created_at: '2026-02-01T00:00:00Z',
+            },
+          ],
+        ],
+        invoices: [
+          [
+            {
+              id: 'iTest',
+              invoice_number: 1000,
+              quote_id: 'qTest',
+              status: 'awaiting_payment',
+              balance: 100,
+              total: 100,
+              created_at: '2026-02-01T00:00:00Z',
+            },
+          ],
+        ],
+      },
+      calls,
+    );
+
+    const out = await globalSearch(sb, '#1000');
+    expect(out.jobs).toHaveLength(0);
+    expect(out.invoices).toHaveLength(0);
+  });
+
+  it('keeps a job found by number when its quote is real', async () => {
+    const calls: Call[] = [];
+    const sb = makeSb(
+      {
+        customers: [[]],
+        quotes: [[], [], [{ id: 'qReal', customer_name: 'Raymond Diaz', is_test: false }]],
+        jobs: [
+          [
+            {
+              id: 'jReal',
+              job_number: 1000,
+              quote_id: 'qReal',
+              status: 'scheduled',
+              install_date: null,
+              created_at: '2026-02-01T00:00:00Z',
+            },
+          ],
+        ],
+        invoices: [[]],
+      },
+      calls,
+    );
+
+    const out = await globalSearch(sb, '#1000');
+    expect(out.jobs).toHaveLength(1);
+    expect(out.jobs[0].title).toBe('Raymond Diaz');
+  });
+
+  it('keeps a job that hangs off no quote at all, which cannot be a test row', async () => {
+    const calls: Call[] = [];
+    const sb = makeSb(
+      {
+        customers: [[]],
+        quotes: [[], []],
+        jobs: [
+          [
+            {
+              id: 'jOrphan',
+              job_number: 1000,
+              quote_id: null,
+              status: 'scheduled',
+              install_date: null,
+              created_at: '2026-02-01T00:00:00Z',
+            },
+          ],
+        ],
+        invoices: [[]],
+      },
+      calls,
+    );
+
+    const out = await globalSearch(sb, '#1000');
+    expect(out.jobs).toHaveLength(1);
+    expect(out.jobs[0].title).toBe('Unknown customer');
   });
 
   it('looks a record up by its display number and still names the customer', async () => {
@@ -312,9 +467,11 @@ describe('globalSearch', () => {
       {
         customers: [[]],
         // The text search misses (nobody is called "1000"), so the job below is
-        // found by its own number and its customer name comes from the second
-        // quotes read.
-        quotes: [[], [{ id: 'q9', customer_name: 'Raymond Diaz' }]],
+        // found by its own number and its customer name comes from the third
+        // quotes read. Three entries because the quotes table is now read
+        // twice up front: once by recency, once restricted to the live
+        // statuses, so an old open quote cannot be buried by newer closed ones.
+        quotes: [[], [], [{ id: 'q9', customer_name: 'Raymond Diaz', is_test: false }]],
         jobs: [
           [
             {
@@ -346,14 +503,14 @@ describe('globalSearch', () => {
     const calls: Call[] = [];
     // A text query that matched no quotes: there is no quote id list to scope
     // by, and an empty in() list would be a no-op filter returning everything.
-    await globalSearch(makeSb({ customers: [[]], quotes: [[]] }, calls), 'Zzzz');
+    await globalSearch(makeSb({ customers: [[]], quotes: [[], []] }, calls), 'Zzzz');
     expect(calls.some((c) => c.table === 'jobs')).toBe(false);
     expect(calls.some((c) => c.table === 'invoices')).toBe(false);
   });
 
   it('searches the phone digits as well as the raw text', async () => {
     const calls: Call[] = [];
-    await globalSearch(makeSb({ customers: [[]], quotes: [[]] }, calls), '516 555 0123');
+    await globalSearch(makeSb({ customers: [[]], quotes: [[], []] }, calls), '516 555 0123');
     const customerOr = calls.find((c) => c.table === 'customers' && c.op === 'or');
     expect(customerOr?.arg).toContain('phone.ilike.%5165550123%');
     expect(customerOr?.arg).toContain('name.ilike.%516 555 0123%');
@@ -365,7 +522,7 @@ describe('globalSearch', () => {
     // branch is the only path this query has, so dropping it would make the
     // most natural phone search silently return nothing.
     const calls: Call[] = [];
-    await globalSearch(makeSb({ customers: [[]], quotes: [[]] }, calls), '(516) 555-0123');
+    await globalSearch(makeSb({ customers: [[]], quotes: [[], []] }, calls), '(516) 555-0123');
     const customerOr = calls.find((c) => c.table === 'customers' && c.op === 'or');
     expect(customerOr?.arg).toBe('phone.ilike.%5165550123%');
     // The punctuated text itself never reaches the filter.
@@ -377,7 +534,7 @@ describe('globalSearch', () => {
     const sb = makeSb(
       {
         customers: [[]],
-        quotes: [[QUOTE_ROW]],
+        quotes: [[QUOTE_ROW], [QUOTE_ROW]],
         jobs: [[]],
         invoices: [
           [
@@ -424,12 +581,75 @@ describe('globalSearch', () => {
     expect(nextIndex(0, 1, 0)).toBe(-1);
   });
 
+  // Premerge staff lens, 2026-08-31: without this the dropdown cannot tell
+  // "these are the only six" from "these are six of forty", which on a common
+  // name is the difference between an answer and a wrong answer.
+  it('reports a group as truncated when there are more matches than fit', async () => {
+    const calls: Call[] = [];
+    const seven = Array.from({ length: MAX_PER_GROUP + 1 }, (_, i) => ({
+      id: `c${i}`,
+      name: `John Smith ${i}`,
+      email: null,
+      phone: null,
+      hl_contact_id: null,
+      // Descending, so c0 is the newest and c6 the oldest. That makes the
+      // row dropped by the cap predictable: the group sorts newest first.
+      updated_at: `2026-08-0${7 - i}T00:00:00Z`,
+    }));
+    const out = await globalSearch(
+      makeSb({ customers: [seven], quotes: [[], []] }, calls),
+      'John',
+    );
+    expect(out.customers).toHaveLength(MAX_PER_GROUP);
+    expect(out.truncated.customer).toBe(true);
+    // The seventh row is read only to detect the overflow; it is never shown.
+    expect(out.customers.some((h) => h.key === 'customer:c6')).toBe(false);
+    expect(out.customers[0].key).toBe('customer:c0');
+  });
+
+  it('reports a group as complete when everything fits', async () => {
+    const calls: Call[] = [];
+    const out = await globalSearch(
+      makeSb(
+        {
+          customers: [
+            [
+              {
+                id: 'c1',
+                name: 'Kristie Tibbetts',
+                email: null,
+                phone: null,
+                hl_contact_id: null,
+                updated_at: '2026-08-02T00:00:00Z',
+              },
+            ],
+          ],
+          quotes: [[], []],
+        },
+        calls,
+      ),
+      'Kristie',
+    );
+    expect(out.customers).toHaveLength(1);
+    expect(out.truncated.customer).toBe(false);
+  });
+
+  it('reads one row past the cap, which is the only way truncation is detectable', async () => {
+    const calls: Call[] = [];
+    await globalSearch(makeSb({ customers: [[]], quotes: [[], []] }, calls), 'Kristie');
+    const customerLimit = calls.find((c) => c.table === 'customers' && c.op === 'limit');
+    // A read capped AT the group size cannot tell a full group from an
+    // overflowing one, so the group would always claim to be complete.
+    expect(customerLimit?.arg).toBe(String(MAX_PER_GROUP + 1));
+  });
+
   it('flattens the four groups in the order the keyboard walks them', () => {
     const results = {
       customers: [hit({ key: 'c' })],
       quotes: [hit({ key: 'q' })],
       jobs: [hit({ key: 'j' })],
       invoices: [hit({ key: 'i' })],
+      truncated: { customer: false, quote: false, job: false, invoice: false },
     };
     expect(flattenResults(results).map((h) => h.key)).toEqual(['c', 'q', 'j', 'i']);
     expect(totalCount(results)).toBe(4);

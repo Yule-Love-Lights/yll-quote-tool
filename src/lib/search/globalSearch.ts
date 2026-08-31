@@ -43,6 +43,13 @@ export type SearchResults = {
   quotes: SearchHit[];
   jobs: SearchHit[];
   invoices: SearchHit[];
+  /**
+   * Which groups had more matches than fit (premerge staff lens, 2026-08-31).
+   * Without this the dropdown cannot tell "these are the only six" from "these
+   * are six of forty and yours is not among them", which on a common name is
+   * the difference between an answer and a wrong answer.
+   */
+  truncated: Record<SearchKind, boolean>;
 };
 
 /** Below this the box does not search at all: one letter matches half the table. */
@@ -52,7 +59,13 @@ export const MIN_QUERY_LEN = 2;
 export const MAX_PER_GROUP = 6;
 
 export function emptyResults(): SearchResults {
-  return { customers: [], quotes: [], jobs: [], invoices: [] };
+  return {
+    customers: [],
+    quotes: [],
+    jobs: [],
+    invoices: [],
+    truncated: { customer: false, quote: false, job: false, invoice: false },
+  };
 }
 
 /**
@@ -259,7 +272,9 @@ export async function globalSearch(
     .select(CUSTOMER_COLUMNS)
     .or(customerClauses.join(','))
     .order('updated_at', { ascending: false })
-    .limit(MAX_PER_GROUP);
+    // One PAST the cap on purpose: the extra row is never rendered, it only
+    // answers "is there more than this?" for the dropdown's own honesty.
+    .limit(MAX_PER_GROUP + 1);
 
   // --- Quotes --------------------------------------------------------------
   const quoteClauses: string[] = [];
@@ -275,17 +290,53 @@ export async function globalSearch(
   }
   if (digits) quoteClauses.push(`customer_phone.ilike.%${digits}%`);
   if (number != null) quoteClauses.push(`quote_number.eq.${number}`);
-  const quotesRes = await sb
-    .from('quotes')
-    .select(QUOTE_COLUMNS)
-    .eq('is_test', false)
-    .or(quoteClauses.join(','))
-    .order('created_at', { ascending: false })
-    .limit(MAX_PER_GROUP * 2);
+  const quoteFilter = quoteClauses.join(',');
+
+  // TWO reads, not one (premerge technical lens, 2026-08-31). The database
+  // applies `limit` BEFORE this file's active-first sort can run, so a single
+  // read ordered by recency can fill all its rows with newer CLOSED quotes and
+  // drop an older OPEN one entirely -- which would make "nothing is
+  // unfindable" at the top of this file a false claim rather than a design.
+  // The second read is restricted to the live states, so an active quote can
+  // only ever be crowded out by other ACTIVE quotes. Merged and de-duplicated
+  // below.
+  //
+  // `status.is.null` is part of the live set on purpose: legacy rows predate
+  // the status column and isActiveQuote() reads a null status as active, so
+  // leaving it out would re-open the same hole one row-shape over.
+  const LIVE_QUOTE_FILTER = `status.is.null,status.not.in.(${[...CLOSED_QUOTE_STATUSES].join(',')})`;
+
+  const [quotesRes, liveQuotesRes] = await Promise.all([
+    sb
+      .from('quotes')
+      .select(QUOTE_COLUMNS)
+      .eq('is_test', false)
+      .or(quoteFilter)
+      .order('created_at', { ascending: false })
+      .limit(MAX_PER_GROUP * 2),
+    sb
+      .from('quotes')
+      .select(QUOTE_COLUMNS)
+      .eq('is_test', false)
+      .or(quoteFilter)
+      .or(LIVE_QUOTE_FILTER)
+      .order('created_at', { ascending: false })
+      .limit(MAX_PER_GROUP),
+  ]);
 
   const customerRows = (customersRes.data ?? []) as CustomerRow[];
-  const quoteRows = (quotesRes.data ?? []) as QuoteRow[];
+  const quoteRowsById = new Map<string, QuoteRow>();
+  for (const r of [
+    ...((liveQuotesRes.data ?? []) as QuoteRow[]),
+    ...((quotesRes.data ?? []) as QuoteRow[]),
+  ]) {
+    if (!quoteRowsById.has(r.id)) quoteRowsById.set(r.id, r);
+  }
+  const quoteRows = [...quoteRowsById.values()];
   const matchedQuoteIds = quoteRows.map((r) => r.id);
+  // Every id here came from a read filtered on is_test=false, which is what
+  // lets the job and invoice rows scoped by these ids skip their own check.
+  const nonTestQuoteIds = new Set(matchedQuoteIds);
 
   // --- Jobs and invoices ---------------------------------------------------
   // Two ways in: the record's own display number, or its quote matched the
@@ -323,30 +374,56 @@ export async function globalSearch(
   const jobRows = (jobsRes.data ?? []) as JobRow[];
   const invoiceRows = (invoicesRes.data ?? []) as InvoiceRow[];
 
-  // Names for the jobs and invoices found by NUMBER, whose quote was never in
-  // the text match. Without this, a "#1000" job hit renders with no customer
-  // on it, which is the one thing the searcher was looking for.
+  // The quotes behind the jobs and invoices found by NUMBER, whose quote was
+  // never in the text match. Two things come from this read, and BOTH matter.
+  //
+  // The name: without it a "#1000" job hit renders with no customer on it,
+  // which is the one thing the searcher was looking for.
+  //
+  // The is_test flag: the quotes reads above exclude test quotes, but a job or
+  // an invoice matched on its OWN display number never went past that filter,
+  // and neither table carries an is_test column of its own. So a test quote's
+  // job was reachable by number and rendered indistinguishable from real work.
+  // Found independently by the premerge technical AND admin lenses, which is
+  // what makes it a class rather than a nit (2026-08-31).
   const nameByQuoteId = new Map<string, string>();
   for (const r of quoteRows) {
     if (r.customer_name) nameByQuoteId.set(r.id, r.customer_name);
   }
-  const missingQuoteIds = [
+  const unverifiedQuoteIds = [
     ...new Set(
       [...jobRows, ...invoiceRows]
         .map((r) => r.quote_id)
-        .filter((id): id is string => !!id && !nameByQuoteId.has(id)),
+        .filter((id): id is string => !!id && !nonTestQuoteIds.has(id)),
     ),
   ];
-  if (missingQuoteIds.length > 0) {
+  // Quote ids confirmed to belong to TEST quotes. Anything hanging off one is
+  // dropped below.
+  const testQuoteIds = new Set<string>();
+  if (unverifiedQuoteIds.length > 0) {
     const extra = await sb
       .from('quotes')
-      .select('id, customer_name')
-      .in('id', missingQuoteIds);
-    const extraRows = (extra.data ?? []) as { id: string; customer_name: string | null }[];
+      .select('id, customer_name, is_test')
+      .in('id', unverifiedQuoteIds);
+    const extraRows = (extra.data ?? []) as {
+      id: string;
+      customer_name: string | null;
+      is_test: boolean | null;
+    }[];
     for (const r of extraRows) {
+      if (r.is_test) {
+        testQuoteIds.add(r.id);
+        continue;
+      }
       if (r.customer_name) nameByQuoteId.set(r.id, r.customer_name);
     }
   }
+
+  // A row with no quote at all cannot belong to a test quote, so it stays.
+  const notFromTestQuote = (r: { quote_id: string | null }): boolean =>
+    !r.quote_id || !testQuoteIds.has(r.quote_id);
+  const visibleJobRows = jobRows.filter(notFromTestQuote);
+  const visibleInvoiceRows = invoiceRows.filter(notFromTestQuote);
 
   const nameFor = (quoteId: string | null): string =>
     (quoteId ? nameByQuoteId.get(quoteId) : null) ?? 'Unknown customer';
@@ -377,7 +454,7 @@ export async function globalSearch(
     sortedAt: r.created_at,
   }));
 
-  const jobs: SearchHit[] = jobRows.map((r) => ({
+  const jobs: SearchHit[] = visibleJobRows.map((r) => ({
     kind: 'job' as const,
     key: `job:${r.id}`,
     href: `/admin/jobs/${r.id}`,
@@ -389,7 +466,7 @@ export async function globalSearch(
     sortedAt: r.created_at,
   }));
 
-  const invoices: SearchHit[] = invoiceRows.map((r) => ({
+  const invoices: SearchHit[] = visibleInvoiceRows.map((r) => ({
     kind: 'invoice' as const,
     key: `invoice:${r.id}`,
     href: `/admin/invoices/${r.id}`,
@@ -410,5 +487,11 @@ export async function globalSearch(
     quotes: sortHits(quotes).slice(0, MAX_PER_GROUP),
     jobs: sortHits(jobs).slice(0, MAX_PER_GROUP),
     invoices: sortHits(invoices).slice(0, MAX_PER_GROUP),
+    truncated: {
+      customer: customers.length > MAX_PER_GROUP,
+      quote: quotes.length > MAX_PER_GROUP,
+      job: jobs.length > MAX_PER_GROUP,
+      invoice: invoices.length > MAX_PER_GROUP,
+    },
   };
 }

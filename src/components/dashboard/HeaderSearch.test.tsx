@@ -68,4 +68,24 @@ describe('HeaderSearch — the behaviours a static render cannot see', () => {
   it('opens the top hit on Enter when nothing is highlighted, which is what the ranking promised', () => {
     expect(SOURCE).toContain('hits[activeIndex >= 0 ? activeIndex : 0]');
   });
+
+  it('refuses Enter while the shown list belongs to an earlier query', () => {
+    // Typing "Kristie" and hitting Enter inside the debounce window used to
+    // open whatever the top hit for "Kris" happened to be.
+    expect(SOURCE).toContain("resultsQuery !== trimmed");
+    expect(SOURCE).toContain('if (stale) {');
+  });
+
+  it('says when a group has more matches than it is showing', () => {
+    expect(SOURCE).toContain('results.truncated[kind]');
+    expect(SOURCE).toContain('Type more to narrow this down');
+  });
+
+  it('keeps a door to the full customer list, which lost its nav tab', () => {
+    // The search box replaced the Customers tab for "I know who I want", but
+    // not for browsing everyone or filtering by tag. Without this row the page
+    // is reachable only by typing its URL from memory.
+    expect(SOURCE).toContain('Browse all customers');
+    expect(SOURCE).toContain("router.push('/customers')");
+  });
 });

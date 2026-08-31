@@ -45,6 +45,10 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  // WHICH query the rows on screen belong to. Without it, Enter pressed
+  // mid-debounce acts on the PREVIOUS query's list and opens a record the
+  // person is no longer looking for (premerge technical lens, 2026-08-31).
+  const [resultsQuery, setResultsQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(-1);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -58,6 +62,8 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
   const count = totalCount(results);
   const trimmed = query.trim();
   const tooShort = trimmed.length > 0 && trimmed.length < MIN_QUERY_LEN;
+  // The rows on screen do not match what is typed: a read is still in flight.
+  const stale = trimmed.length >= MIN_QUERY_LEN && resultsQuery !== trimmed;
 
   // Clearing back below the minimum is handled HERE rather than in the effect
   // below, because a synchronous setState inside an effect body is a lint
@@ -72,6 +78,7 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
     if (value.trim().length < MIN_QUERY_LEN) {
       sequenceRef.current += 1;
       setResults(emptyResults());
+      setResultsQuery(value.trim());
       setLoading(false);
       setFailed(false);
       setActiveIndex(-1);
@@ -99,12 +106,14 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
             setResults(body.results);
             setFailed(false);
           }
+          setResultsQuery(trimmed);
           setActiveIndex(-1);
           setLoading(false);
         })
         .catch(() => {
           if (sequence !== sequenceRef.current) return;
           setResults(emptyResults());
+          setResultsQuery(trimmed);
           setFailed(true);
           setLoading(false);
         });
@@ -143,6 +152,7 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
     setOpen(false);
     setQuery('');
     setResults(emptyResults());
+    setResultsQuery('');
     setActiveIndex(-1);
     inputRef.current?.blur();
     router.push(hit.href);
@@ -156,6 +166,13 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
       return;
     }
     if (e.key === 'Enter') {
+      // Never act on a list that belongs to an earlier query. Typing
+      // "Kristie" and hitting Enter inside the debounce window would
+      // otherwise open whatever the top hit for "Kris" happened to be.
+      if (stale) {
+        e.preventDefault();
+        return;
+      }
       // Enter with nothing highlighted opens the first hit, which is what the
       // ranking promised: the most relevant live record is already on top.
       const target = hits[activeIndex >= 0 ? activeIndex : 0];
@@ -242,6 +259,12 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
             </p>
           )}
 
+          {/* The full customer list lost its nav tab on 2026-08-31 and had no
+              door left anywhere (premerge staff lens): the search box replaced
+              the tab for "I know who I want", but not for browsing everyone,
+              filtering by the NCE and Neighbor tags, or scanning a list. This
+              row is that door, and it renders whatever was typed, so it is
+              reachable even when nothing matched. */}
           {(['customer', 'quote', 'job', 'invoice'] as SearchKind[]).map((kind) => {
             const group =
               kind === 'customer'
@@ -260,6 +283,14 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
                 >
                   {GROUP_LABELS[kind]}
                 </p>
+                {results.truncated[kind] && (
+                  <p
+                    className="px-3 pb-1 text-[10px]"
+                    style={{ color: 'var(--op-text-2)' }}
+                  >
+                    More {GROUP_LABELS[kind].toLowerCase()} match. Type more to narrow this down.
+                  </p>
+                )}
                 {group.map((hit) => {
                   flatIndex += 1;
                   const index = flatIndex;
@@ -314,6 +345,25 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
               </div>
             );
           })}
+
+          <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--op-border)' }}>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setQuery('');
+                setResults(emptyResults());
+                setResultsQuery('');
+                setActiveIndex(-1);
+                inputRef.current?.blur();
+                router.push('/customers');
+              }}
+              className="block w-full px-3 py-1.5 text-left text-xs hover:bg-black/5"
+              style={{ color: 'var(--op-text-2)' }}
+            >
+              Browse all customers →
+            </button>
+          </div>
         </div>
       )}
     </div>
