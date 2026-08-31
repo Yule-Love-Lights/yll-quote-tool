@@ -54,13 +54,21 @@ const APPS: InstallApp[] = [
     name: 'YLL Advertising',
     homeScreenName: 'YLL Ads',
     audience: 'Field crews. Photographing yard signs and door hangers to get paid.',
-    path: '/advertising/capture',
+    // The worker HOME, not /advertising/capture. Both pages gate on an
+    // advertising account, and after signing in the login route sends an
+    // advertising worker to /advertising, so this is the page they are actually
+    // standing on at the moment they add it to the home screen. Capture is one
+    // tap from there.
+    path: '/advertising',
     icon: '/icons/yll-advertising-192.png',
-    // iOS reads the manifest of whatever page is on screen. A signed-out worker
-    // is bounced to /login, which carries the QUOTE app's icon and name, so
-    // installing from there would save the wrong app.
+    // Two ways this saves the wrong icon, both worth saying out loud. iOS reads
+    // the manifest of whatever page is ON SCREEN: a signed-out worker is bounced
+    // to /login, which is a root-layout page carrying the QUOTE branding. And an
+    // office or admin login is redirected to the quote tool by design (the
+    // advertising surface refuses every non-advertising account), so an admin
+    // cannot install this one at all, no matter which link they open.
     caution:
-      'Sign in first. If you land on the login screen, log in before you add it to your home screen, or you will save the wrong icon.',
+      'Crew logins only. Sign in first and wait until you see the Campaigns screen before you add it to your home screen. Office and admin logins are sent to the quote tool instead, so this app can only be installed from a crew login.',
   },
 ];
 

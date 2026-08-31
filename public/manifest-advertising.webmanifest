@@ -1,9 +1,9 @@
 {
-  "id": "/advertising/capture?app=advertising",
+  "id": "/advertising?app=advertising",
   "name": "YLL Advertising",
   "short_name": "YLL Ads",
   "description": "Yard sign and door hanger photo capture for Yule Love Lights crews.",
-  "start_url": "/advertising/capture",
+  "start_url": "/advertising",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
