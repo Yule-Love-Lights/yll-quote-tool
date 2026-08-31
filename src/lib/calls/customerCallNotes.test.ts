@@ -123,7 +123,7 @@ describe('listCallNotesForCustomer', () => {
     expect(supabase.filters).toContainEqual(['not', ['summary', 'is', null]]);
   });
 
-  it('marks a call still waiting on the hourly cron as pending, without hiding it', async () => {
+  it('marks a call still waiting on the note cron as pending, without hiding it', async () => {
     const supabase = fakeSupabase([transcript({ ghl_note_posted_at: null, ghl_note_quarantined_at: null })]);
     const result = await listCallNotesForCustomer(supabase, ['contact-1']);
     expect(result[0].noteStatus).toBe('pending');
