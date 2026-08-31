@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 
 import BlockedNote from '@/components/advertising/simplecrew/BlockedNote';
 import { getAdvertisingCaller } from '@/lib/auth/advertisingAuth';
-import { getSessionRole } from '@/lib/auth/sessionRole';
+import { getOperator } from '@/lib/auth/supabaseServer';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,11 +24,16 @@ export const dynamic = 'force-dynamic';
 // could always open /admin/advertising/capture by typing it; the crew surface
 // still refuses admins exactly as before.
 export default async function AdvertisingEntryPage() {
-  // Admin first. getSessionRole returns null for an advertising login, so this
-  // cannot swallow a crew member, and an admin has no advertising marker, so
-  // getAdvertisingCaller would only ever refuse them.
-  const role = await getSessionRole();
-  if (role === 'admin') redirect('/admin/advertising/capture');
+  // Admin first, through getOperator because that is the exact primitive the
+  // destination gates on (#1130 moved the admin camera onto it). Same call,
+  // same answer: it is React-cache wrapped, so this costs no extra auth round
+  // trip, and routing on a different predicate than the destination checks is
+  // how you get an icon that lands people on a redirect. getOperator returns
+  // null for an advertising login, so this cannot swallow a crew member, and an
+  // admin carries no advertising marker, so getAdvertisingCaller below would
+  // only ever refuse them.
+  const operator = await getOperator();
+  if (operator?.role === 'admin') redirect('/admin/advertising/capture');
 
   const caller = await getAdvertisingCaller();
   if (caller.ok) redirect('/advertising/capture');
