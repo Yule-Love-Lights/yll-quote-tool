@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
-import { readRoleHint, writeRoleHint } from './roleHint';
 import { AccountMenu } from './AccountMenu';
 import { accountLinksFor } from './accountLinks';
 import { displayName, roleLabel } from './accountIdentity';
@@ -108,21 +107,14 @@ export function OperatorNav({
   // menu renders as initials plus "Signed in" rather than an empty control.
   const [name, setName] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
-  // Hint-first (ops suggestions round): seed the role from the localStorage
-  // echo of the LAST session answer, one tick after hydration, so an admin's
-  // View-as menu does not wait a network round trip on every page mount.
-  // Wrapped in queueMicrotask for the react-hooks/set-state-in-effect rule
-  // (the /admin/invoices load-on-mount idiom) — the premerge technical lens
-  // caught the bare version as a real red CI gate. The fetch below remains
-  // the truth: it overwrites the hint and the state both, so a stale or
-  // hand-edited hint survives at most one page load, and everything the menu
-  // opens is server-gated on the real role anyway.
-  useEffect(() => {
-    queueMicrotask(() => {
-      const hint = readRoleHint();
-      if (hint) setRole(prev => prev ?? hint);
-    });
-  }, []);
+  // The localStorage role hint that used to seed this is GONE (Naldo,
+  // 2026-09-01). It existed so an admin's View-as menu appeared at first paint
+  // without waiting a round trip, and the cost was that on a shared office
+  // computer the echo could still say 'admin' for the NEXT person. Once the
+  // admin-only menu rows and View-as itself both started waiting for the
+  // confirmed session answer, nothing read the hint any more, so it was
+  // storing a role and buying nothing. Restoring it means restoring the flash
+  // as well, so it is not a free option.
   useEffect(() => {
     let cancelled = false;
 
@@ -146,7 +138,6 @@ export function OperatorNav({
           setRole(trueRole);
           setName(signedIn ? (body.name ?? null) : null);
           setEmail(signedIn ? (body.email ?? null) : null);
-          writeRoleHint(trueRole);
         })
         .catch(() => {
           if (cancelled) return;
@@ -221,12 +212,9 @@ export function OperatorNav({
 
   // WT-60: logout (POST /api/auth/logout) worked but had no UI trigger. Best
   // effort — even if the request fails, still send the operator to /login.
-  // The role hint clears FIRST (staff lens MED on this PR): on a shared
-  // computer, a leftover 'admin' hint would flash the View-as menu at the
-  // next person for one page load. Cleared before the network call so even
-  // an aborted logout leaves no hint behind.
+  // The role hint this used to clear is gone: nothing stores a role in the
+  // browser any more, so there is nothing left behind for the next person.
   const signOut = async () => {
-    writeRoleHint(null);
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
@@ -437,9 +425,11 @@ export function OperatorNav({
           "server-render the role into OperatorShell" alternative remains
           IMPOSSIBLE: about two dozen 'use client' surfaces (QuoteBuilder
           included) render OperatorShell, and a client component cannot
-          render an async server component; the localStorage role hint
-          (roleHint.ts) is what makes the menu appear at first paint from a
-          browser's second page onward. */}
+          render an async server component. The localStorage role hint that
+          used to cover that gap is gone (2026-09-01), so the View-as menu now
+          appears once the session answer lands rather than at first paint.
+          That is the deliberate trade: no admin control is ever drawn from a
+          value the previous person on a shared computer left behind. */}
 
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
       {open && (
@@ -513,7 +503,7 @@ export function OperatorNav({
           {/* Mobile View-as (admins only): the same switcher the desktop
               menu uses, as tappable pills inside the hamburger menu — the
               header row itself gains nothing at any width. */}
-          {role === 'admin' && (
+          {role === 'admin' && sessionState === 'signedIn' && (
             <li className="border-b" style={{ borderColor: 'var(--op-border)' }}>
               <p className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--op-text-2)' }}>
                 View as
