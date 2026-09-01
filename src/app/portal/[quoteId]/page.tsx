@@ -273,10 +273,18 @@ export default async function PortalPage({
     quote.serviceType === 'permanent'
       ? quote.lineItems.filter((li) => li.recommended).map((li) => li.id)
       : [];
+  // The recommended set now always HAS a package: either an existing tier the
+  // derive badged, or the "Our Recommendation" (E) card it minted for a custom
+  // mix (derivePackagesPermanent). The one case to refuse is a recommendation
+  // that lands under the quote's approval minimum — that tile renders locked,
+  // and opening the portal on a tile the customer cannot choose would show them
+  // a selected card with an "add $X" note and no way forward. Fall through to
+  // pickInitialPackageId, which is already gate-aware.
   const permanentRecommendedPackage =
     permanentRecommendedIds.length > 0
       ? quote.packages.find(
           (p) =>
+            p.belowMinimum !== true &&
             p.includedItemIds.length === permanentRecommendedIds.length &&
             permanentRecommendedIds.every((id) => p.includedItemIds.includes(id)),
         )
@@ -302,11 +310,18 @@ export default async function PortalPage({
   // (Permanent quotes reach this with D = Whole Home, so a no-recommendation
   // permanent portal opens on the Whole Home set — unchanged behavior.)
   const ourRecommendation = quote.packages.find((p) => p.id === 'D');
+  //
+  // PERMANENT never seeds a raw item list any more. Every recommendable set now
+  // resolves to a package (a badged tier, or the minted 'E' card), so the seed
+  // comes from that package's own bundle — `undefined` here means exactly that.
+  // The two cases with no usable package are both ones we must NOT open on: a
+  // recommendation locked under the approval minimum, and a set that includes
+  // the opt-in maintenance add-on (which no package bundles, by design — the
+  // old raw-id seed pre-selected a billable add-on the customer never chose).
+  // Both fall through to the gate-aware pickInitialPackageId above.
   const fallbackSelectedItemIds =
-    permanentRecommendedIds.length > 0
-      ? permanentRecommendedPackage
-        ? undefined // seed from the matched tier's own bundle
-        : permanentRecommendedIds
+    quote.serviceType === 'permanent' && permanentRecommendedIds.length > 0
+      ? undefined
       : ourRecommendation && ourRecommendation.includedItemIds.length > 0
         ? ourRecommendation.includedItemIds
         : undefined;

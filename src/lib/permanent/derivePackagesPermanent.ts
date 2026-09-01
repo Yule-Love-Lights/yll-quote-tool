@@ -66,6 +66,17 @@ export function derivePackagesPermanent(
     .filter((id) => id === LEFT_ID || id === RIGHT_ID || id === LEGACY_SIDES_ID);
   const hasBack = lineItems.some((li) => li.id === BACK_ID);
 
+  // Custom/manual lines staff marked "bundle into every package" (the builder's
+  // per-line choice; see PortalLineItem.bundleInAllTiers). They ride each
+  // surface package below so a customer who picks Front & Sides is still billed
+  // for, and still gets, that work. The default is OFF, which keeps a custom
+  // line in Whole Home alone exactly as before. The maintenance add-on is
+  // excluded by name: it is an opt-in line that belongs in no package at all,
+  // and it must not become bundle-able through this door.
+  const allTierCustomIds = lineItems
+    .filter((li) => li.bundleInAllTiers === true && li.id !== MAINTENANCE_ID)
+    .map((li) => li.id);
+
   // WT-05: `sideIds` only tells us a side line is present, not that BOTH
   // sides are — a townhome/corner-lot quote can measure just one. Name the
   // package for the specific side(s) actually billed so the customer is
@@ -79,14 +90,15 @@ export function derivePackagesPermanent(
   const packages: PortalPackage[] = [];
 
   if (hasFront) {
-    const p = priceIds([FRONT_ID], lineItems, charges);
+    const ids = [FRONT_ID, ...allTierCustomIds];
+    const p = priceIds(ids, lineItems, charges);
     packages.push({
       id: 'A',
       name: 'Front of Home',
       tagline: 'The front of your home.',
       total: p.total,
       deposit: p.deposit,
-      includedItemIds: [FRONT_ID],
+      includedItemIds: ids,
     });
   }
 
@@ -96,7 +108,7 @@ export function derivePackagesPermanent(
   // WHICH side ids are actually present — a one-side-only quote is named for
   // that specific side, never "Both Sides" / "Front & Sides".
   if (sideIds.length > 0) {
-    const bIds = hasFront ? [FRONT_ID, ...sideIds] : sideIds;
+    const bIds = [...(hasFront ? [FRONT_ID, ...sideIds] : sideIds), ...allTierCustomIds];
     const p = priceIds(bIds, lineItems, charges);
 
     let sidesName: string;
@@ -123,14 +135,15 @@ export function derivePackagesPermanent(
   }
 
   if (hasBack) {
-    const p = priceIds([BACK_ID], lineItems, charges);
+    const ids = [BACK_ID, ...allTierCustomIds];
+    const p = priceIds(ids, lineItems, charges);
     packages.push({
       id: 'C',
       name: 'Back of Home',
       tagline: 'The back of your home.',
       total: p.total,
       deposit: p.deposit,
-      includedItemIds: [BACK_ID],
+      includedItemIds: ids,
     });
   }
 
@@ -160,6 +173,48 @@ export function derivePackagesPermanent(
       deposit: p.deposit,
       includedItemIds: wholeHomeIds,
     });
+  }
+
+  // "Our Recommendation" (E) — the set staff ticked in the builder (any of the
+  // four sides, plus any custom line marked recommended).
+  //
+  // Until this existed, a permanent quote had no way to SAY that a set was the
+  // staff pick. The recommend ticks only pre-selected a tier when the ticked
+  // set happened to equal that tier exactly (see the portal page's permanent
+  // seed); any other mix opened on an unlabelled custom selection, so the
+  // customer never learned it was a recommendation.
+  //
+  // Two shapes, deliberately:
+  //   • the ticked set IS an offered tier → badge that tier and mint nothing,
+  //     because a second card with the same items and the same price is just a
+  //     confusing duplicate (the same reasoning as holiday's same-price tier
+  //     dedupe in the adapter).
+  //   • the ticked set is a mix no tier covers → its own card, LAST, so the
+  //     "Tier N" numbering the portal derives by position stays contiguous for
+  //     A/B/C/D.
+  // Nothing ticked → no card and no badge, unchanged.
+  //
+  // The maintenance add-on is excluded for the same reason it is excluded from
+  // every other package: it is opt-in, and bundling it would silently bill it.
+  const recommendedIds = lineItems
+    .filter((li) => li.recommended === true && li.id !== MAINTENANCE_ID)
+    .map((li) => li.id);
+  if (recommendedIds.length > 0) {
+    const alreadyOffered = packages.find((pkg) => sameIdSet(pkg.includedItemIds, recommendedIds));
+    if (alreadyOffered) {
+      alreadyOffered.recommended = true;
+    } else {
+      const p = priceIds(recommendedIds, lineItems, charges);
+      packages.push({
+        id: 'E',
+        name: 'Our Recommendation',
+        tagline: 'Hand-picked by our team for your home.',
+        total: p.total,
+        deposit: p.deposit,
+        recommended: true,
+        includedItemIds: recommendedIds,
+      });
+    }
   }
 
   return packages;

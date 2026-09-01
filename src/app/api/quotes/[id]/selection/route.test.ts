@@ -104,6 +104,14 @@ describe('parseSelectionBody', () => {
     expect(parseSelectionBody({ ...VALID_BODY, packageId: undefined })).toBeNull();
   });
 
+  it("accepts permanent's 'E' recommendation card", () => {
+    // The guard used to be a hardcoded A/B/C/D check. A customer browsing a
+    // permanent quote and tapping "Our Recommendation" would have had every
+    // autosave of that selection silently dropped.
+    const parsed = parseSelectionBody({ ...VALID_BODY, packageId: 'E' });
+    expect(parsed?.packageId).toBe('E');
+  });
+
   it('rejects a non-array selectedItemIds', () => {
     expect(parseSelectionBody({ ...VALID_BODY, selectedItemIds: 'not-an-array' })).toBeNull();
   });

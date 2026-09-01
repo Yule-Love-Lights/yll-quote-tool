@@ -249,3 +249,171 @@ describe('derivePackagesPermanent (#88 P5)', () => {
     expect(derivePackagesPermanent([], RESULT)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Staff recommendation card (package 'E') — permanent quotes only.
+//
+// Before this, a permanent quote had no way to show the customer "this is the
+// set we picked for your home". The recommend ticks only pre-selected a tier
+// when the ticked set happened to equal that tier exactly; any other mix opened
+// on an unlabelled custom selection. Quote #1303 is the live example.
+// ---------------------------------------------------------------------------
+describe('derivePackagesPermanent — staff recommendation', () => {
+  function recItem(id: string, price: number): PortalLineItem {
+    return { ...permItem(id, price), recommended: true };
+  }
+
+  it('no recommendations → no E card and the tier list is unchanged', () => {
+    const lineItems = [
+      permItem('permanent-front', 1400),
+      permItem('permanent-left', 900),
+      permItem('permanent-right', 900),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    expect(packages.map((p) => p.id)).toEqual(['A', 'B']);
+    expect(packages.some((p) => p.recommended)).toBe(false);
+  });
+
+  it('a recommended set that is a custom mix → its own labelled E card, last', () => {
+    // Front + back is no offered tier (A is front, C is back, D is everything),
+    // so the recommendation needs a card of its own.
+    const lineItems = [
+      recItem('permanent-front', 1400),
+      permItem('permanent-left', 900),
+      permItem('permanent-right', 900),
+      recItem('permanent-back', 1050),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D', 'E']);
+    const e = packages.find((p) => p.id === 'E')!;
+    expect(e.name).toBe('Our Recommendation');
+    expect(e.recommended).toBe(true);
+    expect(e.includedItemIds.slice().sort()).toEqual(['permanent-back', 'permanent-front']);
+    const expected = priceSelection(1400 + 1050, CHARGES);
+    expect(e.total).toBe(expected.total);
+    expect(e.deposit).toBe(expected.deposit);
+  });
+
+  it('a recommended set equal to an offered tier → that tier is badged, no duplicate card', () => {
+    // Front + both sides IS package B, so adding an E card would put two
+    // identical-priced tiles in front of the customer.
+    const lineItems = [
+      recItem('permanent-front', 1400),
+      recItem('permanent-left', 900),
+      recItem('permanent-right', 900),
+      permItem('permanent-back', 1050),
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+    expect(packages.find((p) => p.id === 'B')!.recommended).toBe(true);
+    expect(packages.filter((p) => p.recommended).map((p) => p.id)).toEqual(['B']);
+  });
+
+  it('quote #1303: every surface plus a recommended custom line badges Whole Home', () => {
+    // The live quote that prompted this work. All four surfaces and the Garage
+    // custom line are ticked, which is exactly the Whole Home bundle.
+    const lineItems = [
+      recItem('permanent-front', 1400),
+      recItem('permanent-left', 900),
+      recItem('permanent-right', 900),
+      recItem('permanent-back', 1050),
+      { ...permItem('custom-0', 550, 'roofline'), recommended: true },
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+    expect(packages.find((p) => p.id === 'D')!.recommended).toBe(true);
+    expect(packages.find((p) => p.id === 'D')!.total).toBe(
+      priceSelection(1400 + 900 + 900 + 1050 + 550, CHARGES).total,
+    );
+  });
+
+  it('the maintenance add-on never rides the E card even if flagged', () => {
+    const lineItems = [
+      recItem('permanent-front', 1400),
+      permItem('permanent-back', 1050),
+      { ...permItem('permanent-maintenance', 250, 'permanent-addon'), recommended: true },
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    for (const p of packages) expect(p.includedItemIds).not.toContain('permanent-maintenance');
+    // Front alone IS package A, so it badges A rather than minting an E card.
+    expect(packages.find((p) => p.id === 'E')).toBeUndefined();
+    expect(packages.find((p) => p.id === 'A')!.recommended).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Custom line bundling — staff choose per line whether a custom item rides
+// every package or only Whole Home. Whole Home only stays the default so no
+// existing quote's cards or prices move.
+// ---------------------------------------------------------------------------
+describe('derivePackagesPermanent — custom line bundling', () => {
+  const SURFACES = [
+    permItem('permanent-front', 1400),
+    permItem('permanent-left', 900),
+    permItem('permanent-right', 900),
+    permItem('permanent-back', 1050),
+  ];
+
+  it('default (no flag) → the custom line rides Whole Home only, prices unchanged', () => {
+    const lineItems = [...SURFACES, permItem('custom-0', 550, 'roofline')];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    expect(packages.find((p) => p.id === 'A')!.includedItemIds).toEqual(['permanent-front']);
+    expect(packages.find((p) => p.id === 'A')!.total).toBe(priceSelection(1400, CHARGES).total);
+    expect(packages.find((p) => p.id === 'C')!.includedItemIds).toEqual(['permanent-back']);
+    expect(packages.find((p) => p.id === 'D')!.includedItemIds).toContain('custom-0');
+  });
+
+  it('bundleInAllTiers → the custom line rides every surface package and is priced into each', () => {
+    const lineItems = [
+      ...SURFACES,
+      { ...permItem('custom-0', 550, 'roofline'), bundleInAllTiers: true },
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+
+    const a = packages.find((p) => p.id === 'A')!;
+    expect(a.includedItemIds).toEqual(['permanent-front', 'custom-0']);
+    expect(a.total).toBe(priceSelection(1400 + 550, CHARGES).total);
+
+    const b = packages.find((p) => p.id === 'B')!;
+    expect(b.includedItemIds).toEqual([
+      'permanent-front',
+      'permanent-left',
+      'permanent-right',
+      'custom-0',
+    ]);
+    expect(b.total).toBe(priceSelection(1400 + 900 + 900 + 550, CHARGES).total);
+
+    const c = packages.find((p) => p.id === 'C')!;
+    expect(c.includedItemIds).toEqual(['permanent-back', 'custom-0']);
+    expect(c.total).toBe(priceSelection(1050 + 550, CHARGES).total);
+
+    // Whole Home already carried every custom line — its price must not move.
+    const d = packages.find((p) => p.id === 'D')!;
+    expect(d.total).toBe(priceSelection(1400 + 900 + 900 + 1050 + 550, CHARGES).total);
+  });
+
+  it('an all-tiers custom line never duplicates itself inside Whole Home', () => {
+    const lineItems = [
+      permItem('permanent-front', 1400),
+      permItem('permanent-back', 1050),
+      { ...permItem('custom-0', 550, 'roofline'), bundleInAllTiers: true },
+    ];
+    const d = derivePackagesPermanent(lineItems, RESULT).find((p) => p.id === 'D')!;
+    expect(d.includedItemIds.filter((id) => id === 'custom-0')).toHaveLength(1);
+    expect(d.total).toBe(priceSelection(1400 + 1050 + 550, CHARGES).total);
+  });
+
+  it('the maintenance add-on is never treated as an all-tiers custom line', () => {
+    const lineItems = [
+      permItem('permanent-front', 1400),
+      permItem('permanent-back', 1050),
+      { ...permItem('permanent-maintenance', 250, 'permanent-addon'), bundleInAllTiers: true },
+    ];
+    const packages = derivePackagesPermanent(lineItems, RESULT);
+    for (const p of packages) expect(p.includedItemIds).not.toContain('permanent-maintenance');
+  });
+});
