@@ -18,6 +18,7 @@ import {
   isFixFresh,
   MAX_SEND_ATTEMPTS,
   retryDelayMs,
+  stampIsUsable,
   type GpsPermission,
   type SendOutcome,
 } from './cameraGps';
@@ -138,6 +139,15 @@ export default function CameraScreen({
   // come back" promise was false (technical lens HIGH).
   const discardedRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<Map<string, AbortController>>(new Map());
+  // The position decided for each photo at its shutter, reused by every
+  // retry so a held photo keeps the house it was shot at.
+  const stampRef = useRef<Map<string, { lat: number; lng: number; accuracyM: number | null }>>(new Map());
+  // Photos with a send loop already running. Without this, tapping try
+  // now while the automatic retry was mid-backoff started a SECOND loop
+  // for the same photo, and the capture route has no idempotency, so
+  // both could land and the worker would be paid twice (integration
+  // lens HIGH, S81 close).
+  const sendingRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     return () => {
       urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
@@ -317,9 +327,31 @@ export default function CameraScreen({
   /** One attempt at sending a shot. Returns what happened; decideSend
    * (cameraGps.ts, tested) decides what that means. */
   const attemptSend = useCallback(
-    async (blob: Blob, campaignId: string, key: string): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
+    async (
+      blob: Blob,
+      campaignId: string,
+      key: string,
+      shutterAt: number,
+    ): Promise<{ outcome: SendOutcome; placement?: { id: string; suggestedAddress: string | null } }> => {
       try {
-        const gps = await getGps();
+        // The position is decided ONCE per photo, as close to the shutter
+        // as the phone allows, and reused by every retry. Reading it again
+        // at send time tagged a held photo wherever the worker had walked
+        // to, which is the wrong house on a paid record (staff lens HIGH,
+        // S81 close, against my own retry change).
+        let gps = stampRef.current.get(key) ?? null;
+        if (!gps) {
+          const fresh = await getGps();
+          if (fresh && stampIsUsable(shutterAt, Date.now())) {
+            gps = fresh;
+            stampRef.current.set(key, fresh);
+          } else if (fresh) {
+            // A fix arrived, but too long after the shutter to describe
+            // that house. Refusing it is the honest answer: the photo is
+            // held for the worker rather than tagged with a guess.
+            return { outcome: { kind: 'stale_location' } };
+          }
+        }
         if (!gps) return { outcome: { kind: 'no_gps', denied: gpsStatusRef.current === 'denied' } };
         const file = new File([blob], 'shot.jpg', { type: 'image/jpeg' });
         const { blob: sized } = await downscaleForUploadAsBlob(file);
@@ -329,7 +361,8 @@ export default function CameraScreen({
         fd.set('lat', String(gps.lat));
         fd.set('lng', String(gps.lng));
         if (gps.accuracyM !== null) fd.set('accuracyM', String(gps.accuracyM));
-        fd.set('capturedAt', new Date().toISOString());
+        // The time the SHUTTER fired, not the time this attempt runs.
+        fd.set('capturedAt', new Date(shutterAt).toISOString());
         fd.set('photo', sized, 'proof.jpg');
         const controller = new AbortController();
         abortRef.current.set(key, controller);
@@ -356,7 +389,7 @@ export default function CameraScreen({
   // rule this exists for (Naldo, live incident 2026-08-31: a worker mid-run
   // losing roughly one shot in five, every lost photo thrown away and
   // re-shot): a photo that has been taken is never discarded by the app.
-  const sendShot = useCallback(
+  const runSend = useCallback(
     async (key: string, blob: Blob, stable: ShotIdentity): Promise<void> => {
       const set = (patch: Partial<QueueItem>) =>
         setQueue((q) => q.map((it) => (it.key === key ? { ...it, ...patch } : it)));
@@ -385,7 +418,7 @@ export default function CameraScreen({
         // plain, safe-to-resend failure (photoQueueRestore.ts owns that
         // call; a photo that has really landed must never be sent twice).
         await persistStatus('uploading', attempt);
-        const { outcome, placement } = await attemptSend(blob, stable.campaignId, key);
+        const { outcome, placement } = await attemptSend(blob, stable.campaignId, key, stable.capturedAt);
         if (discardedRef.current.has(key)) return;
         const decision = decideSend(outcome, attempt);
 
@@ -422,7 +455,7 @@ export default function CameraScreen({
           set({ status: 'waiting', attempts: attempt, error: decision.reason });
           await persistStatus('waiting', attempt, decision.reason);
           await sleep(retryDelayMs(attempt));
-        if (discardedRef.current.has(key)) return;
+          if (discardedRef.current.has(key)) return;
           continue;
         }
         if (decision.action === 'hold') {
@@ -434,6 +467,24 @@ export default function CameraScreen({
       }
     },
     [attemptSend, memoryScope],
+  );
+
+  // One send loop per photo, ever. A second loop for the same shot (try
+  // now tapped while the automatic retry sat in its backoff, or a
+  // restore racing a live send) can land twice, and the capture route
+  // has no idempotency, so the worker would be paid twice for one sign
+  // (integration lens HIGH, S81 close).
+  const sendShot = useCallback(
+    async (key: string, blob: Blob, stable: ShotIdentity): Promise<void> => {
+      if (sendingRef.current.has(key)) return;
+      sendingRef.current.add(key);
+      try {
+        await runSend(key, blob, stable);
+      } finally {
+        sendingRef.current.delete(key);
+      }
+    },
+    [runSend],
   );
 
   // Bring back anything still unsent from a previous session (Naldo,
