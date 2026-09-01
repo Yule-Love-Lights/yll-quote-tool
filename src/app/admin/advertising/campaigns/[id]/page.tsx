@@ -31,6 +31,7 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
       backHref="/admin/advertising"
       captureHref={`/admin/advertising/capture?campaign=${encodeURIComponent(campaign.id)}`}
       reviewUrl="/api/admin/advertising/review"
+      editUrl="/api/admin/advertising/campaigns"
     />
   );
 }

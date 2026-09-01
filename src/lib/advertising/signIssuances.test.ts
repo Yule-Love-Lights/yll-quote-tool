@@ -21,6 +21,10 @@ const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker } = vi.hoi
       // When set, the NEXT on-hand read returns this snapshot then clears —
       // models a stale read racing a concurrent stock writer.
       staleOnHandReadOnce: null as AnyRow | null,
+      // What the balance query actually ASKED the database for. Row 479 is
+      // about a filter being ABSENT, and an absent filter is only testable if
+      // the mock records what it was asked.
+      lastPlacementFilters: {} as Record<string, unknown>,
     },
   },
   logAdvertisingActivity: vi.fn(),
@@ -68,7 +72,11 @@ function makeDb() {
           const filters: Record<string, unknown> = {};
           const b = {
             eq(col: string, val: unknown) { filters[col] = val; return b; },
-            is(_col: string, _val: unknown) { return b; }, // voided_at filter: mock rows are never voided
+            // Row 479 (Naldo 2026-08-31): the balance no longer filters on
+            // voided_at at all, so a stub here would hide a re-added filter.
+            // Kept as a recorded no-op with a test below that fails if the
+            // filter comes back.
+            is(col: string, _val: unknown) { filters[`is:${col}`] = true; return b; },
             maybeSingle() {
               if (table === 'inventory_on_hand') {
                 if (stateRef.current.staleOnHandReadOnce) {
@@ -90,6 +98,7 @@ function makeDb() {
             },
             then(resolve: (v: { count: number | null; error: null }) => void, reject?: (e: unknown) => void) {
               if (table === 'advertising_placements' && opts?.head) {
+                stateRef.current.lastPlacementFilters = { ...filters };
                 const workerId = String(filters.worker_id ?? '');
                 return Promise.resolve({ count: stateRef.current.placementCounts[workerId] ?? 0, error: null }).then(resolve, reject);
               }
@@ -112,10 +121,36 @@ beforeEach(() => {
   stateRef.current.placementCounts = {};
   stateRef.current.onHand = { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 };
   stateRef.current.staleOnHandReadOnce = null;
+  stateRef.current.lastPlacementFilters = {};
   dbRef.current = makeDb();
   getAdvertisingWorker.mockResolvedValue({
     id: 'worker-1', displayName: 'Joe Signs', authUserId: null, active: true, isTest: false,
     createdAt: 'x', updatedAt: 'x',
+  });
+});
+
+describe('row 479: a placed sign is a used sign', () => {
+  // Naldo's ruling, 2026-08-31. Voiding a yard-sign photo no longer returns
+  // a sign to the allotment: the plastic is in the ground whatever happens
+  // to the photo or the pay. KNOWN AND ACCEPTED: a voided photo that is
+  // re-uploaded counts twice, because it becomes a second placement row.
+  it('does not ask the database to exclude voided rows', async () => {
+    const { getWorkerSignBalance } = await import('./signIssuances');
+    stateRef.current.issuances = [
+      { id: 'i1', worker_id: 'worker-1', qty: 50, issued_by: 'admin-1', note: null, created_at: 'x' },
+    ];
+    stateRef.current.placementCounts['worker-1'] = 3;
+
+    const balance = await getWorkerSignBalance('worker-1');
+    expect(balance.signsUsed).toBe(3);
+    expect(balance.remaining).toBe(47);
+    // The filter is the thing under test: if a voided_at filter is re-added,
+    // this fails, because voided signs must keep counting.
+    expect(stateRef.current.lastPlacementFilters['is:voided_at']).toBeUndefined();
+    // Control: the recorder DOES capture what this query sets, so the
+    // assertion above is about the code and not a broken instrument.
+    expect(stateRef.current.lastPlacementFilters.kind).toBe('yard_sign');
+    expect(stateRef.current.lastPlacementFilters.worker_id).toBe('worker-1');
   });
 });
 
