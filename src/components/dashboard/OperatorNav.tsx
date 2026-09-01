@@ -9,6 +9,7 @@ import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { AccountMenu } from './AccountMenu';
 import { accountLinksFor } from './accountLinks';
 import { displayName, roleLabel } from './accountIdentity';
+import { ClockCard } from './ClockCard';
 import { HeaderSearch } from './HeaderSearch';
 import { useViewSwitcher } from './useViewSwitcher';
 
@@ -256,7 +257,14 @@ export function OperatorNav({
       className="border-b"
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
-      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
+      {/* xl:max-w-7xl (Naldo, 2026-09-01): the row was capped at 1152px, which
+          is why every previous fit fight ended in shortening a label. The clock
+          needed real width rather than another shortened word, and on a wide
+          monitor the header now uses the space the page has. Below 1280 the cap
+          is the viewport anyway, so nothing changes there. The consequence is
+          deliberate and visible: at 1280 and up the nav spans wider than the
+          page content beneath it. */}
+      <div className="max-w-6xl xl:max-w-7xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
         {/* The full wordmark at every width. It was shortened to YLL on
             2026-08-30, when the search box had to be paid for out of a row
             that already held 12 tabs; dropping Customers, Fleet, Insights and
@@ -400,6 +408,13 @@ export function OperatorNav({
               canSignOut={!hideSignOut}
               roleConfirmed={sessionState === 'signedIn'}
             />
+          </li>
+          {/* The time clock, on every page rather than the dashboard only
+              (Naldo, 2026-09-01). Same always-mounted treatment as the account
+              control beside it: it reserves its width from first paint, so the
+              row does not shuffle when the clock answers. */}
+          <li className="ml-1">
+            <ClockCard variant="header" />
           </li>
         </ul>
 

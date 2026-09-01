@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { actionsFor, statusFor403, advertisingBlockedCopy } from './ClockCard';
+import { actionsFor, statusFor403, advertisingBlockedCopy, headerLabel, statusColor } from './ClockCard';
 
 // The clock card's button state machine, tested without a DOM. The full fetch
 // wiring is exercised by the /api/office/clock route tests; this pins the rule
@@ -68,5 +68,57 @@ describe('advertisingBlockedCopy', () => {
     // The actual claim must be true: advertising accounts structurally don't
     // use this clock at all (not "yet", not "until an admin acts").
     expect(copy.title.toLowerCase()).toContain('advertising');
+  });
+});
+
+// The header form of the clock (Naldo, 2026-09-01). It moved out of the
+// dashboard and into the nav row, which has about 32px of spare width at
+// 1024px, so the trigger says the STATE in a few words and the actions live in
+// a dropdown. Both helpers are pure for the same reason actionsFor is: this
+// repo has no DOM in its test environment, and the wording is the thing most
+// likely to drift.
+
+describe('headerLabel', () => {
+  const ready = (over: Partial<{ clockedIn: boolean; onBreak: boolean; shift: { clockInAt: string } | null }>) => ({
+    status: 'ready',
+    state: { clockedIn: true, onBreak: false, shift: { clockInAt: '2026-09-01T11:22:00Z' }, ...over },
+  });
+
+  it('names the shift start when clocked in', () => {
+    // Short on purpose: "In 7:22 AM", not "In since 7:22 AM", because the row
+    // it sits in was measured and the words cost width.
+    expect(headerLabel(ready({}))).toMatch(/^In \d/);
+  });
+
+  it('says clocked out, and on break, plainly', () => {
+    expect(headerLabel(ready({ clockedIn: false, shift: null }))).toBe('Clocked out');
+    expect(headerLabel(ready({ onBreak: true }))).toBe('On break');
+  });
+
+  it('falls back to one neutral word before the clock has answered', () => {
+    // Never a guess about the state: the trigger must not claim "Clocked out"
+    // to someone who is actually clocked in and simply has a slow network.
+    expect(headerLabel({ status: 'loading' })).toBe('Clock');
+    expect(headerLabel({ status: 'error' })).toBe('Clock');
+    expect(headerLabel({ status: 'signedout' })).toBe('Clock');
+    expect(headerLabel({ status: 'unlinked' })).toBe('Clock');
+  });
+
+  it('handles a clocked-in state with no shift row rather than printing undefined', () => {
+    expect(headerLabel(ready({ shift: null }))).toBe('Clocked in');
+  });
+});
+
+describe('statusColor', () => {
+  it('is green on the clock, amber on break, grey otherwise', () => {
+    const s = (over: object) => ({ status: 'ready', state: { clockedIn: true, onBreak: false, ...over } });
+    expect(statusColor(s({}))).toBe('#16a34a');
+    expect(statusColor(s({ onBreak: true }))).toBe('#d97706');
+    expect(statusColor(s({ clockedIn: false }))).toBe('var(--op-text-dim)');
+  });
+
+  it('shows no colour claim at all until the clock has answered', () => {
+    expect(statusColor({ status: 'loading' })).toBe('var(--op-text-dim)');
+    expect(statusColor({ status: 'error' })).toBe('var(--op-text-dim)');
   });
 });

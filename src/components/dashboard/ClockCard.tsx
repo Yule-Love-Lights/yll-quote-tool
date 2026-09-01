@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /**
  * Office web clock (row 337) — a COMPACT widget that lives in the dashboard
@@ -95,6 +95,35 @@ export function advertisingBlockedCopy(): { headline: string; title: string } {
   };
 }
 
+/**
+ * The few words the HEADER trigger shows. Pure, so the wording is testable
+ * without a DOM, same reasoning as actionsFor above.
+ *
+ * Short on purpose: this sits in a nav row measured to about 46px of spare
+ * width, so the trigger says the STATE and the detail lives in the dropdown.
+ */
+export function headerLabel(load: {
+  status: string;
+  state?: { clockedIn: boolean; onBreak: boolean; shift: { clockInAt: string } | null };
+}): string {
+  if (load.status === 'loading') return 'Clock';
+  if (load.status !== 'ready' || !load.state) return 'Clock';
+  const s = load.state;
+  if (!s.clockedIn) return 'Clocked out';
+  if (s.onBreak) return 'On break';
+  return s.shift ? `In ${clockInTime(s.shift.clockInAt)}` : 'Clocked in';
+}
+
+/** The dot colour for a clock state. Pure. */
+export function statusColor(load: {
+  status: string;
+  state?: { clockedIn: boolean; onBreak: boolean };
+}): string {
+  if (load.status !== 'ready' || !load.state) return 'var(--op-text-dim)';
+  if (!load.state.clockedIn) return 'var(--op-text-dim)';
+  return load.state.onBreak ? '#d97706' : '#16a34a';
+}
+
 /** The compact pill the header shows in every state. */
 function Pill({ children }: { children: React.ReactNode }) {
   return (
@@ -108,11 +137,30 @@ function Pill({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function ClockCard() {
+export function ClockCard({ variant = 'card' }: { variant?: 'card' | 'header' } = {}) {
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   const [reload, setReload] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Header variant only: the dropdown holding the actions. Same open/close
+  // idiom as AccountMenu, so the two header controls behave identically.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
 
   // Mount-time (and retry) read of the caller's current clock state. Inlined
   // with a `cancelled` guard (the repo's CrewLogins pattern) so the lint rule
@@ -179,6 +227,119 @@ export function ClockCard() {
   }
 
   const dim = { color: 'var(--op-text-dim)' } as const;
+
+  // ---------------------------------------------------------------- header
+  // The nav-row form (Naldo, 2026-09-01): the clock belongs on every page, not
+  // just the dashboard, so it moved into the header. The row has about 46px of
+  // spare width, which is nowhere near the card's ~290px, so the trigger
+  // carries the STATE and the actions live one tap away in a dropdown. The
+  // blocked states (not linked, inactive, advertising, error) keep their exact
+  // wording; they just move inside, because a header cannot carry a sentence.
+  if (variant === 'header') {
+    const label = headerLabel(load);
+    const ready = load.status === 'ready' ? load.state : null;
+
+    return (
+      <div ref={rootRef} className="relative shrink-0">
+        <button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-label={`Time clock: ${label}`}
+          onClick={() => setMenuOpen((o) => !o)}
+          className="flex items-center gap-1.5 whitespace-nowrap rounded-md border lg:px-1.5 xl:px-2 py-1 text-xs"
+          style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+        >
+          <span
+            aria-hidden
+            className="inline-block h-2 w-2 shrink-0 rounded-full"
+            style={{ background: statusColor(load) }}
+          />
+          {/* The words only at xl. At 1024 the row cannot afford them, and the
+              dot plus the aria-label still carry the state. */}
+          <span className="hidden xl:inline">{label}</span>
+        </button>
+
+        {menuOpen && (
+          <div
+            role="menu"
+            aria-label="Time clock"
+            className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border p-3 shadow-lg"
+            style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
+          >
+            <p className="mb-2 text-sm font-medium" style={{ color: 'var(--op-text)' }}>
+              {label}
+            </p>
+
+            {load.status === 'signedout' && (
+              <a href="/login" className="text-sm underline" style={{ color: 'var(--op-accent)' }}>
+                Sign in to use the clock
+              </a>
+            )}
+            {load.status === 'unlinked' && (
+              <p className="text-sm" style={dim}>
+                This login is not linked to a staff time record yet. Ask an admin to set it up.
+              </p>
+            )}
+            {load.status === 'inactive' && (
+              <p className="text-sm" style={dim}>
+                Your staff record is inactive. Ask an admin to reactivate it before clocking in.
+              </p>
+            )}
+            {load.status === 'is_advertising' && (
+              <p className="text-sm" style={dim}>
+                {advertisingBlockedCopy().title}
+              </p>
+            )}
+            {load.status === 'error' && (
+              <button
+                type="button"
+                onClick={() => setReload((n) => n + 1)}
+                className="text-sm underline"
+                style={{ color: 'var(--op-accent)' }}
+              >
+                Could not reach the clock. Retry
+              </button>
+            )}
+
+            {ready && (
+              <div className="flex flex-col gap-1.5">
+                {actionsFor(ready).map((b) => (
+                  <button
+                    key={b.action}
+                    type="button"
+                    disabled={busy}
+                    role="menuitem"
+                    onClick={() => {
+                      void act(b.action);
+                    }}
+                    className="rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+                    style={
+                      b.kind === 'primary'
+                        ? { background: 'var(--op-accent)', color: '#1c1917' }
+                        : {
+                            background: 'var(--op-bg)',
+                            color: 'var(--op-text)',
+                            border: '1px solid var(--op-border)',
+                          }
+                    }
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {error && (
+              <p className="mt-2 text-sm" style={{ color: 'var(--op-danger)' }} role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (load.status === 'loading') {
     return <Pill><span className="text-sm" style={dim}>Time clock…</span></Pill>;
