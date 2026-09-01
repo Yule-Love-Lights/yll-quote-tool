@@ -54,6 +54,10 @@ export const ACCOUNT_LINKS: ReadonlyArray<AccountLink> = [
   // is not offered to them. Opening the page up is a permissions decision, not
   // a menu one.
   { label: 'Website leads', href: '/admin/leads', adminOnly: true },
+  // Who can see what (Naldo, 2026-09-01, for Jason). Admin only, and the page
+  // redirects a non-admin server-side too: hiding the row is cosmetic, the
+  // redirect is the refusal.
+  { label: 'Who can see what', href: '/admin/permissions', adminOnly: true },
 ];
 
 /**

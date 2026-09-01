@@ -7,12 +7,13 @@ import { describe, it, expect } from 'vitest';
 import { ACCOUNT_LINKS, accountLinksFor } from './accountLinks';
 
 describe('ACCOUNT_LINKS', () => {
-  it('carries the four rows Naldo asked for, in order', () => {
+  it('carries the rows Naldo asked for, in order', () => {
     expect(ACCOUNT_LINKS.map((l) => l.label)).toEqual([
       'Settings',
       'Insights',
       'Call recordings',
       'Website leads',
+      'Who can see what',
     ]);
   });
 
@@ -74,6 +75,7 @@ describe('accountLinksFor', () => {
       'Insights',
       'Call recordings',
       'Website leads',
+      'Who can see what',
     ]);
   });
 
@@ -81,6 +83,7 @@ describe('accountLinksFor', () => {
     const labels = accountLinksFor('operator', true).map((l) => l.label);
     expect(labels).toEqual(['Settings', 'Insights', 'Call recordings']);
     expect(labels).not.toContain('Website leads');
+    expect(labels).not.toContain('Who can see what');
   });
 
   it('treats an unresolved role as not-admin, the same safe default as View-as', () => {
