@@ -41,6 +41,9 @@ export function ReferralPrefillCard({
 }) {
   const referrer = referrerLabel(match);
   const how = match.matchedOn === 'phone' ? 'phone number' : 'email';
+  // Naming the friend is how a staffer catches a household or shared-office
+  // phone collision before attributing $125 to the wrong person.
+  const friendName = match.refereeName?.trim() || null;
 
   return (
     <div
@@ -49,8 +52,9 @@ export function ReferralPrefillCard({
     >
       <p className="font-semibold">This lead came from a referral link.</p>
       <p className="mt-1 leading-relaxed">
-        {referrer} sent them, and their {how} matches. Set &ldquo;Referred by&rdquo; below so the credit
-        lands when this quote books. If it books without it, the credit cannot be added afterwards.
+        {referrer} sent{friendName ? <> <span className="font-medium">{friendName}</span></> : ' them'}, and
+        the {how} matches. Set &ldquo;Referred by&rdquo; below so the credit lands when this quote books.
+        If it books without it, the credit cannot be added afterwards.
       </p>
       <div className="mt-2.5 flex flex-wrap gap-2">
         <button
@@ -77,6 +81,7 @@ export function ReferralPrefillNotice({
   email,
   excludeCustomerId,
   alreadySet,
+  quoteAlreadyBooked,
   onUse,
 }: {
   phone: string;
@@ -85,28 +90,41 @@ export function ReferralPrefillNotice({
   excludeCustomerId?: string | null;
   /** True once a referrer is set, by this notice or by hand: stop asking. */
   alreadySet: boolean;
+  /** The quote has already booked. accrueOnBooking only ever fires from a
+   *  booking event, so a referral attached now would sit pending forever and
+   *  the card's promise would be false. Say nothing instead. */
+  quoteAlreadyBooked?: boolean;
   onUse: (value: { id: string; name: string }) => void;
 }) {
   const [match, setMatch] = useState<PendingReferralMatch | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  // Scoped to the referral it dismissed, not a permanent latch: dismissing
+  // one suggestion must not hide a later, genuinely different one.
+  const [dismissedId, setDismissedId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (!shouldLookupReferral({ phone, email, alreadySet })) {
+    if (quoteAlreadyBooked || !shouldLookupReferral({ phone, email, alreadySet })) {
       queueMicrotask(() => setMatch(null));
       return;
     }
+    const ac = new AbortController();
+    abortRef.current = ac;
     const timer = setTimeout(async () => {
-      abortRef.current?.abort();
-      const ac = new AbortController();
-      abortRef.current = ac;
       const hit = await lookupPendingReferral({ phone, email, excludeCustomerId, signal: ac.signal });
-      setMatch(hit);
+      if (!ac.signal.aborted) setMatch(hit);
     }, DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [phone, email, excludeCustomerId, alreadySet]);
+    // Abort in the CLEANUP, not in the next timer: otherwise an in-flight
+    // request outlives an unmount, and a stale match can land after the
+    // inputs have already moved on.
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+  }, [phone, email, excludeCustomerId, alreadySet, quoteAlreadyBooked]);
 
-  if (!match || dismissed || alreadySet) return null;
+  if (!match || alreadySet || quoteAlreadyBooked || dismissedId === match.referralId) return null;
 
-  return <ReferralPrefillCard match={match} onUse={onUse} onDismiss={() => setDismissed(true)} />;
+  return (
+    <ReferralPrefillCard match={match} onUse={onUse} onDismiss={() => setDismissedId(match.referralId)} />
+  );
 }

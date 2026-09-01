@@ -32,7 +32,7 @@ describe('ReferralPrefillCard (the copy)', () => {
       <ReferralPrefillCard match={MATCH} onUse={noop} onDismiss={noop} />,
     );
     expect(html).toContain('This lead came from a referral link.');
-    expect(html).toContain('Dana Whitfield sent them');
+    expect(html).toContain('Dana Whitfield sent');
     expect(html).toContain('phone number');
     expect(html).toContain('Set Dana Whitfield as the referrer');
   });
@@ -49,7 +49,7 @@ describe('ReferralPrefillCard (the copy)', () => {
     const html = renderToStaticMarkup(
       <ReferralPrefillCard match={{ ...MATCH, matchedOn: 'email' }} onUse={noop} onDismiss={noop} />,
     );
-    expect(html).toContain('their email matches');
+    expect(html).toContain('the email matches');
     expect(html).not.toContain('phone number');
   });
 
@@ -57,7 +57,7 @@ describe('ReferralPrefillCard (the copy)', () => {
     const html = renderToStaticMarkup(
       <ReferralPrefillCard match={{ ...MATCH, referrerName: null }} onUse={noop} onDismiss={noop} />,
     );
-    expect(html).toContain('Another customer sent them');
+    expect(html).toContain('Another customer sent');
   });
 
   it('never uses an em dash (voice rules)', () => {
@@ -140,5 +140,25 @@ describe('lookupPendingReferral (how it asks)', () => {
   it('returns null when the network throws: a hiccup must not break the builder', async () => {
     fetchMock.mockRejectedValue(new Error('network down'));
     await expect(lookupPendingReferral({ phone: '5165550123', email: '' })).resolves.toBeNull();
+  });
+});
+
+
+describe('ReferralPrefillCard: naming the referred friend', () => {
+  it('names the friend, so staff can catch a shared-household phone match', () => {
+    // Without this, a household or shared office number could attribute $125
+    // to the wrong person with nothing on screen to catch it.
+    const html = renderToStaticMarkup(
+      <ReferralPrefillCard match={MATCH} onUse={noop} onDismiss={noop} />,
+    );
+    expect(html).toContain('Sam Friend');
+  });
+
+  it('still reads as a sentence when the referral has no friend name on file', () => {
+    const html = renderToStaticMarkup(
+      <ReferralPrefillCard match={{ ...MATCH, refereeName: null }} onUse={noop} onDismiss={noop} />,
+    );
+    expect(html).toContain('sent them');
+    expect(html).not.toContain('sent , and');
   });
 });

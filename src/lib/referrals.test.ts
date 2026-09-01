@@ -76,6 +76,7 @@ import {
   setReferralPhotoOptout,
   hasRecentPendingLinkReferral,
   findPendingLinkReferralForContact,
+  consumeLinkReferralForMention,
   isReferralSpendable,
   isReferralExpired,
   notifyReferrerEarned,
@@ -232,7 +233,7 @@ function makeFakeSupabase(initial: { customers?: Row[]; referrals?: Row[]; quote
     return builder;
   }
 
-  return { from, fromCalls };
+  return { from, fromCalls, __tables: tables };
 }
 
 beforeEach(() => {
@@ -1437,8 +1438,10 @@ describe('findPendingLinkReferralForContact (quote-builder prefill)', () => {
     expect(await findPendingLinkReferralForContact({ phone: '5165550123' })).toBeNull();
   });
 
-  it('NEVER matches an already-settled referral (booked, credited, expired)', async () => {
-    for (const status of ['booked', 'credited', 'expired']) {
+  it('NEVER matches an already-settled referral (booked or credited)', async () => {
+    // Only these two: the DB CHECK constraint allows pending/booked/credited,
+    // so an 'expired' status is not a state this table can hold.
+    for (const status of ['booked', 'credited']) {
       sbRef.current = makeFakeSupabase({
         referrals: [{ ...REF, status }],
         customers: [REFERRER],
@@ -1481,6 +1484,128 @@ describe('findPendingLinkReferralForContact (quote-builder prefill)', () => {
 
   it('returns null (never throws) when Supabase is not configured', async () => {
     sbRef.current = null;
+    expect(await findPendingLinkReferralForContact({ phone: '5165550123' })).toBeNull();
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// consumeLinkReferralForMention — closes the double-payment hole found by the
+// PR #1158 review.
+//
+// UNIQUE(referee_quote_id) guarantees one referral row per referee QUOTE and
+// nothing across different quotes. A 'link' row's status never changes on its
+// own, so it stays 'pending' forever; with the quote-builder prefill reading
+// those rows back, a repeat customer's SECOND quote re-surfaces the SAME link
+// row, creates a second mention row on a different quote, and
+// creditBalanceFor sums both. One referral, $250.
+//
+// Consuming the link row at mention-creation time is what makes that
+// impossible, and it fires whether the referrer was suggested or picked by
+// hand.
+// ─────────────────────────────────────────────────────────────────────────
+describe('consumeLinkReferralForMention (one payout per link)', () => {
+  const OPEN_LINK = {
+    id: 'link-1',
+    referrer_customer_id: 'c-referrer',
+    source: 'link',
+    status: 'pending',
+    referee_contact_email: 'sam@example.com',
+    referee_contact_phone: '(516) 555-0123',
+    consumed_at: null,
+    consumed_by_quote_id: null,
+    created_at: '2026-03-10T10:00:00Z',
+  };
+
+  it('marks the matching open link row consumed, and stamps the quote that did it', async () => {
+    const sb = makeFakeSupabase({ referrals: [{ ...OPEN_LINK }] });
+    sbRef.current = sb;
+    const n = await consumeLinkReferralForMention({
+      referrerCustomerId: 'c-referrer',
+      phone: '5165550123',
+      email: null,
+      quoteId: 'q-1',
+    });
+    expect(n).toBe(1);
+    const row = sb.__tables.referrals[0];
+    expect(row.consumed_at).toBeTruthy();
+    expect(row.consumed_by_quote_id).toBe('q-1');
+  });
+
+  it('matches on email too, not just phone', async () => {
+    const sb = makeFakeSupabase({ referrals: [{ ...OPEN_LINK, referee_contact_phone: null }] });
+    sbRef.current = sb;
+    expect(
+      await consumeLinkReferralForMention({
+        referrerCustomerId: 'c-referrer',
+        phone: null,
+        email: 'SAM@example.com',
+        quoteId: 'q-1',
+      }),
+    ).toBe(1);
+  });
+
+  it('leaves another referrer link row alone', async () => {
+    const sb = makeFakeSupabase({ referrals: [{ ...OPEN_LINK, referrer_customer_id: 'c-other' }] });
+    sbRef.current = sb;
+    expect(
+      await consumeLinkReferralForMention({
+        referrerCustomerId: 'c-referrer',
+        phone: '5165550123',
+        email: null,
+        quoteId: 'q-1',
+      }),
+    ).toBe(0);
+    expect(sb.__tables.referrals[0].consumed_at).toBeNull();
+  });
+
+  it('never re-consumes an already-consumed row (idempotent on a resave)', async () => {
+    const sb = makeFakeSupabase({
+      referrals: [{ ...OPEN_LINK, consumed_at: '2026-03-11T00:00:00Z', consumed_by_quote_id: 'q-old' }],
+    });
+    sbRef.current = sb;
+    expect(
+      await consumeLinkReferralForMention({
+        referrerCustomerId: 'c-referrer',
+        phone: '5165550123',
+        email: null,
+        quoteId: 'q-2',
+      }),
+    ).toBe(0);
+    expect(sb.__tables.referrals[0].consumed_by_quote_id).toBe('q-old');
+  });
+
+  it('never throws, and never blocks the save, when Supabase is down', async () => {
+    sbRef.current = null;
+    await expect(
+      consumeLinkReferralForMention({
+        referrerCustomerId: 'c-referrer',
+        phone: '5165550123',
+        email: null,
+        quoteId: 'q-1',
+      }),
+    ).resolves.toBe(0);
+  });
+});
+
+describe('findPendingLinkReferralForContact: a consumed link is never suggested again', () => {
+  it('does not suggest a link row that has already been turned into a mention', async () => {
+    // The repeat-customer double-pay path: same lead, same link, second quote.
+    sbRef.current = makeFakeSupabase({
+      referrals: [
+        {
+          id: 'link-1',
+          referrer_customer_id: 'c-referrer',
+          source: 'link',
+          status: 'pending',
+          referee_contact_phone: '(516) 555-0123',
+          consumed_at: '2026-03-11T00:00:00Z',
+          consumed_by_quote_id: 'q-1',
+          created_at: '2026-03-10T10:00:00Z',
+        },
+      ],
+      customers: [{ id: 'c-referrer', name: 'Dana Whitfield' }],
+    });
     expect(await findPendingLinkReferralForContact({ phone: '5165550123' })).toBeNull();
   });
 });

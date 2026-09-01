@@ -1656,6 +1656,12 @@ create table if not exists public.referrals (
   status                text not null default 'pending',
   amount_usd            numeric not null default 125,
   booked_at             timestamptz,
+  -- A 'link' row is CONSUMED once its suggestion becomes a real 'mention'
+  -- referral (2026-09-01). Without this the same stale link row could seed a
+  -- mention on a repeat customer's second quote and pay one referral twice,
+  -- because UNIQUE(referee_quote_id) only guards a single quote.
+  consumed_at           timestamptz,
+  consumed_by_quote_id  uuid references public.quotes(id) on delete set null,
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now()
 );
@@ -1674,6 +1680,11 @@ alter table public.referrals add constraint referrals_referee_quote_id_key uniqu
 
 create index if not exists referrals_referrer_customer_id_idx
   on public.referrals (referrer_customer_id);
+
+-- The quote-builder prefill lookup wants exactly the open link rows.
+create index if not exists referrals_open_link_idx
+  on public.referrals (source, status)
+  where consumed_at is null;
 
 alter table public.referrals enable row level security;
 

@@ -6264,6 +6264,7 @@ Send anyway?`,
               email={form.customer.email}
               excludeCustomerId={linkedCustomerId}
               alreadySet={!!referredBy}
+              quoteAlreadyBooked={bookedAmendEligible}
               onUse={setReferredBy}
             />
             <ReferredByPicker value={referredBy} onChange={setReferredBy} />
