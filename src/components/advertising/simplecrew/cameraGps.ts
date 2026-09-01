@@ -103,6 +103,9 @@ export function chipStateFor(status: GpsPermission, fixFresh: boolean): GpsChip 
 export type SendOutcome =
   | { kind: 'ok' }
   | { kind: 'no_gps'; denied: boolean }
+  /** A fix arrived, but too long after the shutter to describe the
+   * house the photo was taken at. */
+  | { kind: 'stale_location' }
   | { kind: 'too_large' }
   | { kind: 'refused'; status: number; message?: string }
   | { kind: 'network' };
@@ -122,6 +125,14 @@ export const MAX_SEND_ATTEMPTS = 6;
  * Even then the photo is HELD, never dropped. */
 export function decideSend(outcome: SendOutcome, attempt: number): SendDecision {
   if (outcome.kind === 'ok') return { action: 'done' };
+  if (outcome.kind === 'stale_location') {
+    // Retrying cannot travel back in time, and tagging the photo with a
+    // later position would put it at the wrong house. The worker decides.
+    return {
+      action: 'hold',
+      reason: 'No location was recorded near where this was taken. Send it and the office will place it by the photo, or discard it.',
+    };
+  }
   if (outcome.kind === 'too_large') {
     return { action: 'hold', reason: 'This photo is too large even after compression.' };
   }
@@ -143,4 +154,26 @@ export function decideSend(outcome: SendOutcome, attempt: number): SendDecision 
 /** Backoff between attempts, capped so a dead zone cannot flatten the radio. */
 export function retryDelayMs(attempt: number): number {
   return Math.min(2000 * attempt, 15000);
+}
+
+// A photo belongs to the house it was SHOT at, not to wherever the worker
+// stands when the send finally goes through. Once a photo can be held and
+// retried (and restored a day later), reading the GPS at send time tags it
+// with the wrong house and stamps the wrong time: the exact money error the
+// freshness rule above exists to prevent, arriving through the back door
+// (staff lens HIGH at the S81 close, on my own retry change).
+//
+// So the position and the time are decided ONCE, as close to the shutter as
+// the phone allows, and reused by every attempt. When no fix exists at the
+// shutter the app keeps trying, but only inside this grace window: a fix
+// acquired later than this describes a different place, and a photo that
+// never got one inside it is handed to the worker rather than tagged with
+// a guess.
+export const GPS_STAMP_GRACE_MS = 45_000;
+
+/** PURE. May a fix acquired at `fixAt` stand as the location of a photo
+ * shot at `shutterAt`? */
+export function stampIsUsable(shutterAt: number, fixAt: number): boolean {
+  const delay = fixAt - shutterAt;
+  return delay >= 0 && delay < GPS_STAMP_GRACE_MS;
 }

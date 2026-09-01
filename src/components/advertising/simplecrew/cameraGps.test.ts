@@ -19,9 +19,11 @@ import {
   COLD_FIX_OPTIONS,
   decideSend,
   GPS_FRESH_MS,
+  GPS_STAMP_GRACE_MS,
   isFixFresh,
   MAX_SEND_ATTEMPTS,
   retryDelayMs,
+  stampIsUsable,
   type GpsPermission,
 } from './cameraGps';
 
@@ -146,5 +148,32 @@ describe('COLD_FIX_OPTIONS — the fallback never accepts a fix the fast path wo
   it('still asks for a high accuracy fix and still gives up rather than hanging', () => {
     expect(COLD_FIX_OPTIONS.enableHighAccuracy).toBe(true);
     expect(COLD_FIX_OPTIONS.timeout).toBeGreaterThan(0);
+  });
+});
+
+describe('stampIsUsable — where a held photo says it was taken', () => {
+  it('a fix taken at the shutter is usable, and stays usable however long the send is then held', () => {
+    // The rule reads the gap between the SHUTTER and the FIX, never the
+    // gap to the send. That is the whole point: a photo held for ten
+    // minutes still belongs to the house it was shot at, so the fix taken
+    // at the shutter remains its location no matter when it finally goes.
+    expect(stampIsUsable(1_000, 1_000)).toBe(true);
+    expect(stampIsUsable(1_000, 1_100)).toBe(true);
+  });
+
+  it('a fix acquired shortly after the shutter still describes that house', () => {
+    expect(stampIsUsable(1_000, 1_000 + GPS_STAMP_GRACE_MS - 1)).toBe(true);
+  });
+
+  it('a fix acquired long after the shutter does NOT describe that house', () => {
+    // A worker who walked on while the photo waited would otherwise have
+    // it tagged wherever they now stand, which is the wrong house on a
+    // paid record (staff lens HIGH at the S81 close).
+    expect(stampIsUsable(1_000, 1_000 + GPS_STAMP_GRACE_MS)).toBe(false);
+    expect(stampIsUsable(1_000, 1_000 + 10 * 60 * 1000)).toBe(false);
+  });
+
+  it('a clock that jumps backwards is refused rather than trusted', () => {
+    expect(stampIsUsable(1_000, 500)).toBe(false);
   });
 });
