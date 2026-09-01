@@ -465,18 +465,28 @@ export function colorRequestConfirmMessage(): string {
   return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (the \"Colour change requested\" section) first, or Cancel and do that now.";
 }
 
-/** Row 309: only 'Not a lead' (dismiss) and 'Mark completed' can retire a
- *  pending "due today" follow-up — closeFollowUpsForResolvedItem (store.ts)
- *  is called ONLY from dismissItem and markItemCompleted (its own doc: "a
- *  'handled' item is NOT terminal"), never from markItemHandled or
- *  markItemFollowed. router.refresh() re-renders the whole InboxPage server
- *  component (every one of its sub-fetches, not just listDueFollowUps), so
- *  gating it to just these two actions — rather than firing it after every
- *  successful act() — keeps a Handled/Followed click from paying that cost
- *  for a follow-up it structurally cannot have touched. Pure and exported so
- *  this is directly unit-testable without rendering. */
+/** Row 309: 'Not a lead' (dismiss) and 'Mark completed' retire a pending
+ *  "due today" follow-up via closeFollowUpsForResolvedItem (store.ts), which
+ *  dismissItem and markItemCompleted call and markItemHandled does not.
+ *  router.refresh() re-renders the whole InboxPage server component (every one
+ *  of its sub-fetches), so gating it to the actions that actually move a
+ *  follow-up — rather than firing after every successful act() — keeps a
+ *  Handled click from paying that cost for a nag it cannot have touched.
+ *
+ *  PR #1005 ADDED 'Followed': markItemFollowed now closes the item's
+ *  quote_sent_no_reply nag itself (see its own doc for why "I followed up"
+ *  answers that nag). This sentence used to read "never from markItemHandled
+ *  or markItemFollowed" and went false the moment that landed. The refresh
+ *  matters because the awaiting bucket's "N follow-ups due" count is rendered
+ *  server-side from listDueFollowUps' exact total.
+ *
+ *  Pure and exported so this is directly unit-testable without rendering. */
 export function retiresFollowUp(path: string): boolean {
-  return path === '/api/dashboard/dismiss' || path === '/api/dashboard/completed';
+  return (
+    path === '/api/dashboard/dismiss' ||
+    path === '/api/dashboard/completed' ||
+    path === '/api/dashboard/followed'
+  );
 }
 
 // #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own
@@ -964,11 +974,12 @@ export function InboxList({
         }
       } else if (retiresFollowUp(path)) {
         // Row 309: this row's own optimistic removal above already keeps
-        // THIS list correct — router.refresh() exists purely to reach the
-        // sibling FollowUpStrip, whose initialItems prop is otherwise only
-        // ever read once (useState's initializer is mount-only, see
-        // FollowUpStrip's own reconcile effect). See retiresFollowUp's doc
-        // comment for why this is scoped to dismiss/completed only.
+        // THIS list correct — router.refresh() exists to reach the rest of the
+        // page. PR #1005: the sibling that used to need it was the FollowUpStrip
+        // (now deleted); today it is the awaiting bucket's server-rendered
+        // "N follow-ups due" count. See retiresFollowUp's doc comment for
+        // which actions are scoped in (dismiss, completed, and — since row
+        // 430 — followed).
         router.refresh();
       }
     } catch {

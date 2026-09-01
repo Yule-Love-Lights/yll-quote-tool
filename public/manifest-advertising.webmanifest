@@ -1,0 +1,32 @@
+{
+  "id": "/advertising/go?app=advertising",
+  "name": "YLL Advertising",
+  "short_name": "YLL Ads",
+  "description": "Photographing yard signs and door hangers for Yule Love Lights.",
+  "start_url": "/advertising/go",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FAF6EC",
+  "theme_color": "#0B140F",
+  "icons": [
+    {
+      "src": "/icons/yll-advertising-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/yll-advertising-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/yll-advertising-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -504,20 +504,37 @@ export default function JobDetailPage() {
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mt-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Amend order</h2>
-              <p className="text-sm text-gray-500 mb-2">
-                To change a booked order, first{' '}
-                {data.job.quote_id ? (
-                  <Link href={`/quote/${data.job.quote_id}`} className="text-blue-700 hover:underline">
-                    edit it in the builder
-                  </Link>
-                ) : (
-                  'edit it in the builder'
-                )}{' '}
-                and Calculate to re-price, then record the amendment here. The deposit already paid stays
-                applied; the balance recomputes. A price change puts a re-approval card on the customer&apos;s
-                portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
-                for a price INCREASE only (a decrease never blocks, and the invoice page can override).
-              </p>
+              {/* Row 444, S57 wrap (staff lens HIGH): this panel told staff to
+                  go and Calculate — exactly what /api/quote REFUSES on a
+                  home.works-migrated order. Skip it and Record amendment
+                  answers "edit in the builder first", pointing at the same
+                  blocked action, so staff only learned the truth by separately
+                  opening the builder, where #1080 had already fixed the copy.
+                  The identical "sentence written for the ordinary case" defect,
+                  one surface over. */}
+              {data.isMigrated ? (
+                <p className="text-sm text-gray-500 mb-2">
+                  This order came from home.works. Its figures are a record of what the customer agreed and
+                  paid — this tool did not calculate them and cannot re-price them, so the builder and this
+                  amendment flow are both closed for it. To change this order, agree the new figures with
+                  Jason and record them directly.
+                </p>
+              ) : (
+                <p className="text-sm text-gray-500 mb-2">
+                  To change a booked order, first{' '}
+                  {data.job.quote_id ? (
+                    <Link href={`/quote/${data.job.quote_id}`} className="text-blue-700 hover:underline">
+                      edit it in the builder
+                    </Link>
+                  ) : (
+                    'edit it in the builder'
+                  )}{' '}
+                  and Calculate to re-price, then record the amendment here. The deposit already paid stays
+                  applied; the balance recomputes. A price change puts a re-approval card on the customer&apos;s
+                  portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
+                  for a price INCREASE only (a decrease never blocks, and the invoice page can override).
+                </p>
+              )}
               {/* Row 395 fix round 2 (delta-verify MED, real): moved here from
                   /admin/invoices/[id] (Jason's ruling), but relocating alone
                   didn't fix what row 395 was actually about — this panel

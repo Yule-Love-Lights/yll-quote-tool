@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute } from './customers';
+import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute, expandHlContactIds } from './customers';
 import type { DashboardQuote } from './types';
 
 function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
@@ -180,5 +180,32 @@ describe('matchesCustomerRoute', () => {
 
   it('does not match an unrelated quote', () => {
     expect(matchesCustomerRoute(makeQuote({ highlevel_contact_id: 'h1', customer_id: 'cust-1' }), 'other')).toBe(false);
+  });
+});
+
+describe('expandHlContactIds', () => {
+  it('expands past the routeId-matched quotes to a second HL id sharing the same customer_id', () => {
+    // The exact merge/re-match shape this exists for: two quotes share one
+    // customer_id but carry DIFFERENT HighLevel contact ids (the customer's
+    // record was re-matched in HighLevel at some point). Visiting the profile
+    // via the OLD id must still surface the NEW id's calls, not just its own.
+    const older = makeQuote({ customer_id: 'cust-1', highlevel_contact_id: 'hl-old' });
+    const newer = makeQuote({ customer_id: 'cust-1', highlevel_contact_id: 'hl-new' });
+    const allQuotes = [older, newer];
+    const matchedQuotes = allQuotes.filter(q => matchesCustomerRoute(q, 'hl-old'));
+
+    expect(matchedQuotes.map(q => q.highlevel_contact_id)).toEqual(['hl-old']); // the bug's precondition
+    expect(expandHlContactIds(allQuotes, matchedQuotes).sort()).toEqual(['hl-new', 'hl-old']);
+  });
+
+  it('falls back to the matched quotes alone when none carry a customer_id', () => {
+    const q = makeQuote({ customer_id: null, highlevel_contact_id: 'hl-1' });
+    expect(expandHlContactIds([q], [q])).toEqual(['hl-1']);
+  });
+
+  it('does not pull in an unrelated customer sharing no customer_id', () => {
+    const mine = makeQuote({ customer_id: 'cust-1', highlevel_contact_id: 'hl-1' });
+    const other = makeQuote({ customer_id: 'cust-2', highlevel_contact_id: 'hl-2' });
+    expect(expandHlContactIds([mine, other], [mine])).toEqual(['hl-1']);
   });
 });

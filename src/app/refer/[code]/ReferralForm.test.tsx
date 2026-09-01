@@ -7,12 +7,13 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 
 vi.mock('@/lib/analytics/posthog', () => ({ track: () => {} }));
 
 import { ReferralSuccessScreen } from './ReferralForm';
 
-const FRIEND_SPRITZERS = { count: 2, sizeInches: 16 };
+const FRIEND_SPRITZERS = { count: 2, sizeInches: 16, valueUsd: spritzerRetailValueUsd(2, 16) };
 
 describe('ReferralSuccessScreen: no preview (flag off / capped / deduped / failed)', () => {
   it('shows the original "we will text you" copy, unchanged', () => {
@@ -40,13 +41,15 @@ describe('ReferralSuccessScreen: preview present (#41 V2 auto-analyze succeeded)
     lines: [{ points: [[0.1, 0.2], [0.3, 0.4]] as [number, number][], label: 'front roofline ~42ft' }],
   };
 
-  it('shows the analyzed-photo headline, the address, and the friend offer', () => {
+  it('shows the analyzed-photo headline, the address, and the friend offer (dollarized, naldo/referral-link-preview)', () => {
     const html = renderToStaticMarkup(
       <ReferralSuccessScreen preview={preview} friendSpritzers={FRIEND_SPRITZERS} />,
     );
     expect(html).toContain('ready to glow');
     expect(html).toContain('123 Main St, Smithtown, NY 11787');
-    expect(html).toContain('2 free');
+    expect(html).toContain('$170');
+    expect(html).toContain('$150 off instead');
+    expect(html).toContain('2 free 16&quot; spritzers');
     expect(html).toContain('16&quot; spritzers');
     expect(html).not.toContain('We are on it.');
   });

@@ -3,10 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { listAllAccountsById, listNonCrewOperators } from '@/lib/auth/adminUsers';
-import { crewAppMetadata, crewMetadataIsSafe, validateCrewCredentials } from '@/lib/auth/crewAccounts';
 import { dollarsToCents } from '@/lib/hourlyRate';
 import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 import {
+  clearStaffLogin,
   createFieldCrewMember,
   deleteStaffMember,
   getStaffMember,
@@ -33,7 +33,9 @@ export const runtime = 'nodejs';
  *   GET   /api/admin/staff → every staff member, office and field, with their
  *                            login, rate, Telegram link and active state
  *   POST  /api/admin/staff → add a person, either type
- *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password, type
+ *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password, type,
+ *                            a stale-login clear, or attaching an existing
+ *                            operator login to an existing row (row 359)
  *                            or active
  *   DELETE /api/admin/staff → remove a staff row that has no work behind it
  *
@@ -50,14 +52,15 @@ export const runtime = 'nodejs';
  *     mints one; it links the operator the admin picked. That is what keeps a
  *     crew-role login from ever being created for someone who already holds an
  *     operator account.
- *   - FIELD crew get a CREW-role login minted here (app_metadata.role='crew'),
- *     which `getOperator` rejects, confining it to the crew API.
+ *   - FIELD crew get NO login at all. Crew logins were retired (row 438); they
+ *     work through the Telegram bot instead. A field person who needs the
+ *     dashboard gets a normal operator account and is linked like office staff.
  * The type is stored as `is_office` and shown as a label. Everything downstream
  * of that — rate, Telegram, password, active — is identical for both.
  *
- * ADMIN ONLY, never dormancy-bypassed: `requireAdmin` fails closed. Not public
- * and not under `/api/ops/v1`, so `operatorGate` treats it as operator-only by
- * default and no allowlist entry is needed.
+ * ADMIN ONLY, never dormancy-bypassed: `requireAdmin` fails closed. Not public,
+ * so `operatorGate` treats it as operator-only by default and no allowlist
+ * entry is needed.
  *
  * A PASSWORD IS NEVER RESET BY RAW auth id. The target is resolved from the
  * staff row's own `auth_user_id`, so an admin can only reset the password of a
@@ -177,69 +180,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ member }, { status: 201 });
     }
 
-    // FIELD: create the pay row, then mint and attach a crew-role login.
+    // FIELD: a pay row only. Crew logins were RETIRED (row 438, Naldo 2026-08-28):
+    // the `/api/ops/v1` surface they existed to reach was deleted with the
+    // Operations Hub (row 433), so a minted crew login could reach nothing at all.
+    // Field crew work through the Telegram bot, keyed on `telegram_user_id`, which
+    // is a separate path and is unaffected. If a field person genuinely needs the
+    // dashboard, an admin creates them a normal operator account under Staff
+    // accounts and links it here — that is how Jason already works.
     const displayName = typeof body?.displayName === 'string' ? body.displayName.trim() : '';
     if (!displayName) {
       return NextResponse.json({ error: 'Enter their name.' }, { status: 400 });
     }
-    const email = String(body?.email ?? '').trim();
-    const password = String(body?.password ?? '');
-    const guard = validateCrewCredentials({ email, password });
-    if (!guard.ok) return NextResponse.json({ error: guard.error }, { status: 400 });
 
     const member = await createFieldCrewMember({ displayName, baseRateCents });
-
-    const meta = crewAppMetadata(displayName);
-    // Belt and braces: refuse to create anything that would not read as crew.
-    if (!crewMetadataIsSafe(meta)) {
-      console.error('POST /api/admin/staff: refusing unsafe crew metadata');
-      return NextResponse.json({ error: 'Internal role configuration error' }, { status: 500 });
-    }
-
-    const { data: created, error: createError } = await sb.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      app_metadata: meta,
-    });
-    if (createError || !created?.user) {
-      const message = createError?.message ?? 'Failed to create the login';
-      console.error('POST /api/admin/staff create:', message);
-      // The pay row stands with no login — a legitimate state the panel shows as
-      // "No login yet", with a Create login action to finish the job.
-      const conflict = /already|exists|registered/i.test(message);
-      return NextResponse.json(
-        { error: `${displayName} was added, but the login was not created: ${message}` },
-        { status: conflict ? 409 : 500 },
-      );
-    }
-
-    // ANY failure to attach leaves the freshly minted login orphaned: invisible
-    // in this panel (nothing points at it) and holding the email address, so the
-    // same person cannot be added again. Roll it back on a lost compare-and-swap
-    // AND on a thrown error, not just the former.
-    let linkedMember;
-    try {
-      linkedMember = await linkStaffLogin(member.id, created.user.id);
-    } catch (linkError) {
-      await sb.auth.admin.deleteUser(created.user.id).catch(() => {});
-      console.error(
-        'POST /api/admin/staff link:',
-        linkError instanceof Error ? linkError.message : linkError,
-      );
-      return NextResponse.json(
-        { error: `${displayName} was added, but the login could not be attached and was rolled back.` },
-        { status: 500 },
-      );
-    }
-    if (!linkedMember) {
-      await sb.auth.admin.deleteUser(created.user.id).catch(() => {});
-      return NextResponse.json(
-        { error: `${displayName} was added, but the login could not be attached and was rolled back.` },
-        { status: 409 },
-      );
-    }
-    return NextResponse.json({ member: linkedMember }, { status: 201 });
+    return NextResponse.json({ member }, { status: 201 });
   } catch (e) {
     if (e instanceof OperatorAlreadyLinkedError) {
       return NextResponse.json({ error: e.message }, { status: 409 });
@@ -273,10 +227,13 @@ export async function PATCH(req: NextRequest) {
   const hasTelegram = body !== null && 'telegramUserId' in body;
   const hasPassword = body?.password !== undefined;
   const hasType = typeof body?.isOffice === 'boolean';
+  const hasClearLogin = body?.clearLogin === true;
+  const linkAuthUserId = typeof body?.authUserId === 'string' ? body.authUserId.trim() : '';
+  const hasLinkLogin = linkAuthUserId !== '';
   const hasActive = typeof body?.active === 'boolean';
-  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasActive) {
+  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasClearLogin && !hasLinkLogin && !hasActive) {
     return NextResponse.json(
-      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId or password.' },
+      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId, password, clearLogin or authUserId.' },
       { status: 400 },
     );
   }
@@ -335,6 +292,92 @@ export async function PATCH(req: NextRequest) {
         );
       }
       member = await setStaffTelegram(crewMemberId, parsed.telegramUserId);
+    } else if (hasLinkLogin) {
+      // ATTACH AN EXISTING OPERATOR TO AN EXISTING STAFF ROW.
+      //
+      // Without this the row-359 repair was only half a repair: clearing a dead
+      // pointer left a row with no login and NO WAY to give it one, because the
+      // only door that attaches a login is POST, and POST always INSERTS a new
+      // row — so re-adding the same person collided with the table-wide unique
+      // index on lower(trim(display_name)) and 409'd. The office was told to
+      // "set them up with a new login now" and then could not. Caught by the
+      // premerge staff lens.
+      const target = await getStaffMember(crewMemberId);
+      if (!target) {
+        return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
+      }
+      if (target.authUserId) {
+        return NextResponse.json(
+          {
+            error: `${target.displayName} already has a login linked. Clear it first if it no longer works.`,
+          },
+          { status: 409 },
+        );
+      }
+      // Must be a real operator, and never a crew login: listNonCrewOperators
+      // filters on the RAW app_metadata, before roleOf flattens crew to operator.
+      const operators = await listNonCrewOperators(sb);
+      if (!operators.some((o) => o.id === linkAuthUserId)) {
+        return NextResponse.json(
+          { error: 'That is not an operator account. Add them under Staff accounts first.' },
+          { status: 400 },
+        );
+      }
+      const alreadyLinked = await listLinkedAuthUserIds();
+      if (alreadyLinked.has(linkAuthUserId)) {
+        return NextResponse.json(
+          { error: 'That operator is already linked to another staff member.' },
+          { status: 409 },
+        );
+      }
+      // linkStaffLogin is a compare-and-swap on auth_user_id IS NULL, so a
+      // concurrent link loses rather than silently replacing the winner.
+      member = await linkStaffLogin(crewMemberId, linkAuthUserId);
+      if (!member) {
+        return NextResponse.json(
+          { error: `${target.displayName} was given a login by someone else just now. Reload and check.` },
+          { status: 409 },
+        );
+      }
+    } else if (hasClearLogin) {
+      // ROW 359 REPAIR PATH, for an orphan created before the delete route
+      // started clearing the pointer itself.
+      //
+      // ⚠️ THE GUARD IS THE WHOLE FEATURE. Clearing a LIVE login would lock a
+      // working staff member out of the web clock, so this refuses unless the
+      // linked id genuinely no longer resolves in the auth store. The office
+      // cannot reach this from the UI for a healthy row either — the action only
+      // renders when GET reported loginMissing — but the server decides, because
+      // the UI's view can be stale by the time the click lands.
+      const target = await getStaffMember(crewMemberId);
+      if (!target) {
+        return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
+      }
+      if (!target.authUserId) {
+        return NextResponse.json(
+          { error: `${target.displayName} has no login linked, so there is nothing to clear.` },
+          { status: 409 },
+        );
+      }
+      const accounts = await listAllAccountsById(sb);
+      if (accounts.has(target.authUserId)) {
+        return NextResponse.json(
+          {
+            error: `${target.displayName}'s login still exists, so it was not cleared. Use Reset password if they cannot get in, or remove the account under Staff accounts first.`,
+          },
+          { status: 409 },
+        );
+      }
+      member = await clearStaffLogin(crewMemberId, target.authUserId);
+      if (!member) {
+        // Lost the compare-and-swap: the row's login changed between the
+        // check above and this write, so the dead id we verified is no longer
+        // what is there. Refuse rather than clear whatever replaced it.
+        return NextResponse.json(
+          { error: `${target.displayName}'s login changed while you were looking. Reload and check.` },
+          { status: 409 },
+        );
+      }
     } else if (hasType) {
       const toOffice = body!.isOffice as boolean;
       if (toOffice) {

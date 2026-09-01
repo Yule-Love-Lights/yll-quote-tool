@@ -1,6 +1,8 @@
-// Referral program, PR 1 (ledger #41). Locked product (Naldo, S30): the
-// referrer earns $125 next-season credit per booked friend, stackable — one
-// credit per friend who books, no cap. The friend gets two free 16" spritzers
+// Referral program, PR 1 (ledger #41). Locked product (Naldo, S30; reward
+// widened S72, 2026-08-28): the referrer earns a $125 credit per booked
+// friend, good toward ANY Yule Love Lights service (holiday, permanent,
+// event, bistro) — not next season only. Stackable: one credit per friend
+// who books, no cap. The friend gets two free 16" spritzers
 // on their first booked install; the redemption UI that actually SPENDS a
 // credit is PR 2 — this file only owns the constants + the accrual data path.
 //
@@ -18,6 +20,7 @@
 // exists for that lead and gets booked.
 
 import { after } from 'next/server';
+import { cache } from 'react';
 import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
 import { upsertContactCustomField, isHighLevelConfigured, sendSms, sendEmail } from './integrations/highlevel';
@@ -27,7 +30,8 @@ import { normalizePhone } from './customers';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/** Next-season credit a referrer earns per booked friend (USD). */
+/** Credit a referrer earns per booked friend (USD). Spendable on ANY
+ *  service, not next season only (widened S72, 2026-08-28). */
 export const REFERRAL_CREDIT_USD = 125;
 
 /** A booked credit expires this many years after the friend's booking
@@ -37,10 +41,20 @@ export const REFERRAL_CREDIT_EXPIRY_YEARS = 2;
 /** What the referred friend gets on their first booked install. */
 export const REFERRAL_FRIEND_SPRITZERS = { count: 2, sizeInches: 16 } as const;
 
+/** The friend's cash alternative to the spritzers. Defined in the
+ *  client-safe module (client components state this offer too) and
+ *  re-exported here so server callers get every referral constant from one
+ *  import. See referralSpritzerValue.ts for the reasoning and the $150 vs
+ *  $170 distinction. */
+export { REFERRAL_FRIEND_ALT_CREDIT_USD } from './referralSpritzerValue';
+
 /** The env var backing the GHL contact custom field that carries the
  *  referrer's personal link (so a workflow can merge {{contact.referral_link}}).
- *  Unset ⇒ the stamp is skipped (mirrors quoteLinkFieldId's fail-open contract). */
-const REFERRAL_LINK_FIELD_ENV = 'HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK';
+ *  Unset ⇒ the stamp is skipped (mirrors quoteLinkFieldId's fail-open contract).
+ *  Exported (naldo/referral-link-sweep) so the referral sweep can resolve the
+ *  SAME field id for its idempotency check (reading a contact's own
+ *  customFields) without duplicating the env var name a second place. */
+export const REFERRAL_LINK_FIELD_ENV = 'HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK';
 
 export type ReferralSource = 'link' | 'mention';
 export type ReferralStatus = 'pending' | 'booked' | 'credited';
@@ -221,24 +235,45 @@ export async function ensureReferralCode(customerId: string): Promise<string | n
 // workflow can merge {{contact.referral_link}}. Fail-open on every axis (no
 // contact, GHL not configured, field id not set, or the call itself throwing)
 // — the referral code exists regardless of whether this stamp lands.
-async function stampReferralLinkOnContact(hlContactId: string | null, code: string): Promise<void> {
-  if (!hlContactId || !isHighLevelConfigured()) return;
+//
+// Exported + returns boolean (naldo/referral-link-sweep, was previously
+// private and void-returning): ensureReferralCode above still calls this
+// fire-and-forget via after() on first mint only, where the return value is
+// irrelevant. The referral sweep needs a SYNCHRONOUS, awaited answer instead:
+// it stamps every eligible contact's field itself (not just on first
+// mint, since a contact can reach the sweep already holding a code from
+// some other path with its OWN field never stamped), and its per-run summary
+// counts need to know whether the write actually landed, not just that it
+// was scheduled.
+export async function stampReferralLinkOnContact(hlContactId: string | null, code: string): Promise<boolean> {
+  if (!hlContactId || !isHighLevelConfigured()) return false;
   const fieldId = process.env[REFERRAL_LINK_FIELD_ENV];
   if (!fieldId) {
     console.warn(`[referrals] ${REFERRAL_LINK_FIELD_ENV} not set — skipping referral-link custom field stamp`);
-    return;
+    return false;
   }
   try {
     const link = `${appBaseUrl()}/refer/${code}`;
     await upsertContactCustomField(hlContactId, fieldId, link);
+    return true;
   } catch (err) {
     console.error('[referrals] referral-link custom field stamp failed:', err);
+    return false;
   }
 }
 
 /** Resolve a /refer/<code> landing page to its referrer. Null on a bad/unknown
- *  code or when Supabase isn't configured. */
-export async function getReferralByCode(
+ *  code or when Supabase isn't configured.
+ *
+ *  cache()-wrapped because the refer page calls this TWICE per request —
+ *  once in generateMetadata for the link-preview card, once in the page
+ *  component itself. Next's automatic request memoization covers `fetch()`
+ *  calls only, not arbitrary async functions, so without this every page
+ *  view costs two Supabase round trips on a public, unrate-limited route.
+ *  Same reason and same idiom as getOperator (src/lib/auth/supabaseServer.ts).
+ *  cache() is a pass-through no-op outside an RSC render, so the API-route
+ *  caller and the unit tests are unaffected. */
+export const getReferralByCode = cache(async function getReferralByCode(
   code: string,
 ): Promise<{ customerId: string; name: string | null; photoOptout: boolean } | null> {
   const sb = svc();
@@ -255,7 +290,7 @@ export async function getReferralByCode(
   return data
     ? { customerId: data.id, name: data.name, photoOptout: data.referral_photo_optout ?? false }
     : null;
-}
+});
 
 // ─── Create ─────────────────────────────────────────────────────────────────
 

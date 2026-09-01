@@ -21,6 +21,8 @@ import { useState, type FormEvent } from 'react';
 import { track } from '@/lib/analytics/posthog';
 import { usePartialCapture } from '@/lib/leads/usePartialCapture';
 import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
+import { formatUsd } from '@/components/portal/format';
+import { REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 import type { ReferralAutoAnalyzePreview } from '@/lib/referralAutoAnalyze';
 
 const inputClass =
@@ -42,7 +44,11 @@ export function ReferralSuccessScreen({
   friendSpritzers,
 }: {
   preview: ReferralAutoAnalyzePreview | null;
-  friendSpritzers: { count: number; sizeInches: number };
+  /** naldo/referral-link-preview: valueUsd dollarizes the spritzer count for
+   *  a homeowner who has no reason to know what a spritzer even is,
+   *  computed by the server (src/lib/referralSpritzerValue.ts) from the
+   *  quote builder's own per-size rate, never a separate hardcoded number. */
+  friendSpritzers: { count: number; sizeInches: number; valueUsd: number };
 }) {
   if (preview) {
     return (
@@ -59,8 +65,10 @@ export function ReferralSuccessScreen({
         </div>
         <p className="mt-4 text-[13px] text-[#A89F87]">{preview.formattedAddress}</p>
         <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
-          Expect a text from us today to make it official. You get {friendSpritzers.count} free{' '}
-          {friendSpritzers.sizeInches}&quot; spritzers when you book.
+          Expect a text from us today to make it official. When you book you get{' '}
+          {friendSpritzers.count} free {friendSpritzers.sizeInches}&quot; spritzers for your yard,
+          worth {formatUsd(friendSpritzers.valueUsd)}, or {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)}{' '}
+          off instead, your choice.
         </p>
       </div>
     );
@@ -84,7 +92,7 @@ export function ReferralForm({
   friendSpritzers,
 }: {
   code: string;
-  friendSpritzers: { count: number; sizeInches: number };
+  friendSpritzers: { count: number; sizeInches: number; valueUsd: number };
 }) {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -106,7 +114,7 @@ export function ReferralForm({
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!name.trim() || !phone.trim() || !address.trim()) return;
+    if (!name.trim() || !phone.trim() || !address.trim() || !email.trim()) return;
     setStatus('submitting');
     setErrorMsg(null);
     try {
@@ -181,10 +189,12 @@ export function ReferralForm({
         />
       </div>
       <div>
-        <label className={labelClass} htmlFor="ref-email">Email (optional)</label>
+        <label className={labelClass} htmlFor="ref-email">Email</label>
         <input
           id="ref-email"
+          required
           type="email"
+          autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           onBlur={capturePartial}

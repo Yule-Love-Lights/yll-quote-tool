@@ -43,7 +43,8 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, isMigratedQuote, type QuoteStatus } from '@/lib/quoteStatus';
+import { MigratedBadge } from '@/components/admin/MigratedBadge';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -52,6 +53,7 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 // builder-specific title text, not those components' migration-specific
 // copy — see the chip strip's own comment.
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { QuoteBuilderCallNotesDrawer } from '@/components/quote/QuoteBuilderCallNotesDrawer';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
 import dynamic from 'next/dynamic';
@@ -62,6 +64,7 @@ import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
+import { polylineLengthAspectUnits as polylineLength } from '@/lib/design/polylineFootage';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import {
   reconcilePermanentSideField,
@@ -132,6 +135,10 @@ const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const addBtn = 'mt-1 text-sm text-green-700 hover:text-green-900 font-medium border border-green-300 hover:border-green-500 rounded-md px-3 py-1.5 transition-colors';
 const rmBtn = 'text-red-400 hover:text-red-600 font-bold text-xl leading-none mt-0.5';
+// Client-side mirror of trainingExamples.ts's sanitizeNotes cap — the server
+// re-caps regardless, this just stops the box from accepting more than it
+// can keep so staff aren't surprised by a silent truncation.
+const TRAINING_NOTE_MAX_LEN = 2000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -402,23 +409,14 @@ type LineSegment = { points: [number, number][]; label: string; feature?: 'gutte
 // Satellite image is always 640x640 at zoom=20 from Static Maps.
 const SAT_PX = 640;
 
-// Compute polyline length in "aspect-corrected" normalized units.
-// dx stays as-is (image width = 1), dy is scaled by (height/width) so
-// diagonal distances reflect real pixel distances on the image.
-function polylineLength(lines: LineSegment[], aspect: number): number {
-  const yScale = 1 / aspect; // height in width-units
-  let total = 0;
-  for (const line of lines) {
-    for (let i = 1; i < line.points.length; i++) {
-      const [x1, y1] = line.points[i - 1];
-      const [x2, y2] = line.points[i];
-      const dx = x2 - x1;
-      const dy = (y2 - y1) * yScale;
-      total += Math.sqrt(dx * dx + dy * dy);
-    }
-  }
-  return total;
-}
+// polylineLength moved to src/lib/design/polylineFootage.ts
+// (polylineLengthAspectUnits, imported below as polylineLength) — 2026-08-24
+// consolidation: this was one of THREE hand-written copies of the same
+// "sum each segment's scaled Pythagorean distance" loop across the repo.
+// Verified byte-for-byte parity (raw value + both rounding conventions this
+// file uses) with the old local formula across every training_examples row
+// with a valid satellite scale before this swap (see the PR body). Behavior
+// here is UNCHANGED — same signature, same formula, same call sites.
 
 // #255: mini-group surface labels for the pruned-group warning — matches the
 // wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
@@ -439,6 +437,20 @@ const MINI_SURFACE_LABELS: Record<Surface, string> = {
 };
 function miniSurfaceLabel(surface: string | null): string {
   return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+
+// SHADOW MODE (deterministic-satellite-footage): copy for a roofline whose
+// model-stated satellite footage disagrees >25% with what its own drawn
+// lines measure. The live-corpus measurement (scripts/satellite-footage-report.ts)
+// shows the model's STATED number is currently the more accurate of the two
+// — the drawn-line computation is noisy — so this reads as a "double-check
+// the lines" flag, never as "trust the computed number instead."
+function formatSatelliteDisagreement(label: string, statedFt: number | string, computedFt: number): string {
+  return (
+    `Heads up: the AI's ${label} footage (${statedFt}ft) does not match its own drawn satellite lines ` +
+    `(about ${computedFt}ft). Its stated number is usually the more reliable of the two. Worth a quick ` +
+    `look at the drawn lines before sending.`
+  );
 }
 
 // Row 269 fix round FIX 2 (two-lens MED — dishonest null-case copy): renders
@@ -814,6 +826,11 @@ export default function QuoteBuilder({
   // finding 4's predicate-mismatch case (a staff-decline-after-approval quote
   // whose savedStatus/approvedAt read stale in THIS tab).
   const [staleApprovalFrozen, setStaleApprovalFrozen] = useState(false);
+  // Row 444 (premerge staff lens HIGH): this quote's money came from home.works
+  // and cannot be re-priced. Known at MOUNT from the snapshot the page already
+  // passes, so the warning is on screen before a staffer types — the first cut
+  // only told them after the server refused a save they had already made.
+  const isMigrated = isMigratedQuote((initialQuote?.approvalSnapshot ?? null) as { [k: string]: unknown } | null);
   // Row 331+341: post-approval freeze for the three click-to-edit override
   // surfaces that auto-persist with no separate Calculate/confirm step and no
   // "already approved" warning of their own — EditablePrice (#104),
@@ -838,7 +855,7 @@ export default function QuoteBuilder({
   // for its actual path (decline → revive → edit → re-send).
   const bookedAmendEligible = savedStatus === 'booked';
   const postApprovalFrozen =
-    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen;
+    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen || isMigrated;
   // Premerge finding 2 fix: this copy only ever shows when postApprovalFrozen
   // is true, which (per the carve-out above) now excludes the booked-amend
   // case entirely — so this is always the "re-approval needed" path, never
@@ -868,10 +885,21 @@ export default function QuoteBuilder({
   // Row 367: the DESIGN's own lock copy. Separate from the money reason above
   // because the remedy sentence differs — nothing here needs re-pricing, the
   // customer simply agreed to a picture.
-  const POST_APPROVAL_DESIGN_LOCK_REASON =
-    'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
-  const POST_APPROVAL_LOCK_REASON =
-    "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
+  // Row 444 (premerge staff lens HIGH + technical lens MED): for a migrated
+  // order BOTH of the standard remedies below are dead ends. Decline/revive/
+  // re-send reopens the customer approval flow on an already-booked historical
+  // record and does not clear `approval_snapshot.homeworks`, so the very next
+  // save refuses again; and the amend flow needs a fresh Calculate result to
+  // compute its delta, which the guard makes impossible. Staff who missed the
+  // one-time red banner were being steered at two remedies that cannot work.
+  const MIGRATED_LOCK_REASON =
+    'This order came from home.works. Its figures and design are a record of what the customer agreed and paid — this tool did not calculate them and cannot re-price them. To change this order, agree the new figures with Jason and record them directly.';
+  const POST_APPROVAL_DESIGN_LOCK_REASON = isMigrated
+    ? MIGRATED_LOCK_REASON
+    : 'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
+  const POST_APPROVAL_LOCK_REASON = isMigrated
+    ? MIGRATED_LOCK_REASON
+    : "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -1470,6 +1498,17 @@ export default function QuoteBuilder({
   // Degraded-but-recoverable notice (e.g. the analyzer is down): the photos load
   // and staff design manually. Distinct from analysisError (hard/blocking).
   const [analysisWarning, setAnalysisWarning] = useState<string | null>(null);
+  // SHADOW MODE (deterministic-satellite-footage): per-roofline flag text when
+  // the model's stated satellite footage disagrees >25% with what its own
+  // drawn lines measure. Kept separate from analysisWarning (whose banner
+  // header reads "Auto-design unavailable" — wrong for this case) so it gets
+  // its own amber note. Cleared per-roofline the moment the operator redraws
+  // that roofline's satellite lines (see getSetter) so it never describes
+  // lines that have already been fixed.
+  const [satelliteFootageDisagreement, setSatelliteFootageDisagreement] = useState<{
+    santas: string | null;
+    gingerbread: string | null;
+  }>({ santas: null, gingerbread: null });
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoMediaType, setPhotoMediaType] = useState<string | null>(null);
 
@@ -1614,6 +1653,12 @@ export default function QuoteBuilder({
   // manual button and the silent auto-capture at Send.
   const [trainStatus, setTrainStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [trainError, setTrainError] = useState<string | null>(null);
+  // Optional "what did the AI get wrong here" note, typed at correction time —
+  // the highest-signal training channel (a human explaining a miss), and the
+  // reason training_examples.notes existed in the schema with zero fill for
+  // 44 rows: there was nowhere to type it. Rides along on whichever capture
+  // fires (manual button or the silent auto-capture at Send).
+  const [trainNotes, setTrainNotes] = useState('');
   // The editor's flushSave (#8 Stage A M6), re-registered on each (re)mount.
   // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
   // hasn't persisted yet.
@@ -1643,11 +1688,12 @@ export default function QuoteBuilder({
       const res = await fetch('/api/training-examples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteId: savedQuoteId, source }),
+        body: JSON.stringify({ quoteId: savedQuoteId, source, notes: trainNotes.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Capture failed (${res.status})`);
       setTrainStatus('saved');
+      setTrainNotes('');
     } catch (err) {
       setTrainStatus('error');
       setTrainError(err instanceof Error ? err.message : 'Capture failed');
@@ -1677,11 +1723,12 @@ export default function QuoteBuilder({
       const res = await fetch('/api/permanent-training-examples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteId: savedQuoteId, source }),
+        body: JSON.stringify({ quoteId: savedQuoteId, source, notes: trainNotes.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Capture failed (${res.status})`);
       setTrainStatus('saved');
+      setTrainNotes('');
     } catch (err) {
       setTrainStatus('error');
       setTrainError(err instanceof Error ? err.message : 'Capture failed');
@@ -2292,6 +2339,9 @@ export default function QuoteBuilder({
         seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteSantasLines(updater);
+        // SHADOW MODE: the operator just redrew these lines — the note
+        // describing the old ones is stale the moment this fires.
+        setSatelliteFootageDisagreement((prev) => (prev.santas == null ? prev : { ...prev, santas: null }));
       };
     }
     if (type === 'gingerbread') {
@@ -2299,6 +2349,8 @@ export default function QuoteBuilder({
         seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteGingerbreadLines(updater);
+        // SHADOW MODE: same as above, for the gingerbread/ridge roofline.
+        setSatelliteFootageDisagreement((prev) => (prev.gingerbread == null ? prev : { ...prev, gingerbread: null }));
       };
     }
     if (type === 'stake') {
@@ -2797,6 +2849,19 @@ export default function QuoteBuilder({
     setter(lines => lines.filter((_, i) => i !== lineIdx));
   };
 
+  // Fix round (PR #916, staff lens MED): wholesale-clear every segment for
+  // one satellite roofline type at once, for the case the new segmented
+  // prompt is meant to help with — a badly over-segmented trace is faster to
+  // clear and redraw than to delete one-by-one. Routes through the SAME
+  // getSetter(type) path deleteLine uses above, so it fires identically to a
+  // one-at-a-time delete: the #918 disagreement-note clearing (getSetter's
+  // santas/gingerbread branches) and the thaw/baseline-seed logic every other
+  // line mutation goes through.
+  const clearAllLines = (type: LineType) => {
+    const setter = getSetter(type);
+    setter(() => []);
+  };
+
   const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
     const setter = getSetter(type);
     setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
@@ -2969,6 +3034,8 @@ export default function QuoteBuilder({
         setSatellitePreview(dataUrl);
         setSatelliteSantasLines([]);
         setSatelliteGingerbreadLines([]);
+        // SHADOW MODE: the old lines this note described are gone.
+        setSatelliteFootageDisagreement({ santas: null, gingerbread: null });
         setSatelliteC9Lines([]);
         setSatelliteStakeLines([]);
         setSatelliteBistroLines([]);
@@ -3206,6 +3273,16 @@ export default function QuoteBuilder({
       gingerbreadLines?: LineSegment[];
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
+      satelliteSantasFootage?: number;
+      satelliteGingerbreadFootage?: number;
+      // SHADOW MODE (deterministic-satellite-footage): informational only —
+      // never fed back into form/pricing state, just surfaced in the notes
+      // banner below so staff can see when the model's stated satellite
+      // footage disagrees with what its own drawn lines measure.
+      satelliteSantasFootageDisagrees?: boolean;
+      satelliteGingerbreadFootageDisagrees?: boolean;
+      computedSatelliteSantasFootage?: number | null;
+      computedSatelliteGingerbreadFootage?: number | null;
       preferredSource?: 'street' | 'satellite';
       miniLightDetections?: { type: 'tree' | 'bush' | 'column' | 'railing'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
       wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
@@ -3355,6 +3432,22 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
+    // SHADOW MODE (deterministic-satellite-footage): flag text, per roofline,
+    // when the model's stated satellite footage disagrees >25% with what its
+    // own drawn lines measure — never changes any form/pricing field. Routed
+    // through satelliteFootageDisagreement (the amber double-check banner
+    // below), not analysisNotes, and cleared per-roofline in getSetter when
+    // the operator redraws that roofline's lines.
+    setSatelliteFootageDisagreement({
+      santas:
+        r.satelliteSantasFootageDisagrees && r.computedSatelliteSantasFootage != null
+          ? formatSatelliteDisagreement("Santa's", r.satelliteSantasFootage ?? '?', r.computedSatelliteSantasFootage)
+          : null,
+      gingerbread:
+        r.satelliteGingerbreadFootageDisagrees && r.computedSatelliteGingerbreadFootage != null
+          ? formatSatelliteDisagreement('Gingerbread', r.satelliteGingerbreadFootage ?? '?', r.computedSatelliteGingerbreadFootage)
+          : null,
+    });
     // Row 209: tell the operator when a field's footage was deliberately
     // NOT taken from this analysis, so a number that looks unchanged after
     // "Re-analyze" reads as intentional rather than as a stale UI.
@@ -3425,6 +3518,8 @@ export default function QuoteBuilder({
       if (!ok) return false;
       setSatelliteSantasLines([]);
       setSatelliteGingerbreadLines([]);
+      // SHADOW MODE: the old lines this note described are gone.
+      setSatelliteFootageDisagreement({ santas: null, gingerbread: null });
       setSatelliteC9Lines([]);
       setSatelliteStakeLines([]);
       setSatelliteBistroLines([]);
@@ -4712,12 +4807,38 @@ export default function QuoteBuilder({
     try {
       void quoteBuildTimerRef.current?.link(savedQuoteId);
       const quoteBuildTimerId = quoteBuildTimerRef.current?.currentId();
-      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quoteBuildTimerId }),
-      });
-      const data = await res.json();
+      const postSend = (confirmUnderBilled: boolean) =>
+        fetch(`/api/quotes/${savedQuoteId}/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(confirmUnderBilled ? { 'x-confirm-underbilled': 'yes' } : {}),
+          },
+          body: JSON.stringify({ quoteBuildTimerId }),
+        });
+      let res = await postSend(false);
+      let data = await res.json();
+      // Ledger row 434: the route refuses a FIRST send that would under-bill a
+      // mini group (more drawn members than the billed string count) until it is
+      // confirmed. Ask once, in the operator's own words, and resend with the
+      // confirm header if they accept. Declining leaves the quote UNSENT so they
+      // can go fix the count.
+      if (res.status === 428 && data.code === 'underbilled-mini-groups') {
+        const proceed = window.confirm(
+          `${data.error}
+
+Send anyway?`,
+        );
+        if (!proceed) {
+          setSendStatus('idle');
+          setSendBlockedMsg(
+            'Send cancelled. Adjust the group String count fields, then Calculate and send again.',
+          );
+          return;
+        }
+        res = await postSend(true);
+        data = await res.json();
+      }
       const failedChannels = Array.isArray(data.failedChannels)
         ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
         : [];
@@ -5233,7 +5354,19 @@ export default function QuoteBuilder({
         // adding it read as a self-correction that could not fire. The design
         // routes that DO return it self-correct through noteDesignLocked()
         // below instead.
-        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        // Row 444 joins this set for the same reason the other three are in it:
+        // setResult(null) has already nulled the breakdown, and every pricing
+        // control lives inside `{result && (...)}`, so without the restore below
+        // a staffer who clicks Calculate on a migrated quote is left staring at
+        // a red banner with no way back short of a reload. The tab self-corrects
+        // to server truth - which for a migrated order is "these figures are not
+        // ours to recompute" - instead of staying editable and re-erroring.
+        const LOCK_CODES = new Set([
+          'price-override-locked',
+          'label-override-locked',
+          'bistro-footage-locked',
+          'migrated-quote-locked',
+        ]);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
           setBaselineResult(prevBaseline);
@@ -5800,13 +5933,26 @@ export default function QuoteBuilder({
             amendment (reason, balance re-sync, audit trail, customer notice).
             That control lives only on the job page, which the builder
             otherwise never links to — this closes that dead end. */}
-        {savedStatus === 'booked' && savedJobId && (
+        {savedStatus === 'booked' && savedJobId && !isMigrated && (
           <div className="mb-6 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
             This order is booked. Calculate here to re-price, then{' '}
             <Link href={`/admin/jobs/${savedJobId}`} className="font-semibold underline hover:no-underline">
               open the job to record the amendment
             </Link>{' '}
             — that is what updates the balance, audit trail, and customer notice.
+          </div>
+        )}
+        {/* Row 444, browser-check residual: the banner above invites a
+            Calculate, which /api/quote refuses outright on a migrated order —
+            and the amend flow it points at derives its delta from a fresh
+            result, so it can never compute one either. Both halves of that
+            instruction are dead here, so the banner is replaced rather than
+            shown alongside a lock that contradicts it. */}
+        {isMigrated && (
+          <div className="mb-6 rounded-md border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+            <strong>This order came from home.works.</strong> Its figures are a record of what the customer agreed
+            and paid — this tool did not calculate them and cannot re-price them, so Calculate and the amend flow
+            are both closed here. To change this order, agree the new figures with Jason and record them directly.
           </div>
         )}
 
@@ -5822,6 +5968,12 @@ export default function QuoteBuilder({
                 Test
               </span>
             )}
+            {/* Row 444, browser-check residual: the badge was wired into the
+                quotes LIST and the read-only detail page but never into the
+                builder — and the job page, the invoice page and the customer
+                page all link straight here. A staffer arriving from any of them
+                saw a locked screen with nothing on it saying why. */}
+            {isMigrated && <MigratedBadge />}
             {/* View-only portal (#176) — mirrors the admin detail page's pill. */}
             {viewOnly && (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
@@ -5957,11 +6109,19 @@ export default function QuoteBuilder({
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
               Editing saved quote <span className="font-mono">{quoteNumber != null ? `#${quoteNumber}` : initialQuote?.quoteId.slice(0, 8)}</span> —
-              Calculate updates this quote in place{initialQuote?.approvedAt
+              {/* Row 444, browser-check residual: "Calculate updates this quote
+                  in place" is false for a migrated order, where Calculate is
+                  refused. Same class as the banner and the design-lock copy
+                  above: a sentence written for the ordinary case, left standing
+                  in a case where it is now a lie. */}
+              {' '}
+              {isMigrated
+                ? 'its figures came from home.works and cannot be re-priced here.'
+                : <>Calculate updates this quote in place{initialQuote?.approvedAt
                 ? '. ⚠️ The customer already APPROVED this quote; edits change what their portal shows.'
                 : initialQuote?.sentAt
                   ? '. ⚠️ This quote was already sent; edits change what the customer sees on their portal.'
-                  : '.'}
+                  : '.'}</>}
             </p>
           )}
         </div>
@@ -6060,24 +6220,33 @@ export default function QuoteBuilder({
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Row 444 (premerge staff lens HIGH): these four were the only
+                  editable fields left on a migrated quote, and the save that
+                  would persist them is refused — so a staffer could type a
+                  corrected phone number, see it sit there as if accepted, and
+                  lose it. Read-only, with the reason on the field itself. */}
               <div>
                 <label className={lbl} htmlFor="customer-name">Name</label>
                 <input id="customer-name" className={inp} placeholder="Jane Smith (optional)"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.name} onChange={e => setCustomer('name', e.target.value)} />
               </div>
               <div>
                 <label className={lbl} htmlFor="customer-phone">Phone</label>
                 <input id="customer-phone" className={inp} placeholder="(516) 555-0123"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.phone} onChange={e => setCustomer('phone', e.target.value)} />
               </div>
               <div>
                 <label className={lbl} htmlFor="customer-email">Email</label>
                 <input id="customer-email" className={inp} type="email" placeholder="jane@example.com"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.email} onChange={e => setCustomer('email', e.target.value)} />
               </div>
               <div>
                 <label className={lbl} htmlFor="customer-address">Property Address</label>
                 <input id="customer-address" className={inp} placeholder="123 Main St, Smithtown, NY 11787"
+                  readOnly={isMigrated} title={isMigrated ? MIGRATED_LOCK_REASON : undefined}
                   value={form.customer.address} onChange={e => setCustomer('address', e.target.value)} />
               </div>
             </div>
@@ -6267,12 +6436,26 @@ export default function QuoteBuilder({
                 section level it covers every control in the section, and the
                 copy now names them instead of only the camera. */}
             {postApprovalFrozen && (
+              /* Row 444, browser-check residual: this section's copy was written
+                 out longhand rather than reading POST_APPROVAL_DESIGN_LOCK_REASON,
+                 so branching that constant for migrated orders left THIS block
+                 still telling staff to decline, revive and re-send — futile,
+                 since reviving does not clear the migration stamp. */
               <p className="text-xs text-amber-700 mb-3">
-                🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
-                so nothing in this section can change it — analyzing, moving the camera, saving an angle,
-                pulling or uploading a satellite image, and uploading a house photo are all disabled.
-                To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
-                through the amend flow.)
+                {isMigrated ? (
+                  <>
+                    🔒 <strong>Locked — migrated order.</strong> This design and these figures came from
+                    home.works, not from this tool, so nothing in this section can change them.
+                  </>
+                ) : (
+                  <>
+                    🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
+                    so nothing in this section can change it — analyzing, moving the camera, saving an angle,
+                    pulling or uploading a satellite image, and uploading a house photo are all disabled.
+                    To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
+                    through the amend flow.)
+                  </>
+                )}
               </p>
             )}
             <p className="text-xs text-gray-400 mb-3">
@@ -6496,6 +6679,18 @@ export default function QuoteBuilder({
                     )}
                   </strong>
                   {analysisNotes}
+                </div>
+              )}
+              {(satelliteFootageDisagreement.santas || satelliteFootageDisagreement.gingerbread) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-sm text-amber-800">
+                  <strong className="block mb-1">Double-check the drawn satellite lines</strong>
+                  {[satelliteFootageDisagreement.santas, satelliteFootageDisagreement.gingerbread]
+                    .filter((note): note is string => note != null)
+                    .map((note, i) => (
+                      <p key={i} className={i > 0 ? 'mt-1' : undefined}>
+                        {note}
+                      </p>
+                    ))}
                 </div>
               )}
               {analysisWarning && (
@@ -7211,6 +7406,12 @@ export default function QuoteBuilder({
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-red-500 rounded"></span>
                           <span className="text-sm font-semibold text-gray-800">Front Gutterline — {form.santasFootage}ft</span>
+                          {activeSantasLines.length >= 2 && (
+                            <button type="button" onClick={() => clearAllLines('santas')}
+                              className="ml-auto text-[11px] font-medium text-gray-500 hover:text-red-600 border border-gray-300 hover:border-red-400 rounded px-2 py-0.5">
+                              Clear all
+                            </button>
+                          )}
                         </div>
                         {activeSantasLines.length > 0 ? (
                           <ul className="space-y-1 ml-6">
@@ -7235,6 +7436,12 @@ export default function QuoteBuilder({
                         <div className="flex items-center gap-2 mb-2">
                           <span className="w-4 h-1 bg-blue-500 rounded"></span>
                           <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {form.gingerbreadFootage}ft</span>
+                          {activeGingerbreadLines.length >= 2 && (
+                            <button type="button" onClick={() => clearAllLines('gingerbread')}
+                              className="ml-auto text-[11px] font-medium text-gray-500 hover:text-red-600 border border-gray-300 hover:border-red-400 rounded px-2 py-0.5">
+                              Clear all
+                            </button>
+                          )}
                         </div>
                         {activeGingerbreadLines.length > 0 ? (
                           <ul className="space-y-1 ml-6">
@@ -8674,34 +8881,57 @@ export default function QuoteBuilder({
                 nothing to teach, and the button would otherwise silently
                 write a bistro photo into the holiday library. ── */}
             {(form.serviceType === 'holiday' || form.serviceType === 'event' || form.serviceType === 'permanent') && (
-            <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-between gap-3">
-              <p className="text-xs text-gray-500 flex-1">
-                {form.serviceType === 'permanent'
-                  ? 'Sending auto-saves this house as a permanent-lighting training example. You can also save one now without sending (e.g. to teach an unusual roofline mid-flow).'
-                  : 'Sending auto-saves this house as an AI training example. You can also save one now without sending (e.g. to teach an unusual house mid-flow).'}
-                {trainStatus === 'saved' && (
-                  <span className="ml-1 text-green-700 font-medium">✓ Saved as training example.</span>
-                )}
-                {trainStatus === 'error' && (
-                  <span className="ml-1 text-amber-700">Training capture failed: {trainError}</span>
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={() =>
-                  void (form.serviceType === 'permanent' ? capturePermanentExample('manual') : captureExample('manual'))
-                }
-                disabled={trainStatus === 'saving' || !savedQuoteId}
-                className="shrink-0 bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-              >
-                {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
-              </button>
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-gray-500 flex-1">
+                  {form.serviceType === 'permanent'
+                    ? 'Sending auto-saves this house as a permanent-lighting training example. You can also save one now without sending (e.g. to teach an unusual roofline mid-flow).'
+                    : 'Sending auto-saves this house as an AI training example. You can also save one now without sending (e.g. to teach an unusual house mid-flow).'}
+                  {trainStatus === 'saved' && (
+                    <span className="ml-1 text-green-700 font-medium">✓ Saved as training example.</span>
+                  )}
+                  {trainStatus === 'error' && (
+                    <span className="ml-1 text-amber-700">Training capture failed: {trainError}</span>
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void (form.serviceType === 'permanent' ? capturePermanentExample('manual') : captureExample('manual'))
+                  }
+                  disabled={trainStatus === 'saving' || !savedQuoteId}
+                  className="shrink-0 bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  {trainStatus === 'saving' ? 'Saving…' : '🎓 Save as training example'}
+                </button>
+              </div>
+              {/* Optional note, typed here at correction time — rides along on
+                  both the manual save above and the silent auto-capture at
+                  Send. Fully optional: no required-field marker, nothing
+                  blocks Send or the manual save if it's left blank. */}
+              <label htmlFor="ai-mistake-note" className="block mt-2 text-xs text-gray-500">
+                What did the AI get wrong here? (optional)
+              </label>
+              <textarea
+                id="ai-mistake-note"
+                value={trainNotes}
+                onChange={(e) => setTrainNotes(e.target.value)}
+                maxLength={TRAINING_NOTE_MAX_LEN}
+                rows={2}
+                placeholder={`e.g. "missed the garage wing", "put a wreath on a window with no wreath", "under-counted the bushes"`}
+                className="mt-1 w-full text-xs border border-gray-300 rounded-md px-2 py-1.5 text-gray-700 placeholder:text-gray-400"
+              />
             </div>
             )}
           </div>
         )}
 
       </div>
+
+      {/* Call-notes drawer (2026-08-31): a sibling of the centered column
+          above, not nested inside it — fixed positioning, so it can never
+          affect that column's width or reflow. */}
+      <QuoteBuilderCallNotesDrawer ghlContactId={form.highlevelContactId} />
     </OperatorShell>
   );
 }

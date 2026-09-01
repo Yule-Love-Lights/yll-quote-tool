@@ -24,6 +24,10 @@ vi.mock('@/lib/auth/supabaseServer', async () => {
     // so stubbing it would make them prove nothing.
     isCrewAccount: actual.isCrewAccount,
     CREW_ROLE: actual.CREW_ROLE,
+    // REAL isAdvertisingAccount, same reason as isCrewAccount above — it's the
+    // seam the advertising tests below exercise.
+    isAdvertisingAccount: actual.isAdvertisingAccount,
+    ADVERTISING_ROLE: actual.ADVERTISING_ROLE,
     // REAL authGateEngaged (ledger #347): it's a pure process.env.AUTH_GATE_ENABLED
     // read, and every test below manipulates that env var directly to drive it —
     // stubbing it would make those tests prove nothing.
@@ -135,12 +139,15 @@ describe('proxy — perimeter enforcement (#81 W6-006)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Role-aware perimeter (row 279). Naldo's shared-login ruling put crew accounts
-// in the SAME auth store as operators, so "has a session" stopped implying "may
-// see the operator surface" — and that surface holds customer PII.
+// Role-aware perimeter. Crew logins shared the operator auth store, so "has a
+// session" never implied "may see the operator surface" — and that surface holds
+// customer PII. Crew logins were RETIRED (row 438) and nothing mints one, but
+// this refusal is now UNCONDITIONAL rather than deleted: roleOf collapses every
+// non-admin role to 'operator', so a crew account created by hand later would
+// otherwise be silently promoted. These tests pin the fail-closed behaviour.
 // ---------------------------------------------------------------------------
 
-describe('proxy — crew sessions are confined to the crew surface', () => {
+describe('proxy — crew sessions are refused everywhere (row 438)', () => {
   const crewUser = { id: 'crew-auth-1', app_metadata: { role: 'crew' } };
   const operatorUser = { id: 'op-1', app_metadata: { role: 'operator' } };
 
@@ -155,10 +162,13 @@ describe('proxy — crew sessions are confined to the crew surface', () => {
     process.env.AUTH_GATE_ENABLED = 'true';
   });
 
-  it('lets a crew session reach the crew API', async () => {
+  it('refuses a crew session on the RETIRED crew API too — there is no allowed path left', async () => {
+    // This asserted the opposite before row 438. `/api/ops/v1` was deleted with
+    // the Operations Hub, so the one namespace a crew login could reach is gone
+    // and the gate no longer carries an exception.
     withUser(crewUser);
     const res = await proxy(makeReq('/api/ops/v1/jobs/abc/arrive', 'POST'));
-    expect((res as unknown as { __res?: boolean }).__res).toBe(true);
+    expect(res.status).toBe(403);
   });
 
   it('403s a crew session on an operator API — this is the PII boundary', async () => {
@@ -191,6 +201,76 @@ describe('proxy — crew sessions are confined to the crew surface', () => {
     const res = await proxy(makeReq('/api/ops/midnight-close', 'POST'));
     // Allowlisted → plain next(), not the authed `res` object.
     expect((res as unknown as { __res?: boolean }).__res).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Advertising-role hardening: the same shape as the crew block above, for the
+// advertising population (Naldo's 2026-08-27 ruling). No advertising page or
+// API exists yet — isAdvertisingPath() is empty — so these tests confirm the
+// population lock lands BEFORE the surface does: an advertising session is
+// confined to nothing right now, and refused everywhere else.
+// ---------------------------------------------------------------------------
+
+describe('proxy — advertising sessions are confined to the advertising surface', () => {
+  const advertisingUser = { id: 'adv-auth-1', app_metadata: { role: 'advertising' } };
+  const operatorUser = { id: 'op-1', app_metadata: { role: 'operator' } };
+
+  function withUser(user: unknown) {
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user } }) } },
+      res: { __res: true } as unknown as NextResponse,
+    });
+  }
+
+  beforeEach(() => {
+    process.env.AUTH_GATE_ENABLED = 'true';
+  });
+
+  it('403s an advertising session on an operator API — this is the PII boundary', async () => {
+    withUser(advertisingUser);
+    const res = await proxy(makeReq('/api/customers'));
+    expect(res.status).toBe(403);
+  });
+
+  it('redirects an advertising session away from an operator PAGE', async () => {
+    withUser(advertisingUser);
+    const res = await proxy(makeReq('/customers'));
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toContain('/login');
+    expect(res.headers.get('location')).toContain('advertising-account');
+  });
+
+  it('403s an advertising session on the crew API too — no surface exists for it yet', async () => {
+    withUser(advertisingUser);
+    const res = await proxy(makeReq('/api/ops/v1/jobs/abc/arrive', 'POST'));
+    expect(res.status).toBe(403);
+  });
+
+  it('does NOT confine an operator session — it still reaches the operator surface', async () => {
+    withUser(operatorUser);
+    const res = await proxy(makeReq('/api/customers'));
+    expect((res as unknown as { __res?: boolean }).__res).toBe(true);
+  });
+
+  it('does not treat the CRON path as advertising-reachable', async () => {
+    withUser(advertisingUser);
+    const res = await proxy(makeReq('/api/ops/midnight-close', 'POST'));
+    // Allowlisted → plain next(), not the authed `res` object.
+    expect((res as unknown as { __res?: boolean }).__res).toBeUndefined();
+  });
+
+  it('does not confine a crew session under the advertising branch, and vice versa', async () => {
+    // The two branches must be independent: an advertising account is not a
+    // crew account and must not accidentally satisfy isCrewAccount (or the
+    // reverse). Both are refused on the operator surface, but for their OWN
+    // reason, and the advertising branch must never widen to admit crew.
+    withUser({ id: 'crew-1', app_metadata: { role: 'crew' } });
+    const crewRes = await proxy(makeReq('/api/customers'));
+    expect(crewRes.status).toBe(403);
+    const crewLocation = (await proxy(makeReq('/customers'))).headers.get('location');
+    expect(crewLocation).toContain('crew-account');
+    expect(crewLocation).not.toContain('advertising-account');
   });
 });
 

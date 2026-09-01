@@ -2,39 +2,31 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
+import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
+import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
+import { readRoleHint, writeRoleHint } from './roleHint';
+import { AccountMenu } from './AccountMenu';
+import { accountLinksFor } from './accountLinks';
+import { displayName, roleLabel } from './accountIdentity';
+import { HeaderSearch } from './HeaderSearch';
+import { useViewSwitcher } from './useViewSwitcher';
 
-type NavItem = { label: string; href: string; match: OperatorArea[] };
+// The item list itself lives in operatorView.ts (ops hub workstream A slice
+// 2): it flows through navItemsForView(view) so the later Crew My Day and
+// Advertising builds add role-filtered nav by extending that data, not by
+// rewriting this component. Today every operator's view is 'office' and the
+// list is unchanged.
 
-// Top-level operator areas, in the order Naldo specified. "New quote" lives on
-// the dashboard CTA + the Quotes page (so /quote/* highlights Quotes); Training
-// lives under Settings (so /training/* highlights Settings) — neither is a
-// top-level item.
-const ITEMS: NavItem[] = [
-  { label: 'Home', href: '/', match: ['home'] },
-  { label: 'Inbox', href: '/inbox', match: ['inbox'] },
-  // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
-  // page and everything behind it stay live — reachable by URL and from any
-  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
-  // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
-  // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
-  { label: 'Customers', href: '/customers', match: ['customers'] },
-  { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
-  { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
-  { label: 'Invoices', href: '/admin/invoices', match: ['invoices'] },
-  { label: 'Inventory', href: '/inventory', match: ['inventory'] },
-  { label: 'Insights', href: '/insights', match: ['insights'] },
-  { label: 'Settings', href: '/settings', match: ['settings', 'training'] },
-];
-
-// Small numeric pill for the Inbox nav item — red once something's overdue
-// (>4h, matching the /inbox escalation convention), otherwise a neutral tone
-// so a merely-waiting lead doesn't read as urgent.
-function NavBadge({ count, overdue }: { count: number; overdue: boolean }) {
+// Small numeric pill for a nav item — red once something's overdue,
+// otherwise a neutral tone so a merely-waiting item doesn't read as urgent.
+// Two callers today: Inbox (overdue = a lead waiting >4h, the /inbox
+// escalation convention) and Tasks (overdue = past its due time).
+function NavBadge({ count, overdue, label }: { count: number; overdue: boolean; label: string }) {
   return (
     <span
-      aria-label={`${count} lead${count === 1 ? '' : 's'} waiting in the inbox`}
+      aria-label={label}
       className="ml-1.5 inline-flex items-center justify-center min-w-[1.15rem] h-[1.15rem] px-1 rounded-full text-[10px] font-semibold leading-none"
       style={{ background: overdue ? 'var(--op-danger)' : 'var(--op-text-2)', color: 'var(--brand-cream)' }}
     >
@@ -68,6 +60,8 @@ export function OperatorNav({
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const { view, choose: chooseView } = useViewSwitcher();
+  const items = navItemsForView(view);
   const isActive = (item: NavItem) => item.match.includes(active);
 
   // This nav is shared chrome rendered on every operator page, several of
@@ -86,6 +80,49 @@ export function OperatorNav({
   // because one fetch blipped, which would silently strand a signed-in
   // staffer with no way to sign out until their next page load.
   const [sessionState, setSessionState] = useState<SessionState>('unknown');
+  // Open/overdue Office Task counts for the Tasks badge. Fetched here rather
+  // than passed down like the Inbox counts, because the Tasks badge has to be
+  // right on EVERY page and only the dashboard fetches inbox data server-side.
+  // GET /api/tasks/count is one small query over due_at, reads no task
+  // content, and answers zeroes rather than an error when the task schema is
+  // unavailable — so a task-side problem can never put an error state on an
+  // unrelated screen. null until it answers: no badge, no layout shift beyond
+  // the pill itself appearing, same as Inbox's absent-badge case.
+  const [taskCounts, setTaskCounts] = useState<{ open: number; overdue: number } | null>(null);
+  // Orders the count reads against each other. Mirrors OfficeTasksCard's own
+  // loadSequenceRef/applyTaskLoad pattern, which is the house idiom for
+  // exactly this: once a component can have two reads of the same endpoint in
+  // flight, "did this component unmount" is a different question from "is this
+  // still the newest answer". Caught by the adversarial delta-verify on the
+  // fix round, and reproduced in a browser before it was fixed: holding the
+  // mount fetch for 4 seconds while completing a task moved the badge to the
+  // right number and then let the stale response drag it back, red.
+  const countSequenceRef = useRef(0);
+  // The caller's own role, from the same session answer. Drives the
+  // admin-only View-as control below; null (pre-fetch, signed out, retry
+  // exhausted) renders no control, so the safe default is "not admin".
+  const [role, setRole] = useState<'admin' | 'operator' | null>(null);
+  // Who is signed in, for the account menu (Naldo, 2026-08-30). Same session
+  // answer as the role above, which already carried these on the Operator
+  // record and simply never returned them. Null before it resolves, which the
+  // menu renders as initials plus "Signed in" rather than an empty control.
+  const [name, setName] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
+  // Hint-first (ops suggestions round): seed the role from the localStorage
+  // echo of the LAST session answer, one tick after hydration, so an admin's
+  // View-as menu does not wait a network round trip on every page mount.
+  // Wrapped in queueMicrotask for the react-hooks/set-state-in-effect rule
+  // (the /admin/invoices load-on-mount idiom) — the premerge technical lens
+  // caught the bare version as a real red CI gate. The fetch below remains
+  // the truth: it overwrites the hint and the state both, so a stale or
+  // hand-edited hint survives at most one page load, and everything the menu
+  // opens is server-gated on the real role anyway.
+  useEffect(() => {
+    queueMicrotask(() => {
+      const hint = readRoleHint();
+      if (hint) setRole(prev => prev ?? hint);
+    });
+  }, []);
   useEffect(() => {
     let cancelled = false;
 
@@ -94,10 +131,22 @@ export function OperatorNav({
         .then(res => {
           if (res.status === 401) return { signedIn: false }; // real answer, not a failure
           if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
-          return res.json() as Promise<{ signedIn?: boolean }>;
+          return res.json() as Promise<{
+            signedIn?: boolean;
+            role?: string;
+            name?: string | null;
+            email?: string | null;
+          }>;
         })
         .then(body => {
-          if (!cancelled) setSessionState(body.signedIn === true ? 'signedIn' : 'signedOut');
+          if (cancelled) return;
+          const signedIn = body.signedIn === true;
+          const trueRole = signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null;
+          setSessionState(signedIn ? 'signedIn' : 'signedOut');
+          setRole(trueRole);
+          setName(signedIn ? (body.name ?? null) : null);
+          setEmail(signedIn ? (body.email ?? null) : null);
+          writeRoleHint(trueRole);
         })
         .catch(() => {
           if (cancelled) return;
@@ -118,6 +167,50 @@ export function OperatorNav({
     };
   }, []);
 
+  // Deliberately gated on a CONFIRMED signed-in session, unlike the
+  // Sign-out slot above: this one is a data read, so firing it while the
+  // session is still 'unknown' would mean a guaranteed 401 on the login page
+  // every time. One attempt, no retry — a missing badge is a non-event, and
+  // the next page navigation tries again.
+  useEffect(() => {
+    if (sessionState !== 'signedIn') return;
+    let cancelled = false;
+
+    const load = () => {
+      const sequence = ++countSequenceRef.current;
+      fetch('/api/tasks/count')
+        .then(res => (res.ok ? (res.json() as Promise<{ open?: number; overdue?: number }>) : null))
+        .then(body => {
+          // Two separate guards, and they answer different questions:
+          // `cancelled` means this component went away, `sequence` means a
+          // newer read has already been issued and this answer is stale. A
+          // slow mount fetch resolving after a fast post-mutation one must
+          // NOT win, or the badge silently goes backwards.
+          if (cancelled || sequence !== countSequenceRef.current || !body) return;
+          const open = typeof body.open === 'number' ? body.open : 0;
+          const overdue = typeof body.overdue === 'number' ? body.overdue : 0;
+          setTaskCounts({ open, overdue });
+        })
+        .catch(() => {
+          // Leave the badge as it is. Nothing on this page depends on it.
+        });
+    };
+
+    load();
+
+    // Premerge staff-lens MED: the count was fetched once per page mount and
+    // never again, so completing a task on the dashboard card left the pill
+    // showing a stale number — and, worse, a stale RED — until the staffer
+    // happened to navigate. The card announces every successful mutation on
+    // this channel; re-read the real count rather than adjusting a local
+    // number, so the badge and the database cannot drift apart.
+    window.addEventListener(OFFICE_TASKS_CHANGED, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(OFFICE_TASKS_CHANGED, load);
+    };
+  }, [sessionState]);
+
   // Only a CONFIRMED signedOut hides the control. 'unknown' stays visible.
   const hideSignOut = sessionState === 'signedOut';
 
@@ -128,7 +221,12 @@ export function OperatorNav({
 
   // WT-60: logout (POST /api/auth/logout) worked but had no UI trigger. Best
   // effort — even if the request fails, still send the operator to /login.
+  // The role hint clears FIRST (staff lens MED on this PR): on a shared
+  // computer, a leftover 'admin' hint would flash the View-as menu at the
+  // next person for one page load. Cleared before the network call so even
+  // an aborted logout leaves no hint behind.
   const signOut = async () => {
+    writeRoleHint(null);
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
@@ -137,10 +235,32 @@ export function OperatorNav({
     }
   };
 
-  const inboxBadge = (item: NavItem) =>
-    item.href === '/inbox' && inboxOpenLeads > 0 ? (
-      <NavBadge count={inboxOpenLeads} overdue={inboxOverdue > 0} />
-    ) : null;
+  const badgeFor = (item: NavItem) => {
+    if (item.href === '/inbox' && inboxOpenLeads > 0) {
+      return (
+        <NavBadge
+          count={inboxOpenLeads}
+          overdue={inboxOverdue > 0}
+          label={`${inboxOpenLeads} lead${inboxOpenLeads === 1 ? '' : 's'} waiting in the inbox`}
+        />
+      );
+    }
+    if (item.href === '/tasks' && taskCounts && taskCounts.open > 0) {
+      const { open, overdue } = taskCounts;
+      return (
+        <NavBadge
+          count={open}
+          overdue={overdue > 0}
+          label={
+            overdue > 0
+              ? `${open} open task${open === 1 ? '' : 's'}, ${overdue} past due`
+              : `${open} open task${open === 1 ? '' : 's'}`
+          }
+        />
+      );
+    }
+    return null;
+  };
 
   return (
     <nav
@@ -148,13 +268,35 @@ export function OperatorNav({
       className="border-b"
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
-      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-3 h-12">
+      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
+        {/* The full wordmark at every width. It was shortened to YLL on
+            2026-08-30, when the search box had to be paid for out of a row
+            that already held 12 tabs; dropping Customers, Fleet, Insights and
+            Settings on 2026-08-31 bought that width back with room to spare.
+            The number that governs this row has not changed: it is
+            `max-w-6xl`, so its usable width tops out at 1152px however wide
+            the monitor, and a wider screen buys nothing. Re-measured with both
+            badges showing, the numbers are in OperatorNav.test.tsx. */}
         <span
           className="text-xs font-semibold uppercase tracking-widest shrink-0"
           style={{ color: 'var(--brand-evergreen-3)' }}
         >
           Yule Love Lights
         </span>
+
+        {/* Tablet-portrait and phone: the search box takes the width the nav
+            links are not using, since they live in the hamburger below. */}
+        <div className="flex-1 min-w-0 lg:hidden">
+          <HeaderSearch variant="mobile" />
+        </div>
+
+        {/* Desktop: 160px at 1024px, 224px at 1280px and up. Both numbers
+            come from the measured budget, not from taste: with the four tabs
+            gone the tightest width now leaves 46px of slack. Ctrl+K and Cmd+K
+            focus this one. */}
+        <div className="hidden lg:block lg:w-40 xl:w-56 shrink-0">
+          <HeaderSearch variant="desktop" />
+        </div>
 
         {/* Desktop / tablet-landscape: inline links. Shown at lg+ (1024px), NOT
             md (768px): the 9-item row needs ~832px, so at md it overflowed the
@@ -165,12 +307,39 @@ export function OperatorNav({
             Inbox badge showed — measured in headless Chromium, the exact
             iPad-width horizontal-scroll class #56/S22 fixed. Ten gaps × 2px
             saved = exactly the overflow. */}
-        <ul className="hidden lg:flex items-center gap-0.5 text-sm">
-          {ITEMS.map(item => (
+        {/* lg:px-1.5 xl:px-3 (premerge staff MED, advertising-role-hardening
+            fix round): adding the Schedule item (11 top-level items now, 13
+            <li>s total with the CTA + Sign out) measured a 45px page-level
+            overflow at 1024px in headless Chromium —
+            document.documentElement.scrollWidth 1069 vs clientWidth 1024, the
+            exact #56/S22 class recurring.
+
+            FIRST ATTEMPT (px-3 → lg:px-2, no whitespace-nowrap) measured 0
+            overflow, but that reading was a FALSE PASS: the "+ New quote" CTA
+            and Sign-out button (both multi-word) were silently WRAPPING onto
+            a second line under the remaining squeeze — their boxes rendered
+            52px tall vs the other 11 links' 32px, poking out above and below
+            the h-12 bar — and the wrap shrank their apparent WIDTH enough to
+            hide a REAL 16px shortfall from a plain scrollWidth check. Adding
+            `whitespace-nowrap` to both (below) to force single-line, then
+            re-measuring, is what surfaced the true 16px overflow at 1024
+            (1120/1280 were genuinely fine both times).
+
+            lg:px-1.5 (not px-2) on these 11 links — WITH whitespace-nowrap in
+            place so nothing can hide behind a wrap again — closes it with
+            room to spare: measured (headless Chromium, 3 widths, font-ready +
+            stability-checked, zero wrapped elements confirmed at every width):
+              1024px: 0 overflow, ~11.75px real margin
+              1120px: 0 overflow, ~107.75px margin
+              1280px: 0 overflow (xl:px-3 restores full padding — this is
+                       the original pre-Schedule design's natural fit)
+            */}
+        <ul className="hidden lg:flex items-center gap-0 text-sm">
+          {items.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
+              <Link href={item.href} className="lg:px-1.5 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
                 {item.label}
-                {inboxBadge(item)}
+                {badgeFor(item)}
               </Link>
             </li>
           ))}
@@ -181,10 +350,21 @@ export function OperatorNav({
               active-tab highlight (that is Quotes' job for /quote/*). */}
           <li>
             {/* px-2.5 (not the tabs' px-3): 4px of extra headroom on top of
-                the gap fix above, so the 1024px fit isn't zero-margin. */}
+                the gap fix above, so the 1024px fit isn't zero-margin.
+                whitespace-nowrap (advertising-role-hardening fix round): this
+                CTA's label has a space ("+ New quote") and, once squeezed
+                enough, would silently wrap onto 2 lines rather than shrink in
+                width — that's the false-pass trap the lg:px-1.5 comment above
+                explains. Forcing single-line makes its true width count
+                toward the overflow check instead of hiding behind a wrap. */}
+            {/* Full label again. It was "+ Quote" for one day (2026-08-30)
+                to pay for the search box; the four tabs that left on
+                2026-08-31 covered that cost, so the button says what it does
+                once more. whitespace-nowrap keeps it single-line, which is
+                what stops a silent wrap hiding a real overflow. */}
             <Link
               href="/quote/new"
-              className="px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              className="whitespace-nowrap lg:px-2 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
               + New quote
@@ -196,15 +376,42 @@ export function OperatorNav({
               unmount) keeps the space, drops it from hit-testing, AND
               removes it from the tab order — no separate disabled handling
               needed. */}
-          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
-            <button
-              type="button"
-              onClick={signOut}
-              className="px-3 py-1.5 rounded-md transition-colors"
-              style={{ color: 'var(--op-text-2)' }}
-            >
-              Sign out
-            </button>
+          {/* NOT wrapped in the visibility toggle any more (premerge admin
+              lens, 2026-08-31). This slot held the Sign-out button, and
+              hiding it on a confirmed signedOut session was right: there is
+              nothing to sign out of. The account menu is a different thing.
+              It is now the ONLY door to Settings and Insights, so hiding the
+              whole control took those two with it whenever the session check
+              answered signedOut -- which happens for real while the auth gate
+              is deliberately dormant, where pages still render and the
+              session route still answers honestly. The menu therefore always
+              renders and reserves its width; only the Sign-out ITEM inside it
+              is conditional now. */}
+          <li>
+            {/* lg:px-2 xl:px-3 + whitespace-nowrap (advertising-role-hardening
+                fix round): same reasoning as the CTA above — "Sign out" has a
+                space and was one of the two elements silently wrapping onto 2
+                lines in the first (wrong) measurement of the tab-link fix.
+                whitespace-nowrap forces it single-line; the padding step
+                mirrors the tab links and contributes to the ~11.75px real
+                margin measured at 1024px (see the lg:px-1.5 comment above for
+                the full before/after numbers at all 3 widths).
+
+                This slot is now the ACCOUNT MENU for everyone (Naldo,
+                2026-08-30), which is the second half of the header search
+                change: it names who is signed in, links to Settings and
+                Insights, folds in the admin View-as switcher that used to
+                live here on its own, and keeps Sign out as its last item.
+                Sign out MOVED, it did not disappear — removing it would
+                strand a staffer on a shared computer. The initials-only
+                trigger is also narrower than the "Sign out" text it replaces,
+                which is part of how the search box fits at 1024px. */}
+            <AccountMenu
+              identity={{ name, email, role }}
+              onSignOut={signOut}
+              canSignOut={!hideSignOut}
+              roleConfirmed={sessionState === 'signedIn'}
+            />
           </li>
         </ul>
 
@@ -223,12 +430,56 @@ export function OperatorNav({
         </button>
       </div>
 
+      {/* The View-as strip that briefly lived here is gone (Naldo's design,
+          2026-08-29): the control is the header menu in the Sign-out slot
+          above, so the #1055-era ~29px pop-in class cannot exist at all —
+          there is no admin-only row to appear. The once-suggested
+          "server-render the role into OperatorShell" alternative remains
+          IMPOSSIBLE: about two dozen 'use client' surfaces (QuoteBuilder
+          included) render OperatorShell, and a client component cannot
+          render an async server component; the localStorage role hint
+          (roleHint.ts) is what makes the menu appear at first paint from a
+          browser's second page onward. */}
+
       {/* Mobile + tablet-portrait: dropdown menu (shown below lg / 1024px) */}
       {open && (
         <ul
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* Who is signed in, at the top of the hamburger menu — the mobile
+              half of the desktop account menu (Naldo, 2026-08-30). The View-as
+              rows and Sign out already live further down this same list, so
+              this adds the identity line they were missing rather than a
+              second control. */}
+          <li className="border-b" style={{ borderColor: 'var(--op-border)' }}>
+            <p className="px-4 pt-3 text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+              {displayName({ name, email, role })}
+            </p>
+            <p className="px-4 pb-3 text-xs" style={{ color: 'var(--op-text-2)' }}>
+              {roleLabel(role) ?? 'Signed in'}
+            </p>
+          </li>
+          {/* These pages left the tab list and live in the desktop account
+              menu. This dropdown IS the account menu on a phone, so they have
+              to appear here too, or they would be unreachable below 1024px.
+              Same array and same role filter both places, so a row added in
+              one is added in both and an admin-only row hides in both.
+              `sessionState === 'signedIn'` is the CONFIRMED answer, never the
+              localStorage role hint, which on a shared computer can still say
+              'admin' for the next person. */}
+          {accountLinksFor(role, sessionState === 'signedIn').map(link => (
+            <li key={link.href}>
+              <Link
+                href={link.href}
+                onClick={() => setOpen(false)}
+                className="flex items-center px-4 py-3 text-sm font-medium border-b"
+                style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+              >
+                {link.label}
+              </Link>
+            </li>
+          ))}
           {/* "+ New quote" first in the mobile menu — same one-click-access
               ask as the desktop CTA above. */}
           <li>
@@ -241,7 +492,7 @@ export function OperatorNav({
               + New quote
             </Link>
           </li>
-          {ITEMS.map(item => (
+          {items.map(item => (
             <li key={item.href}>
               <Link
                 href={item.href}
@@ -255,10 +506,42 @@ export function OperatorNav({
                 }}
               >
                 {item.label}
-                {inboxBadge(item)}
+                {badgeFor(item)}
               </Link>
             </li>
           ))}
+          {/* Mobile View-as (admins only): the same switcher the desktop
+              menu uses, as tappable pills inside the hamburger menu — the
+              header row itself gains nothing at any width. */}
+          {role === 'admin' && (
+            <li className="border-b" style={{ borderColor: 'var(--op-border)' }}>
+              <p className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--op-text-2)' }}>
+                View as
+              </p>
+              <div className="flex flex-wrap gap-2 px-4 pb-3">
+                {OPERATOR_VIEWS.map(v => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={!v.built}
+                    onClick={() => {
+                      setOpen(false);
+                      chooseView(v.id);
+                    }}
+                    className="px-3 py-1.5 rounded-full text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={
+                      view === v.id
+                        ? { background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
+                        : { color: 'var(--op-text-2)' }
+                    }
+                  >
+                    {v.label}
+                    {!v.built && ' (not built yet)'}
+                  </button>
+                ))}
+              </div>
+            </li>
+          )}
           {/* Same always-mounted / visibility-hidden treatment as the
               desktop copy above — this dropdown only opens on a click, so it
               is not the layout-shift MED, but it stays tri-state-consistent

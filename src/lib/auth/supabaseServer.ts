@@ -166,6 +166,27 @@ export function isCrewAccount(appMetadata: unknown): boolean {
   return (appMetadata as { role?: unknown } | null | undefined)?.role === CREW_ROLE;
 }
 
+/** The marker on an advertising login. Writable only through the service-role admin API. */
+export const ADVERTISING_ROLE = 'advertising';
+
+/**
+ * True when this account is an ADVERTISING login rather than an operator one. PURE.
+ *
+ * Naldo's 2026-08-27 ruling: advertising is its own population in the SAME shared
+ * auth store, with its own marker — never a third `OperatorRole` value. This
+ * mirrors `isCrewAccount` exactly, and exists for the same reason: `roleOf`
+ * above returns 'operator' for anything that isn't exactly 'admin', including
+ * 'advertising'. Without this seam, an advertising login would satisfy
+ * `requireOperator` and reach `/customers` and every other PII surface.
+ * `getOperator` returns null for these accounts (closing it at the route
+ * layer), and `src/proxy.ts` confines an advertising session to the
+ * advertising surface at the perimeter. No advertising account exists yet —
+ * this ships the population lock before the first one does.
+ */
+export function isAdvertisingAccount(appMetadata: unknown): boolean {
+  return (appMetadata as { role?: unknown } | null | undefined)?.role === ADVERTISING_ROLE;
+}
+
 /**
  * Derive the operator's display name from app_metadata. PURE. Returns the trimmed
  * name, or null when absent/blank/forged (legacy accounts) — callers fall back to
@@ -212,6 +233,10 @@ export const getOperator = cache(async (): Promise<Operator | null> => {
   // requireOperator and requireAdmin reject crew accounts; without it `roleOf`
   // would classify 'crew' as 'operator' and hand them the operator surface.
   if (isCrewAccount(user.app_metadata)) return null;
+  // Same seam, same reason, for advertising (row — advertising role hardening,
+  // 2026-08-27 ruling): `roleOf` would otherwise classify 'advertising' as
+  // 'operator' too.
+  if (isAdvertisingAccount(user.app_metadata)) return null;
   return {
     id: user.id,
     email: user.email ?? null,

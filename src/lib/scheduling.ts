@@ -162,6 +162,39 @@ export async function assignCrewToJob(
     throw new AssignmentRefusedError('That crew member is inactive and cannot be assigned.');
   }
 
+  // NALDO'S RULE, 2026-08-27: a job cannot go on the schedule unless its
+  // property has verified coordinates. This is what makes the GPS timeline
+  // trustworthy by construction — a scheduled job can always be watched, so a
+  // missing timeline can never be mistaken for a crew that did not show up.
+  // The fix path is the geocode fix-list: correct the address there and it
+  // verifies on save. Enforced HERE at the write, per the row-356 precedent:
+  // a dropdown filter alone would not stop a direct POST or a stale id.
+  const { data: jobData, error: jobError } = await db
+    .from('jobs')
+    .select('id, property_id')
+    .eq('id', jobId.trim())
+    .maybeSingle();
+  if (jobError) throw new Error(`assignCrewToJob: job lookup: ${jobError.message}`);
+  const job = jobData as unknown as { id: string; property_id: string | null } | null;
+  if (!job) throw new AssignmentRefusedError('Unknown job.');
+  if (!job.property_id) {
+    throw new AssignmentRefusedError(
+      'This job has no property linked, so it cannot be scheduled until it does.',
+    );
+  }
+  const { data: propData, error: propError } = await db
+    .from('properties')
+    .select('id, lat, lng')
+    .eq('id', job.property_id)
+    .maybeSingle();
+  if (propError) throw new Error(`assignCrewToJob: property lookup: ${propError.message}`);
+  const prop = propData as unknown as { id: string; lat: number | null; lng: number | null } | null;
+  if (!prop || prop.lat == null || prop.lng == null) {
+    throw new AssignmentRefusedError(
+      'This property has no verified coordinates yet. Fix its address on the geocoding page, then schedule it.',
+    );
+  }
+
   const { data, error } = await db
     .from('job_assignments')
     .insert({ job_id: jobId.trim(), crew_member_id: crewMemberId.trim(), assigned_date: assignedDate })
@@ -343,4 +376,71 @@ export async function listUnscheduledJobs(fromDate: string): Promise<{
     });
 
   return { jobs, errors: [] };
+}
+
+/**
+ * Pre-archive check for a property. The geocode fix-list's Archive button asks
+ * before hiding a property: an archived property leaves the fix-list, and the
+ * fix-list is the ONLY path to ever giving that property coordinates — so
+ * archiving one with a job would make the job permanently unschedulable and
+ * invisible (Naldo hit exactly this shape with job #1045).
+ *
+ * OWNERSHIP IS PART OF THE CHECK, not an afterthought: the property must
+ * belong to the given customer, or the answer is 'not-found' — the same opaque
+ * result a mismatched pair got before this guard existed. Answering the jobs
+ * question for a property the caller did not name correctly would let any
+ * operator probe whether a foreign property id has jobs (the 409-vs-404
+ * oracle a review lens caught on the first cut of this guard).
+ *
+ * JOBS ARE NOT THE ONLY DOOR (admin lens on PR #1054): a LIVE-pipeline quote
+ * (sent, viewed, approved, booked) converts into a job when the deposit lands,
+ * and createJobFromQuote copies property_id off the quote with no archived
+ * check — so archiving such a property strands the FUTURE job the same way.
+ * Draft, abandoned, and dead quotes do not block: those are exactly the
+ * import-garbage rows the Archive button exists for. Measured 2026-08-28: the
+ * fix-list's properties carried 6 booked / 3 viewed / 2 sent live quotes
+ * beside 4 draft / 1 abandoned.
+ *
+ * Fails SAFE: any lookup error reports 'blocked' (refuses the archive).
+ * Refusing an archive is a retry; hiding a real job is not.
+ */
+export async function propertyArchiveBlock(
+  customerId: string,
+  propertyId: string,
+): Promise<'not-found' | 'has-jobs' | 'has-live-quote' | 'clear'> {
+  const db = getSupabaseServiceClient();
+  if (!db) return 'has-jobs';
+  const { data: propData, error: propError } = await db
+    .from('properties')
+    .select('id')
+    .eq('id', propertyId)
+    .eq('customer_id', customerId)
+    .maybeSingle();
+  if (propError) {
+    console.error('propertyArchiveBlock: property lookup failed:', propError.message);
+    return 'has-jobs';
+  }
+  if (!propData) return 'not-found';
+  const { data: jobData, error: jobError } = await db
+    .from('jobs')
+    .select('id')
+    .eq('property_id', propertyId)
+    .limit(1);
+  if (jobError) {
+    console.error('propertyArchiveBlock: jobs lookup failed:', jobError.message);
+    return 'has-jobs';
+  }
+  if (((jobData as unknown as { id: string }[] | null) ?? []).length > 0) return 'has-jobs';
+  const { data: quoteData, error: quoteError } = await db
+    .from('quotes')
+    .select('id')
+    .eq('property_id', propertyId)
+    .in('status', ['sent', 'viewed', 'approved', 'booked'])
+    .limit(1);
+  if (quoteError) {
+    console.error('propertyArchiveBlock: quotes lookup failed:', quoteError.message);
+    return 'has-live-quote';
+  }
+  if (((quoteData as unknown as { id: string }[] | null) ?? []).length > 0) return 'has-live-quote';
+  return 'clear';
 }

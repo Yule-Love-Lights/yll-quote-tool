@@ -18,7 +18,7 @@ import { SkeletonBar, SkeletonRows } from '@/components/ui/LoadingSkeleton';
  * and the office/field difference is a GROUP HEADING, not a different screen.
  *
  * The one place the two genuinely differ is ADDING someone: office staff link an
- * existing operator login, field crew get a crew-role login created. That is a
+ * existing operator login; field crew get NO login (row 438). That is a
  * permission boundary, not a presentation choice.
  *
  * Admin access is a BADGE, deliberately not a third group. Role and
@@ -56,11 +56,10 @@ export function StaffAccounts() {
   const [type, setType] = useState<'office' | 'field'>('office');
   const [selected, setSelected] = useState('');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [rate, setRate] = useState('');
   const [busy, setBusy] = useState(false);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+  const [linkSel, setLinkSel] = useState<Record<string, string>>({});
 
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -145,7 +144,7 @@ export function StaffAccounts() {
         body: JSON.stringify(
           type === 'office'
             ? { type, authUserId: selected, hourlyRate: rate, displayName: name }
-            : { type, displayName: name, email, password, hourlyRate: rate },
+            : { type, displayName: name, hourlyRate: rate },
         ),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string; member?: { displayName?: string } };
@@ -153,8 +152,6 @@ export function StaffAccounts() {
       setDone(`${data.member?.displayName ?? who} was added.`);
       setSelected('');
       setName('');
-      setEmail('');
-      setPassword('');
       setRate('');
       reload();
     } catch (e) {
@@ -214,6 +211,39 @@ export function StaffAccounts() {
       return;
     }
     void patchRow(row, { password: input }, `${row.displayName}'s password was reset. Give it to them directly.`);
+  }
+
+  function linkLogin(row: StaffRow) {
+    // The other half of the row-359 repair. Clearing a dead pointer only helps
+    // if the row can then be given a working login, and POST cannot do it: POST
+    // always INSERTS, so re-adding the same person collides with the unique
+    // display name. This attaches an existing operator to THIS row.
+    const authUserId = linkSel[row.id];
+    if (!authUserId) return;
+    const op = eligible.find((o) => o.id === authUserId);
+    if (!window.confirm(`Give ${row.displayName} the login ${operatorLabel(op ?? { id: '', name: null, email: null })}?`)) {
+      return;
+    }
+    void patchRow(row, { authUserId }, `${row.displayName} can sign in again.`);
+  }
+
+  function clearStaleLogin(row: StaffRow) {
+    // Only offered for a row the server already reported as loginMissing, and
+    // the server re-checks that the login really is gone before clearing. The
+    // point is to make the row linkable again: while a dead id sits in the
+    // column, adding a replacement login is refused as "already has one".
+    if (
+      !window.confirm(
+        `${row.displayName}'s login no longer exists. Clear the link so you can give them a new one? This does not delete anything else.`,
+      )
+    ) {
+      return;
+    }
+    void patchRow(
+      row,
+      { clearLogin: true },
+      `${row.displayName}'s stale login link is cleared. Pick an operator on their row to give them a working login.`,
+    );
   }
 
   function moveType(row: StaffRow) {
@@ -326,8 +356,8 @@ export function StaffAccounts() {
       <p className="text-sm text-gray-500 mt-2">
         How someone clocks in depends on their LOGIN, not on their group. An operator or admin
         login can clock in from the dashboard header, and by texting the bot once Telegram is
-        linked. A crew login cannot use the dashboard at all, by design, so texting the bot is
-        their only way in. Each row says which login it has.
+        linked. Someone with no login clocks in by texting the bot only. Each row says which
+        login it has.
       </p>
       <p className="text-xs text-gray-500 mt-2">
         Linking Telegram is necessary but not enough on its own: the bot only reads chats on its
@@ -379,7 +409,20 @@ export function StaffAccounts() {
                       )}
                       {s.email && <span className="ml-2 text-xs text-gray-400">{s.email}</span>}
                       <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
-                      {!s.hasLogin && <span className="ml-2 text-xs text-amber-700">No login yet</span>}
+                      {/*
+                        Amber means "there is something to fix". After row 438 a
+                        FIELD row having no login is the DESIGNED state, not a gap,
+                        so flagging it amber would invite an owner to "fix" it by
+                        linking an operator account — quietly re-granting the
+                        dashboard access this change removed. Office staff DO need
+                        a login to use the header clock, so it stays amber there.
+                      */}
+                      {!s.hasLogin &&
+                        (s.isOffice ? (
+                          <span className="ml-2 text-xs text-amber-700">No login yet</span>
+                        ) : (
+                          <span className="ml-2 text-xs text-gray-500">No login — texts the bot</span>
+                        ))}
                       {s.loginMissing && <span className="ml-2 text-xs text-red-600">login deleted</span>}
                       <span className={s.telegramUserId ? 'ml-2 text-xs text-green-700' : 'ml-2 text-xs text-amber-700'}>
                         {s.telegramUserId ? 'Telegram linked' : 'No Telegram'}
@@ -398,7 +441,35 @@ export function StaffAccounts() {
                       link does not shove every other row's buttons out of
                       alignment, which is what made this list look ragged.
                     */}
-                    <div className="mt-1 flex flex-wrap items-center gap-3">
+                    {!s.hasLogin && eligible.length > 0 && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <label className="text-xs text-gray-500" htmlFor={`link-${s.id}`}>
+                        {s.isOffice ? 'Give them a login:' : 'Give dashboard access (not needed to clock in):'}
+                      </label>
+                      <select
+                        id={`link-${s.id}`}
+                        className="border border-gray-300 rounded-md px-2 py-1 text-xs"
+                        value={linkSel[s.id] ?? ''}
+                        onChange={(e) => setLinkSel((m) => ({ ...m, [s.id]: e.target.value }))}
+                      >
+                        <option value="">Choose an operator…</option>
+                        {eligible.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {operatorLabel(o)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={rowBusyId === s.id || !linkSel[s.id]}
+                        onClick={() => linkLogin(s)}
+                        className={action}
+                      >
+                        Link
+                      </button>
+                    </div>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-3">
                       <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
                         {s.active ? 'Active' : 'Inactive'}
                       </span>
@@ -427,6 +498,23 @@ export function StaffAccounts() {
                         className={action}
                       >
                         Reset password
+                      </button>
+                      {/*
+                        Always rendered, hidden when there is nothing stale to
+                        clear — the same convention as Unlink above, so one
+                        orphaned row does not shove every other row's buttons
+                        out of alignment.
+                      */}
+                      <button
+                        type="button"
+                        aria-hidden={!s.loginMissing}
+                        tabIndex={s.loginMissing ? undefined : -1}
+                        style={s.loginMissing ? undefined : { visibility: 'hidden' }}
+                        disabled={rowBusyId === s.id || !s.loginMissing}
+                        onClick={() => clearStaleLogin(s)}
+                        className="text-xs text-red-600 underline disabled:opacity-50"
+                      >
+                        Clear stale login
                       </button>
                       <button type="button" disabled={rowBusyId === s.id} onClick={() => moveType(s)} className={action}>
                         {s.isOffice ? 'Move to field' : 'Move to office'}
@@ -464,7 +552,7 @@ export function StaffAccounts() {
                 onChange={(e) => setType(e.target.value as 'office' | 'field')}
               >
                 <option value="office">Office (uses an existing operator login)</option>
-                <option value="field">Field crew (creates a new crew login)</option>
+                <option value="field">Field crew (no login: they use the Telegram bot)</option>
               </select>
             </div>
 
@@ -509,40 +597,6 @@ export function StaffAccounts() {
               />
             </div>
 
-            {type === 'field' && (
-              <>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1" htmlFor="staff-email">
-                    Email
-                  </label>
-                  <input
-                    id="staff-email"
-                    type="email"
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-700 mb-1" htmlFor="staff-password">
-                    Temporary password
-                  </label>
-                  <input
-                    id="staff-password"
-                    type="text"
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    minLength={8}
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    At least 8 characters. Give it to them directly and have them change it.
-                  </p>
-                </div>
-              </>
-            )}
 
             <div>
               <label className="block text-sm text-gray-700 mb-1" htmlFor="staff-rate">

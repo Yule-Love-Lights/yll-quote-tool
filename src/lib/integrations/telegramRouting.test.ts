@@ -55,7 +55,7 @@ describe('sanitizeTelegramRouting', () => {
 
   it('drops unknown top-level keys and fills missing audiences with []', () => {
     const out = sanitizeTelegramRouting({ leads: ['-100'], somethingElse: ['x'], nested: { a: 1 } });
-    expect(out).toEqual({ leads: ['-100'], jobs: [], inventory: [], ops: [] });
+    expect(out).toEqual({ leads: ['-100'], jobs: [], inventory: [], ops: [], crew: [] });
     expect(Object.keys(out!).sort()).toEqual([...TELEGRAM_AUDIENCES].sort());
   });
 
@@ -73,17 +73,17 @@ describe('chatsForAudience', () => {
   });
 
   it('returns the intersection of the audience\'s assigned chats and the allowlist', () => {
-    const routing: TelegramRouting = { leads: ['-100', '300'], jobs: [], inventory: [], ops: [] };
+    const routing: TelegramRouting = { leads: ['-100', '300'], jobs: [], inventory: [], ops: [], crew: [] };
     expect(chatsForAudience('leads', routing, allow)).toEqual(['-100', '300']);
   });
 
   it('returns [] for an audience with no chats assigned once a routing exists', () => {
-    const routing: TelegramRouting = { leads: ['-100'], jobs: [], inventory: [], ops: [] };
+    const routing: TelegramRouting = { leads: ['-100'], jobs: [], inventory: [], ops: [], crew: [] };
     expect(chatsForAudience('jobs', routing, allow)).toEqual([]);
   });
 
   it('drops an assigned chat that has fallen out of the live allowlist (stale-row protection)', () => {
-    const routing: TelegramRouting = { leads: ['-100', '-999'], jobs: [], inventory: [], ops: [] };
+    const routing: TelegramRouting = { leads: ['-100', '-999'], jobs: [], inventory: [], ops: [], crew: [] };
     expect(chatsForAudience('leads', routing, allow)).toEqual(['-100']);
   });
 });

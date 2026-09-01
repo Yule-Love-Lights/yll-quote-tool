@@ -11,11 +11,18 @@
 // portal (reviews / gallery / steps / protection / FAQ / about / contact,
 // referral page bug batch 2026-07-17, fix 3).
 
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { Star, ShieldCheck, Wrench } from 'lucide-react';
-import { getReferralByCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import {
+  getReferralByCode,
+  REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
+  REFERRAL_FRIEND_SPRITZERS,
+  REFERRAL_FRIEND_ALT_CREDIT_USD,
+} from '@/lib/referrals';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { getSupabaseServiceClient } from '@/lib/supabase';
-import { getDesignByQuote, type DesignScene } from '@/lib/designs';
+import { getDesignByQuote } from '@/lib/designs';
 import {
   galleryItemsFor,
   crossSellFor,
@@ -37,18 +44,25 @@ import { PersonalContact } from '@/components/portal/dark/PersonalContact';
 import { formatUsd } from '@/components/portal/format';
 import { asServiceType, type ServiceType } from '@/lib/serviceType';
 import { getAppSettings } from '@/lib/appSettings';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
 import { ReferralPageTracker } from './ReferralPageTracker';
 import { ReferralForm } from './ReferralForm';
-import { ReferralHeroImage } from './ReferralHeroImage';
-import { ReferralHeroDesign } from './ReferralHeroDesign';
-import { ReferralHeroBadge } from './ReferralHeroBadge';
+import { ReferHero, type HeroResolution } from './ReferHero';
 
 // Google Business Profile reviews deep-link (browser-neutral): same fallback
 // URL the portal uses (src/app/portal/[quoteId]/page.tsx GMB_REVIEWS_URL) when
 // live reviews aren't configured.
 const GMB_REVIEWS_URL =
   'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
+
+// naldo/referral-link-preview: "2 free 16 inch spritzers" is trade jargon a
+// homeowner has no way to price on their own. Dollarized once here, from the
+// quote builder's own per-size rate, never a separate hardcoded number.
+const SPRITZER_VALUE_USD = spritzerRetailValueUsd(
+  REFERRAL_FRIEND_SPRITZERS.count,
+  REFERRAL_FRIEND_SPRITZERS.sizeInches,
+);
 
 // #41 adversarial-review LOW fix: this page is personalized per referral code
 // (a different customer's hero photo + gallery fallback each time). Force
@@ -60,7 +74,92 @@ type Params = { code: string };
 function firstNameOf(name: string | null): string {
   if (!name) return 'A neighbor';
   const first = name.trim().split(/\s+/)[0];
-  return first || 'A neighbor';
+  if (!first) return 'A neighbor';
+  // Names arrive from GoHighLevel however the customer or a staffer typed
+  // them. This is the first word of a link preview a stranger sees, so it is
+  // worth normalising the two common bad shapes and nothing else.
+  //   "david"    -> "David"  (60% of the 52 code-holders in prod today)
+  //   "DAVID"    -> "David"  (caps-lock form fill; reads as shouting in a text)
+  //   "McKenzie" -> unchanged (mixed case is neither all-upper nor all-lower)
+  //   "(631)"    -> unchanged (no letters, so the all-caps test cannot fire)
+  // Never blanket-lowercase the tail: that would wreck McDonald and DeSantis.
+  // Live dev check 2026-08-28 rendered "david thinks you'd love this".
+  const isAllCaps =
+    first.length > 1 && first === first.toUpperCase() && first !== first.toLowerCase();
+  const base = isAllCaps ? first.toLowerCase() : first;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+// ─── Link preview (Open Graph) ──────────────────────────────────────────────
+// This page's whole job is to be TEXTED by one neighbor to another, so the
+// preview card is the first thing the friend sees, before they ever tap.
+// Without it this route inherited the ROOT layout's metadata, which carries no
+// image and describes the operator console ("quoting, customer portal, and
+// dashboard") — the wrong pitch to a homeowner, and verified live on
+// quote.yulelovelights.com/refer/<code> as the only meta tags served.
+// Wrap-review 2026-08-28, customer lens HIGH.
+//
+// The card image is a real completed job, the same class of photo this page
+// falls back to for its hero. Deliberately NOT the referrer's own house even
+// when we have it: preview images are fetched and cached by messaging
+// platforms, which would put a customer's home in a third-party cache. The
+// page itself still shows their house.
+//
+// noindex: the URL embeds a personal referral code. It should be shareable by
+// the person who owns it, never surfaced in search. Open Graph scrapers ignore
+// robots directives, so the preview card still renders.
+const SHARE_CARD = '/refer-share-card.jpg';
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<Params>;
+}): Promise<Metadata> {
+  const { code } = await params;
+  // A bad code must still return usable metadata: the page's own notFound()
+  // owns that case, and a throw here would break the whole response.
+  // Narrower than it looks: getReferralByCode catches and logs its own
+  // PostgREST errors and returns null, so a database outage never reaches
+  // this catch. It guards a synchronous throw (a missing Supabase config,
+  // a client-construction fault), which is the only way one gets here.
+  const referrer = await getReferralByCode(code).catch(() => null);
+  const firstName = referrer ? firstNameOf(referrer.name) : null;
+
+  const title = firstName
+    ? `${firstName} thinks you'd love this`
+    : 'A neighbor sent you this';
+  const description =
+    `${REFERRAL_FRIEND_SPRITZERS.count} free spritzers on your first install with Yule Love Lights, ` +
+    `or ${formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead. Free quote, no obligation.`;
+  const base = appBaseUrl();
+  const url = `${base}/refer/${encodeURIComponent(code)}`;
+  const image = {
+    url: `${base}${SHARE_CARD}`,
+    width: 1200,
+    height: 630,
+    alt: 'A Long Island home lit by Yule Love Lights: warm-white roofline bulbs, lit wreaths, and light-wrapped trees along the driveway',
+  };
+
+  return {
+    title,
+    description,
+    alternates: { canonical: url },
+    robots: { index: false, follow: false },
+    openGraph: {
+      type: 'website',
+      siteName: 'Yule Love Lights',
+      url,
+      title,
+      description,
+      images: [image],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: [image.url],
+    },
+  };
 }
 
 // The referrer's most recently APPROVED quote (customer_approved_at set):
@@ -93,17 +192,9 @@ async function latestApprovedQuote(customerId: string): Promise<{ id: string; se
 // self-serve design poller enforce it separately. The 'design' branch below carries
 // everything that island needs; the 'photo' branch is the unchanged
 // gallery-photo fallback (no design, opted out, or no photo on the design).
-type HeroResolution =
-  | {
-      kind: 'design';
-      scene: DesignScene;
-      photoUrl: string;
-      photoW: number | null;
-      photoH: number | null;
-      alt: string;
-      fallbackUrl: string;
-    }
-  | { kind: 'photo'; url: string; alt: string };
+// HeroResolution itself now lives in ./ReferHero (naldo/referral-link-
+// preview, PIECE 2), the shared component this page and the no-database
+// /refer/preview route both render.
 
 async function resolveHero(
   latest: { id: string; serviceType: ServiceType | null } | null,
@@ -189,69 +280,10 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
     <main className="relative min-h-screen w-full bg-[#060B0F]">
       <ReferralPageTracker code={code} />
 
-      {/* ── Hero ── */}
-      <section className="relative w-full">
-        <div className="relative w-full h-[56vh] min-h-[340px] md:h-[62vh] overflow-hidden">
-          {hero.kind === 'design' ? (
-            <ReferralHeroDesign
-              scene={hero.scene}
-              photoUrl={hero.photoUrl}
-              photoW={hero.photoW}
-              photoH={hero.photoH}
-              palette={appSettings.colors}
-              renderSettings={appSettings.render}
-              alt={hero.alt}
-              fallbackSrc={hero.fallbackUrl}
-            />
-          ) : (
-            <ReferralHeroImage src={hero.url} alt={hero.alt} />
-          )}
-          <div className="absolute inset-0 bg-gradient-to-t from-[#060B0F] via-[#060B0F]/60 to-[#060B0F]/10" />
-          {/* Non-customers are now the common case for this page (naldo/
-              referral-self-serve): most recipients have no approved design of
-              their own, so the fallback gallery photo is someone ELSE's
-              house. Label it so the hero never reads as if it were the
-              referrer's own home. Photo branch only (the component itself
-              gates on hero.kind). Review fix 7: top-left, not bottom-left,
-              since the headline block below is pulled up over the bottom of
-              the hero with a negative margin and can collide with a bottom
-              badge at narrow widths. The badge's own pill background (not
-              the gradient, which is weakest up here) carries its contrast. */}
-          <ReferralHeroBadge kind={hero.kind} />
-        </div>
-        <div className="relative -mt-24 md:-mt-32 max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.22em] uppercase text-[#FFB744] mb-4">
-            You were personally invited
-          </p>
-          <h1 className="font-display text-[34px] leading-[1.1] md:text-[54px] md:leading-[1.05] font-semibold text-[#F4ECD8] tracking-[-0.02em]">
-            {hero.kind === 'design'
-              ? `${firstName} thinks your house deserves this too.`
-              : `${firstName} thinks your house could look like this.`}
-          </h1>
-          <p className="mt-5 text-[17px] md:text-[19px] text-[#E0D7C1] leading-[1.6]">
-            Give us your address. We will follow up with a free quote, no visit needed.
-          </p>
-
-          {/* Compact trust signal, above the fold and above the lead form
-              (PS-A3 fix): a first-time visitor sees proof before we ask for
-              contact info. */}
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
-            <div className="inline-flex items-center gap-2 text-[14px] text-[#E0D7C1]">
-              <Star className="w-4 h-4 fill-[#E8B862] text-[#E8B862]" aria-hidden />
-              <span className="font-semibold">5.0</span>
-              <span className="text-[#A89F87]">&middot; 166 Google reviews</span>
-            </div>
-            <div className="inline-flex items-center gap-1.5 text-[13px] text-[#A89F87]">
-              <ShieldCheck className="w-4 h-4 text-[#E8B862]" aria-hidden />
-              <span>Licensed &amp; insured</span>
-            </div>
-            <div className="inline-flex items-center gap-1.5 text-[13px] text-[#A89F87]">
-              <Wrench className="w-4 h-4 text-[#E8B862]" aria-hidden />
-              <span>48-hour fix guarantee</span>
-            </div>
-          </div>
-        </div>
-      </section>
+      {/* ── Hero (extracted to ./ReferHero, naldo/referral-link-preview
+          PIECE 2, so the no-database preview route can render the exact
+          same component) ── */}
+      <ReferHero hero={hero} firstName={firstName} palette={appSettings.colors} renderSettings={appSettings.render} />
 
       {/* ── Offer block ── */}
       <section aria-labelledby="refer-offer-heading" className="w-full">
@@ -265,10 +297,13 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 For you
               </p>
               <p className="font-display text-[24px] font-semibold text-[#F4ECD8]">
-                {REFERRAL_FRIEND_SPRITZERS.count} free {REFERRAL_FRIEND_SPRITZERS.sizeInches}&quot; spritzers
+                {REFERRAL_FRIEND_SPRITZERS.count} free spritzers, or {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                On your first booked install. No purchase needed to get your free quote.
+                {REFERRAL_FRIEND_SPRITZERS.count} spritzers ({REFERRAL_FRIEND_SPRITZERS.sizeInches}&quot; staked
+                spotlights that light up your yard, worth {formatUsd(SPRITZER_VALUE_USD)}) on your first booked
+                install. Or take {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead, your choice.
+                No purchase needed to get your free quote.
               </p>
             </div>
             <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-6">
@@ -276,10 +311,12 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 For {firstName}
               </p>
               <p className="font-display text-[24px] font-semibold text-[#F4ECD8]">
-                {formatUsd(REFERRAL_CREDIT_USD)} off next season
+                {formatUsd(REFERRAL_CREDIT_USD)} off any job
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                Once you book your install, they get their credit automatically.
+                Good toward any Yule Love Lights service: holiday, permanent, event and wedding
+                lighting, or bistro. Tell us {firstName} sent you when you book and we credit
+                their account, good for {REFERRAL_CREDIT_EXPIRY_YEARS} years.
               </p>
             </div>
           </div>
@@ -295,7 +332,10 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
           >
             Tell us where to look.
           </h2>
-          <ReferralForm code={code} friendSpritzers={REFERRAL_FRIEND_SPRITZERS} />
+          <ReferralForm
+            code={code}
+            friendSpritzers={{ ...REFERRAL_FRIEND_SPRITZERS, valueUsd: SPRITZER_VALUE_USD }}
+          />
         </div>
       </section>
 

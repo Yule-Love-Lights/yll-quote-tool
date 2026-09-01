@@ -54,6 +54,10 @@ const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 
 const MINI_LIGHT_RATES = { canopy: 35, trunk: 45 } as const;
+// Feeds `calcStringsFromBox` below, which hardcodes the same round-canopy
+// wrap formula `src/lib/design/strandCalculator.ts` now implements (and
+// tests) properly for all five company estimating models. This constant is
+// part of the local copy slated for replacement by that module.
 const PLANT_PERSPECTIVE_FACTOR = 0.4;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -701,6 +705,11 @@ function NewTrainingHousePageInner() {
 
         if (scale && detections.length > 0) {
           const PERSPECTIVE = 0.4;
+          // `src/lib/design/strandCalculator.ts` is the canonical, tested
+          // implementation of the company's wrap rules (all five real
+          // estimating models, not just round canopy). This local copy
+          // hardcodes the round-canopy formula for every detection shape
+          // and is slated for replacement by that module.
           const recalcStrings = (box: [number, number, number, number]): number => {
             const widthFt = box[2] * scale! * PERSPECTIVE;
             const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;

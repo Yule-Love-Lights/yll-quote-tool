@@ -1,96 +1,66 @@
-'use client';
+// Operator login page (ledger #81, Option B — Supabase Auth). A SERVER
+// component now; the form itself lives in LoginForm.tsx and is unchanged.
+//
+// Why it had to move: iOS reads the manifest of whatever page is on screen when
+// you tap Add to Home Screen. Anyone heading for the advertising app while
+// signed out is bounced here first, and this page inherited the QUOTE app's
+// manifest, icon and name from the root layout, so installing from the login
+// screen saved the wrong app. A page can only vary that per request through
+// generateMetadata, which a 'use client' module cannot export.
+//
+// The whole change is metadata. Nothing about signing in moved.
 
-// Operator login page (ledger #81, Option B — Supabase Auth). Per-user email +
-// password: posts to /api/login, which signs in against Supabase and sets the
-// SSR session cookies the middleware validates. Redirects back to the page the
-// operator was trying to reach.
+import { Suspense } from 'react';
+import type { Metadata } from 'next';
 
-import { Suspense, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { LoginForm } from './LoginForm';
 
-// WT-61: `from.startsWith('/')` alone lets a protocol-relative value like
-// `//evil.com/x` through — the browser treats a leading `//` as "same scheme,
-// different host", so `router.replace` navigates off-origin (open redirect /
-// phishing). Require a single leading slash: same-origin path, not a
-// scheme-relative host. Also reject the `/\host` backslash form AND any ASCII
-// tab/newline/CR. The WHATWG URL parser normalizes a backslash to a slash and
-// strips control chars before parsing, so `/\evil.com`, `/\/evil.com`, and
-// `/%09/evil.com` all re-form as a protocol-relative host and hard-navigate
-// off-origin. No legitimate same-origin path contains them.
-export function safeRedirectTarget(target: string): string {
-  if (!target.startsWith('/')) return '/';
-  if (/[\t\n\r]/.test(target)) return '/';
-  if (target[1] === '/' || target[1] === '\\') return '/';
-  return target;
+// The paths that mean "this person is on their way to the advertising app".
+// /advertising covers the crew doors including the /advertising/go router the
+// installed icon opens; /admin/advertising covers the owner's camera, which the
+// router sends an admin to.
+function isAdvertisingDestination(from: string): boolean {
+  const path = from.length > 1 && from.endsWith('/') ? from.slice(0, -1) : from;
+  return (
+    path === '/advertising' ||
+    path.startsWith('/advertising/') ||
+    path === '/admin/advertising' ||
+    path.startsWith('/admin/advertising/')
+  );
 }
 
-function LoginForm() {
-  const router = useRouter();
-  const params = useSearchParams();
-  const from = params.get('from') || '/';
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+export async function generateMetadata({
+  searchParams,
+}: {
+  searchParams: Promise<{ from?: string | string[] }>;
+}): Promise<Metadata> {
+  const { from } = await searchParams;
+  // A repeated ?from= gives an array. Take nothing rather than guess.
+  const target = typeof from === 'string' ? from : '';
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? 'Login failed');
-      }
-      router.replace(safeRedirectTarget(from));
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
-      setBusy(false);
-    }
+  // `from` is attacker-controllable, so it is only ever COMPARED here, never
+  // interpolated into a URL or any emitted tag. The two outcomes are fixed
+  // literals; the worst a crafted value can do is pick the other one.
+  if (!isAdvertisingDestination(target)) {
+    // Inherit the root layout's quote-tool identity unchanged.
+    return {};
+  }
+
+  return {
+    applicationName: 'YLL Advertising',
+    manifest: '/manifest-advertising.webmanifest',
+    appleWebApp: {
+      capable: true,
+      title: 'YLL Ads',
+      statusBarStyle: 'black',
+    },
+    icons: {
+      icon: '/favicon.ico',
+      apple: [
+        { url: '/icons/yll-advertising-apple-touch.png', sizes: '180x180', type: 'image/png' },
+      ],
+    },
   };
-
-  return (
-    <form onSubmit={onSubmit} className="flex w-full max-w-sm flex-col gap-4 text-left">
-      <label htmlFor="email" className="text-sm font-medium text-[#C9D3CB]">
-        Email
-      </label>
-      <input
-        id="email"
-        type="email"
-        autoComplete="username"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        className="min-h-[48px] rounded-lg border border-white/15 bg-white/5 px-4 text-base text-white outline-none focus:border-[#E8B862]"
-        required
-      />
-      <label htmlFor="password" className="text-sm font-medium text-[#C9D3CB]">
-        Password
-      </label>
-      <input
-        id="password"
-        type="password"
-        autoComplete="current-password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className="min-h-[48px] rounded-lg border border-white/15 bg-white/5 px-4 text-base text-white outline-none focus:border-[#E8B862]"
-        required
-      />
-      {error && <p className="text-sm text-[#E5736F]">{error}</p>}
-      <button
-        type="submit"
-        disabled={busy}
-        className="inline-flex min-h-[48px] items-center justify-center rounded-full bg-[#E8B862] px-6 text-base font-semibold text-[#0B140F] disabled:opacity-60"
-      >
-        {busy ? 'Signing in…' : 'Sign in'}
-      </button>
-    </form>
-  );
 }
 
 export default function LoginPage() {

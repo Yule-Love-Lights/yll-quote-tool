@@ -18,6 +18,7 @@ const {
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  clearStaffLogin,
   deleteStaffMember,
   getStaffMember,
   listNonCrewOperators,
@@ -67,6 +68,7 @@ const {
     setStaffType: vi.fn(),
     deleteStaffMember: vi.fn(),
     getStaffMember: vi.fn(),
+    clearStaffLogin: vi.fn(),
     listNonCrewOperators: vi.fn(),
     listAllAccountsById: vi.fn(),
     OperatorAlreadyLinkedError,
@@ -96,6 +98,7 @@ vi.mock('@/lib/crewMembers', () => ({
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  clearStaffLogin,
   deleteStaffMember,
   getStaffMember,
   StaffHasRecordsError,
@@ -151,6 +154,8 @@ beforeEach(() => {
   setStaffType.mockResolvedValue({ ...OFFICE, isOffice: false });
   deleteStaffMember.mockResolvedValue(OFFICE);
   getStaffMember.mockResolvedValue(OFFICE);
+  clearStaffLogin.mockResolvedValue({ ...OFFICE, authUserId: null });
+  linkStaffLogin.mockResolvedValue({ ...OFFICE, authUserId: 'op-ann' });
 });
 
 describe('GET /api/admin/staff', () => {
@@ -254,49 +259,29 @@ describe('POST /api/admin/staff — office', () => {
   });
 });
 
-describe('POST /api/admin/staff — field', () => {
-  it('creates the pay row, mints a CREW login and attaches it', async () => {
+describe('POST /api/admin/staff — field (no login: crew logins retired, row 438)', () => {
+  it('creates the pay row and NO login at all', async () => {
+    const res = await POST(post({ type: 'field', displayName: 'Little James', hourlyRate: '17' }));
+    expect(res.status).toBe(201);
+    expect(createFieldCrewMember).toHaveBeenCalledWith({ displayName: 'Little James', baseRateCents: 1700 });
+    // The whole point of row 438: nothing mints a crew account any more.
+    expect(createUser).not.toHaveBeenCalled();
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('ignores an email and password if an old client still sends them', async () => {
+    // A stale browser tab holding the previous form must not resurrect the path.
     const res = await POST(
       post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
     );
     expect(res.status).toBe(201);
-    expect(createFieldCrewMember).toHaveBeenCalledWith({ displayName: 'Little James', baseRateCents: 1700 });
-    // The login must carry the crew marker, which is what confines it.
-    expect(createUser).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'lj@x.com', app_metadata: expect.objectContaining({ role: 'crew' }) }),
-    );
-    expect(linkStaffLogin).toHaveBeenCalledWith('crew-new-field', 'new-auth');
-  });
-
-  it('400s a bad email or a short password, before creating anything', async () => {
-    expect((await POST(post({ type: 'field', displayName: 'X', email: 'nope', password: 'password123', hourlyRate: '17' }))).status).toBe(400);
-    expect((await POST(post({ type: 'field', displayName: 'X', email: 'x@y.com', password: 'short', hourlyRate: '17' }))).status).toBe(400);
-    expect(createFieldCrewMember).not.toHaveBeenCalled();
     expect(createUser).not.toHaveBeenCalled();
   });
 
   it('400s a missing name', async () => {
-    const res = await POST(post({ type: 'field', email: 'x@y.com', password: 'password123', hourlyRate: '17' }));
+    const res = await POST(post({ type: 'field', hourlyRate: '17' }));
     expect(res.status).toBe(400);
     expect(createFieldCrewMember).not.toHaveBeenCalled();
-  });
-
-  it('rolls the orphan login back when the attach loses its compare-and-swap', async () => {
-    linkStaffLogin.mockResolvedValueOnce(null);
-    const res = await POST(
-      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
-    );
-    expect(res.status).toBe(409);
-    expect(deleteUser).toHaveBeenCalledWith('new-auth');
-  });
-
-  it('keeps the pay row and says so when the login cannot be created', async () => {
-    createUser.mockResolvedValueOnce({ data: null, error: { message: 'email already registered' } });
-    const res = await POST(
-      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
-    );
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toContain('was added');
   });
 });
 
@@ -539,16 +524,6 @@ describe('failure paths after an irreversible write', () => {
     expect(((await res.json()) as { loginDeleted: boolean }).loginDeleted).toBe(false);
   });
 
-  it('POST field rolls the orphan login back when the attach THROWS, not just when it loses the race', async () => {
-    linkStaffLogin.mockRejectedValueOnce(new Error('db exploded'));
-    const res = await POST(
-      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
-    );
-    expect(res.status).toBe(500);
-    // Without the rollback the login would sit orphaned, invisible to the panel
-    // and holding the email so the same person could never be added again.
-    expect(deleteUser).toHaveBeenCalledWith('new-auth');
-  });
 });
 
 describe('GET exposes the login TYPE, which decides how someone can clock in', () => {
@@ -557,5 +532,98 @@ describe('GET exposes the login TYPE, which decides how someone can clock in', (
     const b = (await res.json()) as { staff: Array<{ id: string; isCrewLogin: boolean }> };
     expect(b.staff.find((x) => x.id === 'crew-1')?.isCrewLogin).toBe(true);
     expect(b.staff.find((x) => x.id === 'crew-office')?.isCrewLogin).toBe(false);
+  });
+});
+
+describe('PATCH clearLogin — row 359, repairing an orphaned pay row', () => {
+  it('clears the link when the login genuinely no longer exists', async () => {
+    // op-kelly is absent from the accounts map, i.e. the account was deleted.
+    listAllAccountsById.mockResolvedValueOnce(new Map());
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(200);
+    // CAS: the write is scoped to the exact dead id we verified.
+    expect(clearStaffLogin).toHaveBeenCalledWith('crew-office', 'op-kelly');
+  });
+
+  it('REFUSES to clear a login that still exists — that would lock a working staffer out', async () => {
+    // The guard is the whole feature: the row's login resolves fine, so this
+    // must not be cleared even though the caller asked for it.
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/still exists/);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('409s a row that has no login linked at all', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('404s an unknown staff id', async () => {
+    getStaffMember.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', clearLogin: true }))).status).toBe(404);
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('ignores clearLogin:false rather than treating the key as an intent', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: false }));
+    expect(res.status).toBe(400); // nothing to update
+    expect(clearStaffLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH authUserId — attaching a login to an EXISTING row (row 359, the other half)', () => {
+  it('links an eligible operator to a row that has no login', async () => {
+    // Without this the repair was half a repair: POST always INSERTS, so
+    // re-adding the same person collides with the unique display name.
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }));
+    expect(res.status).toBe(200);
+    expect(linkStaffLogin).toHaveBeenCalledWith('crew-office', 'op-ann');
+  });
+
+  it('REFUSES a row that already has a login, pointing at Clear first', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/Clear it first/);
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES a crew login — listNonCrewOperators never offers one', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'crew-auth-1' }));
+    expect(res.status).toBe(400);
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES an operator already linked to somebody else', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    listLinkedAuthUserIds.mockResolvedValueOnce(new Set(['op-ann']));
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }));
+    expect(res.status).toBe(409);
+    expect(linkStaffLogin).not.toHaveBeenCalled();
+  });
+
+  it('409s a lost compare-and-swap rather than reporting success', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...OFFICE, authUserId: null });
+    linkStaffLogin.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'crew-office', authUserId: 'op-ann' }))).status).toBe(409);
+  });
+
+  it('404s an unknown staff id', async () => {
+    getStaffMember.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', authUserId: 'op-ann' }))).status).toBe(404);
+  });
+});
+
+describe('PATCH clearLogin — the compare-and-swap', () => {
+  it('409s when the login on that row changed between the check and the write', async () => {
+    listAllAccountsById.mockResolvedValueOnce(new Map());
+    clearStaffLogin.mockResolvedValueOnce(null); // CAS matched nothing
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', clearLogin: true }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/changed while you were looking/);
   });
 });

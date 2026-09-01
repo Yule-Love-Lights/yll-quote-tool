@@ -1,6 +1,14 @@
 import sharp from 'sharp';
 import { getClaudeClient } from './claude';
 import type { StoredReferenceAsset } from './referenceAssets';
+import { footageFromLines, satelliteFootageDisagrees } from './design/polylineFootage';
+import {
+  buildDoorAnchorPrompt,
+  isValidDoorAnchorModelResult,
+  doorAnchorScaleFromModelResult,
+  rescaleFtPerPxToOriginal,
+  type DoorAnchorSource,
+} from './design/doorAnchor';
 
 // Fail-safe (analyzer outage): when the Claude analysis fails, the analyze
 // routes still return the Street View + satellite imagery so staff can design
@@ -73,6 +81,36 @@ export type PhotoAnalysisResult = {
   satelliteSantasFootage: number;
   satelliteGingerbreadLines: LineSegment[];
   satelliteGingerbreadFootage: number;
+  // SHADOW MODE (deterministic-satellite-footage): footage recomputed in pure
+  // TypeScript from the model's OWN satelliteSantasLines/satelliteGingerbreadLines
+  // (src/lib/design/polylineFootage.ts), alongside — never replacing — the
+  // model's self-reported satelliteSantasFootage/satelliteGingerbreadFootage
+  // above. null when it couldn't be computed (no satellite image dimensions or
+  // no feet-per-pixel scale — see polylineFootage.ts's degenerate-input table).
+  // Nothing that reaches pricing reads these two fields today.
+  computedSatelliteSantasFootage: number | null;
+  computedSatelliteGingerbreadFootage: number | null;
+  // True when the computed footage above disagrees with the model's own
+  // stated footage by more than SATELLITE_FOOTAGE_DISAGREEMENT_THRESHOLD_PCT
+  // (polylineFootage.ts). Always false when the computed value is null.
+  satelliteSantasFootageDisagrees: boolean;
+  satelliteGingerbreadFootageDisagrees: boolean;
+  // SHADOW MODE (door-anchor scale, spike PR #922): a feet-per-pixel scale
+  // derived from a SEPARATE, cheap vision call that locates the front door
+  // or garage door in the STREET photo (src/lib/design/doorAnchor.ts) — a
+  // candidate alternative to the staff-placed yardstick (measured
+  // unreliable: one address yardsticked twice disagreed by 72%). Nothing
+  // that reaches pricing, projection, or the analyzer's own detections reads
+  // these three fields today; they exist to start collecting real-world
+  // agreement data against the yardstick (scripts/door-anchor-report.ts).
+  // Rescaled into the ORIGINAL uploaded photo's pixel space (same space the
+  // design editor's yardstick lives in — see rescaleFtPerPxToOriginal).
+  // ALL THREE null together whenever the door-anchor call fails, times out,
+  // or the model reports no door/garage-door anchor — this must never throw
+  // or delay the caller (see runDoorAnchorShadow below).
+  doorAnchorFtPerPx: number | null;
+  doorAnchorSource: DoorAnchorSource | null;
+  doorAnchorConfidence: number | null;
   preferredSource: 'street' | 'satellite';
   miniLightDetections: MiniLightDetection[];
   wreathDetections: WreathDetection[];
@@ -80,6 +118,13 @@ export type PhotoAnalysisResult = {
   garlandDetections: GarlandDetection[];
   notes: string;
   confidence: 'low' | 'medium' | 'high';
+  // Fix round (PR #916): which ANALYZER_PROMPT_VERSION produced this result —
+  // stamped by analyzePhoto itself at generation time, so it travels with the
+  // result through the analysis-context route into designs.seed_analysis and
+  // on into training_examples.prompt_version at capture time. Optional so
+  // existing test fixtures / hand-built PhotoAnalysisResult literals that
+  // predate this field keep compiling.
+  promptVersion?: string;
 };
 
 // Strip markdown code fences and pull the outer JSON object out of Claude's
@@ -327,6 +372,19 @@ const OUTPUT_JSON_SCHEMA = `You MUST respond with ONLY valid JSON matching this 
 
 Round footage to the nearest 5 feet. Coordinates should be precise — trace right along the visible edge. If a photo is too poor, use confidence "low" and return empty line arrays.`;
 
+// Fix round (PR #916, admin lens MED): bump this string whenever SYSTEM_PROMPT
+// below materially changes (wording that could shift what the model returns —
+// not a comment-only edit). Stamped onto every PhotoAnalysisResult at the
+// point analyzePhoto actually runs the prompt (see the `promptVersion` field
+// on the return value below), NOT at training-example capture time — a design
+// can be analyzed under one prompt version and sent (captured) days or weeks
+// later under a different one, so capture time is the wrong place to read
+// this constant. training_examples.prompt_version is populated by copying the
+// value that was already stamped into original_analysis at analysis time (see
+// src/lib/trainingExamples.ts's captureTrainingExample), so a row is always
+// tagged with the prompt that actually produced it.
+export const ANALYZER_PROMPT_VERSION = 'v2-segmented-2026-08-28';
+
 const SYSTEM_PROMPT = `You are a holiday lighting estimator for Yule Love Lights, a Long Island NY Christmas lighting company. You analyze photos of houses to estimate roofline lighting measurements.
 
 ${ROOFLINE_TRACING_RULES}
@@ -429,15 +487,16 @@ When a satellite image is supplied, also produce polylines in the SATELLITE imag
 FIRST, FIND THE ROAD. The "front" is the public street the house fronts onto — CORRELATE WITH THE STREET-VIEW IMAGE to confirm which roof edge that is. Do NOT assume the nearest paved surface is the road: a neighbor's driveway, a shared driveway, a side street, or a back alley is NOT the front. If you cannot confidently tell which edge faces the real road, return empty arrays rather than guessing the front.
 
 THEN split ONLY the front roof section:
-- satelliteSantasLines = the FRONT roof edge that faces the road (the street-facing eave/gutter). Usually one straight segment.
-- satelliteGingerbreadLines = the RIDGE of that front section PLUS its two SIDE edges (the left/right roof edges nearest the front).
+- satelliteSantasLines = the FRONT roof edge(s) that face the road (the street-facing eave/gutter). This is an ARRAY — do not force it to one entry. A plain rectangular front is one segment; a front with a garage wing, bump-out, ell, or any section set back or forward from the main body needs a SEPARATE segment for each, the same way the street-view MULTI-RUN rule above (rule 3) already splits those into separate entries. Two edges at different depths cannot be one polyline. A bigger or more cut-up house gets MORE segments here, never fewer — this array should scale with the house the same way santasLines does on the street photo.
+- satelliteGingerbreadLines = the RIDGE of that front section PLUS its two SIDE edges (the left/right roof edges nearest the front) — same array-not-single-line rule: one segment per distinct run.
 - DO NOT trace the BACK roof edge, and do NOT run the side edges all the way around to the backyard — stop them at the front section. No backyard lines, ever.
 
-HOW TO TRACE THE SATELLITE ROOFLINE — follow these rules strictly. If you can't follow them for this image, return an EMPTY array ("satelliteSantasLines": []) instead of guessing:
+HOW TO TRACE THE SATELLITE ROOFLINE — follow these rules strictly:
 - Snap polyline points ONLY to the ACTUAL ROOF EDGE (visible shingle seam / gutter line where the roof plane ends and the wall/ground begins). Lighter roofing material against the yard or driveway is usually the edge.
 - DO NOT trace the property boundary, the lot outline, driveways, sidewalks, pools, decks, patios, pergolas, sheds, detached garages, or landscaping. ONLY the primary structure's roof.
-- If the roof is L-shaped / U-shaped / T-shaped / has a courtyard, USE ENOUGH POINTS to hug every inside corner. A bounding box is WRONG — it will overstate footage. 8-20 points is typical for a modest cut-up; commercial can need 40+.
-- Shadows and tree canopy can obscure an edge. If you can't see the edge, DO NOT guess — skip that segment or return an empty array.
+- If the roof is L-shaped / U-shaped / T-shaped / has a courtyard, USE ENOUGH POINTS to hug every inside corner within a single connected run, AND add a separate polyline entry for any wing or section a single connected line can't reach. A bounding box is WRONG — it will overstate footage. 8-20 points is typical for a modest cut-up; commercial can need 40+.
+- Shadows and tree canopy can obscure an edge. If you can't see ONE specific run, skip only that run and KEEP the segments you can see — do not empty the whole array because one part is unclear.
+- A complex or large roofline is NOT by itself a reason to return fewer or empty segments — the more distinct roof planes you can see, the more segments you should return. Reserve an empty array for when you genuinely cannot see the roof at all (see below), not for "this one is complicated."
 - Ridges on the satellite image appear as the BRIGHTEST lines running along the roof's peak (the sunlit side meets the shaded side). Trace along those peak lines, not across the slopes.
 - FOOTAGE MUST BE DERIVED FROM THE POLYLINE. Do not invent a number and then draw a polyline to match. Compute: for each segment, sum sqrt((x2-x1)^2 + (y2-y1)^2) in normalized coords, multiply by 640 to get pixels, multiply by the feet-per-pixel scale. Sum across segments. Round to the nearest 5ft. If your polyline is empty, footage is 0.
 
@@ -451,7 +510,7 @@ Set "preferredSource" to "satellite" when:
 - Street view is heavily obscured by trees, fences, or setback.
 Otherwise set it to "street".
 
-If you could not reliably trace the satellite roofline (heavy tree cover, low contrast, image unclear), set satelliteSantasLines to [] and satelliteGingerbreadLines to []. Note this in the "notes" field. The user will trace it manually — an empty array is MUCH better than a wrong one.
+Only return fully empty satelliteSantasLines/satelliteGingerbreadLines arrays when the roof itself is genuinely not visible in the image (heavy tree cover, low contrast, image unclear, wrong house framed) — say which of these it is in the "notes" field. Do NOT return empty because the roof has many planes or looks complicated; that case gets MORE segments, not zero. The user will trace manually only what you truly could not see — an empty array is for "I cannot see this roof," not for "this roof is hard."
 
 ${OUTPUT_JSON_SCHEMA}`;
 
@@ -576,7 +635,10 @@ type FewShotExample = {
   source: 'training' | 'design';
 };
 
-async function buildFewShotMessages(examples: FewShotExample[]) {
+// Exported test-only (mirrors the FewShotExample type export below) — proves
+// aiFailureNotes (a staff-typed "what did the AI get wrong" note) actually
+// reaches the assembled prompt text, not just the few-shot data shape.
+export async function buildFewShotMessages(examples: FewShotExample[]) {
   type Block =
     | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
     | { type: 'text'; text: string };
@@ -701,6 +763,103 @@ async function buildReferenceMessages(references: StoredReferenceAsset[]) {
 
 export { type FewShotExample };
 
+// SHADOW MODE (door-anchor scale, spike PR #922): model + hard timeout for
+// the second, cheap vision call. Model matches the main analyzer call above
+// (same tier the spike measured its numbers on — see doorAnchor.ts). Timeout
+// is a few seconds of margin over the spike's observed per-call latency
+// (78/78 live calls succeeded with no retries needed); analyze-photo/
+// analyze-address are both maxDuration=60 routes that already spend 20-40s
+// on the main call, so this must degrade to null well before eating into
+// that budget rather than risk timing out the customer-facing response.
+const DOOR_ANCHOR_MODEL = 'claude-sonnet-4-6';
+const DOOR_ANCHOR_TIMEOUT_MS = 8000;
+
+type DoorAnchorShadowFields = {
+  doorAnchorFtPerPx: number | null;
+  doorAnchorSource: DoorAnchorSource | null;
+  doorAnchorConfidence: number | null;
+};
+
+const NULL_DOOR_ANCHOR: DoorAnchorShadowFields = {
+  doorAnchorFtPerPx: null,
+  doorAnchorSource: null,
+  doorAnchorConfidence: null,
+};
+
+// Strips a "data:image/...;base64," prefix if present. Local copy of the
+// same 2-line check downscaleImageForVision already does inline (twice) —
+// duplicated here rather than touching that function's body, which stays
+// byte-identical to before this change.
+function rawBase64(input: string): string {
+  const comma = input.indexOf(',');
+  return input.startsWith('data:') && comma >= 0 ? input.slice(comma + 1) : input;
+}
+
+// SHADOW MODE (door-anchor scale): a SEPARATE, cheap vision call that asks
+// the model to locate the front door / garage door in the STREET photo and
+// derive a feet-per-pixel scale (src/lib/design/doorAnchor.ts has the
+// prompt/parsing/math — this function is the I/O + failure-isolation shell
+// around it). FAILURE-ISOLATED end to end and TIME-BOUNDED: any decode
+// failure, API error, timeout, or schema-invalid model response degrades
+// every field to null via NULL_DOOR_ANCHOR — this must NEVER throw and must
+// NEVER take longer than DOOR_ANCHOR_TIMEOUT_MS, so it can never delay or
+// fail the customer-facing analyze response. Never mutates or reads the
+// main analysis result — fully independent of it.
+async function runDoorAnchorShadow(
+  client: NonNullable<ReturnType<typeof getClaudeClient>>,
+  base64Image: string,
+  mediaType: string,
+): Promise<DoorAnchorShadowFields> {
+  const attempt = (async (): Promise<DoorAnchorShadowFields> => {
+    const { base64: sentBase64, mediaType: sentMediaType } = await downscaleImageForVision(base64Image, mediaType);
+    const [sentMeta, originalMeta] = await Promise.all([
+      sharp(Buffer.from(sentBase64, 'base64')).metadata(),
+      sharp(Buffer.from(rawBase64(base64Image), 'base64')).metadata(),
+    ]);
+    const sentW = sentMeta.width ?? null;
+    const sentH = sentMeta.height ?? null;
+    if (!sentW || !sentH) return NULL_DOOR_ANCHOR;
+
+    const response = await client.messages.create({
+      model: DOOR_ANCHOR_MODEL,
+      max_tokens: 300,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: sentMediaType, data: sentBase64 } },
+            { type: 'text', text: buildDoorAnchorPrompt(sentW, sentH) },
+          ],
+        },
+      ],
+    });
+    const textBlock = response.content.find((b) => b.type === 'text');
+    if (!textBlock || textBlock.type !== 'text') return NULL_DOOR_ANCHOR;
+    const parsed = extractJson(textBlock.text.trim());
+    if (!isValidDoorAnchorModelResult(parsed)) return NULL_DOOR_ANCHOR;
+    const scale = doorAnchorScaleFromModelResult(parsed);
+    if (!scale) return NULL_DOOR_ANCHOR;
+
+    const originalW = originalMeta.width ?? 0;
+    const ftPerPx = rescaleFtPerPxToOriginal(scale.ftPerPx, sentW, originalW);
+    return { doorAnchorFtPerPx: ftPerPx, doorAnchorSource: scale.source, doorAnchorConfidence: scale.confidence };
+  })();
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<DoorAnchorShadowFields>((resolve) => {
+    timer = setTimeout(() => resolve(NULL_DOOR_ANCHOR), DOOR_ANCHOR_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([attempt, timeout]);
+  } catch {
+    // Anything the attempt threw (decode failure, API rejection, malformed
+    // response) — never propagate, never delay the caller.
+    return NULL_DOOR_ANCHOR;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type SatelliteReference = {
   base64: string;
   mediaType: 'image/jpeg' | 'image/png';
@@ -740,6 +899,13 @@ export async function analyzePhoto(
   if (!validMediaTypes.includes(mediaType as typeof validMediaTypes[number])) {
     throw new Error(`Unsupported image type: ${mediaType}`);
   }
+
+  // SHADOW MODE (door-anchor scale): kicked off HERE, NOT awaited — it runs
+  // CONCURRENTLY with the few-shot/reference assembly and the main vision
+  // call below, so its latency (a single ~2-5s call per the spike) overlaps
+  // the main call's 20-40s instead of stacking after it. Awaited once, right
+  // before the return, with its own hard timeout — see runDoorAnchorShadow.
+  const doorAnchorPromise = runDoorAnchorShadow(client, base64Image, mediaType);
 
   const { satellite, references = [], houseStyleHint, corpusBiasNote, mode = 'design' } = options;
 
@@ -895,8 +1061,52 @@ export async function analyzePhoto(
   }
   const parsed = parsedRaw as PhotoAnalysisResult;
 
+  const finalSantasLines = normalizeLines(parsed.satelliteSantasLines);
+  const finalGingerbreadLines = normalizeLines(parsed.satelliteGingerbreadLines);
+  const finalSatelliteSantasFootage = coerceFootage(parsed.satelliteSantasFootage);
+  const finalSatelliteGingerbreadFootage = coerceFootage(parsed.satelliteGingerbreadFootage);
+
+  // SHADOW MODE (deterministic-satellite-footage): recompute satellite footage
+  // from the model's OWN drawn lines, in pure TypeScript, purely for
+  // visibility — never consumed by pricing. Needs the REAL pixel dimensions
+  // of the exact satellite image bytes the model was shown (satellite.base64
+  // above), not an assumed "640x640" (a live training row measures 642x470).
+  // Best-effort: any decode failure (corrupt bytes, no satellite supplied)
+  // just leaves both computed fields null — this must never throw and break
+  // a live analyze call.
+  let satelliteImgWidthPx: number | null = null;
+  let satelliteImgHeightPx: number | null = null;
+  if (satellite) {
+    try {
+      const meta = await sharp(Buffer.from(satellite.base64, 'base64')).metadata();
+      satelliteImgWidthPx = meta.width ?? null;
+      satelliteImgHeightPx = meta.height ?? null;
+    } catch {
+      // Decode failure — leave both null; footageFromLines treats null
+      // dimensions as "cannot compute" (returns null), not a thrown error.
+    }
+  }
+  const computedSatelliteSantasFootage = footageFromLines(
+    finalSantasLines, satelliteImgWidthPx, satelliteImgHeightPx, satellite?.feetPerPixel,
+  );
+  const computedSatelliteGingerbreadFootage = footageFromLines(
+    finalGingerbreadLines, satelliteImgWidthPx, satelliteImgHeightPx, satellite?.feetPerPixel,
+  );
+
+  // SHADOW MODE (door-anchor scale): awaited last, after all the other
+  // post-processing above has had time to run concurrently with it. Already
+  // internally time-bounded (DOOR_ANCHOR_TIMEOUT_MS) and failure-isolated —
+  // this await can never throw and never waits longer than that timeout.
+  const doorAnchor = await doorAnchorPromise;
+
   return {
     ...parsed,
+    // Fix round (PR #916): stamp the prompt version that actually produced
+    // this result, always the live constant — never trust anything the model
+    // itself might echo back under this key (it's not part of the requested
+    // JSON schema, so `...parsed` above should never carry it, but override
+    // explicitly rather than rely on that).
+    promptVersion: ANALYZER_PROMPT_VERSION,
     // Audit fix: coerce form-facing scalars (raw JSON is cast, never validated).
     santasFootage: coerceFootage(parsed.santasFootage),
     santasDifficulty: coerceDifficulty(parsed.santasDifficulty),
@@ -904,10 +1114,27 @@ export async function analyzePhoto(
     gingerbreadDifficulty: coerceDifficulty(parsed.gingerbreadDifficulty),
     santasLines: normalizeLines(parsed.santasLines),
     gingerbreadLines: normalizeLines(parsed.gingerbreadLines),
-    satelliteSantasLines: normalizeLines(parsed.satelliteSantasLines),
-    satelliteGingerbreadLines: normalizeLines(parsed.satelliteGingerbreadLines),
-    satelliteSantasFootage: coerceFootage(parsed.satelliteSantasFootage),
-    satelliteGingerbreadFootage: coerceFootage(parsed.satelliteGingerbreadFootage),
+    satelliteSantasLines: finalSantasLines,
+    satelliteGingerbreadLines: finalGingerbreadLines,
+    satelliteSantasFootage: finalSatelliteSantasFootage,
+    satelliteGingerbreadFootage: finalSatelliteGingerbreadFootage,
+    // SHADOW MODE fields — see the PhotoAnalysisResult type comment. Rounded
+    // ONCE here (never inside footageFromLines, which returns an unrounded
+    // float) to the nearest whole foot, matching Math.round's standard
+    // round-half-up direction; the model's own stated numbers are rounded to
+    // the nearest 5ft by its own prompt instruction, so these are
+    // intentionally a finer-grained "what the lines actually measure".
+    computedSatelliteSantasFootage:
+      computedSatelliteSantasFootage == null ? null : Math.round(computedSatelliteSantasFootage),
+    computedSatelliteGingerbreadFootage:
+      computedSatelliteGingerbreadFootage == null ? null : Math.round(computedSatelliteGingerbreadFootage),
+    satelliteSantasFootageDisagrees: satelliteFootageDisagrees(finalSatelliteSantasFootage, computedSatelliteSantasFootage),
+    satelliteGingerbreadFootageDisagrees: satelliteFootageDisagrees(finalSatelliteGingerbreadFootage, computedSatelliteGingerbreadFootage),
+    // SHADOW MODE fields — see the PhotoAnalysisResult type comment and
+    // runDoorAnchorShadow. Always all-null together on any failure/timeout.
+    doorAnchorFtPerPx: doorAnchor.doorAnchorFtPerPx,
+    doorAnchorSource: doorAnchor.doorAnchorSource,
+    doorAnchorConfidence: doorAnchor.doorAnchorConfidence,
     preferredSource: parsed.preferredSource === 'satellite' ? 'satellite' : 'street',
     // W5-026: enum-validate AFTER box-normalization — a detection with a
     // hallucinated box gets dropped by normalizeBoxArray first; one with a

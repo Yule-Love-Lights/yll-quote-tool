@@ -20,11 +20,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, updatePropertyMock, archivePropertyMock, unarchivePropertyMock } = vi.hoisted(() => ({
+const { requireOperatorMock, updatePropertyMock, archivePropertyMock, unarchivePropertyMock, propertyArchiveBlockMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   updatePropertyMock: vi.fn(),
   archivePropertyMock: vi.fn(),
   unarchivePropertyMock: vi.fn(),
+  propertyArchiveBlockMock: vi.fn(
+    async (): Promise<'not-found' | 'has-jobs' | 'has-live-quote' | 'clear'> => 'clear',
+  ),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
@@ -39,6 +42,10 @@ vi.mock('@/lib/customers', () => ({
   updateProperty: updatePropertyMock,
   archiveProperty: archivePropertyMock,
   unarchiveProperty: unarchivePropertyMock,
+}));
+
+vi.mock('@/lib/scheduling', () => ({
+  propertyArchiveBlock: propertyArchiveBlockMock,
 }));
 
 import { POST } from './route';
@@ -79,6 +86,46 @@ beforeEach(() => {
   updatePropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
   archivePropertyMock.mockResolvedValue({ data: { ...SOME_ROW, archived_at: '2026-01-02T00:00:00Z' }, error: null });
   unarchivePropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
+  propertyArchiveBlockMock.mockResolvedValue('clear');
+});
+
+// The geocode fix-list's Archive button guard (2026-08-28): a property a job
+// references must refuse to archive, or the job's address disappears from the
+// only surface that can ever give it coordinates. Ownership is checked INSIDE
+// the guard so a mismatched customer/property pair stays an opaque 404 — a 409
+// there would leak whether a foreign property id has jobs.
+describe('archive guard', () => {
+  it('returns 409 has-jobs and never archives', async () => {
+    propertyArchiveBlockMock.mockResolvedValue('has-jobs');
+    const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('has-jobs');
+    expect(archivePropertyMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 has-live-quote and never archives', async () => {
+    propertyArchiveBlockMock.mockResolvedValue('has-live-quote');
+    const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('has-live-quote');
+    expect(archivePropertyMock).not.toHaveBeenCalled();
+  });
+
+  it('answers a mismatched customer/property pair with an opaque 404, not a 409', async () => {
+    propertyArchiveBlockMock.mockResolvedValue('not-found');
+    const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(404);
+    expect(archivePropertyMock).not.toHaveBeenCalled();
+  });
+
+  it('does not guard UNarchiving', async () => {
+    propertyArchiveBlockMock.mockResolvedValue('has-jobs');
+    const res = await POST(makeReq({ archived: false }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(200);
+    expect(unarchivePropertyMock).toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/customers/[customerId]/properties/[propertyId] — operator gate', () => {
@@ -209,5 +256,42 @@ describe('POST .../properties/[propertyId] — errors', () => {
     archivePropertyMock.mockResolvedValueOnce({ data: null, error: { message: 'boom' } });
     const res = await POST(makeReq({ archived: true }), makeParams(CUSTOMER_ID, PROPERTY_ID));
     expect(res.status).toBe(500);
+  });
+});
+
+describe('POST .../properties/[propertyId] — address correction (the geocode fix-list)', () => {
+  it('passes the address through to updateProperty and returns the row WITH lat/lng', async () => {
+    updatePropertyMock.mockResolvedValue({
+      data: { ...SOME_ROW, address: '6 Birch Rd, Amityville, NY 11701', lat: 40.711, lng: -73.404 },
+      error: null,
+    });
+    const res = await POST(makeReq({ address: '6 Birch Rd, Amityville, NY 11701' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { property: { lat: number | null; lng: number | null } };
+    // The fix-list tells VERIFIED from still-refused by these fields; a response
+    // without them made both outcomes look identical (the S68 lens round).
+    expect(body.property.lat).toBe(40.711);
+    expect(body.property.lng).toBe(-73.404);
+    expect(updatePropertyMock).toHaveBeenCalledWith(CUSTOMER_ID, PROPERTY_ID, {
+      address: '6 Birch Rd, Amityville, NY 11701',
+    });
+  });
+
+  it('a still-refused correction returns lat null, so the caller can say so', async () => {
+    updatePropertyMock.mockResolvedValue({ data: { ...SOME_ROW, lat: null, lng: null }, error: null });
+    const res = await POST(makeReq({ address: '1 Nowhere Ln' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    const body = (await res.json()) as { property: { lat: number | null } };
+    expect(body.property.lat).toBeNull();
+  });
+
+  it('surfaces the duplicate-address collision as a 409', async () => {
+    updatePropertyMock.mockResolvedValue({ data: null, error: { message: 'duplicate key value (23505)' } });
+    const res = await POST(makeReq({ address: '1 A St' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects an empty address', async () => {
+    const res = await POST(makeReq({ address: '   ' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(400);
   });
 });

@@ -60,6 +60,13 @@ describe('office clock — auth gate', () => {
     expect(clockIn).not.toHaveBeenCalled();
   });
 
+  it('403s an ADVERTISING login — it has no office clock access at all (advertising role hardening)', async () => {
+    getOfficeClockCaller.mockResolvedValue({ ok: false, reason: 'is_advertising' });
+    const res = await POST(makeReq({ action: 'in' }));
+    expect(res.status).toBe(403);
+    expect(clockIn).not.toHaveBeenCalled();
+  });
+
   it('403s an operator login not linked to a staff row', async () => {
     getOfficeClockCaller.mockResolvedValue({ ok: false, reason: 'unlinked' });
     const res = await GET();

@@ -96,14 +96,20 @@ export function replyOutcomeMessage(outcome: 'refused' | 'error'): string {
 }
 
 /** Row 309: a local copy of InboxList.tsx's own retiresFollowUp (kept
- *  deliberately un-shared like the rest of this file's helpers). Only 'Mark
- *  completed' (path === '/api/dashboard/completed') can retire a pending
- *  "due today" follow-up — closeFollowUpsForResolvedItem (store.ts) is
- *  called ONLY from dismissItem and markItemCompleted; 'Followed' (this
- *  file's other act() caller) never does. Pure and exported so this is
- *  directly unit-testable without rendering. */
+ *  deliberately un-shared like the rest of this file's helpers). 'Mark
+ *  completed' retires a pending "due today" follow-up through
+ *  closeFollowUpsForResolvedItem (store.ts).
+ *
+ *  PR #1005 ADDED 'Followed', this file's other act() caller: markItemFollowed
+ *  now closes the item's quote_sent_no_reply nag itself (see its own doc). The
+ *  sentence here used to end "'Followed' never does" and went false the moment
+ *  that landed. The refresh is what updates the awaiting bucket's
+ *  server-rendered "N follow-ups due" count; this row's own pill is already
+ *  cleared client-side by clearNeedsLookOnMove.
+ *
+ *  Pure and exported so this is directly unit-testable without rendering. */
 export function retiresFollowUp(path: string): boolean {
-  return path === '/api/dashboard/completed';
+  return path === '/api/dashboard/completed' || path === '/api/dashboard/followed';
 }
 
 /** Row 311 fold-in (LOW): a row moved client-side by moveGroup carries its OLD
@@ -182,6 +188,7 @@ export function InWorksSection({
   followUpDays,
   nowMs,
   evidenceIncomplete = false,
+  followUpsDue = null,
 }: {
   awaiting: InWorksItem[];
   handled: InWorksItem[];
@@ -192,6 +199,17 @@ export function InWorksSection({
   // see store.ts listInWorks's evidenceIncomplete. Defaulted so existing
   // callers/tests that don't pass it render exactly as before (no banner).
   evidenceIncomplete?: boolean;
+  /** PR #1005 (premerge staff + customer lenses, MED, converged): the deleted
+   *  "Follow-ups due today" strip carried a COUNT in its heading, and the pills
+   *  that replaced it carry none — so staff lost the one-glance "how many am I
+   *  behind on". This is listDueFollowUps' exact, UNCAPPED totalDue, the same
+   *  number the morning digest prints, deliberately not derived by counting
+   *  pills: the pills come from listInWorks' capped fetch, and a handled row
+   *  whose quote also reads unanswered shows "Quote unanswered" instead by
+   *  needsLookReason's priority, so a pill count would under-report for two
+   *  unrelated reasons. null when the read failed — render nothing rather than
+   *  a wrong or zero-looking number. */
+  followUpsDue?: number | null;
 }) {
   const router = useRouter();
   const [awaitingItems, setAwaitingItems] = useState<InWorksItem[]>(awaiting);
@@ -304,11 +322,11 @@ export function InWorksSection({
           moveGroup(item.id, group, outcome);
         }
         // Row 309: this row's own optimistic transition above already keeps
-        // THIS section correct — router.refresh() exists purely to reach the
-        // sibling FollowUpStrip, whose initialItems prop is otherwise only
-        // ever read once (useState's initializer is mount-only, see
-        // FollowUpStrip's own reconcile effect). See retiresFollowUp's doc
-        // comment for why this is scoped to 'Mark completed' only.
+        // THIS section correct — router.refresh() exists to reach the rest of
+        // the page. PR #1005: the sibling that used to need it was the
+        // FollowUpStrip (now deleted); today it is this section's own
+        // server-rendered "N follow-ups due" count. See retiresFollowUp's doc
+        // comment for which actions are scoped in.
         if (retiresFollowUp(path)) router.refresh();
       } else {
         // A definite server answer (a rejection, not a throw) — the write is
@@ -591,12 +609,29 @@ export function InWorksSection({
         <div className="mb-4">
           <p className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color: 'var(--op-text-2)' }}>
             Awaiting their reply ({awaitingItems.length})
+            {typeof followUpsDue === 'number' && followUpsDue > 0 && (
+              <span style={{ color: 'var(--op-text-2)' }}>
+                {' · '}
+                {/* PR #1005: "across the inbox" is load-bearing. This is the
+                    inbox-wide due total, so it can legitimately exceed the
+                    pills visible in THIS bucket — live today it reads 33
+                    beside 31 pills, because the other two due items sit in
+                    "Needs a look" below, where a handled row's sharper "Quote
+                    unanswered" reason wins by needsLookReason's priority. */}
+                {followUpsDue} follow-up{followUpsDue === 1 ? '' : 's'} due across the inbox
+              </span>
+            )}
           </p>
           {/* #252 slice H: this list and the main "Open leads" queue above both
               read as "awaiting reply" at a glance — spell out who owes whom so
               they're unambiguous side by side. */}
+          {/* PR #1005: the qualifier is load-bearing now that the deleted
+              "Follow-ups due today" strip's signal lives on these rows as a
+              "Follow-up due" pill — a flat "nothing to do" would contradict a
+              pill sitting two lines below it. */}
           <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            You’ve followed up on these — nothing to do until they write back.
+            You’ve followed up on these — nothing to do until they write back, unless a row is
+            flagged “Follow-up due”.
           </p>
           <ul className="space-y-2">
             {awaitingItems.map((item) => renderRow(item, 'awaiting'))}
@@ -611,7 +646,7 @@ export function InWorksSection({
           specific row is missing, only that the check may be incomplete. */}
       {evidenceIncomplete && (
         <p className="text-xs mb-2" style={{ color: '#92400e' }}>
-          Some evidence checks didn’t finish — Needs a look may be missing rows.
+          Some evidence checks didn’t finish — Needs a look and “Follow-up due” may be missing rows.
         </p>
       )}
 

@@ -2535,6 +2535,30 @@ _(S21 and older → `session_log_naldo_archive.md`.)_
 - **NEXT:** nothing pending from this session; it opened and closed one bug. Old escalation emails already in the inbox still carry the broken link — only newly-sent ones are fixed.
 
 
+### S56 (Jason) — 2026-08-28 — the Homeworks CRM retired into the quote tool: 20 quotes, $41,162.88, reconciled to the penny; plus the /inbox follow-up strip deleted
+
+**SHIPPED:** two PRs, both merged and live. **#1005** deleted the "Follow-ups due today" strip and moved its one non-duplicated signal onto the rows below. **#1049** migrated all 2026 revenue out of Homeworks before it bills again on 16 September. Ledger 444-449 minted; counter 444 → 450.
+
+**THE MIGRATION.** 20 quotes for 18 customers, matching Homeworks to the penny: **$41,162.88 contracted · $29,890.70 collected · $11,272.18 outstanding**. The tool held nothing before 2026-06-23, so half the year's revenue existed in no report. Also created the first payment-plan tracking this tool has had (`installments`) for the three customers who pay monthly, and closed out the four completed jobs with their historical invoices.
+
+**MEASURE-BEFORE-DESIGNING DECIDED THE WHOLE SHAPE, THREE TIMES.** (a) The pricing engine **cannot reproduce the charged tax on 8 of the 14 invoices** — Homeworks taxes PER LINE and rounds each (Rodney's $2,650 line lands on $2,881.87, the half-cent going DOWN), three invoices carry two rates, one rate is not in the document at all. That killed "recompute from a rate" before a line was written and made "store the charged figures verbatim" the rule. (b) Card-on-file vaulting turned out to be **live and populated — 18 of 22 paid quotes carry a Valor vault token** — which shrank "build recurring billing" to "build a schedule", and made the pay-link path (the card vaults as a side effect of the first payment) retire the vault-transfer question entirely. (c) Zero quotes in prod had ever had deposit = total, so Naldo's "what happens to a paid-in-full customer who still needs an install" was genuinely unprecedented — and the completion route already handles it by name.
+
+**EVERY GATE I WROTE FAILED FIRST, ON SOMETHING REAL.** The invoice parser asserted the three Homeworks totals and caught itself reading the **"due" column as the total**. The line-item gate caught **four invoices running onto a second page** and then **Kevin Egan's continuation page carrying no invoice number and $3,600 of items**. The record-set gate caught **Raymond's figures being the pre-export ones** (his 4th payment landed the day of the migration). A plausible-looking wrong number never survived to a write.
+
+**MISTAKES:** I told Jason **Kathy Polera's invoice was untaxed and he ruled on that false fact** — it charges $56.52 at 8.75%; my parser read "no rate found" as "no tax" · I **backdated `quote_sent_at` and left `created_at` at the migration run date**, which turned the homepage's Quote-turnaround KPI **negative** (−63.35 days on the migrated set, dragging the overall from +4.52 to −12.66) — caught by the admin lens, not me · I **omitted `currentDepositUsd` from every migrated snapshot**, so the portal adapter fell back to "50% of the total" and Rodney, who paid $8,101.87 in full, would have been told on his own portal that we hold about $4,050.94 — caught by the customer lens · my **`priorTool` audit trail overwrote itself on a re-run**, recording the already-corrected figure as the original for Asharib and needing a hand restore · a **test I wrote to pin the due-on-completion guard passed with the guard removed**, caught only by the mutation probe · I **left the create path with no idempotency guard**, so a second run would have duplicated quotes.
+
+**DID RIGHT:** ran the four-lens round on the money PR even though Jason had already given the merge-go, and **held the merge** to put the findings in front of him — three of the four HIGHs were customer- or owner-visible and none was in the code, they were in the data I had already written · verified Asharib end to end (quote, invoice, job, GHL card all at $1,658.92) rather than trusting the write · **proved the idempotency guard live** by re-running a migrated record and confirming the set still read 20 / $41,162.88 · reconciled three independent Homeworks exports to the penny before believing any of them · refused to hand-type 19 records, generating them from the parsed data instead.
+
+**THE CLOSE LENS CAUGHT A FALSE CLAIM IN MY OWN COMMIT MESSAGE.** The fix-round commit said the negative-KPI bug was “Fixed by setting `created_at` to the real document date”. I had fixed the DATA with SQL; the SCRIPT still left `created_at` at the run time, so a future batch would have reproduced it — and the message read as though the code had changed. The lens also asked whether `/insights`' Time-to-close carried the same distortion, since it does the identical `customer_approved_at − created_at` subtraction. Verified in prod at close: **zero negatives on both metrics**, migrated time-to-close 0.14 days, overall 6.46 — the one data fix covered both. The script now sets `created_at` too, so the claim is true of the code and not just of the rows. This is the report-not-intent pitfall in a commit message, which is exactly where it hides.
+
+**REVIEW:** four lenses on #1005 + an adversarial delta-verify (1 MED, 2 LOW, all fixed); four lenses on #1049 (3 HIGH, 4 MED across them — everything fixable in code or data fixed the same session); one whole-session integration lens at close.
+
+**NOT FIXED, by Jason's direction — next session finishes the migration first, then fixes these together:** rows **444** (a staffer can destroy a migrated quote's money by clicking Calculate — booked quotes are exempt from the post-approval freeze), **445** (`/admin/installments` has no link anywhere), **446** (`markInstallmentPaid` has no caller, so the next payment can't be recorded), **447** (the 13 overwritten drafts lost their original inputs/result), **449** (`isOverdue` compares against UTC, not ET).
+
+**ENDING:** master `77d2c623`. Gates tsc 0 · lint 0 errors / 21 warnings · vitest **8546** across 469 files.
+
+**NEXT:** row **448** — the monthly installment runner — then a lens round on it, then rows 444-447/449 as one batch. **Jason's own actions, both dated:** a Valor pay link to **Jane before 5 September** and to **Raymond before 28 September**; each vaults the card as a side effect of the payment. Mary needs neither — her monthlies are done and her last $184.16 is an ordinary balance after install.
+
 ### Naldo S56 — codex-mode orchestration skill built + repo-shared (PR #709 MERGED), then a 4-lens skill review surfaced real gaps NOT YET applied — questions dismissed, fixes pending Naldo's decisions (2026-08-10)
 
 > Built `.claude/skills/codex-mode/SKILL.md` + `JASON-SETUP.md`: Claude-as-orchestrator, OpenAI Codex CLI-as-builder loop, so Naldo's limited Claude usage stretches by pushing code-writing to a separate OpenAI quota. Diagnosed and documented a real environment gotcha along the way: Codex's Windows sandbox dies with `CreateProcessWithLogonW failed: 267` on any OneDrive-synced path (same tax that eats `node_modules`) — must run from `C:\dev\yll-quote-tool`. Self-reviewed on Fable 5 before first ship (4 gaps fixed: wrong-tree review risk, Bash 2-min timeout on long dispatches, dirty-tree/untracked-file gaps, unbounded correction ping-pong). Moved from Naldo's global `~/.claude/skills/` into the repo (`.claude/skills/codex-mode/`) per his ask so Jason gets it via git sync — PR #709, gates green, merged same session.
@@ -2561,6 +2585,22 @@ _(S21 and older → `session_log_naldo_archive.md`.)_
 - Model routing followed the standing table without being asked: Sonnet 5 for the four finder agents, Fable 5 (the session's own seat) for the skill's own pre-ship self-review and this dispositioning pass.
 - **Caught a session-number collision, but only in two stages, and the first stage was wrong.** This log's own "Next fresh conversation" marker said S53 (stale since S52's close). First check: `feedback_self_assessment.md` already had a completed S55 entry with an open close PR (#713) — took that as proof S53 was free and renumbered to S56. That was still wrong: at merge time, `git switch -c naldo/s56-close origin/master` pulled in a REAL S53 entry (PR #707, a remote session that closed independently) that neither doc I'd checked had surfaced. Correct number was right (S56, since S53-S55 were all genuinely taken), but the reasoning chain that got there was lucky, not sound — checking self-assessment alone would have missed a docs-only close PR that never touched that file. The only check that actually catches this class is `gh pr list --limit 200` for the highest merged `sNN-close`/session PR, checked FIRST, before trusting any local memory file.
 
+
+### S57 (Jason) — 2026-08-29 — the Homeworks migration finished and verified three ways; the installment runner built and deliberately left unarmed — 9 PRs merged
+
+- **SHIPPED, all merged+live:** **#1051** the monthly installment runner (pure planner, four independent gates, ET business day — closing row 449) · **#1053** the row-444 money trap closed: `/api/quote`, `free-items` and every design write refuse a migrated quote, plus a Record-payment route and button and `installments.paid_by` · **#1080** the builder copy the browser check caught still lying · **#1113** the wrap review's own four findings · plus four ledger/doc PRs (#1052, #1074, #1081, #1082).
+- **JASON'S RULING, the one that matters most: THE RUNNER STAYS UNARMED, indefinitely.** Not a hold pending readiness — he keeps collecting the remaining installments by hand and sends each customer a pay link on the day. Both code headers and the consent migration were rewritten to say there is no plan to arm it, because they read as a checklist waiting to be ticked. Four gates stand between the code and a card: no `vercel.json` cron, `INSTALLMENT_RUNNER_ENABLED` off, `VALOR_AUTO_CHARGE_ENABLED` off, and `installment_auto_charge_consent_at` NULL on every row.
+- **THE MIGRATION IS DONE, AND VERIFIED THREE WAYS AGAINST HOMEWORKS' OWN EXPORTS** — `payments.csv` → collected **$29,890.70**, the A/R aging report → outstanding **$11,272.18**, revenue-by-customer → contracted **$41,162.88**. Every one to the cent, with exactly two adjustments, both already-known facts: Raymond's $278.40 4th installment (collected after the export was taken) and the five estimate-sourced customers who never had a Homeworks *invoice* and so appear in neither report. **No customer exists in Homeworks that is not in the tool.** Homeworks holds **$0** of expense data, so cancelling it before 16 September loses nothing.
+- **8 of 20 deposit dates were wrong; 5 corrected, 3 deliberately left.** The five estimate-sourced quotes carried the ESTIMATE's date because S56 had no payment record for them — #1318 Steve Herman was out by **78 days**. The other three (#1000, #1212, #1315) are a credit-timing artifact where money entered account credit days before reaching the invoice; moving those back would make each quote *paid before it was approved*, so that is Jason's call, not an inference. Mary O'Connor's 2nd installment cleared 2026-08-17, not on its due date.
+- **READING THAT EXPORT NEEDS A RULE, now written into `project_quote_tool.md`:** money in = invoice payments **+** `added to credit` **−** `decreased from credit`, and an invoice row paid from `Customer Credit Balance` is a credit being *applied*, not new money. Without it Jane Laguerre reads $6,811.89 instead of $4,093.14 and Michael Green $4,020.11 instead of $2,010.05.
+- **Deposit rates (row 452), Jason's rule:** the chip flags a genuinely DIFFERENT arrangement — 50% standard, 40% NCE, anything else rare — so it is about the deposit, not about how much has been collected. Three NCE quotes corrected to 40%; #1316 Ryan Roth stamped 0.469 (a confirmed rare case) and #1141/#1142 at 1.0 (paid in full BEFORE install). Rodney Smith, Anthony Infranco and Asharib Iqbal deliberately NOT stamped: they reached 100% collected the ordinary way, which is exactly what the chip should stay quiet about.
+- **REVIEW:** four-lens premerge round plus an adversarial delta-verify on each of #1051 and #1053 (8 HIGHs and 5 HIGHs respectively, every one in my own code); a full four-lens wrap round — Customer BLOCK 1 HIGH, Staff BLOCK 1 HIGH + 3 MED, **Admin PASS 0**, Integration 0 HIGH + 3 MED. All four wrap HIGH/MED-worth-fixing items shipped in #1113; three MEDs deferred; one accepted with a reason (`paid_by` is unrendered exactly as its sibling `invoices.settled_by` has been since #225).
+- **THE ADMIN LENS ANSWERED THE QUESTION I MOST FEARED:** the five moved `deposit_paid_at` timestamps broke **no** reporting. It grepped all 60+ consumers — `computeKpis` keys off `customer_approved_at`, `monthlyRevenue` buckets by approval month, `serviceMetrics` by install month, and everywhere else the column is read as a *boolean*. S56 turned a homepage KPI negative by back-dating `quote_sent_at`, which *does* feed month buckets; this session moved a column that feeds none. Safe by the column's nature, not by luck — but I did not check that before writing, which is the lesson.
+- **MISTAKES:** told Jason rows 450/451 were dormant because the runner is unarmed — true of the runner and irrelevant, since #1053's own manual Record button has no such gate and is the path staff actually use · fixed the surface a guard lives on and missed the surfaces that talk about it **four times in one session** (locking without builder copy, builder copy without the job page, `sceneLockedMessage` without `refuseIfFrozen`, and the dormancy claim itself) · told him row 425 "does not exist" from a grep that required bold, when it does · under-counted the paid-in-full quotes as four when it is five · left all six rows this session shipped reading as OPEN until he asked a question that surfaced it.
+- **DID RIGHT:** the browser drive found four defects that tsc, lint and 8,448 tests all passed · every guard mutation-probed at write time, including one probe that pins the case we must NOT do · reconciled against three independent exports rather than trusting my own arithmetic · verified "mine is a superset" character-by-character before resolving a squash conflict, and checked nothing was lost before deleting another dev's stray merge marker · pushed back on one review finding with evidence rather than building a UI nobody asked for.
+- **CROSS-DEV:** `migrations/FULL-SCHEMA.sql` carried a stray `=======` from Naldo's `1c9771ab` (#1093) that would break `psql -f` on a fresh rebuild. Verified nothing was lost, removed it in #1113, flagged in the PR body rather than silently touching his file.
+- **ENDING STATE:** master `5c22695f` before #1113. Gates: tsc 0 · lint 0 errors / 21 warnings · vitest **9378 across 538 files**. Prod verified READY on master's exact tip. Ledger rows 444-449 marked off, 450/451 recorded live-not-dormant, 452 closed, 453 open and fail-closed. Counter 460.
+- **JASON'S DATED ACTIONS:** Valor pay link to Jane before **5 Sep** ($453.13), Raymond before **28 Sep** ($278.40). Mary needs neither. No install dates exist for any of the 20 yet, and that is expected — dates come first, then scheduling.
 
 ### Naldo S57 (post-close delta) — the merge-go landed #726/#727/#728, then a five-number ledger collision surfaced mid-merge and was resolved by the merged-source tiebreaker (2026-08-10→11)
 
@@ -2927,6 +2967,36 @@ heads-up), the wrap MED (row 356), the wrap LOW (row 357).
 
 **NEXT (S68).** (1) Get the four Bouncie API facts — auth flow, vehicles endpoint + whether it carries a current location, **webhook authentication** (the one that can change the design: constraint (b) assumes a shared-secret check like Telegram's; if Bouncie sends unsigned webhooks we need a secret-in-URL + REST cross-check instead), and rate limits. Every Bouncie host is blocked from a web container, so this needs a LOCAL session or pasted text. (2) Lens round on #945, then merge-go. (3) Backfill dry run → Naldo reads it → `--live`. (4) Then phase 2 (webhook receiver + `vehicles` table + static vehicle→crew mapping). Also still open from S66: row 354 office-onboarding UI, 355 CI cost, 356 schedule-write office/field enforcement, 357 ClockCard 403 conflation. Next free ledger #: **404**.
 
+### S68 (Naldo) — 2026-08-25→27 — verification pass on the three self-serve estimator PRs (#624/#800/#815): the keystroke flash is measurably gone in prod, the accuracy clamp is correct, and the estimator has recorded ZERO completions, plus the canonical fix that came out of it. Close PR naldo/s68-record-and-canonical [Claude Code desktop, run for Naldo]
+
+**The ask.** Naldo asked for a verification pass with no code changes: confirm the three self-serve estimator PRs are on master, run the gates, drive the live `/estimate` page to prove the sample-hero canvas no longer flashes on every address keystroke (#800), and confirm the dashboard accuracy tile clamps sub-minimum lows at read time (#815). The verification stayed read-only as instructed. Two days later he approved shipping the one small fix the pass had found, which is the only code in this PR.
+
+**Two premises in the brief were off.** The brief called these PRs "this session's" work; they merged 2026-08-18 and 2026-08-19 from a single branch, about a week earlier. It also gave `14072ca4` as master HEAD, which was true at their merge but 28 commits stale by the time verification started. Gates were therefore run at the live tip, not the stated SHA.
+
+**MERGE STATE, confirmed and re-confirmed.** All three PRs MERGED; `c22cd3f8` (#624), `677564f9` (#800) and `14072ca4` (#815) are all ancestors of master, and the branch tip `948a74e9` is on master with the remote branch deleted. Of the 19 files those PRs touched, `BeforeAfter.tsx` was byte-identical to session end and `selfServeMetrics.ts` plus its test differed only in COMMENT lines, from `372dfa95` (the PR #854 doc correction). Re-checked again at master `27df2103` after roughly forty more PRs landed: `memo(` and `useMemo(litScene, [design.scene])` are both still there, and `shownLow = Math.max(r.low, minimum)` is still applied in both the in-range check and the midpoint. Nothing was reverted.
+
+**GATES:** run at `70a54b9e` during the first pass (tsc 0 errors, lint 0 errors with 19 pre-existing warnings, 419 files / 7590 tests) and re-run on this branch after its final re-sync onto `71210e38` (tsc 0 errors, lint 0 errors with the same 19 warnings, **452 files / 8167 tests**), with GitHub Actions `gates` and Vercel both green on the PR.
+
+**#800 KEYSTROKE FLASH: GONE, measured not eyeballed.** The browser pane could not composite frames (every screenshot timed out), so the check ran as DOM instrumentation against live prod: a MutationObserver on `.est-framebox.est-install` plus identity tags on all three `<canvas>` nodes. Typing a full 37-character address as real keystrokes produced zero canvas adds, zero removes, zero Konva container churn, zero loading skeletons, and the same three canvas nodes throughout. Eighty-six compare-slider steps produced the same zero across 43 distinct `clip-path` states, which proves the re-renders actually happened. **The control is what makes the zero worth anything:** clicking "Show home 2" produced 3 canvas adds and a replaced Konva container with every tag new, so the observer does detect a remount when one occurs. The mechanism checks out in source too: `EstimateFlow` holds the address in `useState`, so every keystroke re-renders the parent, and `DesignCanvas` keys its mount effect on `[scene, photoUrl, photoW, photoH]`, exactly the identity the `useMemo` stabilises.
+
+**#815 ACCURACY CLAMP: correct, and honest about itself.** `shownLow(r) = Math.max(r.low, minimum)` with `minimum` defaulting to `BUSINESS_RULES.minimumQuoteAmount` ($1,000), applied in BOTH the in-range filter and the midpoint behind the miss percentage. The function stays pure (the minimum is an optional second parameter, which is what makes the test possible) and `loadSelfServeMetrics` is unchanged. 12/12 tests pass including the clamp test. No prod data was written: the PR diff is two files, no migration and no script.
+
+**THE FINDING (row 435), from measuring prod rather than reading the tile.** `self_serve_estimates` has **0 rows**. Measured 2026-08-25 (`quotes` 191) and again 2026-08-27 (`quotes` 207), so the tool is being used and the estimator still records nothing. The accuracy tile therefore has nothing to score, and the clamp guards an era that produced no rows. Master already says this in the code comment, corrected by PR #854 after #815's original body overstated it, so the record is straight. What is NOT recorded anywhere is the consequence: `recordSelfServeEstimate` is best-effort and only `console.warn`s, so an empty table is indistinguishable from an insert that has been failing silently since telemetry landed 2026-07-19, while `/estimate` is live and indexable. **ANSWERED at wrap, 2026-08-27, by reading prod logs instead of guessing: there is no traffic.** In 24 hours of production there was exactly ONE `GET /estimate` (this session's own curl) and zero `/api/estimate` calls, out of 212 distinct request paths. The marketing site never points at it either: `yulelovelights.com` and `/get-a-quote/` return 200 with zero references to the estimator, and `/instant-quote/` and `/estimate/` 404. The estimator is built, live, indexable and unreachable, so the next step is a launch, not a telemetry fix.
+
+**SHIPPED (row 436): the canonical URL on `/estimate`.** The page set `robots: index, follow` but exported no `alternates.canonical`, so any query-string entry could index as a separate thin duplicate of a page whose whole purpose (#624) was to rank. Fixed with `alternates: { canonical: '<base>/estimate' }` for every variant, base read from `PORTAL_BASE_URL` with the prod host as the literal fallback, matching the idiom the payment routes already use. Four tests in `src/app/estimate/page.test.ts`, and **mutation-probed**: removing the line fails 3 of the 4, so the test is real rather than merely green.
+
+**THE SIX DANGLING BRANCHES: verified dead, not lost.** The first pass flagged six closed-unmerged branches carrying commits that never reached master, checked only by commit ancestry. Checked at content level this time and every one is genuinely superseded. `naldo/223-named-morning-brief` holds ledger row 229, which is SHIPPED S58 via merged PR #780 and already archived; the feature landed by another route. The other five (`s47-close`, `s50-journal-3`, `s57-postclose`, `s59-close`, `s61-postclose-delta2`) are close notes for sessions that ARE recorded on master as journal fragments, and every one of them writes to `docs/context/session_log_naldo.md`, which has been FROZEN since the 2026-08-21 migration (#865). Merging any of them would write to a dead file. The answer is prune, not ship, so this stops being a task.
+
+**THE CLOSE PR THAT DID NOT LAND.** S68's original close, PR #948, was closed unmerged by Jason on 2026-08-26 with no comment, while its gates and Vercel checks were green and it was MERGEABLE. Nothing from it reached master: no fragment, no rows, no scorecard entry. This PR re-lands the record from scratch.
+
+**LEDGER: minted 435-436; counter to 437. FOURTH mint for the same findings.** 404-406 ceded to Jason's #947, 409-411 lost to his merged S51/S52 rows, 415-417 lost when close PR #948 was closed unmerged, 430-431 lost to the merged S69 close #1014. Each renumber was caught at a pre-merge re-check, which is the rule working, but the real lesson is cheaper: land a close PR fast, because one that sits open across other sessions' merges renumbers every time.
+
+**MISTAKES.** Accepted the brief's "this session" framing instead of checking `mergedAt`, a field of a command already run. Guessed the telemetry column names off the TypeScript type (`low`/`high`) instead of reading the loader's `select` (`estimate_low`/`estimate_high`), producing a 400 that could easily have been misread as "the table is not migrated". Wrote a gate count bound to the wrong SHA into the first draft of this fragment (382 files / 6791 tests, which was `c81c9ced`, not `70a54b9e`); caught in my own diff before it shipped, but that is the AGENTS.md report-versus-intent pitfall recurring in my own hands.
+
+**ENDING STATE.** master `27df2103`. One PR open from this session, carrying a 7-line code change plus this record.
+
+**NEXT (S69).** (1) Row 435 is ANSWERED, not open: the estimator has no traffic, so the work is a launch. Originally: grep Vercel logs for `[selfServe] recordSelfServeEstimate failed` and settle whether the estimator has genuinely had no completed submissions or the insert is broken. (2) The six dead worktrees were pruned at this wrap. (3) Ask Jason why #948 was closed, so the next close does not repeat it. Next free ledger #: **437**.
+
 ### Naldo S69 — 2026-08-24→27 — the open-PR backlog cleared: 12 PRs merged, 7 closed, and every one of the session's worst defects was in my own work
 
 > A cleanup session that turned into a defect hunt. The ask was "clean up open PRs and the ledger"; the value was in what the reviews caught before it shipped. Started at 24 open PRs, ended at 16 (and 7 of those arrived from other sessions while this one ran). Master `27df2103` at close. Gates: tsc 0 · lint 0 errors (19 warnings) · vitest **8137 / 450 files**.
@@ -2938,5 +3008,873 @@ heads-up), the wrap MED (row 356), the wrap LOW (row 357).
 - **Prod measurements settled three questions that reading could not.** Row 378's exposure, the `legacy_rebook` population (149 rows, all holiday, so a leftover unqualified `getColorScheme` caller cannot reach a permanent quote), and the portal-visibility usage (311 designs, ZERO hidden) which is what made scrapping that feature safe to consider.
 - **Naldo's rulings, recorded so they are not re-litigated:** the Operations Hub is scrapped, replaced by other tools. The portal image-visibility switches stay PORTAL-ONLY and are not extended: what he actually wanted was hiding a customer's photo on their own referral page, and that already exists and is live (`customers.referral_photo_optout`). He does not want a photo hidden from a customer's quote. Quote build timing gets an idle cap but keeps per-person visibility to any operator. Downstream work built on the portal-visibility feature (rows 370, 429, 367, 427 from other sessions) is KEPT, and a revert I had started was abandoned unpushed once that cost surfaced.
 - **REVIEW:** every merged feature PR took a full four-lens pre-merge round, plus an adversarial delta-verify on the #881 fix round. At close, the scaled pass: integration lens **PASS (0 HIGH, 0 MED)**, which independently confirmed the compositions worth worrying about were already caught by later PRs (#937's clamp filters rather than coerces per-photo entries; the row-260 CAS guard has no bypass; #938 fixed the #849/#921 satellite-vs-footage interaction). Customer lens **CONCERNS (0 HIGH, 1 MED, 1 LOW)**: the MED is **row 434**, a mini group can visibly show more lights than it bills with no server-side cross-check; the LOW is the accepted read-path brightness residual from row 348. Both are on already-merged work, so both are rows, not fixes in this close.
-- **NEXT:** merge-go on **#1009** (the timer disclosure pill, row 375 half). Then Naldo's call on **row 433**, whether to strip the orphaned Ops Hub routes and contract or leave them. Five older PRs (#869, #817, #782, #679, #669) and the newer AI-measurement set (#914-918, #922) are other sessions' lanes and were deliberately not touched.
+**POST-CLOSE DELTA (same S69 conversation, 2026-08-27→28; the number does not move).** Four more product rulings from Naldo, two PRs merged, one built-then-closed, and a ledger truth-up he prompted by asking a question I should not have needed.
+
+- **Row 434 SHIPPED (#1020).** A send-time guard: on a FIRST send the route refuses with 428 and names every mini group billing fewer strings than it has drawn members, until staff confirm. Naldo's framing changed the build: **the drawn design is a REFERENCE, not a promise of exact placement**, so this is a money guard for staff and explicitly NOT a customer-accuracy check, and the copy says so. Scoped narrow on purpose: only under-billing (billing MORE than is drawn is normal judgement), only a first send, a confirm rather than a block, test quotes exempt, and it FAILS OPEN if the design cannot load. Negative-controlled: disabling the gate fails exactly one test.
+- **Row 433 SHIPPED (#1027) — the Operations Hub leftovers scrapped.** Removed the three `/api/ops/v1/jobs/*` machine routes, `OPERATIONS_HUB_CONTRACT.md`, and the whole `ops-contract-schema/` directory. Verified BEFORE deleting that the arrive/depart/complete feature survives: `jobSegments.ts` is also called by the Telegram crew bot, and the deleted routes had zero in-repo callers. **The process lens then found a HIGH I would have shipped:** removing the AGENTS.md ownership row stripped the only stated owner of the LIVE `crew_members` table and the four labor libraries, including the money-math one. Re-homed into the Naldo row. The technical lens separately caught that I had claimed to remove the leftovers while leaving a 4,000-line directory behind, and that `shiftBreaks.ts` justified its unpaid-break money math by citing the file I had just deleted.
+- **Row 375 CLOSED, not shipped.** I built the "Timing" pill telling staff a build timer runs, on Naldo's earlier yes. He then reversed it: staff see their numbers on the scoreboard, no pill needed. #1009 closed unmerged. The row 374 idle cap stays live, which matters more now, since without it an interrupted quote would distort the very scoreboard staff are pointed at.
+- **Row 368 RESOLVED, no code.** The portal image-visibility question dissolved on one fact: what Naldo actually wanted was hiding a customer's photo on their OWN referral page, and `customers.referral_photo_optout` already does that and is live. He does not want a photo hidden from a customer's quote. A revert of the portal switches was started and **abandoned unpushed** once it emerged three other sessions had built on that feature (rows 370, 429, 367, 427).
+- **THE MISS WORTH RECORDING.** Naldo asked "is everything in the session complete?" and it was not. Row 434 had shipped and was still marked open, which is the promoted mark-a-row-off pitfall recurring in the same session where I wrote it into my own scorecard. Worse, row 375 said "PR #1009 OPEN: staff now see a Timing pill" — written while that PR was open and left standing after he closed it, so the row described a feature that does not exist. A future session would have believed it. Both corrected and archived; row 433 was correctly marked but never moved out of the active table.
+- **Repo hygiene:** 14 of this session's worktrees pruned (51 → 38) after checking each for uncommitted work. Five older ones held ~1000 DELETED files each, the known OneDrive damage, all on merged branches.
+- **Cross-dev heads-up owed:** `AGENTS.md`'s ownership table changed (the Hub row removed, labor paths re-homed to Naldo). Not a policy change per the process lens, so it takes the 48-hour async path, but Jason should know before he next touches crew or labor code.
+
+- **POST-CLOSE REVIEW (the integration lens, run over the whole session including the two post-close PRs): CONCERNS — 0 HIGH, 1 MED, 1 LOW.** Both findings are the SAME composition defect, and it is one no per-PR review could have caught: row 433's PR (#1027) deleted the `/api/ops/v1/**` namespace, which was the only thing a crew-role login could reach, while the admin Staff panel that MINTS those logins sat in an untouched file still claiming that boundary in a comment. I verified it myself rather than taking it on report, and the lens was wrong on one point worth recording: it read the whole crew-auth path as moot, but `src/proxy.ts:48` still calls `isCrewPath`, so a crew account is now refused EVERYWHERE rather than let loose — it fails CLOSED, which is the safe direction, and that distinction is the difference between a cleanup and an incident. Deferred to **row 438** rather than fixed here, because whether crew logins remain a product concept is Naldo's call, not a cleanup. The lens also confirmed the row-434 send guard cannot fire on a retry or reconcile path (`isFirstSend` is mutually exclusive with both retry query flags) and fails open on a design-load error.
+
+- **A SECOND thing row 433 quietly falsified, found while verifying this PR needed no CI run.** `.github/workflows/ci.yml` deliberately ignores `docs/**/*.md` rather than `docs/**`, and its comment marks that glob LOAD-BEARING because `docs/context/ops-contract-schema/` held a real vitest file that a wider glob would have stopped gating — a point the S70 process lens caught before it merged. PR #1027 then deleted that entire directory: `git ls-files` returns 0 there now. The glob is still CORRECT (other non-md files live under `docs/`, and the "check `git ls-files | grep -v '.md$'` before widening" instruction still works), so nothing is broken and nothing was changed here — `.github/workflows/**` is a SHARED path needing Jason's async heads-up, and editing it would also strip this PR's docs-only auto-merge. Recorded so the next reader does not trust a justification pointing at a file that no longer exists. Same class as the lying rows above: my own merge made a true sentence false somewhere I was not looking.
+
+- **ROW 438 SHIPPED (#1045) — crew logins retired on Naldo's ruling, and the design turned on a MEASURED number.** Prod held ZERO crew accounts; all five `crew_members` rows with a login link pointed at operator or admin accounts, i.e. the office linking path. So nothing was stranded and nobody was escalated. Removed the minting path, the email/password form, `crewAuth.ts` and `isCrewPath`. **Kept every guard keyed on `isCrewAccount`, and made the proxy refusal UNCONDITIONAL rather than deleting it** — `roleOf` collapses non-admin roles to 'operator', so deleting the guard would silently PROMOTE any crew account created later by hand. Deleting it would have been the opposite of a cleanup.
+
+- **THE REVIEW EARNED ITS KEEP ON THE ONE FINDING I COULD NOT HAVE SEEN.** Four lenses plus a delta-verify: technical/customer/staff PASS, admin CONCERNS. The admin MED was real and mine: the amber "No login yet" badge and "Give them a login" picker were keyed on `!hasLogin`, which after this PR is the PERMANENT correct state of every field row. Amber reads as "fix me", and the obvious fix — linking an operator — would have quietly re-granted the dashboard access the PR exists to remove. I removed the minting path and left the UI inviting its reversal.
+
+- **THE MERGE WAS THE RISKIEST PART, AND ONLY NALDO ASKING CAUGHT IT.** An hour after I called the PR ready it was silently CONFLICTING: master moved 50 commits and another session shipped an ADVERTISING account role touching the same two security files. Four conflicts. `proxy.ts`'s body auto-merged with only the import conflicting, which is exactly where a wrong result hides, so I read the merged body rather than trusting it (both gates survived, correctly side by side). `time-exceptions` had a NEWER master ruling (operator-only → admin-only) and I took master's substance with my correction applied, not either side wholesale. Then **tsc caught what no conflict marker showed**: master's NEW `advertisingPerimeter.test.ts` imports the function I deleted — a clean merge, a broken build — and the FULL suite caught a second one, master's population matrix asserting the pre-retirement rule. My targeted auth run had passed both. After a hand resolution, run everything, not the suites you think you touched.
+
+- **MISTAKE, twice, caught by my own asserts:** my replacement COMMENT named `isCrewPath`, the very symbol I was deleting — the lying-comment class, committed while sweeping for lying comments. Also removed a block whose trailing `})` closed an enclosing `describe`, and wrote a check that matched `resetPassword` as if it were `setPassword`, which would have deleted a working feature. Every one was stopped before a byte was written, because the pattern is encode → assert the invariant → temp → `os.replace`. The asserts are worth more than the care.
+
+- **Gates at merge:** tsc clean, lint 0 errors (21 warnings, none in a file this touched), **8734 tests / 490 files**. CI green pinned to `e37299fb`. Negative-controlled: disabling the proxy guard fails exactly the three crew-refusal tests and nothing else. Merged as `12af8245`.
+
+- **NEXT:** nothing is blocked. One open question for Naldo: **row 438** — are crew logins still a product concept now that the API they reached is gone? Rows 435/436 and 437 belong to concurrent sessions. Next free ledger #: **439**.
+
+### S70 (Naldo) — 2026-08-24 — office staff onboarding, then the panel rebuild it turned into: 4 PRs merged and live, 1 open. Close PR naldo/s70-close
+
+> **SESSION NUMBER: this conversation began as S67** (the S66 handoff said so) and renumbered to **S70** at close. While it ran, three genuinely different sessions claimed and MERGED S67 (fleet GPS / Bouncie), S68 (self-serve estimator verification) and S69 (open-PR backlog cleanup). Merged claims win, so this one moved rather than colliding. Master went 244 commits between session start (`94ea2c0b`) and close (`caaa2c12`), which is the real reason: this was a long conversation in a fast repo.
+
+**The ask.** Setting up an office person for the time clock meant hand-editing the database. End that. It grew, on Naldo's live feedback, into replacing the whole staff-admin surface.
+
+**SHIPPED, merged and live:**
+- **#906** — office-staff onboarding UI (row 354). Settings flow: pick an existing operator, set an hourly rate, create their `crew_members` pay row with `is_office=true`. No credentials handled: the operator already has a login. Money parsed to integer cents server-side. Folded in row 357 (the office clock now returns a machine-readable `reason`, so `ClockCard` says "account inactive" distinctly from "not linked").
+- **#912** — Telegram for ALL staff, correcting a rule that was never Naldo's. The code refused to link Telegram for office staff; his ruling is that every staff member gets one. **The runtime always supported it** (`getCrewMemberByTelegramUserId` never filtered on `is_office`); only the admin doors blocked it.
+- **#913** — one Staff panel. Deleted BOTH `/api/admin/crew-accounts` and `/api/admin/office-staff` and their components, replaced by one `/api/admin/staff` (GET/POST/PATCH/DELETE) and one `StaffAccounts.tsx`, grouped Office / Field with identical actions per row. New capabilities that existed nowhere before: **password reset** (a crew login could previously be created and never recovered), **in-app field-crew creation** (`insertCrewMember` had ZERO callers, so every crew row was hand-seeded SQL), move office<->field, and FK-guarded removal.
+- **#910** — ledger rows 358 and 359.
+
+**OPEN: #1017** (row 355, CI docs-only skip). Needs **Jason's explicit go**, not the 48h async standard, because it changes what "gates green" means for a docs-only PR and the wrap's unattended auto-merge depends on that.
+
+**THE FINDING WORTH KEEPING, corrected at close.** `is_office` controls exactly one THING: whether someone is offered when assigning crew to a job. It has TWO enforcement points, not one: `listActiveFieldCrew` filters the dropdown, and `assignCrewToJob` (`src/lib/scheduling.ts:156`, added by #983) refuses the write. Neither clock reads it, and it says nothing about what login someone holds. Proven by a real row rather than by reading: **Jason is `role=admin` on an `is_office=false` pay row**, the maximal combination (admin access, both clocks, dispatchable). So **do not move Jason to office** — it would only cost him job assignment.
+
+⚠️ I first wrote this as "`listActiveFieldCrew` is its ONLY functional reader", which was true when #913 was written and false by the time I wrote it down: I had personally verified the second reader hours earlier while checking that row 356 had shipped, then repeated the stale phrasing anyway. Caught by the close integration lens. Fourth instance of this session's worst habit.
+
+**MISTAKES**
+- **I shipped false UI copy TWICE, in the same paragraph, hours apart.** First that field crew "sign in with their own crew login" (Jason disproves it). Then, in the correction itself, that "anyone here can clock in from the dashboard header" (`getOfficeClockCaller` refuses crew-role logins outright, so a crew login can only text the bot). Both caught by review lenses, neither by me. The lesson is not "check copy" — I did check, and wrote a second false claim while fixing the first. It is that a claim about WHO CAN DO WHAT must be traced to the guard that decides it, every time, not reasoned from the surrounding design.
+- **My own repair action could strand someone.** "Move to office", built for mis-set-type recovery, only flipped the flag: a crew-login person moved to office loses the job-assignment roster and still cannot use the dashboard clock. Worse off, nothing gained, reachable through the UI's own advertised fix. Now refused with a 409 naming the real remedy.
+- **I reported row 356 as open work when it had already shipped.** I only found out because I went to build it and checked the code first. A stale ledger read presented to Naldo as a to-do list.
+- **Two untested failure paths after an irreversible write**, both found by the technical lens: DELETE returned 500 if the login lookup threw AFTER the row was deleted (telling the admin nothing happened when the row was gone for good), and the field-crew POST rolled back an orphan login only on a lost compare-and-swap, not on a thrown error.
+- **A read-only review agent ran `git checkout FETCH_HEAD -- .` in the shared worktree.** It was a no-op and I verified the tree immediately (branch, HEAD, deletions all intact), but AGENTS.md says reviewers read via `git show`. Worth tightening the lens briefs.
+
+**DID RIGHT**
+- **Checked before building, twice, and both times the work was already done.** Row 356's guard was already in `assignCrewToJob` on master; half of row 355 (the `concurrency` block) was already in `ci.yml`. Two builds avoided by reading the live system instead of trusting the row.
+- **Re-derived every HIGH before accepting it, and refuted one.** The technical lens called a JSON-primitive body a live 500; `'x' in 42` genuinely throws, but the `crewMemberId` check returns 400 first, so it was unreachable. The negative control settled it: reverting my fix left the new test green. Kept the guard as defence in depth and **renamed the test so it does not claim to have caught a crash it never caught.**
+- **Negative-controlled four guards** (the office-only write filter, the crew exclusion in the operator picker, the Telegram collision mapping, the password-reset target, the crew-login-only deletion, the move guard). Each mutation failed exactly its own test and nothing else.
+- **Measured prod before designing destructive behaviour.** Queried the actual foreign keys before building Remove: six FKs across four tables, all NO ACTION, so Postgres itself refuses to delete anyone with recorded time. The guard is the database, not a check I could forget. Also queried Jason's real account rather than guessing at his access.
+- **Caught the stale-CI trap.** A watcher reported green instantly; it was reporting the PREVIOUS head while the real run was still in progress. Verified the run's `headSha` against the pushed SHA and merged only after green on the exact commit, pinned with `--match-head-commit`.
+- **Recorded every ledger collision instead of silently taking a number** (358/359 minted above Jason's unmerged #902 claims; 363 taken after his session explicitly reserved it for #913).
+
+**GATES at close:** tsc 0 errors · lint 0 errors (19 pre-existing warnings) · vitest **8167 passed**. Master `caaa2c12`.
+
+**REVIEW:** every merged PR took a FULL four-lens pre-merge round (#913's found 2 HIGHs, both mine, both fixed before the merge-go). Close pass, two lenses:
+- **Integration lens over the merged session work: PASS** (0 HIGH, 0 MED, 3 LOW). No leftovers from the two deleted routes in live code, `/api/admin/staff` confirmed the single door writing `crew_members` identity columns, `linkOfficeStaff` vs `linkStaffLogin` confirmed genuinely distinct rather than rename drift, and #906's `reason` field still consumed correctly by ClockCard. The LOWs became **row 437**: `updateCrewMember` is now dead code (its only caller was the deleted crew-accounts route), and two code comments carry the stale "only reader" claim.
+- **Process lens on the open #1017: BLOCK, 1 HIGH, fixed.** `paths-ignore: docs/**` would have silently stopped gating `docs/context/ops-contract-schema/flow-q-contract.test.ts`, a live vitest test inside tsconfig's include. Narrowed to `docs/**/*.md`. It also caught that my comment overstated the wrap auto-merge's dependence on the CI check (wrap runs the gates locally). **A full four-lens round is still owed on #1017** before it merges, since `.github/workflows/**` is a FULL-tier path and this close ran only the one process lens.
+
+**NEXT:** Jason's explicit go on **#1017**. Row 359 (a deleted operator still orphans a pay row) is open and now visible in the panel but not recoverable. Row 358 is **MOOT** — the Operations Hub was scrapped 2026-08-27.
+
+### S71 (Naldo) — 2026-08-25→28 — fleet GPS built END TO END and switched ON: 13 PRs merged, the geofence design killed mid-flight for in-house polling, and the van live in prod at close. Close PR naldo/s71-close [Claude Code desktop]
+
+> **NUMBER:** this conversation began as S68 per the S67 handoff; S68/S69/S70 were all claimed and MERGED by other sessions while it ran (estimator verification, PR-backlog cleanup, staff-admin rebuild). Merged claims win — same renumber pattern S70's own close documented.
+
+**The arc.** Naldo moved this to a local session because the web container's egress proxy blocked docs.bouncie.dev. Reading the REAL OpenAPI spec (`docs/reference/bouncie-openapi.json`, committed) corrected two search-sourced row-403 facts on day one: auth is OAuth-2 authorization-code ONLY (no API key — later MEASURED: the portal's API key 401s against /v1/vehicles), and tripStart/tripEnd carry NO location. Then, mid-build, Naldo's question "why are the customer's home coordinates going to Bouncie?" killed the just-merged geofence subsystem (#1010): coordinates never leave the tool, proximity is computed in-house by a 2-minute poller against the day's schedule, and the deleted design survives only as SUPERSEDED migration files.
+
+**Shipped (13 PRs, all lens-reviewed except #994 — covered at this close):** #945 backfill+geofenceAnchor gate (190 coordinates written LIVE, verified by re-run 215→25 all-accounted) · #992 webhook receiver (capture-only; prod-tested with a signed POST) · #994 always-open BUSINESS_HOURS (Naldo's keep-all-data call) · #1006 OAuth tokens + secretBox (AES-256-GCM; the `refresh_token_enc` column's encrypted-at-rest claim made TRUE for the first time) · #1007 visit timeline (the SECOND CLOCK — crew clock manually for payroll, GPS is the cross-check; no FK into shifts/job_segments, pinned by a touched-tables test) · #1010 geofences (merged, then DELETED by #1018) · #1016 geocode-at-write + schedule-refusal + /admin/geocoding fix-list · #1018 polling proximity engine · #1021 /admin/fleet (two clocks side by side, van-is-not-the-person warning) · #1030 Settings→Bouncie (row 430's health surface; expired token reads DEAD immediately) · #1011/#1023/#1028 docs.
+
+**Live surfaces changed:** 3 Supabase migrations applied (bouncie-vehicles, oauth-tokens incl. trigger with named go, vehicle-visits-polling); Bouncie portal app `yll-hub` + webhook configured (tripData deliberately OFF — the bulk-volume stream); 5 Vercel env vars; the */2-min poll cron; the OAuth grant connected LIVE at close (encrypted, poll cycles `errors 0`, van honestly `noSignal` until it drives). The failed first connect (3× token-endpoint 401 — API key pasted as client secret) was diagnosed from one log query and became its own status message.
+
+**Owner decisions recorded (runbook, not chat):** keep all data / always open · round-the-clock live display (put separately, approved, #1028) · coordinates never leave the tool · ETA texts one-message-at-departure, 25% padding 10-min floor rounded up, via GHL, switch-off until arrivals proven · office drags jobs into order · duration priors (holiday ≤~1.5h; permanent 4-5h at 2-3 crew) seeded into `docs/reference/scheduling-system-design.md` for Jason.
+
+**REVIEW at close (full four — #994 had shipped un-lensed + live surfaces changed):** technical **CLEAN** (every cross-PR seam: geofence deletion total, one visit-writer generation, shared staleness constant; 1 LOW addDays dupes) · customer **CLEAN on the sharp claims** (no coordinate leakage, nothing customer-visible, no messages) + 2 MED · staff **no HIGHs** (payroll boundary binds at combined-tree level) + 2 MED · admin **2 HIGH — both LEDGER-TRUTH failures fixed IN THIS CLOSE** (row 403 still asserted the reversed off-hours protection; row 430 still read open after #1030 shipped it), secrets sweep clean, cron cost sane, all three owner decisions verified recorded. MED/LOW dispositions → **row 439**.
+
+**Worst own-mistakes (full list in local self-assessment):** the fix-list shipped saving with PATCH against a POST-only route (dead on arrival; two lenses converged) · the geofence armer would have armed NOTHING in prod (nested embed on a nonexistent FK, `error` destructured away — confirmed live: PGRST200) · a lat/lng swap guard that structurally could not catch a Long Island swap · the repo's DST class repeated (hardcoded T04:00Z) · a 24h grace window that showed a dead grant as Connected · the inert-value class twice in one session (webhookConfigured; the unread ?bouncie= param).
+
+**NEXT:** drive the van (first real data) · fix the ~15 addresses on /admin/geocoding · row 439 polish · schedule day-ordering, THEN ETA texts + duration model per the design doc · rows 431/432 (timeline operability, radius tuning — now DWELL threshold tuning) wait on real visits.
+
+Gates at close: tsc 0 · lint 0 errors (19 pre-existing warnings) · vitest **8388 / 461 files**. Master at close: `37da5891`.
+
+### S73 (Naldo) — 2026-08-28 — PostHog stopped being a data graveyard: a morning review robot, a PR reviewer robot, and merge-by-text. 3 PRs merged and live, 5 live PostHog settings changed. Close PR naldo/s73-close [Claude Code desktop]
+
+> **NUMBER, and a collision recorded rather than silently taken.** This close first stamped **S72**, having checked master, every journal fragment, `gh pr list --limit 200` and the remote branch list, all of which left 72 free. It does not: the concurrent REFERRAL session had already claimed S72 in the machine-local self-assessment (`feedback_self_assessment.md`), which is not in the repo and so is invisible to every repo-side check. Its work (PRs #790, #804, #924, #960) is merged, this session's number was cemented nowhere yet, so it yielded to **S73** rather than collide. **The transferable lesson: the number space is master + the archive + every open PR + every unmerged branch + the LOCAL self-assessment, and only the last of those is invisible to git.** S71 was separately taken mid-conversation by the fleet-GPS session, which had itself renumbered from S68.
+
+**The ask.** Naldo had read that people plug Claude into PostHog and get a daily review that fixes things automatically. PostHog was already collecting from both surfaces and nobody had ever looked at it.
+
+**What research changed before any build.** The first plan was API-key auth against the remote MCP. Checking rather than assuming found an OFFICIAL PostHog connector in the Claude directory using OAuth, plus an official `posthog` plugin for Claude Code. Both were adopted, so no key was ever handled. Connected with the **read-only** scope preset on every scope, which is the guardrail the pipeline doc claims.
+
+**Three robots, all live:**
+- **PostHog daily review** (`trig_01PCjNCUYyCwNL6k2vMHaWM9`), 7:00 AM ET. Reads the last 24h across both hosts, triages into quote-tool bugs / website findings / suggestions / noise, opens up to 3 fix PRs a day, files a GitHub issue, texts Telegram. Report-only for money, pricing, payments, auth and every SHARED path; website is report-only entirely. Backlog rule at 5 open PRs.
+- **PR lens review** (`trig_013mbkDVY6GdGSbpvDMvnwZE`), GitHub-triggered on `pull_request.opened` for `claude/` branches. One comment, `lens-review-bot` marker, PASS or BLOCK. Cannot merge, approve, close, or push.
+- **PR merge on request** (`trig_015kPuXZQCcjAZTYKLQNiPF8`), API-triggered by the Telegram bot. Re-derives open/not-draft, `claude/` branch, a lens-review PASS comment, CI green on the CURRENT head SHA, and master-is-ancestor, then squash-merges pinned to that SHA.
+
+**THE RESULT WORTH REMEMBERING: the reviewer robot found real defects in both PRs it has ever seen, and one of them was mine and invisible to a green test run.** On #1039 it caught that the `staff_device` property read `document.cookie` for `yll_staff_device`, which is set `httpOnly` — so it could never fire in a real browser, and the tests passed only because they stubbed a cookie state that cannot exist. The whole point of the PR was dead on arrival behind three green gates. On #1044 it caught a coaching reply that ignored the bot's group contract, and correctly diagnosed the deeper cause (a broad prefix regex where the sibling uses a whole-string match) that my own fix would have missed.
+
+**Shipped:** #1032 the pipeline record (docs) · #1039 staff-device super property + lead-form per-field drop-off events · #1044 merge-by-text. Every one lens-reviewed; #1044 additionally took an adversarial delta-verify of its fix round, which returned BLOCK on a HIGH.
+
+**Live PostHog config changed (no git diff, so recorded here):** exception autocapture ON (was OFF, which is why zero errors were ever visible); dead-click autocapture ON; heatmaps ON; session replay NARROWED from everything to a URL trigger list (portal, estimate, refer, and the marketing site) so staff screens stop being recorded; internal-user filter excluding `staff_device`, default-on; an error-tracking webhook to Telegram, enabled and fire-tested.
+
+**Measured, not guessed:**
+- All-time errors across both surfaces: **5 distinct, 7 events**. Tiny, but a floor rather than a measurement, since capture had been off.
+- Rage clicks, all time: `/quote/new` **82 from 10 staff**, `/inbox` 21/6, `/admin/quotes` 14/5. The worst frustration surface in the tool is the quote builder.
+- Lead form, 90 days: ~886 views, 165 starts, **23 submits**. Start-to-submit **14%**. That is the money finding, and #1039's per-field events exist to locate it → row 441.
+- The top "page" in analytics was `/admin/fleet`, 44 views from 3 people: the office. Hence the staff filter.
+- A live marketing-site error surfaced within an hour of enabling capture: `sticky_head_func`, 36 occurrences in one session → row 440.
+
+**Own mistakes (full list in the local self-assessment):** the httpOnly cookie read above, caught by a robot rather than by me · gated the coaching reply on `addressed` but NOT the branch that actually merges, so the approver typing `merge 1043` in a crew group would have deployed unbidden and announced it (caught by the delta-verify; the fix-introduces-bugs class, in the same session that shipped the reviewer to catch exactly this) · introduced a UTF-8 BOM by running a mutation probe through PowerShell's `Set-Content -Encoding utf8`, the documented hazard, caught by the same delta-verify · passed a long commit body inline to git on PowerShell against my own standing rule, then blamed the classifier for four blocked attempts before switching to `-F`.
+
+**Process note worth carrying:** the safety classifier blocked `npm run lint` and `npx eslint` on BOTH shells for most of the session, so lint never ran locally on the feature branches. CI ran it green on every merged head, and it ran clean at this close (0 errors, 21 warnings). Stated in both PR bodies rather than implied, per the report-not-hope rule.
+
+**REVIEW AT CLOSE (full four lenses — required because #1039 and #1044 each shipped on fewer than four, and live non-repo surfaces changed). Three of four returned BLOCK, and they were right to.**
+
+- **ADMIN — BLOCK, 3 HIGH, all three fixed in this close.** (1) **The runbook said the pipeline was never set up, while it was running.** The Setup-state checklist on master still read as an unstarted to-do list. Cause was mechanical and worth remembering: the updates were committed to PR #1032's branch AFTER that PR had already merged, so they sat orphaned on a dead branch. The one document that tells Naldo whether this thing is on was the document that said it was off. (2) The reviewer and merge routines' prompts existed only outside the repo, so every authority claim about a routine that can MERGE CODE was unverifiable from here; both prompts are now recorded verbatim, with their known weaknesses named (the PASS-comment gate does not verify comment authorship; the 3-PR cap is prompt-level, not code-level). (3) The new staff filter was implicitly credited with more than it does; the doc now states exactly what it covers and that it does NOT close row 422. Remaining MEDs are dispositioned into the doc or accepted.
+- **CUSTOMER — BLOCK, 1 HIGH → MEASURED, and it turned out pre-existing and bigger than the lens could see.** It reasoned from code that dead-click capture records element text through a path replay masking never touches. Querying prod turned that into a number: **1004 events in 180 days carry a `$` in `$el_text`**, and the samples are real quote figures ("Gingerbread $1,080 Off", "Santa's Roofline $440 Off", "$95"). The bulk is `$autocapture`, which has been on for months; this session's dead-click change added **7**. So the session widened a pre-existing gap rather than creating one. Deliberately NOT reverted unilaterally, because disabling autocapture would break the rage-click and heatmap work the whole pipeline rests on, and customer data is Naldo's call → **row 442** with the measurement and three fix shapes.
+- **STAFF — BLOCK, 1 HIGH, and it is not this session's code.** `QuoteBuilder`'s "Clear all" wipes a roofline's traced satellite lines with no confirm and no undo, and the next derive zeroes the billed footage on screen, overriding a typed override; 13+ sibling destructive actions in that file do confirm. It arrived in PR #916 (a concurrent session) during this window, and was itself shipped as a fix for an earlier staff-lens finding. Traced in code, NOT reproduced (the lens had no operator login) → **row 443**, flagged to Naldo, Jason's area.
+- **TECHNICAL — CONCERNS, 0 HIGH, 1 MED, 1 LOW.** MED: two rapid `merge` texts could fire the routine twice with no dedupe key. ACCEPTED with evidence rather than fixed: the routine's first check is that the PR is open, and this session proved that path live by firing it at an already-merged PR, which refused. Worst case is a wasted run and a second Telegram note. LOW: the coaching matcher still answers a bare two-word "merge conflict" from the approver in an addressed chat; accepted as noise, approver-only. Everything else it attacked came back clean, including the client/server boundary, the lead-form events across all three form variants, the crew-vocabulary dispatch order, and the identity gate's env edge cases.
+
+**NEXT:** row 440 (marketing-site sticky-header error, needs a human, WordPress) · row 441 after a week of field data · `/quote/new` rage clicks are unexplained and now have heatmaps and replay pointed at them · the daily robot's first unattended run is 7:00 AM 2026-08-29, and its report should be read as a test of the pipeline as much as of the app.
+
+Gates at close: tsc 0 · lint 0 errors (21 warnings) · vitest **8484 / 465 files**. Master at close: `3efc00f2`.
+
+# S74 (Naldo) — 2026-08-28 — fleet page verified, repaired, rebuilt to spec, and proven on a real job day: 3 PRs merged and live
+
+> Session number note: the handoff said S72, and every repo-side check agreed. S72 was
+> in fact held by the referral session in the machine-local self-assessment, the one
+> place git cannot see, and S73 was taken the same way the day before. This session is
+> S74, claimed at wrap after checking master, the archive, every open PR, AND the local
+> file. That local-file door has now bitten twice (S73 documented it; S74 walked into
+> it), so it was promoted to the AGENTS.md session-number pitfall this close.
+
+## What shipped
+
+- **PR #1036, merged + prod-verified: the /admin/geocoding fix-list had been dead
+  since it shipped.** The page selected `customers(display_name)`; the real column is
+  `name`. PostgREST answered 400 to every request, the error path returned an empty
+  list, and the page told staff "Nothing needs fixing" while 25 unschedulable
+  properties existed. Found by measuring (the page said zero, prod counted 25, the
+  Supabase API log showed the 400), fixed, and the failure mode itself fixed too: a
+  load error now renders a visible error card, never the all-clear. Verified both
+  directions against prod with the real service client before the PR existed.
+- **PR #1040, merged + prod-verified: the fleet page became a real tool.** Leaflet +
+  OpenStreetMap live map (no API key, no customer data in any request), field-only
+  crew clock, at-place timer ("At Depot since 6:50 AM · 43 min"), day list, 2-minute
+  auto-refresh, and honest tracker-asleep wording (an OBD tracker sleeps when the
+  ignition is off, which is most of any real visit; the old copy read that as
+  "position unknown, not parked"). Two review lenses pre-merge (technical PASS; staff
+  0 HIGH / 6 MED, five fixed in the round, one accepted), then a same-day device
+  round with Naldo produced three more fixes shipped in the same PR.
+- **PR #1046, merged (by a concurrent chat, deliberately) + prod-verified: the
+  two-clocks split.** The payroll-versus-GPS comparison moved to /admin/fleet/clocks,
+  ADMIN ONLY via the new `getSessionRole` (fail-closed; crew and advertising logins
+  excluded before the role collapse — the S58 seam, now pinned by tests whose crew
+  branch is mutation-probed). The fleet page is live-only for all office operators.
+  Fleet became its own nav area; Jobs and Fleet no longer co-highlight (Naldo: bug,
+  not an accepted cost). Full four-lens round: customer PASS, technical and admin
+  converged on the untested gate (fixed same hour), staff's real finding is recorded
+  as a decision: non-admin office staff now have NO GPS-history surface, so "when did
+  the van arrive yesterday" requires an admin.
+- **Naldo's staff row moved office → field** (his click, after my direct write was
+  classifier-blocked): he appears on the fleet crew clock and is assignable to jobs.
+
+## The real-world proof
+
+Job #1046 (166 Van Buren St, West Babylon) was assigned for the day on the existing
+schedule page as the test. The tracker then recorded the whole day unattended: depot
+6:50→10:10 AM, job visit 10:24→11:10 AM (47 min), depot 11:41→12:01, second job visit
+12:11→4:36 PM (the double-back captured as two visits, exactly as designed), depot
+arrival 5:19 PM. Beside it the crew clock: Naldo in 7:01→10:15 and 10:15→5:26. That is
+the first real duration data the scheduling design has been waiting on (rows 431/432),
+and the 120 m radius behaved.
+
+## Decisions recorded (do not re-litigate)
+
+- Fleet page access: ALL office operators for the live view (Naldo, over the
+  narrower you-and-Jason idea). The two-clocks comparison: admins only.
+- The scheduling design doc gained a 2026-08-28 addendum from Naldo and Jason's call:
+  manual person-to-vehicle assignment per day (answers the doc's open "crew or
+  vehicle?"), the Staff section is Jason's build (all-staff hours; automatic GPS hours
+  separate; P4P its own tab and own kickoff; marking off PART of a day's hours is a
+  hard requirement), Copilot is dropped this month (bills the 16th), scheduling wanted
+  inside ~2 weeks.
+- Truck-and-trailer tracker activates later (row 454 holds the steps).
+
+## Review at close
+
+Wrap ran one integration lens plus the customer lens (package.json is a SHARED path,
+so the customer lens ran with a live logged-out drive). Findings recorded in the wrap
+block of the journal entry; dispositions in rows 454-457.
+
+## Ending state
+
+Master at close: see close PR. Gates at close: tsc 0 · lint 0 errors (19 warnings) ·
+vitest green (8459 at the last combined-tree run; the suite grew all day as five-plus
+concurrent sessions merged). Ledger: minted 454-457, counter to 458, above Jason's
+open #1052 which holds 450-453.
+
+
+---
+
+## POST-CLOSE DELTA (same conversation, 2026-08-28 evening → 2026-08-29)
+
+The conversation continued past the close; per the one-conversation-one-session
+rule this is a delta on S74, not a new session. (The close itself had been run
+by a resumed instance of this same conversation after a midday harness restart;
+the post-restart half picked up here.)
+
+**Shipped, merged + prod-verified:**
+
+- **PR #1054 — Archive button on the geocode fix-list, guarded.** Naldo's ask:
+  most of the 25 rows are import garbage. Archive (never delete; quotes and jobs
+  reference properties by id), confirm dialog naming the undo path, and a
+  refusal for any property with a job OR a live-pipeline quote
+  (sent/viewed/approved/booked) — measured on the real list: 6 booked, 3
+  viewed, 2 sent quotes sat on those exact properties, so the admin lens HIGH
+  (quote converts to a job at deposit time and strands invisibly) was live, not
+  theoretical. Technical lens MED fixed too: ownership check runs INSIDE the
+  guard so a mismatched customer/property pair stays an opaque 404 instead of
+  leaking a has-jobs boolean. Both refusal branches mutation-probed.
+- **PR #1062 — manual shift entry and correction, admins only.** Naldo's
+  ruling: office reconstructs a forgotten clock-in by reading the GPS timeline
+  BESIDE the form and TYPING the times; GPS never writes payroll, structurally
+  unchanged. Four lenses + an adversarial delta-verify, two fix rounds:
+  - Staff HIGHs: an open shift is corrected WITHOUT force-closing it (the
+    close would have flipped the crew member's bot to "not clocked in"
+    mid-workday); every manual touch writes a dashboard_activity row with
+    before/after AND a Telegram note to the crew member when linked.
+  - Delta-verify HIGH (the catch of the day): round 1 guarded the clock-OUT
+    against clipping a running break; moving the clock-IN clips the same break
+    from the other end. Replaced with ONE containment rule — the typed interval
+    must contain every break and job segment the shift has — numeric compares,
+    fail-closed, negative-controlled in both directions.
+  - Admin MEDs: the create path refuses non-field-crew at the WRITE (the
+    promoted gate-at-the-state-change pitfall, caught recurring); the stamp is
+    name (email).
+  - Staff MEDs: all times pinned to Eastern regardless of device timezone (new
+    src/lib/etClock.ts, DST-tested on both 2026 transition days); sanity
+    confirm on >12h or <15min shifts.
+- **The shifts_no_overlap DB exclusion constraint, LIVE on prod** under
+  Naldo's explicit "Yes constraint" (ask-first migration category; measured
+  zero overlapping pairs before apply). The database itself now refuses
+  overlapping shifts per person; 23P01 maps to the app's own overlap refusal.
+  btree_gist enabled. FULL-SCHEMA carries both this and shifts.manual_by.
+- **docs/reference/crew-gps-notice-draft.md** — the written crew notice the
+  runbook requires before any hours conversation references GPS, for Naldo to
+  edit and send; mentions manual entries and the take-home van plainly.
+
+**Data rulings executed:** Naldo moved his own staff row office→field (fleet
+clock + schedulable, his click after the classifier blocked the direct write),
+and DELIBERATELY moved Jason Balroop field→office ("Jason works in the
+office"). ⚠️ SUPERSESSION: the S70 key fact "do not move Jason to office" is
+overruled by this ruling — do not "fix" it back. Consequences on record: Jason
+is not schedulable to field jobs, not on the fleet crew clock, and the manual
+shift form refuses him; his dashboard clock works by login and is unaffected.
+
+**Review at this delta's close:** one integration lens over the post-close
+span including the concurrent #1063 merge. Verdict CONCERNS: 1 MED, 1 LOW, 0
+HIGH. The MED was a real cross-PR find nobody's per-PR round could see: a
+FUTURE-dated manual shift (an admin date typo) would silently block that crew
+member's every organic clock-in (clockIn inserts now-to-infinity, collides
+with the future row on the new constraint, dies as a generic error). The fix shipped
+same close as PR #1069 (manual entries reconstruct the past, so a future
+clock-out or keep-open clock-in refuses plainly; negative-controlled) and
+waits for Naldo's merge-go. The LOW (a backdated
+clock-in can mislabel a forgotten_clock_out exception's hint text) is accepted
+as cosmetic. #1063 itself checked clean against this session's diffs: it
+writes no shifts rows, the classifier never branches on manual_by, and
+FULL-SCHEMA holds both sessions' changes without contradiction. Rows minted: 458 (no void for a bogus manual shift), 459 (paid-day
+guard trigger). Gates at close: tsc 0 · lint 0 errors · vitest full suite
+green on the merged tree.
+
+# S75 (Naldo) — 2026-08-28→29 — from prompt review to a LIVE calls-to-tasks system in one conversation: 6 PRs merged, 3 migrations applied, 7 days backfilled, hourly automation armed
+
+## The arc
+
+Started as a review of Naldo's Operations Hub audit prompt. Ended with the
+calls-to-tasks feature live in production: office tasks on the dashboard,
+HighLevel call transcripts ingested (Deepgram never needed), commitments
+extracted into assigned tasks, and the hourly timers armed by Naldo the same
+night. Along the way: the full Ops Hub audit, a read-only HighLevel
+transcript probe with a measured Deepgram verdict, the eight-slice calls
+merge plan, and the advertising role hardening. Two other lanes (admin
+View-as mechanism, advertising schema) ran concurrently in Naldo's own
+sessions off prompts this session wrote.
+
+## Shipped (all merged + live)
+
+- **#1025** ops-hub plan doc grounded in master reality (superseded-remnant
+  handling, roleOf cite, nav truth, sibling-project pointer).
+- **#1029** the Ops Hub audit report `ops_hub_audit_2026-08.md`: 6 recon
+  agents + same-day prod measurements; all of Naldo's rulings folded in
+  (teardown keep/cut, Office Tasks reversal, separate advertising
+  population, all-operators coaching visibility, rate stamped at
+  acceptance, Schedule nav now).
+- **#1042** the GHL transcript probe `ghl_transcript_probe_2026-08.md`:
+  HTTP 200 on the pinned 2021-07-28 version, channel split matching the
+  stored Deepgram diarization (247/783 vs 235/798 words), verdict DEEPGRAM
+  CAN BE DROPPED. Also documented this machine's router DNS poisoning of
+  services.leadconnectorhq.com (filter IP 167.206.37.145; pin the real
+  Cloudflare address).
+- **#1056** the calls merge plan `calls_merge_plan_2026-08.md`: six
+  architecture decisions, eight PR-sized slices, retirement double-gated.
+- **#1043** advertising role hardening (workstream A slice 1): the
+  population lock BEFORE any advertising account exists. Four lenses + a
+  delta-verify caught and fixed a real 45px nav overflow at 1024px, two
+  sibling-parity gaps (staff picker, office clock), and a half-wired
+  ClockCard reason. Schedule nav item shipped inside it.
+- **#1066** the calls track, ONE PR per Naldo's ruling (slices S1+S2+S6):
+  office_tasks/office_task_events with the copilot's twice-guarded RPC
+  design; call_recordings/call_transcripts + GHL export sync + the
+  HighLevel transcript adapter + junk gate + /admin/calls; call_commitments
+  with the TOCTOU finalize (producer folded into its transaction) creating
+  tasks assigned to the rep who took the call. Naldo's launch rulings built
+  in: EVERYTHING shared (manual tasks too, "Personal" badged), rep
+  assignment via GHL user → operator email match.
+- **Prod ops after the single merge-go:** three migrations applied via MCP
+  and verified by schema queries; the 7-day backfill run through the REAL
+  route handlers locally (DNS pinned): **79 calls → 22 transcripts (rep
+  names resolved) → 19 commitments → 19 tasks (9 auto-assigned), zero
+  failures**; Naldo set CALLS_SYNC_ENABLED/CALLS_EXTRACT_ENABLED and
+  redeployed. Timers: sync :12, extract :27 hourly.
+
+## Review record
+
+Every PR lens-reviewed pre-merge at its tier (docs = process lens; code =
+FULL four). #1066's round: 0 HIGH from personas, then the technical lens
+BLOCKED with 2 HIGH **proven in a live postgres:16 container**: both
+ON CONFLICT upserts targeted PARTIAL unique indexes (42P10), meaning the
+sync could never insert a recording and the producer could never create a
+task — the whole feature dead on arrival behind 9050 green tests, the
+repo's third hit of this exact class. Fix round re-proven in the container;
+two delta-verifies (one caught a half-wired UI reason path); final round
+(shared-everything + rep assignment) delta-verified PASS with a live
+truth-table on the relaxed ownership RPC. Close review: integration +
+customer lenses (running at close; results in the close PR discussion or
+the post-close delta if late).
+
+## Decisions confirmed (do not re-litigate)
+
+- Deepgram dropped; HighLevel transcription on the already-pinned API
+  version. 13 of 79 calls had no HL transcript (mostly <45s) — an honest
+  platform limit, recorded, not a bug.
+- Inbound calls carry NO GHL user (ring-all): their tasks land in the
+  shared pool. Naldo chose option 2: keep the pool, no GHL routing change,
+  no guess-the-rep code.
+- Everything-is-shared task visibility; rate/rep rulings per the audit doc.
+- Email IS the account link: every named GHL rep matched their operator
+  account 1:1 (Naldo 11/11, Kelly 4/4, Jason 1/1). No mapping table needed.
+
+## Mistakes (full list in the scorecard)
+
+Ran the four-lens round on a stale local tree missing S6 (caught via a
+lens's "route missing" contradiction); hand-typed a SHA into
+--match-head-commit (guard refused, twice); applied migration 1
+comment-stripped instead of byte-verbatim; a background command chained a
+poll after a fallible merge and left a conflicted tree sitting 40 minutes;
+the backfill runner's stop condition read fields that didn't exist.
+
+Gates at close: see close PR (run on fresh master in a clean worktree).
+Master at close: `9a78becc`+. Next free ledger #: 466 after this close
+(S75 minted 460-464 for the remaining calls slices, plus 465 at close for
+the grant-hardening advisory).
+
+Close review outcome: integration lens PASS (composition clean, prod schema matches the fully-amended files, backfill figures consistent, zero orphans) with one advisory deferred to row 465 (call-table grant hardening); customer lens PASS on live prod (clean cron denials, perimeter composition intact; a real-device 375px pass on /estimate and /login remains a human nicety, low risk).
+
+# S76 (Naldo) — 2026-08-28→29 — the ops hub plan finished and live: View-as as a header menu, time tracking, the advertising lane tested with real photos, and the suggestions round built same-night
+
+> Number claimed at close 2026-08-29 ~04:30 ET after the full sweep (fragments, close PRs, remote branches, and the machine-local self-assessment, which is the S73 lesson): S75 was the calls session, nothing held S76. If a concurrent session's close also claims S76, the merged claim wins and this fragment renumbers.
+
+## What shipped (all merged to master, all lens-reviewed pre-merge, prod deployment verified READY per merge)
+
+- **#1063 (`f1a7562a`), the one-merge integration** under Naldo's explicit one-merge goal: the admin View-as mechanism (#1055's view context + `navItemsForView`), the `/admin/time-tracking` page holding row 278's time-exception queue (#1059), the invoices "Unreconciled (N)" chip (#1060), the time-exceptions API tightened to admin-only (Naldo's ruling 2026-08-29), the #1061 advertising surfaces absorbed at their newest commits, the View-as Advertising wiring (view seeded from the page's own area, so a switch survives navigation with zero client persistence), and `scripts/advertising-e2e-smoke.ts`. Superseded and closed #1055/#1059/#1060/#1061.
+- **#1071 (`4b721674`)**: Naldo's device-round design — View-as became a compact header dropdown in the Sign-out slot (Office current, Advertising live, Crew honestly disabled, Sign out last), the strip deleted outright, so the #1055-era pop-in class cannot exist. A localStorage role hint makes the menu present at first paint from a browser's second page onward; the session fetch stays the truth and the hint clears on sign-out (staff lens MED). Operators byte-identical.
+- **#1072 (`30845675`)**: review-queue duplicate candidates split by signal strength with the weak worker-day-only list behind a toggle (photos one tap away, never invisible — the admin lens corrected my own suggestion here), per-worker door-hanger counts paged to completeness, and the worker earnings "rate changed since you placed these" note.
+- **#1073 (`1794676c`)**: the morning digest carries "Stuck time records: N" with the link, only when N > 0; the queue page links the manual shift editor as the fix path (#1062 shipped it same night).
+- **Prod data ops**: the capture-to-pay smoke ran against the live database with generated sample photos (a yard sign and a door hanger) — 24 invariants including accept stamping exactly 250 cents, idempotent re-accept, reject-requires-reason, door hangers unpaid under the then-current rule, is_test excluded from pay and duplicate flags, teardown byte-identical incl. audit rows. 19 orphaned audit rows from the script's first runs were deleted and verified 0 remaining.
+- **Documents**: the full operations suggestions list (11 items, dispositioned same night: 1-3, 5, 7 built and merged; 4 delivered as a print-ready sign-crew hire sheet; 8 executed; 6 drafted for AGENTS.md pending Jason; 9 awaiting Naldo's crew-door ruling; 10-11 advisory).
+
+## The night's shape (for the next reader)
+
+Concurrent sessions moved master roughly a dozen times during this session's work: the advertising session built and merged workstream B itself mid-flight (#1061, then #1077 which REVERSED the door-hanger pay exclusion, then the still-open #1078), the calls session merged its lane, payroll/manual-shift merged, S74/S75 closed. The one-merge bundle had to re-sync onto a master that had already merged a newer copy of a branch inside the bundle. That experience is suggestion 6 (one session per lane), drafted for AGENTS.md with Jason's eyes: "One session per workstream lane. A session that finishes a lane merges that lane; concurrent sessions never bundle another session's open branch."
+
+## Review record
+
+Every merged PR carried its pre-merge round: CODE-tier lens pairs on #1059/#1060/#1071/#1072/#1073, a FULL four-lens on #1055's mechanism and on the #1063 combined tree, adversarial delta-verifies on both substantive fix rounds, and this wrap's integration lens over the whole shipped set. Zero HIGH findings survived to a merge; the one HIGH of the night was MINE (see the scorecard) and was fixed before its PR landed. Combined-tree gate before the final three-PR landing: 9156 tests across 522 files, tsc 0, lint 0 errors.
+
+## Open threads
+
+- Crew view stays disabled in the menu until Naldo rules on its door (crew logins retired in #1045; a Telegram-linked link fits how crews already work) — row 466.
+- The one-session-per-lane AGENTS.md draft needs Jason's eyes — row 467.
+- Post-#1077 drift, sharpened by this close's integration lens (HIGH on this session's own artifact): #1077 removed the kind filter from `summarizeEarnings`, so a pending door hanger now estimates 250 cents and the smoke script's "door hanger earns/pends 0" checks WILL FAIL its next run; the pay page's "(unpaid)" label and two never-pay comments are stale too. Row 468, flagged to Naldo directly at close; the label half is also flagged on the open #1078.
+- The settings page carries a pre-existing ~433px horizontal overflow at 375px width (control-measured: identical for operator/admin, menu closed/open, untouched by this session) — row 469.
+
+### S77 (Naldo) — 2026-08-29 — the daily PostHog robot's report worked: a site-wide JavaScript error traced to our own dead code and deleted, and error alerting turned from decorative into functional — close PR naldo/s77-close
+
+**NUMBER:** S75 and S76 were both taken by concurrent sessions while this one ran, and both had already merged their close PRs by wrap time. S77 verified free against master, the archive, every open PR, every remote branch and the machine-local self-assessment before anything was stamped.
+
+**ZERO REPO DIFF.** Everything this session changed lives outside git: a live WordPress theme file and PostHog project configuration. The close PR is documents only.
+
+## What shipped
+
+**1. The marketing site's site-wide JavaScript error, fixed at source (ledger row 440, now archived).**
+
+The daily PostHog review robot reported 201 exceptions in 24 hours across at least 9 pages of yulelovelights.com, `TypeError: Cannot read properties of null (reading 'classList')`, and suggested chasing it against recent WordPress, Elementor or plugin updates. It was not an update. The stack frame named `sticky_head_func` at line 3061 of the served document, which led to `astra-child/functions.php` lines 27-50: a `wp_footer` hook printing a scroll handler that read `#stick_form_section`, an element removed from the site long ago. `header` was null, so every scroll event threw, on every page, for every visitor.
+
+Two measurements settled the diagnosis before any edit:
+- The element exists on zero pages while the script ships on every page, including the 404 page.
+- The "0 to 201 in 24 hours" was **instrumentation, not regression**. Pageviews on that host go back to 2026-07-30; the first `$exception` is 2026-08-28T12:38, the day exception capture was switched on. The bug is old; yesterday is only when it became visible.
+
+Deleted the whole block, file 157 lines to 133. Purged NitroPack. Verified 12 live pages (5 originally erroring, plus the blog index, an about page, the services index, a 404, and three more) all returning 200 with the script absent and no PHP fatal. `window.onscroll` now reads null on two pages checked, so nothing else on the site was competing for that global. Resolved all four PostHog issues for this error so a recurrence trips the new reopened alert.
+
+**The removed code, preserved verbatim as the rollback artifact** (there is no version history on a live theme file; this is the revert lever):
+
+```php
+add_action('wp_footer','sticky_quote_form_func');
+function sticky_quote_form_func(){
+echo '<script>
+	//console.log("test");
+	// When the user scrolls the page, execute myFunction
+	window.onscroll = function() {sticky_head_func()};
+
+	// Get the header
+	var header = document.getElementById("stick_form_section");
+	//console.log(header);
+
+	// Get the offset position of the navbar
+	var sticky = 900;
+
+	// Add the sticky class to the header when you reach its scroll position. Remove "sticky" when you leave the scroll position
+	function sticky_head_func() {
+		if (window.pageYOffset > sticky) {
+			header.classList.add("sticky_block");
+		} else {
+			header.classList.remove("sticky_block");
+		}
+	}
+</script>';
+}
+```
+
+**2. PostHog error alerting made functional.**
+
+Before: one alert on issue-created, and spike detection sitting at its shipped defaults. The default **minimum threshold is 500 exceptions in a 5-minute window**, and the largest 5-minute bucket this project has ever recorded is **23**, so the spiking alert could never have fired. Retuned to threshold 10, multiplier unchanged at 10, snooze 10 minutes to 60 (which matches the 1-hour baseline window PostHog's docs describe). Re-read after a full page reload: 60 / 10 / 10.
+
+Added the two missing alerts, spiking and reopened, cloned server-side from the existing Telegram destination so the webhook URL was never read into the transcript. Then the wrap review found the real weakness: the message body was a **static string with no template tokens at all**, so an alert would have said "new error on Yule Love Lights" and nothing else, on all three triggers. Rewrote both bodies to carry the issue name, the error text, a direct link to the issue, and for spiking the current bucket value against the computed baseline. Fire-tested both after the rewrite.
+
+**3. The lead form, cleared rather than fixed (ledger row 441 updated, still open).**
+
+The robot's third suggestion was to test the form because it showed 0 submits from 4 starts in 2 days. Naldo tested it and `yll_lead_form_submitted` fired. Re-measured over 30 days: 486 views, 107 starts, 20 submissions, about 0.67 a day, so two empty days is ordinary. Row 441 stays open because the per-field drop-off events are two days old and hold one session.
+
+## Session review (full four lenses, per the wrap rule for a live non-repo surface change)
+
+Customer PASS (0 HIGH, 0 MED, 1 LOW), admin PASS (0 HIGH), technical CONCERNS (5 MED), process **BLOCK (2 HIGH, 4 MED)**. Dispositions:
+
+- **Process HIGH, no rollback artifact.** Correct and fixed in this document: the deleted 24 lines are above, verbatim. Also raised as proposed standing rule 472.
+- **Process HIGH, probed a blocked tool call three times.** Accepted as a real mistake, recorded in the self-assessment. Nuance kept for accuracy: the manual procedure was handed over after the second block, and the third attempt came only after Naldo explicitly asked me to try again.
+- **Technical MED, undefined-function fatal if another file called the deleted function.** Refuted empirically: 12 pages across 5 template types return 200 with no fatal.
+- **Technical MED, the head of the file (lines 1-26) was never hashed.** Refuted: the edit was a true range delete, and the post-save read showed lines 1-27 unchanged.
+- **Technical MED, spike baseline semantics unverified.** Answered from PostHog's docs: the baseline is the issue's own activity over the past hour, falling back to an average across other issues when an issue is too new. A spike inflates the baseline for the following hour only.
+- **Technical MED, cloned body references fields absent on the new events.** Refuted, and it exposed something worse: zero tokens at all. Fixed, see above.
+- **Technical and admin converged, the alerts are unproven on a real event.** Accepted. Both fire-tested, but a synthetic invocation bypasses the trigger pipeline, so ledger row 471 holds it open until a genuine alert lands.
+- **Admin MED, the GHL key has no durable tracking.** Fixed: ledger row 470.
+- **Admin MED, the canonical PostHog doc was not updated.** Fixed in this close.
+- **Admin LOW/MED, resolving by fingerprint can miss a fifth variant; the alert text does not name the host.** Both folded into row 471.
+
+## Mistakes
+
+- **Reported a 3-day query result as an all-time fact** ("the first `yll_lead_form_submitted` event ever recorded"). The real 30-day figure is 20. Corrected in the next message. Second occurrence of the class (S39 reported a `LIMIT 5` result as exhaustive), so it is promoted to AGENTS.md Pitfalls in this close.
+- **Probed a blocked tool call three times** instead of handing over the paste-able procedure on the first block, which Naldo's own global rule names explicitly.
+- **Read a NitroPack purge as done when it had not run.** A stale element ref sent the click to a different page entirely and I only caught it by re-reading the "last purge" timestamp, which still said 2 hours. The feature check caught what the click result did not.
+- **A scroll test that proved nothing.** The automated browser tab reports `innerHeight` 0, so `scrollTo` was a no-op; the `window.onscroll === null` reads stand because they need no layout, but there is still no real scroll test of the fixed pages.
+
+## Ending state
+
+Master `9d883b7f` at branch time; `origin/master` then moved to `993d95cc` (PR #1078) mid-close, so the branch was re-synced and re-gated. Gates at branch time: tsc 0 · lint 0 errors (21 warnings) · vitest **9156** across 522 files. Gates on the merged tree, which is what this PR actually is: **tsc 0 · lint 0 errors (21 warnings) · vitest 9158 passed across 522 files**. Ledger: row 440 shipped and archived, 441 updated, 470-472 minted, counter at 473.
+
+## Next
+
+- Row 470 first, and it is Naldo's to do: rotate both GHL keys and move the live one into `wp-config.php`.
+- Row 471 closes itself the first time a real alert lands. Check the message names the issue and the link opens it.
+- Row 441 wants a week of per-field data before anyone touches the lead form.
+- One thing worth a human eyeball: scroll any page of yulelovelights.com once, since no automated scroll test was possible.
+
+# S78 (Naldo), 2026-08-29: the silent-empty class closed on three surfaces, a payroll row made deletable, and a wrap review that found the hole in my own delete
+
+> Session number note: the handoff said S75. By the time the first PR was ready master
+> had moved 51 commits, S75 and S76 fragments had landed, and PR #1087 held S77; the
+> machine-local self-assessment confirmed all three. This is S78, re-checked at wrap.
+> That is the second session running where the number had to be corrected mid-flight,
+> and the cause is the same both times: a long-lived handoff written before other
+> sessions closed.
+
+## What shipped
+
+- **PR #1069, merged and live: a manual shift can no longer be dated in the future.**
+  Carried over from the S74 post-close round, brought current with master twice as it
+  moved underneath, gates re-run each time, merged pinned to the verified SHA.
+- **PR #1091, merged, live, and device-checked by Naldo: three silent-empty reads and
+  the void action.**
+  - **Row 455.** `listActiveFieldCrew` returned an empty array for three different
+    situations: no service client, a failed query, and a company with genuinely no
+    field crew. Both callers rendered that as an ordinary empty dropdown, so a broken
+    query looked exactly like nobody being available, on the page that gates all
+    scheduling. It returns null when the roster could not be READ, and the schedule
+    page and the admin clocks page both say so.
+  - **Row 457d.** `listFleetDays` swallowed both source query errors into an empty
+    list, so a failed read looked like a quiet stretch with no data. Returns null on
+    either failure. The office filter still fails open on purpose: over-listing days
+    is the safe direction for navigation.
+  - **Row 457b and 457c.** A stale `/admin/fleet?date=` bookmark silently showed
+    today; it now says where the day view went and links there for admins. The "the
+    van is not the person" caveat moved onto the all-office live page, which is the
+    page actually showing at-place timers to the whole office.
+  - **Row 458, the substantial one.** An admin could type a manual shift and
+    afterwards only edit its times, so a bogus row lived forever, because shrinking it
+    to a minute pollutes payroll rather than removing it. Voiding DELETEs the row. A
+    guarded delete beat a void marker on measurement, not taste: a marker would have
+    needed the shifts overlap constraint changed (an ask-first migration) and every
+    reader of paid time taught about it, while a delete needs neither. Three guards,
+    all fail-closed: the row must be an office-TYPED entry (`source='office'` with a
+    manual stamp), it must carry no break or job segment, and the delete is a CAS on
+    `updated_at`. Each was mutation-probed.
+  - **Row 456.** `docs/reference/geocode-fix-list-triage.md`, measured against the
+    real archive guard rather than by eye: 7 test rows archivable, 7 real customers
+    the guard WOULD let you archive (fix, do not archive), 11 blocked, and 9 of the 25
+    carrying no address at all.
+- **PR #1095, merged: the ledger rows corrected** so 455 and 458 read as shipped and
+  456 and 457 stay open for the parts that are still a person's job, not code.
+- **PR #1098, merged and live: the wrap review's own HIGH fix.** Merged after the close docs were written, which is why the post-close delta below exists.
+
+## The wrap review, and what it found in my own merged code
+
+Four lenses. Two of them reached the same HIGH from different directions.
+
+`adminVoidShift` deleted the payroll row and THEN wrote the audit entry, through a
+helper that logs a failure and carries on. A failed insert left a payroll row
+permanently gone with no record anywhere, while the route answered ok and the confirm
+dialog promised "the activity log keeps a record of what was removed". Re-deriving it
+rather than taking it on report made it worse: supabase-js returns a failed insert as
+`{ error }` and does not throw, so the insert's error was never read and the try/catch
+only ever caught a transport fault. An RLS refusal came back as a quiet success.
+
+Fixed in #1098: the audit writer reports its failure, and the void writes the entry
+BEFORE the delete and refuses on failure. Of the two ways this can lie, an entry for a
+removal that did not happen is the recoverable one, because the shift is still on the
+page.
+
+Other findings, all dispositioned:
+
+- **Staff lens, 3 MED, all fixed in #1098.** The roster-failure notice said "the picker
+  below is empty" when `AddShiftForm` returns null and renders nothing at all. The
+  Remove confirm never named the shift, which is no check at all on a day holding
+  several manual entries. The crew Telegram note invited a reply the bot answers with
+  "Didn't understand that", to someone who just learned time was removed from their
+  pay.
+- **Admin lens, 1 MED, recorded as row 473.** The `shift-manual-*` entries are not
+  discoverable from any payroll or fleet page; the only reader of `dashboard_activity`
+  is the inbox activity feed, which has no label for them and caps at 100 rows.
+- **Admin lens, clean where it counts:** it checked the triage doc's claims against
+  `propertyArchiveBlock` and they match exactly, and found access control and every
+  hours aggregate untouched by the delete.
+- **Technical lens ruled things OUT with evidence**, which is worth as much as a
+  finding: the check-then-act window between the child guard and the delete is real in
+  the code but unreachable, because a voidable row can never be reopened and both
+  child-creating paths refuse on a closed shift.
+- **Integration lens found the cross-session break** no per-PR review could see. Open
+  PR #1094 adds a new consumer of `listActiveFieldCrew` written against the OLD
+  contract, catching a throw from a function that now returns null instead. It proved
+  it by merging onto master and compiling: two real tsc errors. Flagged on that PR
+  with the exact fix rather than edited underneath its session.
+
+## Ending state
+
+Master `17446edc` plus whatever lands next. Gates on master at close: tsc 0 errors,
+lint 0 errors with 21 pre-existing warnings, vitest 9255 passing. One run reported a
+single unhandled error outside the tests; a second full run did not reproduce it, so
+it is recorded as a flake, not a break. Gates on the open #1098 branch: tsc 0, lint 0
+errors, vitest 9268.
+
+## Decisions on record
+
+- A guarded DELETE, not a void marker, for a wrongly created manual shift. Chosen on
+  blast radius: no schema change, no constraint change, no reader of paid time needs
+  to learn about it.
+- Row 459 stays parked. `shifts` has no paid or approved marker, which is the row's
+  own precondition, re-verified against `migrations/FULL-SCHEMA.sql` today.
+- The geocode fix-list cleanup is a staff task, not code. The tool already refuses to
+  archive anything carrying a job or a live quote.
+
+## Next up
+
+- Merge #1098 once Naldo has read it.
+- PR #1094's owner fixes the null contract before merging; the comment on that PR has
+  the change.
+- Naldo: send the crew GPS notice before any hours conversation references GPS, and
+  work the fix-list from the triage doc.
+
+## POST-CLOSE DELTA (same conversation, 2026-08-29 afternoon)
+
+The close docs were written while #1098 was still open, and both it and the close PR
+itself merged minutes later, so the fragment above described a state that stopped being
+true almost immediately. That is the row-referencing-an-open-PR trap this scorecard
+already names; correcting it is what this delta is for.
+
+- **#1098 merged (`37df332b`) and #1099 merged (`84607f4a`).** Both were brought current
+  with master first, an advertising PR having landed in between, re-gated at tsc 0,
+  lint 0 errors, vitest 9278 across 530 files, CI green on the exact head, merged
+  pinned to that SHA. Prod serves `37df332b`, the last code change.
+- **A second wrap ran a delta-verify on the merged fix, which nothing had reviewed.**
+  This repo's rule is that a fix round on a money seam gets its own adversarial pass;
+  #1098 was itself a fix round and merged without one. The pass found a MED and proved
+  it by running code: the audit-first ordering has a mirror case, where the audit row
+  lands and the delete then loses its CAS race, leaving the trail permanently asserting
+  a removal that never happened. My own commit message had named that tradeoff and
+  then left it uncorrected.
+- **PR #1100, open at the time of writing:** a second append-only entry,
+  `shift-manual-void-aborted`, records that the removal did not happen, for both the
+  lost race and a failed delete. Append-only, because correcting the first entry in
+  place would be rewriting an audit trail. Log-not-throw, because the caller is already
+  throwing the real refusal. Also logs the cause behind an `audit-failed` refusal,
+  which was otherwise an opaque "try again" loop with nothing to diagnose from.
+  Mutation-probed; gates tsc 0, lint 0 errors, vitest 9279.
+- **The lesson, and it is the same one twice in one day:** the first review found that
+  the void could destroy a row without recording it; the delta-verify found that the
+  fix could record a destruction that never happened. Both are the audit trail lying
+  about payroll, from opposite ends. A fix that names its own tradeoff in a commit
+  message has not handled that tradeoff.
+- **Process note for whoever reconciles it:** the wrap skill on this machine says a
+  close PR touching the root `CLAUDE.md` cannot auto-merge, while the AGENTS.md
+  auto-merge allowlist says `CLAUDE.md` is the journal every close appends to and must
+  never be an auto-merge-off trigger. The two contradict each other. #1099 was held for
+  an explicit go rather than resolving it unilaterally, and the same fork will appear
+  at the next close.
+
+# S79 (Naldo) — 2026-08-29 — the marketing site: accessibility to 100, agentic audit cleared, and a paid speed tool that had silently stopped working
+
+**Zero repo changes.** Everything this session shipped is on the live WordPress site
+(yulelovelights.com). The close PR is documents only.
+
+## What prompted it
+
+Naldo ran PageSpeed Insights on the marketing site and asked three things: fix the
+failing "Agentic Browsing" accessibility-tree audit, explain what the WebMCP items mean
+and whether they matter, and give an honest answer on whether the weak performance score
+hurts SEO, plus what else we should measure.
+
+## What shipped, all on the live site
+
+- **New Elementor Custom Code snippet 4792, "A11y Contrast and Agentic Browsing Fixes"**
+  (entire site, body end). One CSS block and one `<script nitro-exclude>` block. Undo
+  lever: delete the snippet.
+  - Contrast: global body text `#777E90` to `#6b7182` (4.06 to 4.87 against white); the
+    two top contact bars and the lead-form submit button `#33995F` to `#2b8251` (3.58 to
+    4.76). `transition:none` was needed because those containers animate background-color
+    and fought the override.
+  - Agentic fix: Elementor stamps an invalid `role="presentation"` on the hero background
+    video; swapped for `aria-hidden="true"`.
+  - Carousel: `aria-label` "Previous slide" / "Next slide" on the Elementor swiper
+    buttons, which had `role="button"` and no accessible name.
+  - Lead-form honeypot: `tabindex="-1"` on the hidden `input[name=company]` spam traps.
+    **CORRECTED at close:** this was reported mid-session as closing a real lead-loss
+    hazard, and that claim was wrong. The wrap technical lens found the widget already
+    bakes `tabindex: '-1'` into the honeypot, and `git log` confirms it has done so in
+    `public/lead-form.js` since 2026-07-11, before this session started. The live page and
+    a Lighthouse `aria-hidden-focus` failure both showed the attribute absent at the time,
+    most likely a stale cached copy of that script being served, but the widget was never
+    actually unprotected. The change is harmless belt-and-braces, not a hazard closed.
+- **Edit to pre-existing snippet 3559** (April's accessibility fixes): added
+  `nitro-exclude` to its script tag. No logic change.
+- **NitroPack**: Naldo renewed the lapsed subscription and upgraded to Plus (40,000
+  pageviews, 25GB CDN). Cache purged and rebuilt several times.
+
+- **CORRECTION shipped inside the close:** the `!important` background added for the
+  contact bars was also applied to the lead-form submit button, which silently killed that
+  button's hover darken, because `!important` beats the widget's own non-`!important`
+  `:hover` rule regardless of specificity. Found by the wrap technical lens with a real
+  hover in a headless browser, not by reading CSS. The rule was split so the bars keep the
+  override and the button gets its own `:hover`/`:focus` state at `#21633e` (contrast 7.19).
+  This was a regression introduced by this session on the site's primary conversion CTA.
+
+## Results, measured
+
+Google PageSpeed mobile: **Performance 39 to 85**, FCP 4.2s to 1.7s, **LCP 10.2s to
+3.7s**, TBT 840ms to 180ms, SI 8.0s to 3.0s. Best Practices 100, SEO 100.
+Lighthouse mobile **Accessibility 97 to 100**. Page weight ~9,355 KiB to ~817 KiB;
+stylesheets on the homepage 62 to 7. The hero video was left untouched throughout, at
+Naldo's explicit instruction. One audit still fails: `td-has-header` on the towns
+comparison table, deliberately left because fixing it could visibly change that table.
+
+## The real root cause, after two wrong ones
+
+The cache had been missing on **every** request and NitroPack reported **0 optimized
+pages**. Two confident diagnoses were given before the right one:
+
+1. The Meta pixel plugin's server-side `Set-Cookie: _fbp` on every response, with nginx
+   skipping cache on any Set-Cookie. Refuted by test: a request already carrying `_fbp`
+   gets a response with no Set-Cookie and still missed.
+2. SiteGround's edge WAF returning 403 to bot-format user agents, blocking NitroPack's
+   optimizer. This one was **sent to NitroPack support before it was tested**. The 403 is
+   real and reproducible (control-tested against interleaved current-Chrome requests) but
+   was not the cause.
+
+NitroPack support answered it in one message: **the Business plan's renewal had failed,
+so they stopped serving cache.** Pure billing. The evidence was visible from the start —
+renewal cancellation emails in the info@ inbox and "Next billing: N/A" on the dashboard —
+and was treated as a footnote while technical theories were chased.
+
+## The trap worth inheriting
+
+Once optimization came back on, **both accessibility snippets went completely dead** and
+Lighthouse accessibility fell 100 to 94. NitroPack rewrites inline scripts to
+`type="nitropack/inlinescript"` and defers them until the visitor interacts, so nothing
+ran for a crawler, a screen reader, or an AI agent, while the page looked fine in a
+browser. NitroPack's `nitro-exclude` attribute on the script tag fixes it. **Any future
+accessibility or structural script on this site needs that attribute or it silently does
+nothing.**
+
+## Also delivered
+
+A four-lens audit of the site (performance, AI/GEO visibility, local SEO, structured
+data) with a ranked backlog, published as an artifact plus four detailed files. Highlights
+still open for Naldo to action: the Yelp listing slug says "hicksville" while the site's
+schema says Amityville (a top-tier citation mismatch), the Google Business Profile primary
+category and hours need an owner-only check, the 5.0/172 review rating is displayed but
+absent from structured data, and seven live town permanent-lighting pages are set to
+noindex. Answered directly: WebMCP is a draft standard with no real traffic yet and is
+worth skipping for now; and the performance score costs nothing in rankings today because
+the origin has no CrUX field data, but 10 seconds on a phone was costing real customers.
+
+## Session review
+
+Four lenses (customer, technical, admin, staff) run against a written description of the
+live-surface changes, since there is no git diff to review.
+
+### S80 (Naldo) — 2026-08-29 — the advertising subsystem built end to end: six PRs, all merged and live, plus a live E2E with real sample photos — close PR naldo/s80-close
+
+- **NUMBER:** stamped S80. S74-S78 were held by concurrent sessions (master already carried an S78 close), and **S79 was held by a `naldo/s79-close` branch existing only in another local worktree** — invisible to master, the archive, every open PR and every remote branch. The S73 lesson recurring through the one door no repo-side check covers; caught by `git checkout` refusing the name, before a single artifact was stamped.
+- **SHIPPED, six merged PRs, each with its own four-lens round plus an adversarial delta-verify:**
+  - **#1057** schema + data layer: `advertising_workers` / `campaigns` / `placements` / `activity`, the private `advertising-proof` bucket, RLS-enabled-zero-policies, and the money rules as CHECK constraints.
+  - **#1061** the surfaces: worker capture (GPS + camera + campaign), own-placements with rejection reasons and resubmit, earnings; admin review queue with duplicate flags, accept/reject/bulk, the account-creation door, campaign management, pay summary. Login now names `/advertising` as home for an advertising account.
+  - **#1067** the yard-sign SKU in the shared inventory tables + manual stock reconciliation (no auto-decrement, by ruling).
+  - **#1077** **pay per accepted PHOTO** — Naldo's device-check ruling superseding the door-hangers-never-pay exclusion. Constraint swap on a populated table, backfill, and a copy sweep.
+  - **#1086** sign allotments (issuance ledger, remaining DERIVED as issued minus photos taken) + the photo-similarity engine (dHash + Hamming, strict 10-bit threshold).
+  - **#1096** placement **void**: a voided row counts for nothing (pay, estimates, allotments, stock, badges, duplicate flags) while its history stays.
+- **LIVE E2E with real photos, not mocks:** generated a yard-sign and a door-hanger sample image, signed in as a seeded `is_test` worker on a phone-sized browser with mocked GPS, submitted both through the real routes (Google reverse-geocoded to a real Farmingdale address), rejected one and accepted the other as the office, resubmitted through the worker UI, accepted again — **exactly one $2.50 stamp, retry a no-op**, six audit rows in order. Later re-ran the same shape for per-photo pay and for void.
+- MISTAKES: **the Void button I added rendered only on pending rows**, so the mis-tapped Accept it exists for had no button (self-caught while briefing the delta-verify) · **fixed the voided chips and never checked the MAP**, leaving voided-accepted rows as green "this paid" pins (delta-verify HIGH) · **shipped three counter guards with no tests at all**, then wrote tests that passed immediately until mutation probes proved them · **left the door-hangers-never-pay claim in code comments** after the rule changed, in three files · **a PR body went up with em dashes** against the standing voice rule.
+- DID RIGHT: **measured before believing** (sharp's grayscale raw really is 72 bytes; the two sample photos really are 27 bits apart while an identical photo is 0) · every CHECK negative-controlled **live** on prod, both directions, before trusting it · **held nothing back from the lens rounds**, which returned two BLOCKs that were both real (a stale branch that would have broken master's tsc, and a green "$2.50 Accepted" chip on rows that earn nothing) · every guard mutation-probed · the merge loop re-gated on **six** master moves rather than merging stale once.
+- REVIEW AT CLOSE: one integration lens plus the customer lens (the combined diff touches SHARED paths). Customer lens PASS, zero findings, reachability traced by construction. **The integration lens found a HIGH in MERGED, LIVE code, and it was my own mistake a THIRD time:** the void PR gated the status chip's LABEL on `voidedAt` and left the money suffix on the very next line ungated, so a voided-accepted placement rendered **"Voided · $2.50"** — on the admin screen the void was performed on, and on the worker's own view of the pay they lost. The sibling ProfileScreen already had the correct early-return shape with a comment naming that exact class: same fix, one file short. Fixed in **PR #1104** with a regression test pinning label and suffix as ONE decision, which fails when the guard is removed (probed). Its MED (the one placement counter without an `is_test` filter) was EXPLAINED rather than "fixed": that counter is scoped to a single worker, placements inherit the worker's flag, and filtering would zero a TEST worker's own balance during the device check that reads it. Two doc-comment nits corrected, FULL-SCHEMA parity re-asserted by script.
+- Ledger **479-482** minted (first written as 474-477; **S79's marketing rows 474-478 MERGED while this close PR was open**, so the merged rows won and these renumbered rather than hand-resolving over them): void's allotment give-back ruling (**Naldo's call**), the issuance idempotency lock, **payout settlement tracking** (the one real gap left: the tool says what is earned, nothing records that it was paid), and the two voided-exclusion guards needing real assertions.
+- NEXT: the UI session's Simple Crew replica owns presentation; wiring left for it is a Void button surface on its own screens and the allotment balance in Manage Crew. First device check: real phone, real GPS, real camera.
+
+#### S80 POST-CLOSE DELTA (same conversation, 2026-08-29)
+
+- Naldo asked whether the advertising side was finished. VERIFIED against the ledger rather than answered from memory: everything built is live, and the only genuinely open items are his two product decisions (row 479 void's allotment give-back, row 481 payout settlement) plus two small hardening rows.
+- That check surfaced **row 468**, another session's row about drift MY pay-per-photo change caused in their smoke script. All four of its claims are actually fixed now (the smoke asserts the per-photo rule, the doorHangerCount test header was corrected, no door-hanger "unpaid" claim survives a tree-wide grep) — the work landed, the ROW was never marked off. Recorded as verified-resolved in the row itself; left standing to close because it is S76's row, not mine.
+- Wrote `docs/reference/advertising-payout-spec.md` at Naldo's ask: a cold-start build spec for row 481, ready for a later session. Its load-bearing call is that a settlement records WHICH PLACEMENTS it paid (lines keyed to placement ids, unique per placement) rather than a period and a total — period-only settlement drifts the moment a placement inside an already-paid week is accepted late, and the office cannot then tell an underpayment from a late acceptance. Unpaid stays derived (earned minus settled), never stored. Four open questions are listed for him to answer BEFORE any code, the sharpest being what should happen when an already-PAID placement is voided.
+
+### S81 (Naldo) — 2026-08-29 — the Simple Crew replica, the device round it earned, and admin mass photo upload — close PR naldo/s81-close
+
+- **NUMBER:** this conversation never stamped one while it built, and by close time S80 was held by the concurrent advertising-engine session (close PR #1103, post-close #1106 already merged). Took S81. **Attribution caveat worth recording rather than quietly resolving:** the S80 fragment claims #1057, #1061 and #1067 as well, and this session's own record claims them too. What is beyond dispute from this conversation's transcript is #1078, #1090 and #1093, so those are what this entry claims. The three contested numbers are on `claude/advertising-*` branches; if it matters later, the branch reflog is the evidence, not either fragment.
+- **SHIPPED, three merged PRs, all live:**
+  - **#1078 the Simple Crew replica.** Naldo sent 17 screenshots of the Simple Crew app and asked for an exact replica in our colours, admin view and worker view. This replaced the v1 advertising UI wholesale: worker app at `/advertising` (Campaigns, Camera, Profile, Settings) and admin app at `/admin/advertising` (Campaigns, Crew, Camera, Settings). Leaflet maps with status-coloured pins, a live camera with a multi-shot background upload queue and per-photo notes, day-grouped photo cards, the confetti empty states, bottom tab bars, sheet modals. Two migrations (`worker_note`, `campaigns.kind`) applied to prod and appended to FULL-SCHEMA.
+  - **#1090 the device round.** Naldo tested the replica on his phone and returned five findings, all fixed: the camera never prompted for location (the browser only shows its permission prompt when the geolocation API is CALLED, and the old code called it only after the shutter, so a never-asked device saw failures and no prompt); Pay merged into Settings as one screen; a way back to the quote tool for admins; the Help section deleted ("we are the support"); and the palette re-pointed to the quote tool's own cream and evergreen.
+  - **#1093 admin mass photo upload.** Someone placed signs before the tool existed and could not record them. An admin can now attach a batch of camera-roll photos to a worker: each lands accepted and paid at the campaign's current rate, GPS and the taken date read out of the file's EXIF client-side before compression strips them, a money-echo confirm before anything uploads, exact duplicates skipped, a partial unique index as the backstop that cannot be raced.
+- **THE REVIEW RECORD, which is the real story of this session.** Every PR took its lens round and every fix round took an adversarial delta-verify, and the delta-verifies earned their keep three separate times: **#1090's fix reintroduced the exact class it was written to close** (the chip trusted a GPS fix for 15 seconds while the shutter trusted it for 5, so a green "GPS ready" could vouch for a fix the shutter would then refuse), and **#1093's two fix rounds were both BLOCKed** — first because the dedupe used `maybeSingle`, which PostgREST answers with an error and null data when two rows match, so the guard silently disarmed itself exactly where duplicates already existed; then because the new unique index guards the transition INTO accepted, so the ordinary Accept button could hit a raw 23505 and 500. Both were real. Neither would have been caught by the gates.
+- **THE COLLISION, handled by deleting my own work.** Mid-review, the concurrent session shipped **placement void** (#1096) for the same problem this session had solved with an `unaccept` action. Theirs is better: the row keeps its status and stamped rate as history, records who voided it and why, and stops counting for pay everywhere. Two mechanisms for one job would have been the worse outcome, so `unacceptPlacement`, its route action, its tests and its UI were deleted in the merge and the admin's undo button now voids.
+- MISTAKES: **the GPS fix that reintroduced its own class** (two thresholds, no shared constant; now one `GPS_FRESH_MS` with the chip and the shutter reading the same rule, mutation-probed) · **a test mock that lied** — it returned the first row where real PostgREST errors, so the dedupe test could never have caught the bug it was written for; fixed the instrument first, then watched the test fail for the right reason · **committed with a red suite** because the commit was `&&`-chained after the test line, so a failing OperatorNav test rode through (the rename had a third consumer) · **em dashes in a commit message**, caught before push, against the standing voice rule.
+- DID RIGHT: **let the delta-verify BLOCK me twice on my own money code and fixed rather than argued** · **measured before applying the unique index** (zero colliding groups in prod, which is what made it safe/additive rather than a constraint change needing a named go) · **negative-controlled every new guard** at write time, including the accept-path 23505 which failed correctly before the fix · **checked the riskiest interaction myself while the reviewer ran** and found the accept-path gap independently, so the fix was already written when the BLOCK arrived · **took master's void over my own unaccept** instead of defending the work.
+- **REVIEW AT CLOSE: one integration lens over the combined two-session advertising subsystem, plus the customer lens (the combined diff touches SHARED paths: `package.json` gained leaflet and exifr). Customer lens PASS, zero findings, with live logged-out probes: the marketing form and a portal quote render clean and carry no leaflet or exifr, every advertising surface 307s to login, both advertising APIs 401. The integration lens found a HIGH in MERGED, LIVE code, at exactly the seam it was spawned to inspect, and it was mine: the bulk-upload dedupe index refuses a second accepted row for the same worker, campaign and photo hash, while void is an OVERLAY that leaves `status='accepted'` forever. So a VOIDED photo still satisfied the index. Void a wrongly accepted photo and the office could never redo the work: the worker path 409s claiming the photo is already accepted (false, it pays nothing), and the bulk path is worse, reporting a calm 'already uploaded, skipped' 200 and creating nothing. The void migration's own comment names resubmission as the remedy, and the bulk sheet's confirm text promises the admin that a wrong accept can be undone; the index silently defeated both. Neither PR's own review could have seen it: the dedupe shipped before `voided_at` existed. Fixed in **PR #1107** (query filter plus a narrowed index predicate, applied to prod after measuring zero live colliding groups), with tests pinning both directions and a mutation probe that fails exactly the voided test.**
+- **ENDING STATE:** gates green — tsc 0, lint 0 errors (21 pre-existing warnings), vitest **9321** across 532 files (9315 at the moment of the last merge, plus the six tests added by the close review's fix). Prod deploy verified on the #1093 merge commit; the new bulk route refuses a logged-out POST with 401; the unique index verified live in the database.
+- **NOT DONE, deliberately:** no ledger rows were minted and `task_ledger.md` was not touched at all, because this session's kickoff prompt forbade editing it while concurrent sessions were live. The mass-upload follow-ups are therefore recorded here and in the handoff rather than as rows: backfilled yard-sign photos draw down a worker's sign allotment (the allotment derive treats any photographed sign as a used sign, whenever it was taken), and there is no per-row "this was backfilled" badge — the activity log records it, nothing renders it.
+- **NEXT:** Naldo's real ask behind mass upload was never the file picker: he wants to hand over a Google Drive folder link and have the photos ingested for him. Drive access is confirmed working from the assistant side (listing and downloading his images), so the next session's first job is that ingest, with a 3-photo dry run before the full batch. The manual picker stays as the second door.
+
+#### S81 POST-CLOSE DELTA (same conversation) — the close lens finished, and the rest of its findings
+
+- The integration lens's HIGH was acted on from its partial file before the agent finished; its FULL report then landed with **1 HIGH, 1 MED, 3 LOW**, so the close entry above understated the count. Recording the whole set and its dispositions here rather than leaving a doc that tells half the story.
+- **MED, FLAGGED TO NALDO, NOT FIXED:** the sign-allotment feature (#1086: issuance ledger, balances, its API route) has **zero UI reachability** — nothing in any component calls it. The other session's own close names the UI wiring as pending, and the screen it belongs on (Manage Crew) is this session's, so it sits exactly between the two lanes. This is the S61 `CrewLogins` class, a built and tested feature with no door into the product, and it needs a decision rather than a quiet fix.
+- **LOW, FIXED in PR #1107:** the pure `countDoorHangersByWorker` called itself the tested pin of the counting rules while the paged counter beside it filtered voided rows and it did not, so the two enforced different rules; a future caller wiring the pure one into a live path would have counted voided door hangers. Now skips voided rows, with a test that fails without the change.
+- **LOW, FIXED in PR #1107:** the workers route claimed `active` gates "login use and pay eligibility". It gates login only: an inactive worker's pending placements can still be accepted and paid, and bulk upload allows inactive workers by design. The comment now says what the code does.
+- **LOW, DEFERRED:** `advertising_activity` is written diligently by every mutator and read by nothing in the product. Three separate code comments justify their CAS design by the audit trail's trustworthiness, and no human can look at it. Worth a viewer on a placement or worker detail eventually; no money moves wrongly today.
+- Gates after the two comment fixes: tsc 0, lint 0 errors, vitest **9322** across 532 files. PR #1107 now carries the HIGH fix and both LOW fixes and still waits for Naldo's go.
+
+#### S81 POST-CLOSE DELTA 2 (same conversation) — a field incident, four more merged PRs, and a close review that found two HIGHs in them
+
+- **SHIPPED after the close, all merged and live:** **#1126** the camera remembers its campaign (page-supplied wins outright, a memory under an hour is silent, older preselects but the shutter refuses until confirmed) · **#1135** sign allotments got their two doors, an admin section on the advertising Settings screen and each worker's own count, plus a worker-scoped `GET /api/advertising/sign-balance` · **#1141** the live field fix: a photo that fails to send is held and retried instead of discarded · **#1142** photos persist to IndexedDB at the shutter and restore on reopen, a discard aborts the in-flight request, and the GPS cold-lookup options are tied to the freshness constant.
+- **THE FIELD INCIDENT, and what the evidence actually said.** Naldo reported a worker losing roughly one shot in five on full signal. The server had logged **20 successes and zero failures** in the same window, so nothing was reaching it: the failures were on the phone, before the request. Cause was mine, from #1126: cutting the GPS freshness window from 25s to 5s made the shutter fall through to a cold `getCurrentPosition` constantly, and near a roofline that timed out. The expensive part was that a failed shot was then DISCARDED, so the worker walked back and re-shot the sign.
+- **THE HONEST GPS ANSWER WAS SMALLER THAN THE CLEVER ONE.** A builder proposed extending trust to an aging fix whenever it matched the fix before it. The counter-example killed it: comparing two old fixes proves the worker was still BETWEEN them, never SINCE, and the rule could only ever fire when the stream had stalled, which is exactly when that evidence is worthless. It was proved with a test, then deleted. What shipped instead: the 5s rule unchanged, its worst-case drift (7m at walking pace, under half the 15m house gap) stated and pinned by a test, the stalled-stream counter-example as a permanent regression test, and the one real bug underneath it all, `maximumAge: 0` on the cold lookup, which refused the phone's own cached fix even a second old while our fast path already trusted anything under five. That is now tied to `GPS_FRESH_MS` with a test that fails if the two drift apart.
+- **PARALLEL AGENTS, split on a file boundary.** Two builders in isolated worktrees, one owning `cameraGps.ts` and one owning `CameraScreen.tsx` plus new storage files, so they could not collide. Both reported honestly, including one that caught its own test fixture passing for the wrong reason. The persistence builder also found a latent bug in MY merged code: `retryShot` sent to whichever campaign was selected NOW rather than the one the photo was shot under.
+- **THE CLOSE REVIEW FOUND TWO HIGHs IN THE MERGED, LIVE RESULT, AND BOTH WERE MINE.** The staff lens: the retry loop read GPS and stamped `capturedAt` on EVERY attempt, so a held photo was tagged wherever the worker had walked to, and a restored one would be tagged the next day. That is the wrong house on a paid record, the exact class the freshness rule exists to prevent, reintroduced through the back door of my own retry change. The integration lens: tapping try now while the automatic retry sat in its backoff started a SECOND send loop for one photo, and the capture route has no idempotency, so both could land and pay twice. Fixed in **PR #1149** (position and time decided once at the shutter and reused, with a 45s grace window past which the photo is held rather than guessed at; one send loop per photo), mutation-probed.
+- **STILL OPEN from that review, recorded not fixed:** the queue sheet never prunes finished shots and shows no summary count · the note field locks exactly while a photo is held, which is now a normal long-lived state · reopening after a crash can stack the confirm bar, the restored banner and a full queue sheet before the worker can shoot · an uploaded photo gets no positive signal, only the absence of a badge · a soft unmount can leave a retry loop running unowned · two tabs on one phone could both resume the same photo · a hung IndexedDB costs a 2s stall per write · nothing sweeps orphaned records.
+- **NOT VERIFIED ON A PHONE.** None of the storage or GPS behaviour has been exercised on real hardware. Every claim here rests on tests and code reading. The single highest-value next action is one device check: shoot, force-quit, reopen.
+- Gates at this delta: tsc 0, lint 0 errors (22 warnings), vitest **9804** across 567 files. Master at `28b156bd` plus PR #1149 open.
+
+### S82 (Naldo), 2026-08-29, Office Tasks gets a page, a nav item and a layout that puts the work first: 3 PRs merged and live. Close PR naldo/s82-close
+
+- **NUMBER:** claimed S77 at start (free everywhere then), and lost it three times while the session ran. S77 went to a concurrent session, then S78, then S79, and S80/S81 landed before close. Settled on **S82**, verified free against master's fragments, every remote branch, every open and merged PR, and the machine-local self-assessment. The durable fix applied mid-session: **stop stamping a session number in PR bodies at all.** The repo convention asks a `claude/*` PR to name its OPERATING DEV, which is what merge authority routes on; the number belongs in the close, where it cannot go stale inside an already-merged body. Both affected bodies were corrected.
+
+- **SHIPPED, all merged, prod-verified by SHA:**
+  - **#1092** (`3ca0c708`): a `/tasks` page (Open work and History tabs, filter by source and assignee, three sort modes), a **Tasks** item in the operator nav with an open-count badge, `GET /api/tasks/count`, and `office_tasks.assigned_to` surfaced as a display label. **No migration needed and that was the finding:** the column already existed and already held the S75 backfill's 9 rep assignments; the read path simply never selected it.
+  - **#1097** (`4a2b0722`): one-click History from the dashboard card, `/tasks?view=history` opening on that tab.
+  - **#1105** (`271d8b67`): Naldo's option A off a mock-up: the list owns the page, the add form becomes a right-hand panel. First task moved from about 600px down to **y=329**; five rows above the fold instead of one.
+
+- **THE NAV ROW WAS THE HARD PART, and only measurement settled it.** The row was already near its limit at 11 items with a recorded history of a 45px overflow. With the 12th item AND both badges showing, the old padding measured **22px of page overflow at 1024px** and **6px at 1280px**. `lg:px-0.5 xl:px-2.5` with `gap-0` closes both: 0 overflow at 1024, 1120, 1280 and 390, with uniform element heights asserted at every width first, because this file's own comments record a false pass where a squeezed multi-word button WRAPPED and hid a real shortfall from a plain scrollWidth read.
+
+- **THREE REVIEW ROUNDS, AND EACH FOUND A REAL DEFECT IN MY OWN WORK.** 8 lens agents, 3 adversarial delta-verifies, 6 mutation probes.
+  - **The delta-verify caught my stale-badge fix REOPENING the bug it closed.** The nav now reads the count on mount and on every mutation, and nothing ordered the two, so a slow mount fetch could resolve last and drag the badge BACKWARDS to a stale red number. Reproduced before fixing (hold the mount response 4s, complete a task: badge 12 to 11 and then **back to 12**), fixed with the sequence token the sibling file already uses, and the same run then ends on 11. Sibling-guard parity, one file away.
+  - **A test of mine passed against the exact regression its name described.** "puts the add form AFTER the list" asserted only that two substrings existed; the lens swapped the two render sites and all 46 tests still passed. My own earlier probe had missed it because it removed the grid CLASS, which the test does check. Now both ordering tests compare positions against the loading box, and that swap fails both.
+  - **The staff lens caught the layout fix creating the same complaint at another width.** Putting the form after the list is what gets tasks first on a phone; it also left the form under the WHOLE list below 1024px, and made a keyboard user tab through every filter and every row's three buttons to reach it. With 22 real tasks the title field sits at **y=2300 on an iPad in portrait**, **y=4092 on a phone**. One control answers both: a visible button below `lg`, and a focus-only skip link above it.
+
+- **THE 401 THAT WASN'T WHAT I SAID IT WAS.** A prod cron logged `401 The token is not authorized for this scope` on the HighLevel users lookup, and the one new call since the backfill has a null `rep_email`. I hypothesised a scope gap between the Vercel key and the local one; Naldo confirmed **the keys are the same**, which killed it. Then my own probe 401'd on all three calls INCLUDING the control, which is the instrument confessing rather than evidence: I had used `rest.gohighlevel.com/v1` instead of the `services.leadconnectorhq.com` + Version header the app actually uses. Corrected, it then failed at the network layer, because **this machine's router resolves that host to an ISP filter address (167.206.37.145) while public DNS returns Cloudflare**, the S75 poisoning, same class, new host. With the address pinned the call returns **200**. So the token is fine and the 401 was transient. The REAL defect is downstream and worse: `getGhlUser` is best-effort, never retries, and nothing backfills, so a one-second blip permanently unassigns a task (ledger 489).
+
+- **MISTAKES:** the badge fix that reopened its own bug · two tests in two consecutive PRs that overclaimed in their names, both caught by a lens rather than by me · spawned a lens round against a **dirty working tree** (my uncommitted test fix; the agent reported it honestly rather than folding it in) · published a wrong root cause for the 401 before checking the account-level facts, twice over · said a probe would print only status codes then printed enough body to include a customer name · my own first jump-control attempt would have painted over the filters at `lg`, caught before testing.
+
+- **DID RIGHT:** measured before designing every time (the 22px overflow, the 2 distinct assignees behind an accepted LOW, the 18-tasks-tip-together finding) · negative-controlled every browser claim, never reporting a fix working without watching it fail with the fix removed · caught two red gates that were NOT my diff (a stale `.next/dev/types` after killing the dev server, and a missing `exifr` after master added it) rather than debugging phantoms · held every merge until master was current, four times.
+
+- **REVIEW AT CLOSE:** one integration lens, scoped to the seams per-PR reviews cannot see. **0 HIGH, 0 MED.** It verified rather than assumed the two that mattered: the calls-notes feature (#1109) never touches `office_tasks`, and `git log` over the nav files since my commit is empty, so nothing disturbed the measured fit.
+
+- **LEDGER:** minted **487-491**, counter now 492. 487 editing a task at all (only status can change today; the database already permits the rest, so no trigger migration), 488 reassignment **HELD by Naldo** with its design recorded, 489 the rep-attribution retry, 490 the assignee-filter display-name limit, 491 whether 24 hours is the right default for a call-derived task.
+
+- **NOT DONE, deliberately:** reassignment, held at Naldo's word. Two cosmetic residuals accepted rather than fixed: the past-due chip can be one paint stale when switching tabs mid-refetch, and a signed-out History link lands on Open work after login because the perimeter's `from` param keeps the path and drops the query (pre-existing, not this session's).
+
+- Gates at close on master `2e1dc016`: tsc 0 · lint 0 errors (21 warnings) · vitest **9433 / 540 files**.
+
+### S83 (Naldo), 2026-08-30, advertising payout settlement: the tool now records that the money was handed over, not only that it was earned. PR #1130, open and awaiting a merge-go
+
+- **NUMBER:** the handoff had no number. Checked at start against master, the archive, every open PR, every remote branch, `git worktree list` and the machine-local self-assessment: S81 was the highest, so S82 looked free. It was not for long. `naldo/s82-close` merged while the build was running, and the check was re-run at that moment rather than at the end, so **nothing had been stamped anywhere** when the number moved to S83. The re-check-on-every-master-resync rule is what caught it.
+
+- **WHAT SHIPPED (PR #1130, three commits, open for review):** a settlement records that a worker was paid, saying WHICH photos it covered rather than a week and an amount. Two new tables (`advertising_settlements`, `advertising_settlement_lines`), a data layer (`payouts.ts`), an admin route, the worker's own history route, Earned / Paid / Unpaid on the pay screen with a Mark paid action, and a payment history on the worker's phone. `placement_id` is UNIQUE across settlement lines, which is the whole safety property: a photo is payable at most once, guaranteed by the database rather than by remembering. Settled and unpaid are derived, never stored.
+
+- **ASKED BEFORE BUILDING, and the answers shaped the design.** Naldo ruled: a paid photo cannot be voided at all (refusing beats a credit concept); payment method is a fixed list, cash / venmo / check / other; Mark paid defaults to everything outstanding; and the worker sees their **full payment history**, not just a running total. The one money question this build deliberately did NOT answer is now ledger row **492**: a payment recorded by mistake has no way back, and whether an admin should be able to delete one is money behaviour, so it was left for him rather than invented.
+
+- **THE REVIEW ROUNDS FOUND MORE THAN THE BUILD DID, AND EVERY FINDING WAS IN MY OWN CODE.** Four lenses returned 1 HIGH, 6 MED, 1 LOW; two adversarial delta-verifies then found 4 MED and 5 LOW in the FIXES, and a third round closed those.
+  - **The HIGH was the promoted guard-versus-copy pitfall, found twice from different questions** (staff and admin lenses), which is what marks it a class. My new guard refuses to void a paid photo; the void confirm still promised "its pay is reversed", and the review route's `isStateRefusal` regex matched my refusal on `cannot be` and rewrote it to "That placement was already reviewed. Reload the queue." False and useless: reloading never makes a paid photo voidable. Both surfaces fixed, with a test pinning the passthrough.
+  - **I guarded one side of my own race.** `recordSettlement` validated `voided_at` from a snapshot taken before the write, so a void landing in that window passed its own guard (no settlement line existed yet when it looked) and left a photo voided AND paid: excluded from earned, included in paid, so unpaid goes negative. The line insert is the serialisation point, so `voided_at` is re-read after the lines land and the payment is unwound if a void won the gap.
+  - **A fail-open read feeding a money total.** `earningsSummary` returns `[]` on a read error by design, so unpaid silently became negative on a healthy 200. My first fix only protected workers who had ALREADY been paid, which the delta-verify correctly called the smaller population; the real fix was at the source, splitting the function into a throwing core for money callers and a fail-open wrapper for the two display routes.
+
+- **THE SECOND DELTA-VERIFY CAUGHT A FALSE CLAIM IN MY OWN COMMIT MESSAGE.** I wrote that all three round-two guards were mutation-probed; the unwind retry was not among them and **could not be**, because the test double's delete always succeeded. An unprobed guard on the one path that needs a human is exactly the shape this repo keeps getting bitten by, so the fixture gained a failing delete and the retry now has both of its outcomes pinned. The same round found the money readers still answered "$0 earned, $0 owed" when the database was not configured, the same confident falsehood through a different door, and that this money route had no test file at all while every sibling admin advertising route has one. It has ten now, four of them mutation-probed, and one of those was passing vacuously until the assertion moved from the status code to the message.
+
+- **MISTAKES worth keeping.** I applied the migration by retyping its comment block into the MCP tool instead of pasting it, and four comment lines drifted; every executable line matched byte for byte, and a per-line hash diff against the applied SQL is what caught it. A commit message of mine claimed a dead variable was gone when I had only planned the removal. And three separate instruments were wrong before the code was: a test helper that dropped a worker whose photos were all voided where the real engine mints them with zeros, a guard that fired on any negative rather than on the failure's signature, and a probe script that died on cp1252 output and left a mutation applied.
+
+- **NOT DONE, and said plainly rather than reported as verified.** No browser drive: the pay screen sits behind an operator password this session will not enter. The substitute was the real money engine run in-process against live data with every invariant asserted, plus a control proving the reader returns non-zero when rows exist. Prod currently holds **no real accepted photo** (16 pending; the only 2 accepted are test rows), so every figure is legitimately $0.00 and the arithmetic is proven by tests, not by production.
+
+- **CI could not verify the final head.** GitHub Actions stopped creating runs repo-wide at 02:00Z, for every branch, while the workflow shows active, which matches the free-plan minutes pitfall. `gates` passed on the first commit; the two later ones have local gates only, stated in the merge-go rather than glossed.
+
+- Gates at close, run locally on the exact tree: tsc 0 · lint 0 errors (21 standing warnings) · vitest **9475 across 542 files**. Twenty guards mutation-probed across the build and three fix rounds (nine, four, three, then four on the new route test): each removal fails exactly one test, the intended one. The one guard that could not be probed at first is why the fixture gained a failing delete. Every CHECK negative-controlled live against prod in both directions, probe rows cleaned to zero. Ledger: 481 marked shipped, 492 minted, counter 493.
+
+### S85 (Naldo), 2026-08-31, every call gets an automatic HighLevel note and internal comment, shows up on the customer profile and the quote builder, and posts within 20-25 minutes instead of an hour. 5 PRs merged and live, 1 fix-round PR open
+
+- **NUMBER:** the local worktree list surfaced a live peer session (`posthog-error-tracking-424f1d`, uncommitted PWA/manifest/crew work, branch literally named `claude/wrap-s84-fixes`) — a real concurrent claim on S85 that neither `gh pr list` nor any remote branch could see, since it was local-only and unpushed. Master, the archive, every open PR, every remote branch and the machine-local self-assessment all had S85 free; the worktree list is what caught it. Took **S85** anyway after confirming no S85 collision exists anywhere — the OTHER session's branch name was a coincidence of harness auto-naming, not an actual close, but the risk was real enough not to gamble on it.
+
+- **SHIPPED, all merged:**
+  - **#1109** the core worker: `postPendingCallNotes` takes a transcribed, commitment-extracted call and posts one internal HighLevel Note carrying the summary + task list, claim-and-CAS'd against `ghl_note_attempts` so two invocations can't double-post. New cron `calls-note`, admin surface in `CallsView.tsx`.
+  - **#1112** fixed a real prod defect the same day it shipped: 6 real notes had posted with `ghl_note_id` stored `null`, because the code read `.id` bare off HighLevel's response, and HighLevel wraps the created note. `noteIdFrom()` now accepts every shape a live read-only GET confirmed HighLevel actually returns; the 6 existing rows repaired by fetching their real ids and matching by timestamp proximity.
+  - **#1131** the note now ALSO posts as an Internal Comment into the conversation thread (Naldo's ask — a rep sees it without leaving the call/text history), best-effort by design, plus a `CustomerCallNotesPanel` on `/customers/[contactId]` showing the same content.
+  - **#1132** a one-off backfill (`backfillComments.ts` + a dry-run-first CLI) for the 31 calls whose Note had already posted before the Comment feature existed. `is_test` guard, a `backdatedPrefix()` naming a call's real age when the comment posts days late.
+  - **#1138** a collapsed-by-default call-notes drawer on the quote builder's right side (Naldo's own direct request), fetching over a new operator-gated route rather than importing the server-only data layer into a client component.
+  - **#1140** the 3-stage pipeline (sync/extract/note) moved from once-hourly to every 15 minutes, staggered 5-minute offsets, after Naldo reported a call from an hour earlier still hadn't posted — confirmed against the real database it was on schedule, not broken, and shortened the schedule rather than debugging a non-bug.
+
+- **THE WRAP'S OWN REVIEW FOUND A REAL HIGH IN ALREADY-MERGED WORK, FROM THIS SESSION'S OWN #1131.** Spawned 2 lenses (integration + customer) because the combined diff touches `src/lib/integrations/highlevel.ts`, a SHARED path. Customer lens: PASS, 0 findings (traced every consumer of the type correction and the new `createInternalComment`, all staff-only or discarding the return value). Integration lens: **HIGH** — `/customers/[contactId]`'s call-notes panel claimed to show "every HL contact id" a customer ever carried, but derived that set from `quotes` already filtered to the route id, which structurally collapses to ONE HL id whenever the route id IS an HL id (the dominant case). A customer merged or re-matched across two different HL ids over time would see an incomplete call history on the profile page while the quote builder's own drawer (which does a real `customer_id` round trip) showed all of it — for the identical customer. Also **MED** (the live comment-post and its local marker write shared one try/catch, so a marker-write failure after a real successful post could make a later backfill run double-post the same comment) and **LOW** (3 stale "hourly" references #1140 missed). All three fixed in **PR #1147**: a new pure function `expandHlContactIds` mirroring the drawer route's own resolution, a split try/catch with one retry on the marker write (the S82 lesson — a never-retried write behind a real success silently drifts the stored state), and the 3 stale comments corrected. Every fix mutation-probed: revert it, exactly one test fails.
+
+- **NOT DONE.** PR #1147 is open, awaiting Naldo's merge-go — the wrap process fixes still-open HIGH findings before close, but this HIGH was in already-merged work, so per AGENTS.md it gets a fix PR plus a direct flag rather than blocking the session close. Ledger untouched — this was direct user request work, not from the ledger, and no existing row matched it closely enough to update.
+
+- Gates at close on master `2846b15c`: tsc 0 · lint 0 errors (22 warnings) · vitest **9750 / 564 files**. #1147's own gates identical. Full detail in this fragment; no separate archive entry needed yet.
 

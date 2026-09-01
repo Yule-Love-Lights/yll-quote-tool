@@ -3,7 +3,7 @@
 // accounts UI needs, plus the pure countAdmins() that feeds the last-admin guard.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { roleOf, nameOf, isCrewAccount, type OperatorRole } from './supabaseServer';
+import { roleOf, nameOf, isCrewAccount, isAdvertisingAccount, type OperatorRole } from './supabaseServer';
 
 export type OperatorAccount = {
   id: string;
@@ -22,7 +22,20 @@ type RawUser = {
   last_sign_in_at?: string | null;
 };
 
-/** Map a Supabase auth user to the public account shape (role derived safely). */
+/**
+ * Map a Supabase auth user to the public account shape (role derived safely).
+ *
+ * ⚠️ `roleOf` flattens EVERY non-admin role to 'operator' — crew already relies
+ * on being excluded upstream (see `listNonCrewOperators` below) rather than
+ * labeled here, and the same is true for advertising: `isAdvertisingAccount`
+ * is not consulted in this function, so the day an advertising login exists,
+ * it will display here as an unlabeled 'operator' in Settings → Accounts, same
+ * as every other display surface built on this shape. Whoever builds the
+ * advertising creation door must add explicit labeling wherever this shape
+ * reaches the UI — `listAllAccountsById`'s `isCrew` field (adding an
+ * `isAdvertising` field the same way) is the precedent to copy, not a rename
+ * of this function.
+ */
 export function toOperatorAccount(u: RawUser): OperatorAccount {
   return {
     id: u.id,
@@ -101,9 +114,51 @@ export async function listAllAccountsById(
   );
 }
 
+/**
+ * ⚠️ RULE FOR THE NEXT SHARED-STORE POPULATION: this filter must exclude every
+ * population that is not a real operator, checked on the RAW app_metadata
+ * before `roleOf`/`toOperatorAccount` flattens it. Crew and advertising are
+ * excluded here for that reason (advertising role hardening, 2026-08-27) —
+ * without this, an advertising login would be offered as an "eligible
+ * operator" in the Staff panel's office-onboarding picker and could be linked
+ * to a crew_members pay row exactly like a real operator. The next population
+ * added to this store needs the same line added here.
+ */
 export async function listNonCrewOperators(sb: SupabaseClient): Promise<OperatorAccount[]> {
   return (await listAllRawUsers(sb))
-    .filter((u) => !isCrewAccount(u.app_metadata))
+    .filter((u) => !isCrewAccount(u.app_metadata) && !isAdvertisingAccount(u.app_metadata))
     .map(toOperatorAccount)
     .sort(byNameThenEmail);
+}
+
+/**
+ * Case-insensitive email match against an already-fetched operator list.
+ * PURE (no Supabase call) so the matching logic itself — case folding, no
+ * match, an empty/null query — is testable without mocking listUsers.
+ * Split out from findOperatorByEmail below so a caller that already has the
+ * population in hand (e.g. matching many rep emails in one batch) doesn't
+ * refetch it per lookup.
+ */
+export function matchOperatorByEmail(operators: OperatorAccount[], email: string | null): OperatorAccount | null {
+  const normalized = email?.trim().toLowerCase();
+  if (!normalized) return null;
+  return operators.find((o) => o.email?.toLowerCase() === normalized) ?? null;
+}
+
+/**
+ * Maps a rep's email (resolved from GHL, see src/lib/calls/pipeline.ts) to a
+ * real operator account, for office_tasks.assigned_to
+ * (calls_merge_plan_2026-08.md slice S6, rep-assignment ruling). Matches
+ * against listNonCrewOperators — crew and advertising logins are excluded
+ * for the same reason the office-onboarding picker excludes them (a rep's
+ * email should never auto-assign a customer-facing crew/advertising account
+ * an internal admin task just because the addresses happen to collide).
+ * null on no match — never throws for a miss, only for a genuine Supabase
+ * error (matching the caller's own single-lookup shape; a caller matching
+ * MANY emails in one batch should call listNonCrewOperators once and reuse
+ * matchOperatorByEmail directly instead of calling this per email).
+ */
+export async function findOperatorByEmail(sb: SupabaseClient, email: string | null): Promise<OperatorAccount | null> {
+  if (!email?.trim()) return null;
+  return matchOperatorByEmail(await listNonCrewOperators(sb), email);
 }

@@ -63,6 +63,12 @@ export type TrainingExampleRow = {
   satellite_feet_per_pixel: number | null;
   satellite_lines: DesignSatelliteLines | null;
   original_analysis: Record<string, unknown> | null;
+  // Fix round (PR #916): which ANALYZER_PROMPT_VERSION (src/lib/photoAnalysis.ts)
+  // produced original_analysis. Null for rows captured before this column
+  // existed, or where original_analysis predates the promptVersion field being
+  // stamped onto analyzePhoto's result. See promptVersionOf() below for why
+  // this is copied from original_analysis rather than stamped fresh here.
+  prompt_version: string | null;
   final_scene: DesignScene;
   final_inputs: TrainingExampleInputs;
 };
@@ -87,6 +93,21 @@ function asDifficulty(v: unknown): 'easy' | 'medium' | 'hard' {
 
 function asFootage(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+// Fix round (PR #916, admin lens MED): the prompt version that produced a
+// captured example must be read from the analysis ITSELF (design.seed_analysis,
+// stamped by analyzePhoto at generation time), never from the currently-live
+// ANALYZER_PROMPT_VERSION constant at capture time. A design can be analyzed
+// under one prompt and sent (captured, via 'auto-send') days or weeks later
+// under a different one — stamping the live constant at capture time would
+// silently mislabel that row's original_analysis with the WRONG prompt
+// version, exactly the kind of error this column exists to prevent when
+// comparing before/after a prompt change. null for legacy analyses that
+// predate the promptVersion field.
+function promptVersionOf(seedAnalysis: Record<string, unknown> | null | undefined): string | null {
+  const v = seedAnalysis?.promptVersion;
+  return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
 // notes is stored uncapped and maps straight to aiFailureNotes, which is
@@ -183,6 +204,7 @@ export async function captureTrainingExample(opts: {
     satellite_feet_per_pixel: design.satellite_feet_per_pixel ?? null,
     satellite_lines: design.satellite_lines ?? null,
     original_analysis: design.seed_analysis ?? null,
+    prompt_version: promptVersionOf(design.seed_analysis),
     final_scene: scene,
     final_inputs: finalInputs,
     ...(embedVec ? { embedding: embedVec } : {}),
@@ -239,6 +261,58 @@ export async function getSimilarTrainingExamples(
   });
   if (error) {
     console.error('getSimilarTrainingExamples error:', error);
+    return [];
+  }
+  return (data ?? []) as TrainingExampleRow[];
+}
+
+// Lightweight shape for similarity RANKING only -- no base64 image columns.
+// A full TrainingExampleRow averages ~981 KB (street + satellite photos,
+// measured live 2026-08-24); this shape averages ~7 KB (final_scene is jsonb,
+// measured ~6.8 KB avg -- cheap enough that a maintained count column isn't
+// needed). Used to widen the similarity candidate POOL for biasForMiniLights
+// (fewShot.ts's MINI_BIAS_POOL_SIZE) without paying full-row bytes for
+// candidates that get discarded immediately after ranking.
+export type LiteTrainingExampleRow = {
+  id: string;
+  final_scene: DesignScene;
+  street_w: number | null;
+  street_h: number | null;
+};
+
+// Same ranking as getSimilarTrainingExamples (cosine distance, closest
+// first), but via the sibling match_training_examples_lite RPC, which
+// SELECTs only id/final_scene/street_w/street_h server-side -- the base64
+// photo columns never cross the wire for this call. Never a substitute for
+// getSimilarTrainingExamples: only enough to RANK + score mini-light
+// richness; hydrate the final selected ids with getTrainingExamplesByIds.
+export async function getSimilarTrainingExamplesLite(
+  queryEmbedding: number[],
+  limit = 8,
+): Promise<LiteTrainingExampleRow[]> {
+  const sb = getSb();
+  if (!sb) return [];
+  const { data, error } = await sb.rpc('match_training_examples_lite', {
+    query_embedding: queryEmbedding,
+    match_count: limit,
+  });
+  if (error) {
+    console.error('getSimilarTrainingExamplesLite error:', error);
+    return [];
+  }
+  return (data ?? []) as LiteTrainingExampleRow[];
+}
+
+// Hydrate a small, already-decided set of ids to full rows (base64 photos
+// included) -- the second half of the rank-cheap/hydrate-only-the-winners
+// split. `.in()` does NOT preserve the input id order; callers that care
+// about similarity order (fewShot.ts does) must re-sort by their own id list.
+export async function getTrainingExamplesByIds(ids: string[]): Promise<TrainingExampleRow[]> {
+  const sb = getSb();
+  if (!sb || ids.length === 0) return [];
+  const { data, error } = await sb.from('training_examples').select('*').in('id', ids);
+  if (error) {
+    console.error('getTrainingExamplesByIds error:', error);
     return [];
   }
   return (data ?? []) as TrainingExampleRow[];
@@ -344,6 +418,32 @@ export async function listTrainingExamples(limit = 200): Promise<TrainingExample
     has_satellite: r.satellite_media_type != null,
     has_analysis: original_analysis != null,
   }) as TrainingExampleListItem);
+}
+
+// Uncapped count of rows eligible for the placement eval, so
+// scripts/eval-placement.ts can tell whether listTrainingExamples' fetch
+// limit silently truncated the corpus. Mirrors the SAME eligibility that
+// script's own `!r.excluded && r.has_analysis && r.street_w && r.street_h`
+// filter applies, done server-side with a head:true count query (no rows
+// transferred) instead of a second full fetch. (street_w/street_h use
+// `.not(is,null)` rather than the script's truthy check, so a literal 0 --
+// not a real photo dimension -- would count here and not there; harmless in
+// practice and noted rather than hidden.)
+export async function countEligiblePlacementExamples(): Promise<number | null> {
+  const sb = getSb();
+  if (!sb) return null;
+  const { count, error } = await sb
+    .from('training_examples')
+    .select('id', { count: 'exact', head: true })
+    .eq('excluded', false)
+    .not('original_analysis', 'is', null)
+    .not('street_w', 'is', null)
+    .not('street_h', 'is', null);
+  if (error) {
+    console.error('countEligiblePlacementExamples error:', error);
+    return null;
+  }
+  return count;
 }
 
 export async function getTrainingExample(id: string): Promise<TrainingExampleRow | null> {

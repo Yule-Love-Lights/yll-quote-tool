@@ -10,17 +10,50 @@ import { ReferralSection } from './ReferralSection';
 const PROPS = { creditUsd: 125, spritzerCount: 2, spritzerSizeInches: 16 };
 
 describe('ReferralSection', () => {
-  it('states the $125 credit and never the old $150 figure', () => {
+  it("states the referrer's credit as $125, never the old $150 figure", () => {
+    // Narrowed 2026-08-28: $150 now legitimately appears on this page as the
+    // FRIEND's cash alternative to the spritzers, so a bare not-to-contain
+    // '$150' would fail on correct copy. What this test actually guards is
+    // that the REFERRER's credit is $125 and is never quoted as $150 again.
     const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
-    expect(html).toContain('$125');
-    expect(html).not.toContain('$150');
+    expect(html).toContain('$125 credit');
+    expect(html).not.toContain('$150 credit');
   });
 
-  it('states both sides of the offer: referrer credit + friend spritzers', () => {
+  it('states both sides of the offer: referrer credit (dollarized, good toward any service) + friend spritzers (dollarized)', () => {
     const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
-    expect(html).toContain('$125 off');
+    expect(html).toContain('$125 credit');
+    expect(html).toContain('any Yule Love Lights service');
+    expect(html).toContain('$170');
+    expect(html).toContain('$150 off instead');
     expect(html).toContain('2 free 16&quot; spritzers');
+    expect(html).toContain('16&quot; spritzers');
     expect(html).toContain('first booked');
+    // The old undollarized phrasing and the stale "next season" framing must
+    // both be gone (naldo/referral-link-preview).
+    expect(html).not.toContain('staked spotlights');
+    expect(html).not.toContain('next season');
+  });
+
+  // Review fix 6: consumeCredits (src/lib/referrals.ts) flips the referrer's
+  // ENTIRE booked balance to spent in one shot, capped at the job subtotal,
+  // so a bigger balance than the job costs loses the difference. This page
+  // promotes stacking ("It stacks, so there is no limit...") with no
+  // warning of that, so it now discloses that a redemption applies the
+  // whole balance together to one job.
+  it('discloses that the whole balance applies together to one job when redeemed (never alarming, no accrual-logic change)', () => {
+    const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
+    expect(html).toContain('applies together to one job');
+  });
+
+  // Review fix 9: "You get $125 credit... Your friend gets $170 in free
+  // lighting" used to read as a direct comparison in one sentence. Now
+  // split into two paragraphs, and the friend's reward is framed as
+  // something the referrer is GIVING, not a competing prize.
+  it('does not present the referrer credit and the friend gift as a side-by-side comparison', () => {
+    const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
+    expect(html).not.toContain('bistro. Your friend gets');
+    expect(html).toContain('giving your friend');
   });
 
   it('renders the personal referral link + copy control when one is available', () => {

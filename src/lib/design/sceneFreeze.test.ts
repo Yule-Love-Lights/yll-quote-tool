@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
-import { isSceneFrozen, readSceneLock, refuseIfFrozen, SCENE_LOCKED_CODE, type SceneFreezeRow } from './sceneFreeze';
+import { isSceneFrozen, readSceneLock, refuseIfFrozen, sceneLockedMessage, SCENE_LOCKED_CODE, type SceneFreezeRow } from './sceneFreeze';
 
 const base: SceneFreezeRow = {
   quote_sent_at: '2026-08-01T00:00:00Z',
@@ -105,6 +105,65 @@ const APPROVED = {
   is_test: false,
 };
 
+describe('isSceneFrozen — home.works migrated orders (row 444)', () => {
+  // The booked carve-out exists for the amend path: edit here, Calculate, record
+  // the amendment. That path does not exist for a migrated order — /api/quote
+  // refuses to re-price it — so without this the design canvas autosaved
+  // (PUT /api/designs/[id], 600ms debounce) straight past the money guard and a
+  // staffer could redraw a historical record. Premerge staff lens.
+  const migrated = {
+    ...base,
+    status: 'booked' as const,
+    customer_approved_at: '2026-05-10T00:00:00Z',
+    deposit_paid_at: '2026-05-11T00:00:00Z',
+    approval_snapshot: { homeworks: { invoiceNumber: 'HW-1162' } },
+  };
+
+  it('freezes a migrated BOOKED order, which the amend carve-out would otherwise allow', () => {
+    expect(isSceneFrozen({ ...migrated, approval_snapshot: null })).toBe(false);
+    expect(isSceneFrozen(migrated)).toBe(true);
+  });
+
+  it('freezes a migrated order even with no approval timestamp at all', () => {
+    expect(isSceneFrozen({ ...migrated, customer_approved_at: null, deposit_paid_at: null })).toBe(true);
+  });
+
+  it('still exempts a test quote, like every other freeze in this app', () => {
+    expect(isSceneFrozen({ ...migrated, is_test: true })).toBe(false);
+  });
+
+  it('refuseIfFrozen gives a migrated order the remedy that exists, not the futile one', async () => {
+    // S57 wrap (integration lens): this shared helper guards four design-photo
+    // routes and was the ONE call site the migrated-message sweep missed.
+    sbRef.current = fakeSb({
+      quoteId: 'q1',
+      quote: { ...APPROVED, approval_snapshot: { homeworks: { doc: 'Homeworks invoice #5' } } },
+    }).client;
+    const res = await refuseIfFrozen('d1');
+    expect(res).not.toBeNull();
+    const body = await res!.json();
+    expect(body.error).toContain('home.works');
+    expect(body.error).not.toContain('decline');
+    expect(body.code).toBe(SCENE_LOCKED_CODE);
+  });
+
+  it('refuseIfFrozen keeps the ordinary approval wording for a non-migrated quote', async () => {
+    sbRef.current = fakeSb({ quoteId: 'q1', quote: APPROVED }).client;
+    const res = await refuseIfFrozen('d1');
+    const body = await res!.json();
+    expect(body.error).toContain('decline');
+    expect(body.error).not.toContain('home.works');
+  });
+
+  it('gives the migrated case its own remedy, because the generic one is futile', () => {
+    // Decline/revive/re-send does not clear approval_snapshot.homeworks, so the
+    // next save refuses again — telling staff to do it is worse than useless.
+    expect(sceneLockedMessage(true)).toContain('home.works');
+    expect(sceneLockedMessage(true)).not.toContain('decline');
+    expect(sceneLockedMessage(false)).toContain('decline');
+  });
+});
+
 describe('readSceneLock', () => {
   beforeEach(() => {
     sbRef.current = null;
@@ -112,7 +171,7 @@ describe('readSceneLock', () => {
 
   it('locks a design whose linked quote is approved and not booked', async () => {
     sbRef.current = fakeSb({ quoteId: 'q1', quote: APPROVED }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: true, quoteId: 'q1', auditable: true });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: true, quoteId: 'q1', auditable: true, migrated: false });
   });
 
   it('does not lock a booked order — the amend path stays open', async () => {
@@ -122,16 +181,16 @@ describe('readSceneLock', () => {
     }).client;
     // Row 423: a booked order is the one state where a design write still
     // LANDS on a signed-off quote, so it is also the one that must be audited.
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: 'q1', auditable: true });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: 'q1', auditable: true, migrated: false });
   });
 
   it('does not lock an UNLINKED design, or one whose quote row is gone', async () => {
     // Nothing was ever signed off, so there is no agreement to protect.
     // Nothing signed off, so nothing to protect AND nothing to audit onto.
     sbRef.current = fakeSb({ quoteId: null }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: null, auditable: false });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: null, auditable: false, migrated: false });
     sbRef.current = fakeSb({ quoteId: 'q1', quote: null }).client;
-    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: null, auditable: false });
+    expect(await readSceneLock('d1')).toEqual({ ok: true, locked: false, quoteId: null, auditable: false, migrated: false });
   });
 
   it('reports ok:false — never a lock, never a licence — when a read fails', async () => {

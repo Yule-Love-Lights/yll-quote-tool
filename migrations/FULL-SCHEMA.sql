@@ -31,6 +31,25 @@
 -- 38 live tables — neither adds a new table). Both migrations are UNAPPLIED
 -- to prod as of that PR — see each one's own header + this file's
 -- inventory_orders posture note for why.
+-- 2026-08-29-call-commitments.sql (calls_merge_plan_2026-08.md slice S6)
+-- folded in the SAME PR that added it: one new table (call_commitments)
+-- plus the office_tasks_create_from_commitment producer function, and an
+-- in-place amendment to the office_tasks section above (created_by is now
+-- nullable — see that section's own comment). UNAPPLIED to prod as of
+-- this PR, same as the S1/S2 migrations it sits alongside.
+-- 2026-08-29-call-ingest.sql (calls_merge_plan_2026-08.md slice S2) folded
+-- in the SAME PR that added it: three new tables (call_recordings,
+-- recording_sync_state, call_transcripts). NOTE: several migrations landed
+-- between 2026-08-24 and this one (bouncie-vehicles, bouncie-oauth-tokens,
+-- job-geozones-vehicle, vehicle-visits-polling, advertising-schema,
+-- installments, training-examples-prompt-version) WITHOUT a matching
+-- changelog line here, even though their DDL was folded into this file at
+-- the time — the file/table counts below were already stale before this
+-- entry and this PR does not attempt to re-derive them; that re-derivation
+-- is a separate task from shipping S2. Do not trust the counts below without
+-- a fresh `ls migrations/*.sql` + a fresh table-count query, per the
+-- "re-derive, don't hand-increment" rule two paragraphs up. This migration
+-- is UNAPPLIED to prod — see its own header.
 -- WHY THIS PASS EXISTED: the S58 post-close six-lens review (mislabelled S59 until the 2026-08-19 correction) found this file no longer was
 -- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
 -- tables while 81 migrations and 37 live tables existed, and TWO tables
@@ -627,6 +646,12 @@ create extension if not exists vector;
 alter table training_examples
   add column if not exists embedding vector(1024);
 
+-- Fix round (PR #916): which ANALYZER_PROMPT_VERSION (src/lib/photoAnalysis.ts)
+-- produced original_analysis — see migrations/2026-08-28-training-examples-
+-- prompt-version.sql for the full rationale. Null = pre-versioning row.
+alter table training_examples
+  add column if not exists prompt_version text;
+
 create or replace function match_training_examples(
   query_embedding vector(1024),
   match_count int
@@ -636,6 +661,33 @@ language sql
 stable
 as $$
   select *
+  from training_examples
+  where excluded = false
+    and embedding is not null
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+
+-- Lightweight sibling of match_training_examples (2026-08-24 migration) --
+-- returns only id/final_scene/street_w/street_h, no base64 image columns.
+-- Used to RANK a wide similarity candidate pool cheaply (mini-light
+-- retrieval bias, fewShot.ts) without paying full-row bytes for candidates
+-- discarded immediately after ranking. Never a substitute for
+-- match_training_examples -- callers hydrate only their final selected ids.
+create or replace function match_training_examples_lite(
+  query_embedding vector(1024),
+  match_count int
+)
+returns table (
+  id uuid,
+  final_scene jsonb,
+  street_w int,
+  street_h int
+)
+language sql
+stable
+as $$
+  select id, final_scene, street_w, street_h
   from training_examples
   where excluded = false
     and embedding is not null
@@ -2005,12 +2057,29 @@ create table if not exists public.shifts (
   source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
   close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
   device_time     timestamptz,
+  -- Who made a manual admin entry or the last manual edit (2026-08-29,
+  -- migrations/2026-08-29-shifts-manual-by.sql). Null = only ever touched by
+  -- the crew member's own clock actions. Always a HUMAN identity; nothing
+  -- automated sets it — GPS never writes payroll.
+  manual_by       text,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
 
 create unique index if not exists shifts_one_open_per_person
   on public.shifts (crew_member_id) where clock_out_at is null;
+
+-- One person can never hold two overlapping shifts — DB-enforced (2026-08-29,
+-- migrations/2026-08-29-shifts-no-overlap.sql, Naldo's explicit go). An open
+-- shift occupies all time from its clock-in onward. Violations = 23P01,
+-- mapped to the 'overlap' refusal in src/lib/shifts.ts.
+create extension if not exists btree_gist;
+alter table public.shifts drop constraint if exists shifts_no_overlap;
+alter table public.shifts add constraint shifts_no_overlap
+  exclude using gist (
+    crew_member_id with =,
+    tstzrange(clock_in_at, coalesce(clock_out_at, 'infinity'::timestamptz), '[)') with &&
+  );
 
 create index if not exists shifts_crew_member_id_idx
   on public.shifts (crew_member_id);
@@ -2635,6 +2704,23 @@ comment on column public.quotes.ghl_event_date_pushed is
   'MM/DD/YYYY value last CONFIRMED pushed to GHL''s "Event Date" custom field (ledger #314). Stamped by every push site (send route, quote/route.ts''s date-changing update, the approve route reconcile) on a successful push. Compared against the quote''s current formatted event date to detect "our side changed since the last push" — never compared against GHL''s live value, which would silently revert a staff correction made directly in GHL. Null = legacy/never-confirmed-pushed row.';
 
 -- ---------------------------------------------------------------------
+-- quotes.installment_auto_charge_consent_at (2026-08-28, migrations/
+-- 2026-08-28-installment-auto-charge-consent.sql, ledger row 448) — the
+-- customer's agreement that scheduled installment payments may be charged
+-- to their saved card with no human in the loop. NULL = no consent, and
+-- src/lib/installmentRunner.ts refuses; that is the default for every row.
+-- Added because the three migrated payment-plan customers came from a CRM
+-- where every payment was collected by hand, and the card vaults as an
+-- unconditional side effect of any card payment — so nothing in the system
+-- had ever established consent to a recurring debit.
+-- ---------------------------------------------------------------------
+alter table public.quotes
+  add column if not exists installment_auto_charge_consent_at timestamptz;
+
+comment on column public.quotes.installment_auto_charge_consent_at is
+  'When the customer agreed that scheduled installment payments may be charged to their saved card automatically. NULL = no consent = the runner refuses (src/lib/installmentRunner.ts).';
+
+-- ---------------------------------------------------------------------
 -- job_stock_movements (2026-08-25, migrations/2026-08-25-job-stock-
 -- movements.sql, ledger row 386, renamed row 397) — durable, append-only
 -- audit of stock taken off / put back on the shelf per JOB PREP OR
@@ -2782,131 +2868,2078 @@ alter table public.vehicle_events enable row level security;
 
 
 -- ---------------------------------------------------------------------
--- Fleet GPS — the SECOND CLOCK (ledger row 403 phase 3b).
--- Source migration: 2026-08-27-vehicle-visits.sql (read it for the reasoning).
+-- Fleet GPS — the SECOND CLOCK, polling shape (ledger row 403).
+-- Source migration: 2026-08-28-vehicle-visits-polling.sql (read it for the
+-- reasoning; it also names the two superseded geofence migrations that must
+-- never be applied). Customer coordinates never leave this database: the
+-- quote tool polls the vehicle position and does the proximity maths itself.
 --
--- The crew clock in and out by hand and that stays the payroll record. These
--- tables are an independent record of the same day, derived from where the vans
--- actually were, so the two can be COMPARED. Row 403 constraint (a): GPS never
--- writes payroll, and that is enforced structurally — there is deliberately NO
--- foreign key from here into `shifts` or `job_segments`.
+-- Crew clock in and out by hand and that stays the payroll record. These
+-- columns and this table are the independent record compared against it, and
+-- there is deliberately NO foreign key from here into shifts or job_segments.
 -- ---------------------------------------------------------------------
 -- ---------------------------------------------------------------------
--- job_geozones — the mapping between OUR jobs and BOUNCIE's geofences.
+-- Last known position per vehicle — what the office map reads.
 --
--- Bouncie runs the geofence server-side and tells us ENTER/EXIT by its own zone
--- id. That id means nothing to us on its own, so this is the lookup that turns
--- an incoming event back into "the Smith job on the 28th".
---
--- Zones are armed only for days that actually have scheduled jobs (Naldo's
--- rule), so rows here are created the night before and retired after. `retired_at`
--- rather than deletion, because an event can arrive slightly after we tear a
--- zone down and we would rather resolve it than drop it.
---
--- `job_id` is NULLABLE on purpose: the depot zone (6 Birch Road, Amityville) is
--- not a job. `kind` says which it is, so a reader never has to infer it from a
--- null.
+-- Written by the poller on every cycle. `last_seen_at` is Bouncie's own
+-- `stats.lastUpdated`, not our poll time, so a stale device shows as stale
+-- rather than as freshly parked (row 403 constraint (c): an absent or silent
+-- device must read as "no signal", never as "not at the job").
 -- ---------------------------------------------------------------------
-create table if not exists public.job_geozones (
-  id                   uuid primary key default gen_random_uuid(),
-  kind                 text not null check (kind in ('job', 'depot')),
-  job_id               uuid references public.jobs(id) on delete cascade,
-  assigned_date        date,
-  bouncie_location_id  text not null,
-  bouncie_geozone_id   text not null,
-  created_at           timestamptz not null default now(),
-  retired_at           timestamptz,
-
-  -- A depot zone has no job and no date; a job zone must have both. Enforced
-  -- here rather than in code, because a half-populated row would resolve events
-  -- to the wrong thing silently.
-  constraint job_geozones_shape check (
-    (kind = 'depot' and job_id is null and assigned_date is null)
-    or (kind = 'job' and job_id is not null and assigned_date is not null)
-  )
-);
-
--- The lookup the webhook does on every geozone event.
-create unique index if not exists job_geozones_bouncie_geozone_key
-  on public.job_geozones (bouncie_geozone_id);
-
--- One live zone per job per day. Partial, so a retired zone does not block
--- re-arming the same job on a later date.
-create unique index if not exists job_geozones_job_date_live_key
-  on public.job_geozones (job_id, assigned_date) where retired_at is null and kind = 'job';
-
--- At most one live depot zone.
-create unique index if not exists job_geozones_depot_live_key
-  on public.job_geozones (kind) where retired_at is null and kind = 'depot';
+alter table public.vehicles add column if not exists last_lat double precision;
+alter table public.vehicles add column if not exists last_lng double precision;
+alter table public.vehicles add column if not exists last_seen_at timestamptz;
 
 -- ---------------------------------------------------------------------
--- vehicle_visits — one row per arrival.
---
--- `exited_at` is NULL while a vehicle is still there. That is a normal, expected
--- state during the working day, not an error, and any reader has to handle it.
---
--- WHAT ACTUALLY MAKES THIS IDEMPOTENT is the writer refusing to open a second
--- visit while one is already open for the same vehicle and zone — not the unique
--- index below. Bouncie's documented duplicate pattern is two SEPARATE deliveries
--- reporting one physical arrival (its real-time and periodic streams overlap,
--- and a device that loses signal dumps a burst on reconnect). Those differ in
--- bytes, so a per-event index cannot see them as duplicates at all.
+-- vehicle_visits — one row per arrival, derived by proximity.
 -- ---------------------------------------------------------------------
 create table if not exists public.vehicle_visits (
   id              uuid primary key default gen_random_uuid(),
   vehicle_id      uuid not null references public.vehicles(id) on delete cascade,
-  geozone_id      uuid not null references public.job_geozones(id) on delete cascade,
 
-  -- Denormalised from job_geozones so the common queries ("visits to this job",
-  -- "did they leave the depot today") do not need a join, and so a visit stays
-  -- readable if its zone is later retired.
+  -- What the vehicle was near. 'depot' is the 6 Birch Road day-start anchor and
+  -- carries no job; a CHECK keeps the shapes honest so a half-populated row can
+  -- never be resolved wrongly.
   kind            text not null check (kind in ('job', 'depot')),
   job_id          uuid references public.jobs(id) on delete set null,
+  constraint vehicle_visits_shape check (
+    (kind = 'depot' and job_id is null) or (kind = 'job')
+  ),
 
   entered_at      timestamptz not null,
   exited_at       timestamptz,
 
-  -- Which raw events produced this. The whole point of the capture table is that
-  -- any derived row can be traced back to the bytes Bouncie actually sent.
-  --
-  -- BOTH ARE `on delete set null`, AND NULLABLE, ON PURPOSE. An earlier draft had
-  -- `enter_event_id not null ... on delete cascade`, which meant that the moment
-  -- anyone purged old raw events — and this project already anticipates a
-  -- retention job — every visit derived from them would be silently deleted too.
-  -- The timeline is the durable record; the raw event is the receipt for it.
-  -- Losing the receipt should cost the provenance link, not the history.
-  -- Found by the S68 technical lens.
-  enter_event_id  uuid references public.vehicle_events(id) on delete set null,
-  exit_event_id   uuid references public.vehicle_events(id) on delete set null,
+  -- Naldo's 15-minute rule, applied at CLOSE time and stored rather than
+  -- filtered: a below-threshold visit is data about drive-bys and quick stops,
+  -- and deleting it would make the radius impossible to tune later.
+  below_min_dwell boolean,
+
+  -- The evidence: where the vehicle actually was at entry, straight from the
+  -- poll. Replaces webhook-event provenance, and doubles as the record for
+  -- tuning the radius (how far from the anchor do real arrivals sit?).
+  entered_lat     double precision,
+  entered_lng     double precision,
 
   created_at      timestamptz not null default now()
 );
 
--- Provenance uniqueness: one visit per source event. Partial, because the column
--- is nullable now — a purged raw event leaves its visit intact with a null link,
--- and several such rows must not collide with each other.
---
--- NOTE this is NOT what makes arrivals idempotent. It only catches a redelivery
--- of the SAME stored event, and those never reach the visit writer anyway: the
--- body hash on `vehicle_events` drops them first. Real duplicate arrivals come
--- from Bouncie's overlapping streams as DIFFERENT events reporting one physical
--- arrival, and the writer guards those by refusing to open a second visit while
--- one is already open for that vehicle and zone.
-create unique index if not exists vehicle_visits_enter_event_key
-  on public.vehicle_visits (enter_event_id) where enter_event_id is not null;
+-- "What is open for this vehicle" — the poller's per-cycle lookup. One open
+-- visit per vehicle AT MOST, enforced: the poller closes before it opens, and
+-- this index makes a bug in that ordering loud instead of silent.
+create unique index if not exists vehicle_visits_one_open_per_vehicle
+  on public.vehicle_visits (vehicle_id) where exited_at is null;
 
--- "What is still open for this vehicle" — the lookup EXIT does.
-create index if not exists vehicle_visits_open_idx
-  on public.vehicle_visits (vehicle_id, geozone_id) where exited_at is null;
-
--- "Every visit to this job, in order" — including the second one when a crew
--- doubles back, which is the point.
+-- "Every visit to this job, in order" — doubling back shows as two rows.
 create index if not exists vehicle_visits_job_idx
   on public.vehicle_visits (job_id, entered_at) where job_id is not null;
 
--- "What happened on this day" — the comparison view against the manual clock.
+-- "What happened that day" — the compare view's read.
 create index if not exists vehicle_visits_entered_idx
   on public.vehicle_visits (entered_at desc);
 
-alter table public.job_geozones   enable row level security;
 alter table public.vehicle_visits enable row level security;
+
+-- ─── installments ───────────────────────────────────────────────────────────
+-- Payment plans (Homeworks migration, 2026-08-28). Three customers pay their
+-- 2026 job monthly. Homeworks had no instalment feature — Jason collected each
+-- payment by hand and edited the invoice — so the schedule lived only in his
+-- notes. One row per scheduled payment.
+--
+-- THE DEPOSIT IS NOT A ROW HERE. quotes.deposit_amount_usd stays the running
+-- total collected, so for any quote carrying a plan:
+--     deposit_amount_usd = initial deposit + every instalment marked paid
+-- src/lib/installments.ts's markInstallmentPaid moves both together, and its
+-- reconcilePlan surfaces any drift on /admin/installments rather than letting
+-- two different numbers both look authoritative.
+create table if not exists public.installments (
+  id                uuid primary key default gen_random_uuid(),
+  quote_id          uuid not null references public.quotes(id) on delete cascade,
+  seq               integer not null,
+  amount_usd        numeric(10,2) not null check (amount_usd > 0),
+
+  -- NULL when the payment falls due after the install rather than on a date.
+  due_date          date,
+  due_on_completion boolean not null default false,
+
+  paid_at           timestamptz,
+  -- 'homeworks' for money collected before the migration, 'valor' for a card
+  -- charge through this tool, 'manual' for cash/check recorded by staff.
+  paid_source       text check (paid_source in ('homeworks', 'valor', 'manual')),
+  -- Doubles as the installment runner's idempotency slot (row 448): NULL, a
+  -- `pending:<iso>` claim, an `ambiguous-timeout:<iso>` marker, or a real Valor
+  -- transaction id. See src/lib/installmentRunner.ts.
+  valor_txn_id      text,
+  -- Row 446: the operator who RECORDED this payment. NULL = collected before
+  -- the migration, or charged automatically (no human actor). Mirrors
+  -- invoices.settled_by; added by migrations/2026-08-28-installments-paid-by.sql
+  -- after a premerge admin lens found this money write had no attributable actor.
+  paid_by           uuid references auth.users(id) on delete set null,
+  note              text,
+
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+
+  unique (quote_id, seq),
+
+  -- Dated or due-on-completion, never both and never neither. This is what
+  -- stops a due-on-completion payment from ever being auto-charged on a date.
+  constraint installments_due_shape check (
+    (due_on_completion and due_date is null) or (not due_on_completion and due_date is not null)
+  )
+);
+
+create index if not exists installments_quote_idx on public.installments (quote_id, seq);
+
+-- "What is owed and when" — the working read, soonest first.
+create index if not exists installments_outstanding_idx
+  on public.installments (due_date)
+  where paid_at is null and not due_on_completion;
+
+create trigger installments_updated_at
+  before update on public.installments
+  for each row execute function dashboard_set_updated_at();
+
+-- ─── office_tasks / office_task_events ──────────────────────────────────────
+-- Office Tasks, the single task list (calls merge plan S1, ledger row TBD —
+-- see docs/context/calls_merge_plan_2026-08.md). Ported from yll-call-copilot
+-- (its ops_tasks / ops_task_events); full porting notes live in
+-- migrations/2026-08-28-office-tasks.sql, extracted here verbatim. UNAPPLIED
+-- to prod as of this PR (creates functions/triggers — off the migration
+-- self-apply allowlist; Naldo applies it separately).
+create table if not exists public.office_tasks (
+  id uuid primary key default gen_random_uuid(),
+  source_system text not null default 'manual'
+    check (source_system in ('manual', 'call_commitment', 'quote_tool')),
+  source_event_id text
+    check (source_event_id is null or char_length(source_event_id) <= 256),
+  title text not null
+    check (
+      nullif(btrim(title), '') is not null
+      and char_length(title) <= 200
+    ),
+  detail text
+    check (detail is null or char_length(detail) <= 2000),
+  status text not null default 'open'
+    check (status in ('open', 'blocked', 'completed', 'dismissed')),
+  due_at timestamptz not null default (now() + interval '24 hours'),
+  -- Operator auth user ids (auth.users.id) — NO FK per decision 1. There is
+  -- no employees table in the Quote Tool; identity IS the operator.
+  -- Nullable as of the 2026-08-29 (S6) amendment above: a 'manual' row is
+  -- always created by a real, authenticated operator (enforced below by
+  -- office_tasks_created_by_presence, mirroring office_tasks_create_manual's
+  -- own p_actor-required check), but a machine-sourced row (S6's
+  -- call_commitment producer) has no operator to credit.
+  created_by uuid,
+  assigned_to uuid,
+  completed_at timestamptz,
+  dismissed_at timestamptz,
+  blocked_at timestamptz,
+  blocked_reason text
+    check (blocked_reason is null or char_length(blocked_reason) <= 500),
+  dismissal_reason text
+    check (dismissal_reason is null or char_length(dismissal_reason) <= 500),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint office_tasks_source_event_presence check (
+    (source_system = 'manual' and source_event_id is null)
+    or (source_system <> 'manual' and nullif(btrim(source_event_id), '') is not null)
+  ),
+  -- Added by the 2026-08-29 (S6) amendment above: a 'manual' row must always
+  -- carry a real creator; any other source_system may leave it null (a
+  -- machine-sourced row has no operator to credit).
+  constraint office_tasks_created_by_presence check (
+    source_system <> 'manual' or created_by is not null
+  ),
+  constraint office_tasks_status_fields_check check (
+    (
+      status = 'open'
+      and completed_at is null
+      and dismissed_at is null
+      and blocked_at is null
+      and blocked_reason is null
+      and dismissal_reason is null
+    )
+    or (
+      status = 'blocked'
+      and completed_at is null
+      and dismissed_at is null
+      and blocked_at is not null
+      and nullif(btrim(blocked_reason), '') is not null
+      and dismissal_reason is null
+    )
+    or (
+      status = 'completed'
+      and completed_at is not null
+      and dismissed_at is null
+      and blocked_at is null
+      and blocked_reason is null
+      and dismissal_reason is null
+    )
+    or (
+      status = 'dismissed'
+      and completed_at is null
+      and dismissed_at is not null
+      and blocked_at is null
+      and blocked_reason is null
+      and nullif(btrim(dismissal_reason), '') is not null
+    )
+  )
+);
+
+-- FULL (non-partial) unique index -- fix-round amendment above. Postgres
+-- unique indexes already treat every NULL as distinct from every other
+-- NULL, so 'manual' rows (source_event_id always NULL) are still unlimited;
+-- dropping the `where source_event_id is not null` predicate only changes
+-- whether an ON CONFLICT clause naming these two columns can find the
+-- index (it now can).
+create unique index if not exists office_tasks_source_event_unique
+  on public.office_tasks (source_system, source_event_id);
+
+create index if not exists office_tasks_creator_due_idx
+  on public.office_tasks (created_by, due_at, id);
+
+create index if not exists office_tasks_assignee_due_idx
+  on public.office_tasks (assigned_to, due_at, id);
+
+-- Read by the history view (GET /api/tasks?status=history), newest-activity-first.
+create index if not exists office_tasks_status_updated_idx
+  on public.office_tasks (status, updated_at desc, id);
+
+create table if not exists public.office_task_events (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references public.office_tasks(id),
+  event_type text not null
+    check (event_type in ('created', 'assigned', 'blocked', 'completed', 'dismissed')),
+  -- Nullable as of the fix-round amendment above: office_tasks_create_from_
+  -- commitment (migrations/2026-08-29-call-commitments.sql) writes a
+  -- 'created' event for a system-produced task with no operator to
+  -- attribute it to. The CHECK below is this table's own backstop (a CHECK
+  -- constraint cannot see office_tasks.source_system) -- in practice a null
+  -- actor only ever appears on that one code path, since every other writer
+  -- (office_tasks_create_manual, every branch of office_tasks_update_status)
+  -- already requires a real p_actor before it can reach an INSERT here.
+  actor uuid,
+  idempotency_key uuid not null,
+  detail jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint office_task_events_actor_presence check (
+    actor is not null or event_type = 'created'
+  ),
+  unique (actor, idempotency_key)
+);
+
+create index if not exists office_task_events_task_created_idx
+  on public.office_task_events (task_id, created_at, id);
+
+alter table public.office_tasks enable row level security;
+alter table public.office_tasks force row level security;
+alter table public.office_task_events enable row level security;
+alter table public.office_task_events force row level security;
+
+revoke all privileges on table public.office_tasks, public.office_task_events
+  from public, anon, authenticated, service_role;
+grant select on table public.office_tasks, public.office_task_events to service_role;
+
+-- Keep updated_at fresh on every write (mirrors crew_members.sql / shifts.sql).
+-- Runs alongside office_tasks_enforce_transition below (also BEFORE UPDATE);
+-- Postgres fires same-event triggers in name order ('e' < 's'), so the
+-- immutability/terminal check always sees the row as the caller submitted it
+-- before this trigger re-stamps updated_at — no interaction between the two.
+create or replace function public.office_tasks_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists office_tasks_set_updated_at on public.office_tasks;
+create trigger office_tasks_set_updated_at
+  before update on public.office_tasks
+  for each row execute function public.office_tasks_set_updated_at();
+
+-- Task identity, source provenance, assignment, deletion, and terminal rows
+-- are immutable in this foundation, ported unchanged from the copilot's
+-- enforce_ops_task_transition (only the column names changed:
+-- created_by_employee_id -> created_by, assigned_employee_id -> assigned_to).
+-- A later reviewed assignment workflow can replace this rule without making
+-- direct service-role DML authoritative.
+create or replace function public.office_tasks_enforce_transition()
+returns trigger
+language plpgsql
+set search_path = ''
+as $function$
+begin
+  if tg_op = 'DELETE' then
+    raise exception using errcode = '23514', message = 'task rows cannot be deleted';
+  end if;
+
+  if new.id is distinct from old.id
+     or new.source_system is distinct from old.source_system
+     or new.source_event_id is distinct from old.source_event_id
+     or new.created_by is distinct from old.created_by
+     or new.assigned_to is distinct from old.assigned_to
+     or new.created_at is distinct from old.created_at then
+    raise exception using errcode = '23514', message = 'task ownership and provenance are immutable';
+  end if;
+
+  if old.status in ('completed', 'dismissed') and new is distinct from old then
+    raise exception using errcode = '23514', message = 'terminal task cannot change';
+  end if;
+
+  return new;
+end
+$function$;
+
+revoke all on function public.office_tasks_enforce_transition()
+  from public, anon, authenticated, service_role;
+
+drop trigger if exists office_tasks_enforce_transition on public.office_tasks;
+create trigger office_tasks_enforce_transition
+before update or delete on public.office_tasks
+for each row execute function public.office_tasks_enforce_transition();
+
+-- Fully immutable audit trail, ported unchanged.
+create or replace function public.office_task_events_reject_mutation()
+returns trigger
+language plpgsql
+set search_path = ''
+as $function$
+begin
+  raise exception using errcode = '23514', message = 'task audit events are immutable';
+end
+$function$;
+
+revoke all on function public.office_task_events_reject_mutation()
+  from public, anon, authenticated, service_role;
+
+drop trigger if exists office_task_events_reject_mutation on public.office_task_events;
+create trigger office_task_events_reject_mutation
+before update or delete on public.office_task_events
+for each row execute function public.office_task_events_reject_mutation();
+
+-- office_tasks_create_manual — port of the copilot's ops_create_manual_task.
+-- Line-by-line porting note against the original:
+--   - p_actor_employee_id -> p_actor (uuid, no employees-table check).
+--   - REMOVED: "if not exists (select 1 from ops_employees where id =
+--     p_actor_employee_id and employee.active) then raise 42501" — no
+--     employees table exists per decision 1; the caller (requireOperator())
+--     already guarantees p_actor is a live, authenticated operator before
+--     this function is ever invoked.
+--   - ADDED a plain "p_actor is not null" check in its place, raising the
+--     SAME 42501 the removed employee-lookup used to raise on a missing/
+--     inactive actor. Without it a null actor would fail later as a bare
+--     NOT NULL violation (23502) on the office_tasks insert, or as a crossed
+--     wire in the advisory-lock hash — 42501 is the clearer, and the route's
+--     existing error-code mapping already expects it.
+--   - Everything else (the advisory-xact-lock keyed on actor+idempotency
+--     key, the payload-aware idempotency replay comparing event_type +
+--     detail jsonb, the future-due-date check, the insert-task-then-insert-
+--     event pair) is unchanged.
+--   - assigned_to is set to p_actor (self-assigned) on manual creation,
+--     matching the copilot's assigned_employee_id := p_actor_employee_id.
+create or replace function public.office_tasks_create_manual(
+  p_title text,
+  p_detail text,
+  p_due_at timestamptz,
+  p_actor uuid,
+  p_idempotency_key uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_task_id uuid;
+  v_existing_event_type text;
+  v_existing_detail jsonb;
+  v_normalized_title text := btrim(p_title);
+  v_normalized_detail text := nullif(btrim(p_detail), '');
+  v_request_detail jsonb;
+begin
+  if p_actor is null then
+    raise exception using errcode = '42501', message = 'an authenticated actor is required';
+  end if;
+  if p_idempotency_key is null then
+    raise exception using errcode = '22023', message = 'idempotency key is required';
+  end if;
+  if nullif(v_normalized_title, '') is null or char_length(v_normalized_title) > 200 then
+    raise exception using errcode = '22023', message = 'task title is invalid';
+  end if;
+  if v_normalized_detail is not null and char_length(v_normalized_detail) > 2000 then
+    raise exception using errcode = '22023', message = 'task detail is too long';
+  end if;
+
+  v_request_detail := jsonb_build_object(
+    'operation', 'create_manual',
+    'title', v_normalized_title,
+    'detail', v_normalized_detail,
+    'due_at', p_due_at
+  );
+
+  -- Serialize first use of one actor/key pair. A concurrent retry waits for
+  -- the first transaction and then returns the same durable result.
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_actor::text || ':' || p_idempotency_key::text, 0)
+  );
+
+  select task_id, event_type, detail
+  into v_task_id, v_existing_event_type, v_existing_detail
+  from public.office_task_events
+  where actor = p_actor
+    and idempotency_key = p_idempotency_key;
+
+  if found then
+    if v_existing_event_type is distinct from 'created'
+       or v_existing_detail is distinct from v_request_detail then
+      raise exception using errcode = '23505', message = 'idempotency key payload conflicts';
+    end if;
+    return v_task_id;
+  end if;
+
+  if p_due_at is not null and p_due_at <= now() then
+    raise exception using errcode = '22023', message = 'task due time must be in the future';
+  end if;
+
+  insert into public.office_tasks (
+    title,
+    detail,
+    due_at,
+    created_by,
+    assigned_to
+  ) values (
+    v_normalized_title,
+    v_normalized_detail,
+    coalesce(p_due_at, now() + interval '24 hours'),
+    p_actor,
+    p_actor
+  )
+  returning id into v_task_id;
+
+  insert into public.office_task_events (
+    task_id,
+    event_type,
+    actor,
+    idempotency_key,
+    detail
+  ) values (
+    v_task_id,
+    'created',
+    p_actor,
+    p_idempotency_key,
+    v_request_detail
+  );
+
+  return v_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_create_manual(text,text,timestamptz,uuid,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_create_manual(text,text,timestamptz,uuid,uuid)
+  to service_role;
+
+-- office_tasks_update_status — port of the copilot's ops_update_own_task.
+-- Line-by-line porting note against the original:
+--   - p_actor_employee_id -> p_actor (uuid, no employees-table check);
+--     REMOVED the same "active employee" existence check as above, for the
+--     same reason, and ADDED the same "p_actor is not null" -> 42501 check
+--     in its place.
+--   - v_task.created_by_employee_id -> v_task.created_by,
+--     v_task.assigned_employee_id -> v_task.assigned_to.
+--   - Everything else (the advisory-xact-lock, the payload-aware
+--     idempotency replay, the terminal-status guard, the per-status reason
+--     requirement/prohibition, the row lock via `for update`) is unchanged
+--     from the port. The creator-or-assignee ownership check the original
+--     port carried here was REMOVED by the 2026-08-29 "everything is
+--     shared" amendment (see this file's header) -- not part of the
+--     original copilot port, noted here so this comment stays accurate.
+create or replace function public.office_tasks_update_status(
+  p_task_id uuid,
+  p_status text,
+  p_reason text,
+  p_actor uuid,
+  p_idempotency_key uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_task public.office_tasks%rowtype;
+  v_existing_task_id uuid;
+  v_existing_event_type text;
+  v_existing_detail jsonb;
+  v_normalized_reason text := nullif(btrim(p_reason), '');
+  v_request_detail jsonb;
+begin
+  if p_actor is null then
+    raise exception using errcode = '42501', message = 'an authenticated actor is required';
+  end if;
+  if p_idempotency_key is null then
+    raise exception using errcode = '22023', message = 'idempotency key is required';
+  end if;
+  if p_status is null or p_status not in ('blocked', 'completed', 'dismissed') then
+    raise exception using errcode = '22023', message = 'invalid task status action';
+  end if;
+  if p_status in ('blocked', 'dismissed') and v_normalized_reason is null then
+    raise exception using errcode = '22023', message = 'a reason is required';
+  end if;
+  if p_status = 'completed' and v_normalized_reason is not null then
+    raise exception using errcode = '22023', message = 'completed tasks do not accept a reason';
+  end if;
+  if v_normalized_reason is not null and char_length(v_normalized_reason) > 500 then
+    raise exception using errcode = '22023', message = 'task reason is too long';
+  end if;
+
+  v_request_detail := jsonb_build_object(
+    'operation', 'set_status',
+    'status', p_status,
+    'reason', v_normalized_reason
+  );
+
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_actor::text || ':' || p_idempotency_key::text, 0)
+  );
+
+  select task_id, event_type, detail
+  into v_existing_task_id, v_existing_event_type, v_existing_detail
+  from public.office_task_events
+  where actor = p_actor
+    and idempotency_key = p_idempotency_key;
+
+  if found then
+    if v_existing_task_id is distinct from p_task_id
+       or v_existing_event_type is distinct from p_status
+       or v_existing_detail is distinct from v_request_detail then
+      raise exception using errcode = '23505', message = 'idempotency key payload conflicts';
+    end if;
+    return v_existing_task_id;
+  end if;
+
+  select *
+  into v_task
+  from public.office_tasks
+  where id = p_task_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'task does not exist';
+  end if;
+  -- EVERYTHING IS SHARED (2026-08-29 amendment, see this file's header):
+  -- the creator-or-assignee ownership check that used to live here is
+  -- REMOVED -- any authenticated operator (p_actor is not null, checked
+  -- above) may act on any task. created_by/assigned_to are no longer
+  -- consulted for authorization anywhere in this function.
+  if v_task.status in ('completed', 'dismissed') then
+    raise exception using errcode = '22023', message = 'terminal task cannot change';
+  end if;
+  -- Fix-round addition: refuse to silently overwrite an ALREADY-blocked
+  -- task's reason. A genuine retry of the SAME action (same actor, same
+  -- idempotency key) already returned above via the replay check and never
+  -- reaches this line -- this only fires for a genuinely different action
+  -- (a different actor, or a fresh idempotency key) hitting a task someone
+  -- else already blocked. Matters for ANY shared task now that everything
+  -- is shared: without this, a second block silently replaces the first
+  -- block's reason with no signal to the first actor that their reason is
+  -- gone.
+  if p_status = 'blocked' and v_task.status = 'blocked' then
+    raise exception using errcode = '22023', message = 'task is already blocked; refresh to see the current reason';
+  end if;
+
+  update public.office_tasks
+  set
+    status = p_status,
+    completed_at = case when p_status = 'completed' then now() else null end,
+    dismissed_at = case when p_status = 'dismissed' then now() else null end,
+    dismissal_reason = case when p_status = 'dismissed' then v_normalized_reason else null end,
+    blocked_at = case when p_status = 'blocked' then now() else null end,
+    blocked_reason = case when p_status = 'blocked' then v_normalized_reason else null end,
+    updated_at = now()
+  where id = p_task_id;
+
+  insert into public.office_task_events (
+    task_id,
+    event_type,
+    actor,
+    idempotency_key,
+    detail
+  ) values (
+    p_task_id,
+    p_status,
+    p_actor,
+    p_idempotency_key,
+    v_request_detail
+  );
+
+  return p_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_update_status(uuid,text,text,uuid,uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_update_status(uuid,text,text,uuid,uuid)
+  to service_role;
+
+
+-- ---------------------------------------------------------------------
+-- advertising (2026-08-28, migrations/2026-08-28-advertising-schema.sql) —
+-- workers / campaigns / placements / activity + the advertising-proof
+-- bucket (ops_hub audit workstream B slice 1). Content below is the
+-- migration file verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Advertising: workers, campaigns, placements, activity + the private
+-- advertising-proof bucket (ops_hub_audit_2026-08.md workstream B slice 1;
+-- role lockout #1043 already merged). SCHEMA + DATA LAYER ONLY: no UI, no
+-- routes, no account-creation door ships with this.
+--
+-- NALDO'S RULINGS (2026-08-27, audit doc section 13 — do not reopen):
+--   * Advertising workers are their OWN population. Their identity rows live
+--     here, never in crew_members; they share only the Supabase auth store
+--     (nullable auth_user_id, same shape as crew_members.auth_user_id).
+--     Accounts carry app_metadata.role = 'advertising' and are rejected by
+--     getOperator / requireOperator / requireAdmin and the role-aware proxy.
+--   * Placements stand alone geographically: own lat/lng/accuracy and a
+--     reverse-geocoded suggested address. property_id is an OPTIONAL link
+--     used only when the location is a customer's house — signs at
+--     intersections are normal, so most rows will have it NULL.
+--   * Pay is $2.50 per ACCEPTED yard sign, integer cents. The rate is
+--     STAMPED onto the placement at acceptance (accepted_rate_cents); a
+--     campaign rate change never moves history. Pending and rejected
+--     placements never count for pay. A rejected placement can be
+--     resubmitted; resubmitted-then-accepted pays exactly once (the stamp
+--     happens only on the transition into 'accepted').
+--   * Door hangers are modeled (kind = 'door_hanger') but pay for them is
+--     PERMANENTLY EXCLUDED until Naldo approves a rule — enforced below by
+--     the CHECK that a door hanger's accepted_rate_cents is always NULL.
+--
+-- STATE-SHAPE CHECKS follow the job_segments / vehicle_visits precedent:
+-- a status is only storable with the fields that make it true (a rejected
+-- row must say why; an accepted row must have proof and a review time; an
+-- accepted yard sign must carry its stamped rate).
+--
+-- RLS ENABLED, ZERO POLICIES on all four tables — service-role only, the
+-- repo default (crew_members / shifts / job_segments pattern). Fails closed
+-- until the advertising routes and their policies ship in a later slice.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md's migration-application default
+-- (brand-new tables, indexes on empty tables, RLS-enable-zero-policies on
+-- brand-new tables only, bucket insert guarded by on conflict do nothing).
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- advertising_workers — the sign-crew identity + login link.
+-- One row per person who places signs. display_name is unique on
+-- lower(trim()) (crew_members_display_name_key convention) so "Joe" and
+-- " joe " cannot become two payees. auth_user_id is the link into the
+-- SHARED auth store: nullable (a worker row can exist before their login),
+-- unique (one login must never back two payees — that would let one person
+-- accrue another's sign money).
+-- ---------------------------------------------------------------------
+create table if not exists public.advertising_workers (
+  id            uuid primary key default gen_random_uuid(),
+  display_name  text not null,
+  auth_user_id  uuid,
+  active        boolean not null default true,
+  is_test       boolean not null default false,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create unique index if not exists advertising_workers_display_name_key
+  on public.advertising_workers (lower(trim(display_name)));
+
+create unique index if not exists advertising_workers_auth_user_id_key
+  on public.advertising_workers (auth_user_id) where auth_user_id is not null;
+
+alter table public.advertising_workers enable row level security;
+
+-- ---------------------------------------------------------------------
+-- advertising_campaigns — a batch of signs/hangers with its per-sign rate.
+-- rate_cents is the CURRENT per-accepted-yard-sign rate in integer cents
+-- (default 250 = $2.50, Naldo's ruling). It is read at acceptance time and
+-- stamped onto the placement; it is never joined into pay history. Runs /
+-- sub-batches can come later (audit doc section 10) — kept minimal here.
+-- ---------------------------------------------------------------------
+create table if not exists public.advertising_campaigns (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null,
+  notes       text,
+  rate_cents  integer not null default 250 check (rate_cents >= 0),
+  active      boolean not null default true,
+  is_test     boolean not null default false,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+alter table public.advertising_campaigns enable row level security;
+
+-- ---------------------------------------------------------------------
+-- advertising_placements — one row per sign (or door hanger) placed.
+--
+-- Status machine: pending → accepted | rejected; rejected → resubmitted
+-- (worker asks for another look); resubmitted → accepted | rejected.
+-- Review fields (reviewed_by/reviewed_at) are stamped by accept AND reject;
+-- rejection_reason survives a resubmit so the worker can still see why the
+-- last review said no.
+--
+-- photo_path is a STORAGE PATH into the private advertising-proof bucket,
+-- never bytes (the bucket-first rule every storage-backed feature here
+-- follows). reviewed_by → auth.users on delete set null, matching
+-- invoices.settled_by.
+--
+-- property_id → properties on delete set null: deleting a property (test
+-- sweeps) must not delete placement/pay history, only unlink it.
+-- Workers/campaigns are plain FKs (no cascade): a worker or campaign with
+-- placement history cannot be deleted out from under the pay record —
+-- Postgres itself refuses (23503), the crewMembers StaffHasRecordsError
+-- pattern.
+-- ---------------------------------------------------------------------
+create table if not exists public.advertising_placements (
+  id                   uuid primary key default gen_random_uuid(),
+  campaign_id          uuid not null references public.advertising_campaigns(id),
+  worker_id            uuid not null references public.advertising_workers(id),
+
+  kind                 text not null check (kind in ('yard_sign', 'door_hanger')),
+  status               text not null default 'pending'
+                         check (status in ('pending', 'accepted', 'rejected', 'resubmitted')),
+
+  lat                  double precision check (lat is null or (lat >= -90 and lat <= 90)),
+  lng                  double precision check (lng is null or (lng >= -180 and lng <= 180)),
+  accuracy_m           double precision check (accuracy_m is null or accuracy_m >= 0),
+  captured_at          timestamptz,
+
+  photo_path           text,
+  suggested_address    text,
+  route                text,
+  neighborhood         text,
+  property_id          uuid references public.properties(id) on delete set null,
+
+  rejection_reason     text,
+  accepted_rate_cents  integer check (accepted_rate_cents is null or accepted_rate_cents >= 0),
+  reviewed_by          uuid references auth.users(id) on delete set null,
+  reviewed_at          timestamptz,
+
+  is_test              boolean not null default false,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now(),
+
+  -- A rejected placement must say WHY — the worker view shows the reason,
+  -- and a reasonless rejection is indistinguishable from a lost write.
+  constraint advertising_placements_rejected_has_reason
+    check (status <> 'rejected' or rejection_reason is not null),
+
+  -- An accepted placement is a PAY event: it must carry its proof photo and
+  -- the review timestamp that anchors day/week earnings.
+  constraint advertising_placements_accepted_shape
+    check (status <> 'accepted' or (photo_path is not null and reviewed_at is not null)),
+
+  -- An accepted YARD SIGN must carry the stamped rate — pay history lives on
+  -- the row, never in a join against the campaign's current rate.
+  constraint advertising_placements_accepted_yard_sign_has_rate
+    check (status <> 'accepted' or kind <> 'yard_sign' or accepted_rate_cents is not null),
+
+  -- Door hangers NEVER carry a rate (pay permanently excluded until Naldo
+  -- approves a rule; do not invent one).
+  constraint advertising_placements_door_hanger_never_pays
+    check (kind <> 'door_hanger' or accepted_rate_cents is null),
+
+  -- The stamp exists ONLY on an accepted yard sign. This is what makes
+  -- "pending and rejected never count for pay" a DB fact rather than a
+  -- query convention: no other state can even hold a rate.
+  constraint advertising_placements_rate_only_when_accepted
+    check (accepted_rate_cents is null or (status = 'accepted' and kind = 'yard_sign')),
+
+  -- Review identity and review time travel together (job_segments
+  -- approval-shape convention): "reviewed by nobody at some time" and
+  -- "reviewed by someone at no time" are both unstorable.
+  constraint advertising_placements_review_pair
+    check ((reviewed_by is null) = (reviewed_at is null))
+);
+
+create index if not exists advertising_placements_worker_id_idx
+  on public.advertising_placements (worker_id);
+
+create index if not exists advertising_placements_campaign_id_idx
+  on public.advertising_placements (campaign_id);
+
+-- The admin review queue reads pending/resubmitted newest-first.
+create index if not exists advertising_placements_status_created_idx
+  on public.advertising_placements (status, created_at desc);
+
+create index if not exists advertising_placements_property_id_idx
+  on public.advertising_placements (property_id) where property_id is not null;
+
+alter table public.advertising_placements enable row level security;
+
+-- ---------------------------------------------------------------------
+-- advertising_activity — append-only audit trail, mirroring
+-- dashboard_activity's shape (actor text / action / detail jsonb /
+-- created_at, FKs on delete set null so deleting a subject never deletes
+-- its audit rows). Append-only is a DATA-LAYER contract: the module exposes
+-- insert and select only, same as dashboard_activity. No updated_at — rows
+-- are never updated.
+-- ---------------------------------------------------------------------
+create table if not exists public.advertising_activity (
+  id            uuid primary key default gen_random_uuid(),
+  actor         text,                                 -- who acted: auth.users id (review actions), advertising_workers id (worker actions), or 'system'
+  action        text not null,                        -- submitted|accepted|rejected|resubmitted|rate_changed|...
+  placement_id  uuid references public.advertising_placements(id) on delete set null,
+  worker_id     uuid references public.advertising_workers(id) on delete set null,
+  detail        jsonb,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists advertising_activity_placement_idx
+  on public.advertising_activity (placement_id);
+
+create index if not exists advertising_activity_created_at_idx
+  on public.advertising_activity (created_at desc);
+
+alter table public.advertising_activity enable row level security;
+
+-- ---------------------------------------------------------------------
+-- updated_at triggers — one shared function for the three mutable tables
+-- (installments uses the shared dashboard_set_updated_at the same way).
+-- ---------------------------------------------------------------------
+create or replace function public.advertising_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists advertising_workers_updated_at on public.advertising_workers;
+create trigger advertising_workers_updated_at
+  before update on public.advertising_workers
+  for each row execute function public.advertising_set_updated_at();
+
+drop trigger if exists advertising_campaigns_updated_at on public.advertising_campaigns;
+create trigger advertising_campaigns_updated_at
+  before update on public.advertising_campaigns
+  for each row execute function public.advertising_set_updated_at();
+
+drop trigger if exists advertising_placements_updated_at on public.advertising_placements;
+create trigger advertising_placements_updated_at
+  before update on public.advertising_placements
+  for each row execute function public.advertising_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- Private bucket for placement proof photos. Mirrors designs /
+-- training-archive / applications: private, service-role only, read back
+-- through signed URLs; the row stores only photo_path, never bytes.
+-- public = false is asserted here rather than left to a dashboard checkbox.
+-- ---------------------------------------------------------------------
+insert into storage.buckets (id, name, public)
+values ('advertising-proof', 'advertising-proof', false)
+on conflict (id) do nothing;
+
+
+-- ---------------------------------------------------------------------
+-- call_recordings / recording_sync_state / call_transcripts (2026-08-29,
+-- migrations/2026-08-29-call-ingest.sql) — call ingest, calls_merge_plan
+-- slice S2. Content below is the migration file verbatim.
+-- ---------------------------------------------------------------------
+-- =====================================================================
+-- Call ingest (calls_merge_plan_2026-08.md, slice S2) — call_recordings,
+-- recording_sync_state, and call_transcripts. FRESH tables: nothing
+-- migrates from the yll-call-copilot database (standing ruling, see the
+-- plan's "Standing rulings" section). Fresh source: the yll-call-copilot
+-- repo at master fb1bf326, migrations 0003/0007/0024 — read-only reference,
+-- ported and adapted, not copy-pasted verbatim (decision 1: identity is the
+-- operator, not ops_employees; the transcription source is the HighLevel
+-- endpoint, not Deepgram; no verticals/metric_scope, both S3+ concerns).
+--
+-- NOT APPLIED to any database by this PR. Naldo applies it once he's ready
+-- (see AGENTS.md's migration-application rule — a brand-new table with RLS
+-- enabled and zero policies is on the safe/additive allowlist, but this PR
+-- still asks rather than assumes).
+--
+-- call_recordings is the idempotency ledger: one row per GHL call message
+-- (unique on ghl_message_id), status pending -> processing -> transcribed /
+-- skipped / failed. recording_sync_state is a single-row (id=1) cursor the
+-- sync job advances monotonically via advance_recording_sync_cursor (ported
+-- from the copilot's migration 0024 almost verbatim — same GREATEST-based
+-- upsert so a stale overlapping invocation can never move the cursor
+-- backward; adapted only to this repo's `security definer set search_path =
+-- public` convention (see allocate_display_number above) instead of the
+-- copilot's `search_path = ''` + explicit revoke/grant boilerplate, which
+-- isn't a pattern this repo otherwise uses).
+--
+-- call_transcripts holds the HighLevel-sourced transcript for a completed
+-- call. Deliberately narrower than the copilot's `transcripts` table: no
+-- vertical_id (verticals don't exist yet — S3), no metric_scope (that
+-- column is copilot-only legacy provenance bookkeeping from its migration
+-- 0020, not part of this port), and outcome always starts 'unknown' —
+-- outcome labeling is a LOCAL quotes-table query per the plan's decision 2,
+-- landing in S4, not here.
+--
+-- rep_email/rep_name (rep_name ADDED by the rep-assignment amendment below)
+-- are resolved by src/lib/calls/pipeline.ts via the new
+-- src/lib/integrations/highlevel.ts getGhlUser helper, best-effort (a
+-- lookup failure leaves both null, never fails the recording).
+-- rep_ghl_user_id stores the ground-truth id from the call message
+-- regardless of whether the lookup succeeded.
+--
+-- The eight commitment-extraction tracking columns + the partial pending-
+-- extraction index are ported from the copilot's migration 0024 now, so S6
+-- (call commitments) does not need a second migration to add them — per
+-- this slice's brief. The index below intentionally omits copilot's
+-- `and metric_scope = 'performance'` condition (no such column exists on
+-- this table). The two PL/pgSQL functions that read/write these columns
+-- (call_commitments_finalize_extraction, record_commitment_extraction_
+-- failure) are NOT ported here — they reference call_commitments, which
+-- does not exist until S6.
+--
+-- AMENDED 2026-08-29 (fix round, same day, this migration still unapplied):
+-- call_recordings_ghl_message_id_key below was a PARTIAL unique index
+-- (`where ghl_message_id is not null`). This migration's OWN original
+-- comment on that index reasoned "a partial index is equivalent [to a
+-- plain one] here" -- true for what values a plain index would ALLOW
+-- (Postgres already treats every NULL as distinct from every other NULL in
+-- ANY unique index, partial or not), but WRONG about the consequence that
+-- actually matters: PostgREST's `.upsert(payload, { onConflict:
+-- 'ghl_message_id' })` (src/app/api/cron/calls-sync/route.ts) compiles to
+-- `INSERT ... ON CONFLICT (ghl_message_id) DO NOTHING`, and Postgres cannot
+-- infer a PARTIAL index from an ON CONFLICT target that carries no matching
+-- WHERE clause -- every call raised 42P10 ("there is no unique or
+-- exclusion constraint matching the ON CONFLICT specification"),
+-- empirically reproduced against a live postgres:16 container (fix-round
+-- progress log). The whole S2 sync cron could never insert a single row
+-- once enabled. This exact class was already hit and fixed twice before in
+-- this repo (migrations/2026-06-12-training-examples.sql and 2026-07-08-
+-- permanent-training-examples.sql, both carrying the same "NOT a partial
+-- index on purpose" note) -- this migration reintroduced it. Fix: dropped
+-- the WHERE predicate. Multiple call_recordings rows with a NULL
+-- ghl_message_id remain permitted (same NULL-distinctness argument, now
+-- correctly connected to why it matters).
+--
+-- AMENDED AGAIN 2026-08-29, same day, rep-assignment ruling (still
+-- unapplied, so amended in place): call_transcripts gains a nullable
+-- rep_name column. The header comment above claiming "rep_email is nullable
+-- and NOT populated by this slice" is now WRONG and has been corrected in
+-- place -- src/lib/calls/pipeline.ts now resolves rep_email AND rep_name
+-- via a new src/lib/integrations/highlevel.ts getGhlUser lookup
+-- (GET /users/{userId}, cached per batch run), best-effort. rep_name is a
+-- SEPARATE column from rep_email rather than folded into it, because
+-- migrations/2026-08-29-call-commitments.sql's producer needs a real
+-- display name for its "Call taken by <name>" task detail line, and
+-- collapsing name into the email column would make that unrecoverable for
+-- calls where a name was resolved but happens to differ from the email's
+-- local part.
+-- =====================================================================
+
+create table if not exists public.call_recordings (
+  id                   uuid primary key default gen_random_uuid(),
+  ghl_message_id       text,
+  ghl_contact_id       text,
+  ghl_conversation_id  text,
+  ghl_user_id          text,
+  direction            text,
+  called_at            timestamptz,
+  duration_seconds     int,
+  status               text not null default 'pending'
+                         check (status in ('pending', 'processing', 'transcribed', 'skipped', 'failed')),
+  skip_reason          text,
+  transcript_id        uuid,
+  detail               jsonb,
+  processing_at        timestamptz,
+  is_test              boolean not null default false,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+
+-- Idempotency key: a re-run of the sync (or the 24h provider-visibility
+-- overlap window re-scanning the same day) must never double-insert the
+-- same call. FULL (non-partial) unique index -- fix-round amendment above:
+-- must be non-partial so PostgREST's ON CONFLICT (ghl_message_id) can find
+-- it. A message with no id at all should never happen but the column
+-- stays nullable defensively; a plain unique index already permits
+-- unlimited NULLs (Postgres treats every NULL as distinct from every other
+-- NULL), so this loses no safety versus the partial form it replaces.
+create unique index if not exists call_recordings_ghl_message_id_key
+  on public.call_recordings (ghl_message_id);
+
+-- The batch runner's candidate query: plain-pending rows plus abandoned-
+-- processing rows (processing_at older than the 15-minute staleness
+-- cutoff), oldest first.
+create index if not exists call_recordings_status_created_idx
+  on public.call_recordings (status, created_at);
+
+alter table public.call_recordings enable row level security;
+
+create table if not exists public.recording_sync_state (
+  id              int primary key default 1 check (id = 1),
+  last_synced_at  timestamptz,
+  detail          jsonb
+);
+
+alter table public.recording_sync_state enable row level security;
+
+create table if not exists public.call_transcripts (
+  id                    uuid primary key default gen_random_uuid(),
+
+  -- Where this transcript came from, copilot's `source_file` convention
+  -- generalized ("source label" — this slice's brief) since there is no
+  -- upload path here yet: the pipeline stamps `ghl:<ghl_message_id>`.
+  source                text,
+
+  customer_name         text,
+  customer_phone        text,
+  called_at             timestamptz,
+  raw_text              text not null,
+  utterances            jsonb,
+
+  rep_email             text,
+  -- Added by the rep-assignment amendment above -- resolved alongside
+  -- rep_email via the same GHL user lookup.
+  rep_name              text,
+  rep_ghl_user_id       text,
+  direction             text,
+  duration_seconds      int,
+  ghl_contact_id        text,
+
+  outcome               text not null default 'unknown'
+                          check (outcome in ('booked', 'not_booked', 'unknown')),
+  outcome_source        text,
+
+  -- Commitment-extraction tracking (ported from the copilot's migration
+  -- 0024 — see this file's header). All null/zero until S6's extractor runs.
+  commitments_extracted_at                     timestamptz,
+  commitment_extractor_version                 text,
+  commitment_extracted_count                   integer,
+  commitment_extraction_attempts               integer not null default 0,
+  commitment_extraction_terminal_failures      integer not null default 0,
+  commitment_extraction_last_attempt_at        timestamptz,
+  commitment_extraction_quarantined_at         timestamptz,
+  commitment_extraction_last_failure_code      text,
+
+  is_test               boolean not null default false,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+
+  constraint call_transcripts_commitment_extracted_count_check
+    check (commitment_extracted_count is null or commitment_extracted_count >= 0),
+
+  constraint call_transcripts_commitment_extraction_marker_check
+    check (
+      (
+        commitments_extracted_at is null
+        and commitment_extractor_version is null
+        and commitment_extracted_count is null
+      )
+      or (
+        commitments_extracted_at is not null
+        and nullif(btrim(commitment_extractor_version), '') is not null
+      )
+    ),
+
+  constraint call_transcripts_commitment_extraction_attempts_check
+    check (
+      commitment_extraction_attempts >= 0
+      and commitment_extraction_terminal_failures >= 0
+      and commitment_extraction_terminal_failures <= commitment_extraction_attempts
+      and (
+        (
+          commitment_extraction_attempts = 0
+          and commitment_extraction_terminal_failures = 0
+          and commitment_extraction_last_attempt_at is null
+          and commitment_extraction_quarantined_at is null
+          and commitment_extraction_last_failure_code is null
+        )
+        or (
+          commitment_extraction_attempts > 0
+          and commitment_extraction_last_attempt_at is not null
+          and commitment_extraction_last_failure_code in (
+            'deterministic_extraction_failed',
+            'transient_dependency_failed'
+          )
+          and (
+            commitment_extraction_quarantined_at is null
+            or commitment_extraction_terminal_failures >= 3
+          )
+        )
+      )
+      and not (
+        commitments_extracted_at is not null
+        and commitment_extraction_quarantined_at is not null
+      )
+    )
+);
+
+-- S6's batch picker: oldest never-attempted work first, excluding anything
+-- already extracted or quarantined. No metric_scope condition — see header.
+create index if not exists call_transcripts_pending_commitment_extraction_idx
+  on public.call_transcripts (
+    commitment_extraction_last_attempt_at nulls first,
+    called_at,
+    id
+  )
+  where commitments_extracted_at is null
+    and commitment_extraction_quarantined_at is null;
+
+-- Post-call HighLevel notes (migrations/2026-08-29-call-notes.sql). Kept as
+-- an alter block rather than folded into the create table above so this
+-- file mirrors the migration that produced it line for line. Deliberately
+-- carries no CHECK constraints: adding one to an already-populated table is
+-- outside AGENTS.md's safe-to-apply allowlist, so the same invariants live
+-- in src/lib/calls/postNotes.ts and its tests instead.
+alter table public.call_transcripts
+  add column if not exists summary                   text,
+  add column if not exists summary_model             text,
+  add column if not exists summary_generated_at      timestamptz,
+  add column if not exists ghl_note_posted_at        timestamptz,
+  add column if not exists ghl_note_id               text,
+  add column if not exists ghl_note_claimed_at       timestamptz,
+  add column if not exists ghl_note_attempts         integer not null default 0,
+  add column if not exists ghl_note_last_attempt_at  timestamptz,
+  add column if not exists ghl_note_last_failure_code text,
+  add column if not exists ghl_note_skip_reason      text,
+  add column if not exists ghl_note_quarantined_at   timestamptz;
+
+-- The note worker's batch picker: calls still owed a note.
+create index if not exists call_transcripts_note_pending_idx
+  on public.call_transcripts (called_at)
+  where ghl_note_posted_at is null
+    and ghl_note_skip_reason is null
+    and ghl_note_quarantined_at is null;
+
+-- Post-call HighLevel internal comment (migrations/2026-08-30-call-comments.sql).
+-- A different HighLevel surface from the note above (a contact's conversation
+-- thread, not their Notes tab); best-effort, no CAS/quarantine machinery of
+-- its own, see src/lib/calls/postNotes.ts for why.
+alter table public.call_transcripts
+  add column if not exists ghl_comment_posted_at timestamptz;
+
+alter table public.call_transcripts enable row level security;
+
+alter table public.call_recordings
+  add constraint call_recordings_transcript_id_fkey
+  foreign key (transcript_id) references public.call_transcripts(id) on delete set null;
+
+-- ---------------------------------------------------------------------
+-- updated_at triggers.
+-- ---------------------------------------------------------------------
+create or replace function public.call_recordings_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists call_recordings_updated_at on public.call_recordings;
+create trigger call_recordings_updated_at
+  before update on public.call_recordings
+  for each row execute function public.call_recordings_set_updated_at();
+
+create or replace function public.call_transcripts_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists call_transcripts_updated_at on public.call_transcripts;
+create trigger call_transcripts_updated_at
+  before update on public.call_transcripts
+  for each row execute function public.call_transcripts_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- advance_recording_sync_cursor — monotonic cursor advance (ported from the
+-- copilot's migration 0024). Takes the single row's lock and applies
+-- GREATEST, so a stale overlapping invocation (a slow cron run racing a
+-- staff-triggered batch) can never move a newer cursor backward.
+-- ---------------------------------------------------------------------
+create or replace function public.advance_recording_sync_cursor(
+  p_next_cursor timestamptz,
+  p_detail jsonb
+) returns timestamptz
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_stored_cursor timestamptz;
+begin
+  if p_next_cursor is null then
+    raise exception 'advance_recording_sync_cursor: p_next_cursor is required';
+  end if;
+
+  insert into recording_sync_state as sync_state (id, last_synced_at, detail)
+  values (1, p_next_cursor, p_detail)
+  on conflict (id) do update
+  set
+    last_synced_at = greatest(sync_state.last_synced_at, excluded.last_synced_at),
+    detail = case
+      when sync_state.last_synced_at is null
+        or excluded.last_synced_at >= sync_state.last_synced_at
+      then excluded.detail
+      else sync_state.detail
+    end
+  returning last_synced_at into v_stored_cursor;
+
+  return v_stored_cursor;
+end;
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- call_commitments (2026-08-29, migrations/2026-08-29-call-commitments.sql)
+-- -- rep commitments extracted from a call transcript + the producer that
+-- turns each OPEN one into an office_tasks row, calls_merge_plan slice S6.
+-- Content below is the migration file verbatim (see that file's own header
+-- for the full port/deviation notes against the yll-call-copilot source).
+-- The office_tasks section ABOVE in this file already carries this same
+-- migration's sibling amendment (created_by now nullable).
+-- ---------------------------------------------------------------------
+create table if not exists public.call_commitments (
+  id uuid primary key default gen_random_uuid(),
+  transcript_id uuid not null references public.call_transcripts(id) on delete cascade,
+  ghl_contact_id text,
+  -- Same identity column and convention as call_transcripts.rep_email
+  -- (migrations/2026-08-29-call-ingest.sql) -- denormalized at extraction
+  -- time from the parent transcript row, not populated by this slice (S2
+  -- leaves call_transcripts.rep_email null; see that migration's header).
+  rep_email text,
+  kind text not null check (kind in ('send_quote', 'send_photos', 'callback', 'schedule_estimate', 'send_info', 'other')),
+  detail text not null,
+  -- Anchored to the CALL's wall-clock time (America/New_York), not
+  -- extraction time -- see src/lib/commitments/time.ts. Nullable: not every
+  -- commitment carries a specific time ("I'll follow up soon").
+  promised_at timestamptz,
+  status text not null default 'open' check (status in ('open', 'cleared', 'done', 'dismissed', 'expired')),
+  dismissed_reason text,
+  -- Free text naming the event that verified/cleared this commitment (e.g.
+  -- "quote sent 2026-08-12", a GHL event id). Populated by a later slice's
+  -- verification job -- nullable and unused by this slice's extractor.
+  verified_by_event text,
+  -- DEDUPE KEY, third column. Zero-based, per (transcript_id, kind). See
+  -- this file's header for why this (not the freeform `detail` text) is the
+  -- stable ordinal: Claude is not byte-deterministic about wording across
+  -- re-extractions.
+  extraction_index int not null default 0,
+  created_at timestamptz not null default now(),
+  cleared_at timestamptz
+);
+
+create unique index if not exists call_commitments_dedupe_key
+  on public.call_commitments (transcript_id, kind, extraction_index);
+
+-- Read by the producer (office_tasks_create_from_commitment's caller) and by
+-- the /admin/calls debug page's commitment-status counts.
+create index if not exists call_commitments_transcript_status_idx
+  on public.call_commitments (transcript_id, status);
+
+alter table public.call_commitments enable row level security;
+alter table public.call_commitments force row level security;
+
+revoke all privileges on table public.call_commitments
+  from public, anon, authenticated, service_role;
+
+-- Same grant shape as the copilot's 0021 -- select for the admin debug page's
+-- counts; insert/update/delete for the finalize/failure functions below
+-- (both SECURITY DEFINER, so this grant is defense-in-depth, not the only
+-- path -- matches office_tasks_create_manual's own posture in S1).
+grant select, insert, update, delete on table public.call_commitments
+  to service_role;
+
+-- ---------------------------------------------------------------------
+-- office_tasks_create_from_commitment -- THE PRODUCER (new code, not a
+-- copilot port -- see this file's header). Turns one OPEN call_commitments
+-- row into an office_tasks row (source_system='call_commitment',
+-- source_event_id=the commitment's own id) plus its office_task_events
+-- 'created' audit row. Idempotent via office_tasks' (source_system,
+-- source_event_id) unique index (S1): a retried call for the same
+-- commitment id is a no-op that returns the same task id and writes no
+-- second event.
+--
+-- Defined BEFORE call_commitments_finalize_extraction below because that
+-- function now calls this one internally, inside its own transaction (see
+-- this file's header, fix-round item 2) -- plpgsql function bodies aren't
+-- validated against each other until they actually EXECUTE, so this
+-- ordering isn't load-bearing for correctness, only for reading top to
+-- bottom in call order.
+-- ---------------------------------------------------------------------
+create or replace function public.office_tasks_create_from_commitment(
+  p_commitment_id uuid,
+  p_assigned_to uuid
+) returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_commitment public.call_commitments%rowtype;
+  v_customer_name text;
+  v_customer_phone text;
+  v_rep_name text;
+  v_rep_label text;
+  v_customer_line text;
+  v_title text;
+  v_detail text;
+  v_due_at timestamptz;
+  v_task_id uuid;
+begin
+  select *
+  into v_commitment
+  from public.call_commitments
+  where id = p_commitment_id
+    and status = 'open';
+
+  if not found then
+    -- Not an error: the commitment may already have been actioned (status
+    -- moved off 'open'), or the id may not exist. The only callers (the
+    -- finalize function's own loop below, and the extraction pipeline
+    -- indirectly through it) only ever pass ids just written as 'open', so
+    -- this is defensive rather than an expected path.
+    return null;
+  end if;
+
+  select transcript_record.customer_name, transcript_record.customer_phone, transcript_record.rep_name
+  into v_customer_name, v_customer_phone, v_rep_name
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = v_commitment.transcript_id;
+
+  v_title := case v_commitment.kind
+    when 'send_quote' then 'Send quote'
+    when 'send_photos' then 'Send photos'
+    when 'callback' then 'Call back'
+    when 'schedule_estimate' then 'Schedule estimate'
+    when 'send_info' then 'Send info'
+    when 'other' then 'Follow up'
+    else 'Follow up'
+  end;
+  if nullif(btrim(v_commitment.detail), '') is not null then
+    v_title := v_title || ': ' || btrim(v_commitment.detail);
+  end if;
+  v_title := left(v_title, 200);
+
+  v_customer_line := nullif(
+    trim(both ' ' from
+      coalesce(v_customer_name, '')
+      || case when v_customer_name is not null and v_customer_phone is not null then ' - ' else '' end
+      || coalesce(v_customer_phone, '')
+    ),
+    ''
+  );
+  -- rep-assignment ruling: name preferred, the commitment's own
+  -- (already-denormalized) rep_email as fallback -- either tells whoever
+  -- picks up a SHARED task who originally took the call.
+  v_rep_label := coalesce(nullif(btrim(v_rep_name), ''), v_commitment.rep_email);
+
+  v_detail := v_commitment.detail;
+  if v_customer_line is not null then
+    v_detail := v_detail || E'\n\n' || v_customer_line;
+  end if;
+  if v_rep_label is not null then
+    v_detail := v_detail || E'\n\n' || 'Call taken by ' || v_rep_label;
+  end if;
+  v_detail := left(v_detail, 2000);
+
+  v_due_at := coalesce(v_commitment.promised_at, now() + interval '24 hours');
+
+  insert into public.office_tasks (
+    source_system, source_event_id, title, detail, due_at, created_by, assigned_to
+  ) values (
+    'call_commitment', p_commitment_id::text, v_title, v_detail, v_due_at, null, p_assigned_to
+  )
+  on conflict (source_system, source_event_id) do nothing
+  returning id into v_task_id;
+
+  if v_task_id is not null then
+    -- This INSERT actually created the row (no conflict) -- write the
+    -- audit event now, in the SAME transaction. actor is null (system
+    -- creation, no operator to attribute it to -- office_task_events.actor
+    -- is nullable per that migration's own amendment, CHECK-gated to
+    -- 'created' events only). idempotency_key is the commitment's own id:
+    -- deterministic and stable, so even a hypothetical future direct retry
+    -- of this function for the same commitment cannot double-write this
+    -- event (it would land on the ELSE branch below instead, since the
+    -- office_tasks row -- and therefore this ON CONFLICT check -- already
+    -- exists by then).
+    insert into public.office_task_events (
+      task_id, event_type, actor, idempotency_key, detail
+    ) values (
+      v_task_id,
+      'created',
+      null,
+      p_commitment_id,
+      jsonb_build_object('source_system', 'call_commitment', 'commitment_id', p_commitment_id)
+    );
+  else
+    select office_task.id into v_task_id
+    from public.office_tasks as office_task
+    where office_task.source_system = 'call_commitment'
+      and office_task.source_event_id = p_commitment_id::text;
+  end if;
+
+  return v_task_id;
+end
+$function$;
+
+revoke all on function public.office_tasks_create_from_commitment(uuid, uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.office_tasks_create_from_commitment(uuid, uuid)
+  to service_role;
+
+-- ---------------------------------------------------------------------
+-- call_commitments_finalize_extraction -- ported from the copilot's
+-- migration 0024 (final/canonical form -- see this file's header for why
+-- 0022's earlier ON CONFLICT upsert is not ported). Adapted: reads/writes
+-- call_transcripts, not transcripts; every metric_scope check and column
+-- reference is dropped (no such column here -- see header). Fix-round
+-- addition: calls office_tasks_create_from_commitment for every freshly
+-- inserted commitment, inside this SAME transaction (see header item 2).
+-- ---------------------------------------------------------------------
+create or replace function public.call_commitments_finalize_extraction(
+  p_transcript_id uuid,
+  p_rows jsonb,
+  p_extractor_version text,
+  p_assigned_to uuid
+) returns text
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_extracted_at timestamptz;
+  v_has_resolved boolean;
+  v_new_commitment_id uuid;
+begin
+  if jsonb_typeof(p_rows) is distinct from 'array' then
+    raise exception using errcode = '22023', message = 'p_rows must be a JSON array';
+  end if;
+  if nullif(btrim(p_extractor_version), '') is null then
+    raise exception using errcode = '22023', message = 'p_extractor_version is required';
+  end if;
+
+  select transcript_record.commitments_extracted_at
+  into v_extracted_at
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = p_transcript_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'source transcript does not exist';
+  end if;
+  if v_extracted_at is not null then
+    return 'already_finalized';
+  end if;
+
+  select bool_or(commitment_record.status <> 'open')
+  into v_has_resolved
+  from (
+    select locked_commitment.status
+    from public.call_commitments as locked_commitment
+    where locked_commitment.transcript_id = p_transcript_id
+    for update
+  ) as commitment_record;
+
+  if coalesce(v_has_resolved, false) then
+    update public.call_transcripts
+    set
+      commitments_extracted_at = now(),
+      commitment_extractor_version = 'preexisting-resolved',
+      commitment_extracted_count = null,
+      commitment_extraction_quarantined_at = null
+    where id = p_transcript_id;
+    return 'refused';
+  end if;
+
+  -- A prior process may have committed rows and crashed before a completion
+  -- marker existed. Replace the entire still-open set so a nondeterministic
+  -- retry cannot leave stale rows that are absent from the final extraction.
+  delete from public.call_commitments
+  where transcript_id = p_transcript_id;
+
+  insert into public.call_commitments (
+    transcript_id,
+    ghl_contact_id,
+    rep_email,
+    kind,
+    detail,
+    promised_at,
+    extraction_index
+  )
+  select
+    p_transcript_id,
+    row_record ->> 'ghl_contact_id',
+    row_record ->> 'rep_email',
+    row_record ->> 'kind',
+    row_record ->> 'detail',
+    (row_record ->> 'promised_at')::timestamptz,
+    (row_record ->> 'extraction_index')::integer
+  from jsonb_array_elements(p_rows) as row_record;
+
+  -- THE PRODUCER, folded into this transaction (fix-round item 2): every
+  -- row just inserted above is 'open' by definition (the column default),
+  -- so this turns each one into its office_tasks row atomically with the
+  -- commitment rows themselves -- either both commit together, or (a
+  -- crash/error anywhere in this function) neither does, and this
+  -- transcript's commitments_extracted_at stays unset so it is retried
+  -- cleanly rather than left as an orphaned open commitment with no task.
+  for v_new_commitment_id in
+    select id from public.call_commitments where transcript_id = p_transcript_id
+  loop
+    perform public.office_tasks_create_from_commitment(v_new_commitment_id, p_assigned_to);
+  end loop;
+
+  update public.call_transcripts
+  set
+    commitments_extracted_at = now(),
+    commitment_extractor_version = p_extractor_version,
+    commitment_extracted_count = jsonb_array_length(p_rows),
+    commitment_extraction_quarantined_at = null
+  where id = p_transcript_id;
+
+  return 'ok';
+end
+$function$;
+
+revoke all on function public.call_commitments_finalize_extraction(uuid, jsonb, text, uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.call_commitments_finalize_extraction(uuid, jsonb, text, uuid)
+  to service_role;
+
+-- ---------------------------------------------------------------------
+-- record_commitment_extraction_failure -- ported from the copilot's
+-- migration 0024, same table adaptation as above (call_transcripts, no
+-- metric_scope check).
+-- ---------------------------------------------------------------------
+create or replace function public.record_commitment_extraction_failure(
+  p_transcript_id uuid,
+  p_failure_code text
+) returns text
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_attempts integer;
+  v_extracted_at timestamptz;
+  v_quarantined_at timestamptz;
+  v_terminal_failures integer;
+begin
+  if p_failure_code is null or p_failure_code not in (
+    'deterministic_extraction_failed',
+    'transient_dependency_failed'
+  ) then
+    raise exception using errcode = '22023', message = 'invalid commitment extraction failure code';
+  end if;
+
+  select
+    transcript_record.commitment_extraction_attempts,
+    transcript_record.commitments_extracted_at,
+    transcript_record.commitment_extraction_quarantined_at,
+    transcript_record.commitment_extraction_terminal_failures
+  into v_attempts, v_extracted_at, v_quarantined_at, v_terminal_failures
+  from public.call_transcripts as transcript_record
+  where transcript_record.id = p_transcript_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'source transcript does not exist';
+  end if;
+  if v_extracted_at is not null then
+    return 'already_finalized';
+  end if;
+  if v_quarantined_at is not null then
+    return 'already_quarantined';
+  end if;
+
+  v_attempts := v_attempts + 1;
+  if p_failure_code = 'deterministic_extraction_failed' then
+    v_terminal_failures := v_terminal_failures + 1;
+  end if;
+  update public.call_transcripts
+  set
+    commitment_extraction_attempts = v_attempts,
+    commitment_extraction_terminal_failures = v_terminal_failures,
+    commitment_extraction_last_attempt_at = clock_timestamp(),
+    commitment_extraction_last_failure_code = p_failure_code,
+    commitment_extraction_quarantined_at = case
+      when v_terminal_failures >= 3 then clock_timestamp()
+      else null
+    end
+  where id = p_transcript_id;
+
+  return case when v_terminal_failures >= 3 then 'quarantined' else 'retry_scheduled' end;
+end
+$function$;
+
+revoke all on function public.record_commitment_extraction_failure(uuid, text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.record_commitment_extraction_failure(uuid, text)
+  to service_role;
+-- yard-sign SKU (2026-08-29, migrations/2026-08-29-yard-sign-sku.sql) —
+-- advertising phase 2 seed rows. Content below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Yard-sign SKU (advertising phase 2, Naldo's 2026-08-29 go on the audit
+-- doc's ruling 8: "catalog SKU plus manual reconciliation first; per-unit
+-- tracking only after placements prove the workflow").
+--
+-- Two idempotent seed rows, nothing else:
+--   * inventory_catalog: YLL-YARD-SIGN under a 'Marketing' category. This is
+--     a NON-VENDOR row — the Thunder CSV import is a pure upsert keyed by
+--     the CSV's own SKUs (upsertCatalogItems), so re-imports never touch or
+--     delete it. wholesale_cost stays NULL: signs are not purchased through
+--     the Thunder PO flow, and a NULL cost keeps them out of any cost math.
+--   * inventory_on_hand: the stock row at qty 0. The office counts the real
+--     pile and sets the number on the advertising admin surface (and on the
+--     existing /inventory/stock page, where this SKU also appears). The
+--     exact admin route moved with the Simple Crew UI rebuild; the SKU and
+--     the stock row are what this migration pins, not a page path.
+--
+-- NO auto-decrement on placement acceptance — deliberately. Phase 2 is
+-- MANUAL reconciliation: the admin page shows accepted-sign counts beside
+-- this stock number and a human reconciles them. Per-unit tracking is a
+-- later phase gated on the workflow proving itself.
+--
+-- The WHERE NOT EXISTS guards make re-running SAFE, not corrective: if a
+-- seeded value is ever wrong, fix it with an UPDATE (or the stock page),
+-- never by editing this file and re-applying (the crew_members lesson).
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (idempotent seed inserts
+-- guarded by where not exists).
+-- =====================================================================
+
+insert into inventory_catalog (sku, name, category, yll_category)
+select 'YLL-YARD-SIGN', 'Yard sign (advertising)', 'Marketing', 'Marketing'
+where not exists (select 1 from inventory_catalog where sku = 'YLL-YARD-SIGN');
+
+insert into inventory_on_hand (sku, on_hand_qty, reorder_point)
+select 'YLL-YARD-SIGN', 0, 0
+where not exists (select 1 from inventory_on_hand where sku = 'YLL-YARD-SIGN');
+
+
+-- ---------------------------------------------------------------------
+-- worker_note (2026-08-29, migrations/2026-08-29-placements-worker-note.sql)
+-- — Simple Crew replica per-photo note. Content below is the migration
+-- verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- advertising_placements.worker_note — the per-photo note from the Simple
+-- Crew replica build (Naldo, 2026-08-29): the capture queue offers "Take a
+-- note..." under every shot, and the note rides the placement so admin
+-- review sees it beside the photo. Free text from the worker about their
+-- own placement; never money-bearing.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (nullable column add).
+-- =====================================================================
+
+alter table public.advertising_placements
+  add column if not exists worker_note text;
+
+comment on column public.advertising_placements.worker_note is
+  'Free-text note the worker attached to their own placement photo (Simple Crew replica capture queue). Editable by the owning worker only; shown to admin beside the photo in review.';
+
+
+-- ---------------------------------------------------------------------
+-- campaigns.kind (2026-08-29, migrations/2026-08-29-campaigns-kind.sql)
+-- — the campaign carries what is being placed. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- advertising_campaigns.kind — the Simple Crew replica (Naldo, 2026-08-29)
+-- models campaigns AS the thing being placed ("Signs", "Door Hangers"), so
+-- the camera has no kind toggle: choosing the campaign chooses the kind.
+-- The placement-level kind column stays the money truth (door hangers can
+-- never carry a rate, enforced by its CHECKs); this default feeds it at
+-- capture time.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (NOT NULL DEFAULT column add;
+-- both existing rows are yard-sign campaigns, which the default matches).
+-- =====================================================================
+
+alter table public.advertising_campaigns
+  add column if not exists kind text not null default 'yard_sign'
+    check (kind in ('yard_sign', 'door_hanger'));
+
+
+-- ---------------------------------------------------------------------
+-- pay per photo (2026-08-29, migrations/2026-08-29-pay-per-photo.sql) —
+-- supersedes the door-hanger pay exclusion in the advertising section
+-- above. Content below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Pay per accepted PHOTO (Naldo's 2026-08-29 ruling, superseding the
+-- 2026-08-27 door-hangers-never-pay exclusion): a campaign's rate_cents is
+-- paid for EVERY accepted placement, whatever its kind. The campaign's NAME
+-- says whether it is a yard-sign or door-hanger campaign; the kind on each
+-- placement records which it was, and the worker still picks it at capture.
+--
+-- What changes at the DB:
+--   * DROP advertising_placements_door_hanger_never_pays (the superseded
+--     exclusion) and the two rate-shape checks that special-cased yard
+--     signs.
+--   * BACKFILL: any already-ACCEPTED placement with a NULL rate gets its
+--     campaign's CURRENT rate stamped (at apply time this is exactly one
+--     is_test door hanger from the E2E fixtures; the UPDATE is written
+--     generically and is idempotent — it matches only NULL rates).
+--   * ADD the generalized pair: an accepted placement must carry its
+--     stamped rate; a rate can exist ONLY on an accepted placement.
+--
+-- HOW TO APPLY: this is a CHECK-constraint change on a populated table, so
+-- it is OUTSIDE the safe/additive allowlist and needs the dev's named
+-- go — given by Naldo 2026-08-29 ("rate per photo... I would make an
+-- adjustment to that"). Idempotent: drops are IF EXISTS, adds are guarded
+-- by name checks, the backfill matches only NULL rates.
+-- =====================================================================
+
+alter table public.advertising_placements
+  drop constraint if exists advertising_placements_door_hanger_never_pays;
+
+alter table public.advertising_placements
+  drop constraint if exists advertising_placements_accepted_yard_sign_has_rate;
+
+alter table public.advertising_placements
+  drop constraint if exists advertising_placements_rate_only_when_accepted;
+
+-- Backfill accepted rows that predate per-photo pay (kind-agnostic on
+-- purpose; only NULL rates are touched, so stamped history never moves).
+update public.advertising_placements p
+set accepted_rate_cents = c.rate_cents
+from public.advertising_campaigns c
+where p.campaign_id = c.id
+  and p.status = 'accepted'
+  and p.accepted_rate_cents is null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'advertising_placements_accepted_has_rate'
+  ) then
+    alter table public.advertising_placements
+      add constraint advertising_placements_accepted_has_rate
+      check (status <> 'accepted' or accepted_rate_cents is not null);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'advertising_placements_rate_only_when_accepted'
+  ) then
+    alter table public.advertising_placements
+      add constraint advertising_placements_rate_only_when_accepted
+      check (accepted_rate_cents is null or status = 'accepted');
+  end if;
+end $$;
+
+
+-- ---------------------------------------------------------------------
+-- sign issuances + photo hash (2026-08-29,
+-- migrations/2026-08-29-sign-issuances-and-photo-hash.sql). Content
+-- below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Sign issuances + photo hashes (Naldo's 2026-08-29 rulings).
+--
+-- advertising_sign_issuances: the append-only ledger of signs HANDED to a
+-- worker ("I'll give a team member 50 per week, and that's how we know how
+-- many they have"). A worker's remaining count is DERIVED in the data layer
+-- (signs issued minus yard-sign photos taken, any status), so nothing here
+-- stores a balance that could drift. Issuing also draws the warehouse
+-- inventory_on_hand pile down in the data layer, floored at zero, with an
+-- audited prior/new.
+--
+-- advertising_placements.photo_hash: a 16-hex-char perceptual dHash of the
+-- proof photo (photoHash.ts), stamped at capture. Feeds the review queue's
+-- duplicate flags with a "very similar photo" reason — assistance only, the
+-- human decides. Nullable: rows captured before hashing simply carry no
+-- signal, and the flag logic treats a missing hash as never-similar.
+--
+-- RLS ENABLED, ZERO POLICIES on the new table (service-role only, the
+-- advertising default). HOW TO APPLY: safe/additive per AGENTS.md (new
+-- table, nullable column-add, indexes that cannot collide, RLS-enable on a
+-- brand-new table).
+-- =====================================================================
+
+create table if not exists public.advertising_sign_issuances (
+  id          uuid primary key default gen_random_uuid(),
+  worker_id   uuid not null references public.advertising_workers(id),
+  qty         integer not null check (qty > 0),
+  issued_by   uuid references auth.users(id) on delete set null,
+  note        text,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists advertising_sign_issuances_worker_idx
+  on public.advertising_sign_issuances (worker_id, created_at desc);
+
+alter table public.advertising_sign_issuances enable row level security;
+
+alter table public.advertising_placements
+  add column if not exists photo_hash text
+  check (photo_hash is null or photo_hash ~ '^[0-9a-f]{16}$');
+
+
+-- ---------------------------------------------------------------------
+-- bulk-upload dedupe index (2026-08-29,
+-- migrations/2026-08-29-bulk-upload-dedupe-index.sql) - the DB backstop
+-- behind admin mass upload. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- ==============================================================
+
+-- ---------------------------------------------------------------------
+-- One accepted photo per (worker, campaign, photo hash) — the DB-level
+-- backstop for admin bulk upload (PR #1093, delta-verify HIGH).
+--
+-- The application checks for an existing accepted row before inserting,
+-- but a check-then-insert can lose a race (two admin tabs uploading the
+-- same camera roll), and every sibling mutator in that file uses a CAS
+-- while this path could not. This index is the authority that cannot be
+-- raced: a second accepted row for the same photo is refused by Postgres
+-- with 23505, which the data layer reports as a duplicate skip rather
+-- than a failure.
+--
+-- Partial on purpose:
+--   * status = 'accepted' only — pending/rejected/resubmitted rows pay
+--     nothing, and a worker legitimately resubmitting the same photo
+--     after a rejection must stay possible.
+--   * photo_hash is not null — a photo whose perceptual hash could not be
+--     computed carries no identity to dedupe on, and must still upload.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md (a partial unique index that
+-- cannot collide with existing data). Verified before applying: zero
+-- (worker_id, campaign_id, photo_hash) groups with more than one accepted
+-- row exist in production.
+-- =====================================================================
+
+create unique index if not exists advertising_placements_accepted_photo_unique
+  on public.advertising_placements (worker_id, campaign_id, photo_hash)
+  where status = 'accepted' and photo_hash is not null;
+-- placement void (2026-08-29, migrations/2026-08-29-placement-void.sql).
+-- Content below is the migration verbatim.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- Placement VOID (Naldo's 2026-08-29 go, closing the duplicate-overcount
+-- deferral from the allotments round): an admin can void a placement so it
+-- stops counting ANYWHERE — pay, pending estimates, a worker's sign
+-- allotment, warehouse-facing accepted counts, and duplicate flags — while
+-- the row itself, its status history, and its stamped rate stay intact as
+-- the record of what happened. Void is an OVERLAY (three nullable columns),
+-- not a status: nothing in the existing state machine changes shape, and
+-- there is still no delete path.
+--
+-- Rules, enforced here: who and when travel together, and a void always
+-- carries its reason (an unexplained reversal of pay is worse than none).
+-- Un-voiding does not exist; a wrongly voided sign gets re-submitted.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md — three nullable column-adds
+-- whose CHECKs are trivially satisfied by every existing row (all NULL).
+-- =====================================================================
+
+alter table public.advertising_placements
+  add column if not exists voided_at timestamptz,
+  add column if not exists voided_by uuid references auth.users(id) on delete set null,
+  add column if not exists void_reason text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'advertising_placements_void_pair'
+  ) then
+    alter table public.advertising_placements
+      add constraint advertising_placements_void_pair
+      check ((voided_by is null) = (voided_at is null));
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'advertising_placements_void_has_reason'
+  ) then
+    alter table public.advertising_placements
+      add constraint advertising_placements_void_has_reason
+      check (voided_at is null or void_reason is not null);
+  end if;
+end $$;
+
+
+-- ---------------------------------------------------------------------
+-- dedupe index excludes voided (2026-08-29,
+-- migrations/2026-08-29-dedupe-index-excludes-voided.sql). Supersedes the
+-- predicate created above. Migration verbatim below.
+-- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- The bulk-upload dedupe index must ignore VOIDED rows (S81 close
+-- integration lens, HIGH).
+--
+-- Two features shipped a day apart and never met. The dedupe index
+-- (2026-08-29-bulk-upload-dedupe-index.sql) refuses a second ACCEPTED row
+-- for the same worker, campaign and photo hash. Void
+-- (2026-08-29-placement-void.sql) is an OVERLAY: it stamps voided_at and
+-- leaves status = 'accepted' forever, precisely so the history survives.
+--
+-- Together they trap the office. Void a wrongly-accepted photo, then try
+-- to do the work again and the voided row still satisfies the index:
+--   * the worker path fails with a 409 saying the photo is already
+--     accepted, which is false, it is voided and pays nothing;
+--   * the bulk path is worse, reporting a calm "already uploaded,
+--     skipped" 200 and creating nothing, so staff believe a paying row
+--     covers work that pays zero.
+-- The void migration's own remedy for a wrongly voided sign is to
+-- resubmit it, which is exactly what this index was preventing.
+--
+-- The narrowed predicate keeps the guard for LIVE accepted rows and lets
+-- a voided one be redone.
+--
+-- HOW TO APPLY: safe/additive per AGENTS.md. The new predicate is a
+-- strict SUBSET of the old one, so it cannot collide with any data the
+-- old index already permitted. Verified before applying: zero
+-- (worker_id, campaign_id, photo_hash) groups hold more than one live
+-- accepted row.
+-- =====================================================================
+
+drop index if exists advertising_placements_accepted_photo_unique;
+
+create unique index if not exists advertising_placements_accepted_photo_unique
+  on public.advertising_placements (worker_id, campaign_id, photo_hash)
+  where status = 'accepted' and voided_at is null and photo_hash is not null;
+
+
+-- =====================================================================
+-- Advertising payout settlement (ledger row 481, Naldo's 2026-08-30
+-- rulings). The tool already knows what every worker has EARNED (the rate
+-- stamped on each accepted photo). Nothing recorded that the money was
+-- HANDED OVER, so the pay screen showed a cumulative earned figure forever.
+--
+-- A settlement says WHICH photos it paid, not just "week of Aug 24, $47.50",
+-- because a photo inside an already-paid week can be accepted days later and
+-- period-only settlement cannot then tell an underpayment from a late
+-- acceptance.
+--
+-- advertising_settlements: one payment handed to one worker. total_cents is
+-- the sum of its lines, asserted in the data layer at write time.
+--   * method (Naldo 2026-08-30): a fixed short list, so "how much did we
+--     pay in cash this month" stays answerable. Free text goes in note.
+--   * total_cents > 0: a $0.00 payment is not a record of anything, and
+--     refusing it at the database means an empty selection can never write
+--     one even if the data layer's own guard were removed.
+--
+-- advertising_settlement_lines: which photos that payment covered.
+--   * placement_id UNIQUE is the whole safety property: a photo can be paid
+--     at MOST ONCE, enforced by the database rather than by remembering. A
+--     double-submitted "Mark paid" loses its race here and surfaces as a
+--     named conflict.
+--   * amount_cents copies the placement's STAMPED accepted_rate_cents at
+--     settle time, so the settlement is its own record even if anything
+--     upstream later changes.
+--   * The placement FK is left at its default (no action / restrict): a
+--     payment record must never lose the subject it paid for. Placements
+--     are voided, never deleted, so nothing in the app hits this.
+--   * The settlement FK cascades: deleting a settlement (which the app
+--     only does to unwind its own failed write) takes its lines with it,
+--     so a half-written payment can never be left behind.
+--
+-- Unpaid is DERIVED, never stored: accepted earned cents minus the sum of
+-- that worker's settlement lines. Same posture as the sign balance and as
+-- `remaining` in signIssuances.ts, so it cannot drift.
+--
+-- RLS ENABLED, ZERO POLICIES on both new tables (service-role only, the
+-- advertising default). HOW TO APPLY: safe/additive per AGENTS.md — two
+-- brand-new tables, indexes that cannot collide with existing data, and
+-- RLS-enable on brand-new tables only.
+-- =====================================================================
+
+create table if not exists public.advertising_settlements (
+  id           uuid primary key default gen_random_uuid(),
+  worker_id    uuid not null references public.advertising_workers(id),
+  total_cents  integer not null check (total_cents > 0),
+  method       text not null check (method in ('cash', 'venmo', 'check', 'other')),
+  note         text,
+  paid_at      timestamptz not null default now(),
+  paid_by      uuid references auth.users(id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists advertising_settlements_worker_idx
+  on public.advertising_settlements (worker_id, paid_at desc);
+
+create table if not exists public.advertising_settlement_lines (
+  id             uuid primary key default gen_random_uuid(),
+  settlement_id  uuid not null references public.advertising_settlements(id) on delete cascade,
+  placement_id   uuid not null references public.advertising_placements(id),
+  amount_cents   integer not null check (amount_cents >= 0),
+  created_at     timestamptz not null default now()
+);
+
+-- A placement is payable at most once. This index IS the guarantee.
+create unique index if not exists advertising_settlement_lines_placement_key
+  on public.advertising_settlement_lines (placement_id);
+
+create index if not exists advertising_settlement_lines_settlement_idx
+  on public.advertising_settlement_lines (settlement_id);
+
+alter table public.advertising_settlements enable row level security;
+alter table public.advertising_settlement_lines enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 2026-08-29: the crew door (row 466) — single-use entry links + access audit
+-- ---------------------------------------------------------------------------
+-- The crew door (ledger row 466), pre-merge review round on PR #1094.
+--
+-- Two findings from that round, both about a link being a bearer credential
+-- that travels through a chat app:
+--
+-- 1. Link tokens were replayable inside their 15-minute window (technical LOW
+--    and admin MED, converging). `last_link_jti` makes a link SINGLE USE: the
+--    mint stamps a fresh id, the entry route consumes it with a compare-and-set,
+--    and a second redemption of the same link finds nothing to consume. It also
+--    means minting a new link invalidates the previous one, so an office
+--    staffer who re-sends a link has revoked the old one by doing so.
+--
+-- 2. Nothing recorded who was sent a link or who walked through the door
+--    (admin MED). `crew_access_events` is the same audit shape the rest of the
+--    repo already uses (dashboard_activity, advertising_activity): append-only,
+--    actor + action + detail, and the crew FK nulls on delete so removing a
+--    crew member never erases the history of their access.
+
+alter table public.crew_members
+  add column if not exists last_link_jti text;
+
+create table if not exists public.crew_access_events (
+  id             uuid primary key default gen_random_uuid(),
+  crew_member_id uuid references public.crew_members(id) on delete set null,
+  actor          text not null,                -- auth.users id (as text), or 'crew'
+  action         text not null check (action in ('link_minted', 'entered', 'entry_refused')),
+  detail         jsonb,
+  created_at     timestamptz not null default now()
+);
+
+create index if not exists crew_access_events_crew_member_idx
+  on public.crew_access_events (crew_member_id, created_at desc);
+
+alter table public.crew_access_events enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- 2026-08-29: crew sessions bind to a rotatable epoch, not the Telegram id
+-- ---------------------------------------------------------------------------
+-- The crew door, delta-verify round on PR #1094.
+--
+-- The first fix bound a crew session to the crew member's telegram_user_id and
+-- the PR claimed that unlinking and relinking was a per-person "sign out
+-- everywhere". That claim was FALSE for the realistic case: the office's
+-- remediation for a leaked link is to unlink and relink the SAME Telegram
+-- account, which restores the same id, so the leaked session's binding matched
+-- again and the stolen cookie came back to life for the rest of its 30 days.
+--
+-- `session_epoch` is a value whose only job is to CHANGE. Sessions are bound to
+-- it, and it is rotated whenever the office does anything that should end a
+-- crew member's sessions: linking or unlinking Telegram, deactivating them, or
+-- pressing Sign out everywhere. Rotating it invalidates every session issued
+-- before, for that one person, and touches nobody else.
+
+alter table public.crew_members
+  add column if not exists session_epoch text;

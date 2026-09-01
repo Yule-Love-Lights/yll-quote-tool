@@ -76,8 +76,30 @@ export const defaultScheduleDay = (now: Date = new Date()) => etDayKey(now);
 const today = () => defaultScheduleDay();
 const hours = (n: number) => `${Math.round(n * 10) / 10}h`;
 
-export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
-  const [date, setDate] = useState(today());
+export function ScheduleDay({
+  crew,
+  onDateChange,
+  initialDate,
+}: {
+  crew: CrewMember[];
+  /**
+   * The day to open on, computed on the SERVER (2026-08-31). Without it this
+   * component seeds from the browser clock while its sibling fleet column
+   * seeds from the server's, so a page rendered just before ET midnight and
+   * hydrated just after starts the two on different days: the jobs list shows
+   * today while the fleet column says it is hiding the vans because this is
+   * not today. Optional, and the browser clock remains the fallback.
+   */
+  initialDate?: string;
+  /**
+   * Called whenever the day picker moves to a different day (2026-08-31).
+   * The Schedule page's fleet column shows only on today, and the date lives
+   * in here, so this is how the sibling column learns about a change. Optional
+   * and side-effect free for every other caller.
+   */
+  onDateChange?: (date: string) => void;
+}) {
+  const [date, setDate] = useState(initialDate ?? today());
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [capacity, setCapacity] = useState<DayCapacity | null>(null);
   const [unscheduled, setUnscheduled] = useState<ScheduledJob[]>([]);
@@ -193,6 +215,10 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
             if (next === date) return;
             setLoading(true);
             setDate(next);
+            // After the no-op guard above on purpose: a retyped identical date
+            // is not a change, and telling the sibling column otherwise would
+            // make it re-evaluate for nothing.
+            onDateChange?.(next);
           }}
           className="border border-gray-300 rounded-md px-3 py-1.5 text-sm"
         />
@@ -360,7 +386,22 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
         </>
       )}
 
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-4 text-sm text-red-600">
+          {error}
+          {/* The coordinate refusal names the geocoding page; make that a real
+              link rather than a destination the staffer has to type (S68 staff
+              lens: an unlinked page is this repo's inert-feature class). */}
+          {error.includes('geocoding page') && (
+            <>
+              {' '}
+              <a href="/admin/geocoding" className="underline font-medium">
+                Open the geocoding page
+              </a>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }

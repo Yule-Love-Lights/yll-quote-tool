@@ -519,3 +519,363 @@ describe('analyzePhoto #149 retry-once on unusable JSON', () => {
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 });
+
+// SHADOW MODE (deterministic-satellite-footage): analyzePhoto() computes
+// satellite footage from the model's OWN drawn lines, additively, alongside
+// (never replacing) the model's self-reported satelliteSantasFootage /
+// satelliteGingerbreadFootage — the exact fields self-serve pricing reads
+// (src/lib/selfServe/estimateRange.ts's effectiveRooflineFootage).
+describe('analyzePhoto — shadow-mode computed satellite footage (deterministic-satellite-footage)', () => {
+  let createMock: ReturnType<typeof vi.fn>;
+  let analyzePhoto: typeof import('./photoAnalysis').analyzePhoto;
+
+  const setResponse = (analysisJson: Record<string, unknown>) => {
+    createMock.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify(analysisJson) }],
+      stop_reason: 'end_turn',
+    });
+  };
+
+  const baseAnalysis = {
+    santasFootage: 40,
+    santasDifficulty: 'medium',
+    santasLines: [],
+    gingerbreadFootage: 20,
+    gingerbreadDifficulty: 'medium',
+    gingerbreadLines: [],
+    miniLightDetections: [],
+    wreathDetections: [],
+    spritzerDetections: [],
+    garlandDetections: [],
+    notes: 'ok',
+    confidence: 'high',
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    createMock = vi.fn();
+    vi.doMock('./claude', () => ({
+      getClaudeClient: () => ({ messages: { create: createMock } }),
+    }));
+    const mod = await import('./photoAnalysis');
+    analyzePhoto = mod.analyzePhoto;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.doUnmock('./claude');
+    vi.resetModules();
+  });
+
+  it('computes computedSatelliteSantasFootage/computedSatelliteGingerbreadFootage from the real satellite image dimensions (a real 642x470 PNG, mirroring the live 12 Orient Ave shape) WITHOUT changing the model-stated fields', async () => {
+    const satPng = await sharp({
+      create: { width: 642, height: 470, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).png().toBuffer();
+    const satBase64 = satPng.toString('base64');
+
+    // A pure-vertical satellite santas segment: (0.5,0.2)->(0.5,0.8) on 642x470
+    // at feetPerPixel=0.3. dy = 0.6*470=282px -> 282*0.3=84.6ft (Math.round=85).
+    // The MODEL states a wildly different 40ft — well past the 25% threshold.
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [{ points: [[0.5, 0.2], [0.5, 0.8]], label: 'sat front' }],
+      satelliteSantasFootage: 40,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'satellite',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg', [], {
+      satellite: { base64: satBase64, mediaType: 'image/png', feetPerPixel: 0.3 },
+    });
+
+    // The EXISTING fields — the ones self-serve pricing / the seeded scene
+    // actually read — are completely unchanged: byte-for-byte the model's own
+    // stated numbers, lines, and source pick.
+    expect(result.satelliteSantasFootage).toBe(40);
+    expect(result.satelliteGingerbreadFootage).toBe(0);
+    expect(result.preferredSource).toBe('satellite');
+    expect(result.satelliteSantasLines).toEqual([{ points: [[0.5, 0.2], [0.5, 0.8]], label: 'sat front' }]);
+
+    // The NEW shadow fields are additive and correctly derived.
+    expect(result.computedSatelliteSantasFootage).toBe(85); // Math.round(84.6)
+    expect(result.computedSatelliteGingerbreadFootage).toBe(0); // no lines drawn, but dims+scale known -> a real computable 0, not null
+    expect(result.satelliteSantasFootageDisagrees).toBe(true); // |85-40|/40 = 1.125 > 0.25
+    expect(result.satelliteGingerbreadFootageDisagrees).toBe(false); // 0 vs 0 (nothing drawn, nothing stated)
+  });
+
+  it('leaves computed fields null and disagreement false when no satellite image was supplied', async () => {
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [],
+      satelliteSantasFootage: 0,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'street',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg'); // no satellite option at all
+
+    expect(result.computedSatelliteSantasFootage).toBeNull();
+    expect(result.computedSatelliteGingerbreadFootage).toBeNull();
+    expect(result.satelliteSantasFootageDisagrees).toBe(false);
+    expect(result.satelliteGingerbreadFootageDisagrees).toBe(false);
+  });
+
+  it('leaves computed fields null (never throws) when the satellite base64 is corrupt/undecodable', async () => {
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [{ points: [[0, 0], [1, 0]], label: 'sat' }],
+      satelliteSantasFootage: 50,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'satellite',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg', [], {
+      satellite: { base64: 'not-a-real-png', mediaType: 'image/png', feetPerPixel: 0.3 },
+    });
+
+    expect(result.computedSatelliteSantasFootage).toBeNull();
+    expect(result.satelliteSantasFootageDisagrees).toBe(false);
+    // Stated field is STILL untouched — the decode failure never propagates.
+    expect(result.satelliteSantasFootage).toBe(50);
+  });
+
+  it('leaves computed fields null when the satellite image has no known feetPerPixel scale (the 642x470/null-scale live training row)', async () => {
+    const satPng = await sharp({
+      create: { width: 642, height: 470, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    }).png().toBuffer();
+    setResponse({
+      ...baseAnalysis,
+      satelliteSantasLines: [{ points: [[0, 0], [1, 0]], label: 'sat' }],
+      satelliteSantasFootage: 50,
+      satelliteGingerbreadLines: [],
+      satelliteGingerbreadFootage: 0,
+      preferredSource: 'satellite',
+    });
+
+    const result = await analyzePhoto('AAAA', 'image/jpeg', [], {
+      satellite: { base64: satPng.toString('base64'), mediaType: 'image/png' }, // no feetPerPixel
+    });
+
+    expect(result.computedSatelliteSantasFootage).toBeNull();
+    expect(result.satelliteSantasFootageDisagrees).toBe(false);
+  });
+});
+
+// SHADOW MODE (door-anchor scale, spike PR #922): a SEPARATE, cheap vision
+// call locates the front door / garage door in the STREET photo and derives
+// a feet-per-pixel scale — additive, alongside (never replacing) anything
+// the main analysis produces. Nothing that reaches pricing/projection/the
+// analyzer's own detections reads these three fields today.
+describe('analyzePhoto — shadow-mode door-anchor scale (door-anchor-experiment spike, PR #922)', () => {
+  let createMock: ReturnType<typeof vi.fn>;
+  let analyzePhoto: typeof import('./photoAnalysis').analyzePhoto;
+  let photoBase64: string;
+  const PHOTO_W = 800;
+  const PHOTO_H = 600;
+
+  const okAnalysisJson = {
+    santasFootage: 40,
+    santasDifficulty: 'medium',
+    santasLines: [],
+    gingerbreadFootage: 20,
+    gingerbreadDifficulty: 'medium',
+    gingerbreadLines: [],
+    satelliteSantasLines: [],
+    satelliteSantasFootage: 0,
+    satelliteGingerbreadLines: [],
+    satelliteGingerbreadFootage: 0,
+    preferredSource: 'street',
+    miniLightDetections: [],
+    wreathDetections: [],
+    spritzerDetections: [],
+    garlandDetections: [],
+    notes: 'ok',
+    confidence: 'high',
+  };
+  const mainResponse = { content: [{ type: 'text', text: JSON.stringify(okAnalysisJson) }], stop_reason: 'end_turn' };
+  const doorAnchorResponse = (obj: Record<string, unknown>) => ({
+    content: [{ type: 'text', text: JSON.stringify(obj) }],
+    stop_reason: 'end_turn',
+  });
+  // Every request the main analyzer sends carries max_tokens: 8192; the
+  // door-anchor call carries max_tokens: 300 (see runDoorAnchorShadow) — the
+  // one reliable way to tell the two calls apart in a mock, since they share
+  // the same model id.
+  const isDoorCall = (req: { max_tokens: number }) => req.max_tokens === 300;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const jpeg = await sharp({
+      create: { width: PHOTO_W, height: PHOTO_H, channels: 3, background: { r: 10, g: 20, b: 30 } },
+    }).jpeg().toBuffer();
+    photoBase64 = jpeg.toString('base64');
+    createMock = vi.fn();
+    vi.doMock('./claude', () => ({
+      getClaudeClient: () => ({ messages: { create: createMock } }),
+    }));
+    const mod = await import('./photoAnalysis');
+    analyzePhoto = mod.analyzePhoto;
+  });
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.doUnmock('./claude');
+    vi.resetModules();
+    vi.useRealTimers();
+  });
+
+  it('records a front-door anchor scale from a valid model response (image under the downscale threshold, so no rescale needed)', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? doorAnchorResponse({ object: 'front_door', garageDoorWidth: null, bbox: [100, 200, 40, 100], confidence: 0.85 })
+        : mainResponse,
+    );
+
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+
+    expect(result.doorAnchorSource).toBe('front-door');
+    expect(result.doorAnchorConfidence).toBe(0.85);
+    // 800x600 is under MAX_VISION_EDGE_PX (1568) so sent == original dims, no rescale.
+    expect(result.doorAnchorFtPerPx).toBeCloseTo((80 / 12) / 100, 6);
+  });
+
+  it('records a garage-door (single) anchor scale', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? doorAnchorResponse({ object: 'garage_door', garageDoorWidth: 'single', bbox: [50, 300, 220, 70], confidence: 0.6 })
+        : mainResponse,
+    );
+
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+
+    expect(result.doorAnchorSource).toBe('garage-door');
+    expect(result.doorAnchorFtPerPx).toBeCloseTo((108 / 12) / 220, 6);
+  });
+
+  it('rescales ftPerPx into the ORIGINAL photo pixel space when the image was downscaled before the vision call', async () => {
+    const bigJpeg = await sharp({
+      create: { width: 3000, height: 2000, channels: 3, background: { r: 5, g: 5, b: 5 } },
+    }).jpeg().toBuffer();
+    const bigBase64 = bigJpeg.toString('base64');
+    const { downscaleImageForVision } = await import('./photoAnalysis');
+    const { base64: sentBase64 } = await downscaleImageForVision(bigBase64, 'image/jpeg');
+    const sentMeta = await sharp(Buffer.from(sentBase64, 'base64')).metadata();
+    const sentW = sentMeta.width!;
+    const ORIGINAL_W = 3000;
+    expect(sentW).toBeLessThan(ORIGINAL_W); // sanity: this really exercises a downscale
+
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? doorAnchorResponse({ object: 'front_door', garageDoorWidth: null, bbox: [10, 10, 20, 60], confidence: 0.7 })
+        : mainResponse,
+    );
+
+    const result = await analyzePhoto(bigBase64, 'image/jpeg');
+
+    const expectedSentFtPerPx = (80 / 12) / 60;
+    const expectedOriginalFtPerPx = expectedSentFtPerPx * (sentW / ORIGINAL_W);
+    expect(result.doorAnchorFtPerPx).toBeCloseTo(expectedOriginalFtPerPx, 8);
+  });
+
+  it('ambiguous garage width (null) -> all three fields null, no standard size to anchor to', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? doorAnchorResponse({ object: 'garage_door', garageDoorWidth: null, bbox: [50, 300, 220, 70], confidence: 0.6 })
+        : mainResponse,
+    );
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+    expect(result.doorAnchorFtPerPx).toBeNull();
+    expect(result.doorAnchorSource).toBeNull();
+    expect(result.doorAnchorConfidence).toBeNull();
+  });
+
+  it('"none" (model found no usable anchor) -> all three fields null', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? doorAnchorResponse({ object: 'none', garageDoorWidth: null, bbox: [0, 0, 0, 0], confidence: 0.1 })
+        : mainResponse,
+    );
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+    expect(result.doorAnchorFtPerPx).toBeNull();
+    expect(result.doorAnchorSource).toBeNull();
+    expect(result.doorAnchorConfidence).toBeNull();
+  });
+
+  it('schema-invalid model response (missing field) -> all three fields null, never throws', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? { content: [{ type: 'text', text: JSON.stringify({ object: 'front_door', bbox: [1, 2, 3, 4] }) }], stop_reason: 'end_turn' } // missing confidence + garageDoorWidth
+        : mainResponse,
+    );
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+    expect(result.doorAnchorFtPerPx).toBeNull();
+  });
+
+  it('malformed JSON from the door-anchor call -> all three fields null, never throws', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? { content: [{ type: 'text', text: '{"object": ,}' }], stop_reason: 'end_turn' }
+        : mainResponse,
+    );
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+    expect(result.doorAnchorFtPerPx).toBeNull();
+  });
+
+  it('an API rejection on the door-anchor call -> all three fields null, never throws, main result unaffected', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req) ? Promise.reject(new Error('simulated door-anchor 529')) : mainResponse,
+    );
+    const result = await analyzePhoto(photoBase64, 'image/jpeg');
+    expect(result.doorAnchorFtPerPx).toBeNull();
+    expect(result.notes).toBe('ok'); // the main analysis is completely unaffected
+  });
+
+  it('degrades to null and never waits past DOOR_ANCHOR_TIMEOUT_MS when the door-anchor call hangs', async () => {
+    vi.useFakeTimers();
+    createMock.mockImplementation((req: { max_tokens: number }) =>
+      isDoorCall(req) ? new Promise(() => {}) : Promise.resolve(mainResponse), // door call never resolves
+    );
+
+    const resultPromise = analyzePhoto(photoBase64, 'image/jpeg');
+    await vi.advanceTimersByTimeAsync(8000);
+    const result = await resultPromise;
+
+    expect(result.doorAnchorFtPerPx).toBeNull();
+    expect(result.doorAnchorSource).toBeNull();
+    expect(result.doorAnchorConfidence).toBeNull();
+    expect(result.notes).toBe('ok'); // main analysis unaffected by the hang
+  });
+
+  // PINNING TEST: every field the rest of the app already reads must be
+  // byte-identical whether the door-anchor call succeeds or fails outright —
+  // this shadow field can never perturb the real analysis result.
+  it('pinning: existing analysis fields are byte-identical whether the door-anchor call succeeds or fails', async () => {
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req)
+        ? doorAnchorResponse({ object: 'front_door', garageDoorWidth: null, bbox: [10, 10, 20, 60], confidence: 0.9 })
+        : mainResponse,
+    );
+    const successResult = await analyzePhoto(photoBase64, 'image/jpeg');
+
+    createMock.mockImplementation(async (req: { max_tokens: number }) =>
+      isDoorCall(req) ? Promise.reject(new Error('simulated failure')) : mainResponse,
+    );
+    const failResult = await analyzePhoto(photoBase64, 'image/jpeg');
+
+    const stripDoorFields = (r: typeof successResult) => {
+      const rest: Record<string, unknown> = { ...r };
+      delete rest.doorAnchorFtPerPx;
+      delete rest.doorAnchorSource;
+      delete rest.doorAnchorConfidence;
+      return rest;
+    };
+    expect(stripDoorFields(successResult)).toEqual(stripDoorFields(failResult));
+    expect(successResult.doorAnchorSource).toBe('front-door');
+    expect(failResult.doorAnchorSource).toBeNull();
+  });
+});

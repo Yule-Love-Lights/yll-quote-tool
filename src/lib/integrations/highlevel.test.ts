@@ -14,12 +14,14 @@ import {
   upsertContact,
   upsertContactCustomField,
   createContactNote,
+  createInternalComment,
   createContact,
   listLocationCustomFields,
   createLocationCustomField,
   sendSms,
   updateOpportunity,
   getContactInternal,
+  getGhlUser,
   HighLevelError,
 } from './highlevel';
 import type { HighLevelContact, HighLevelOpportunity } from './types';
@@ -60,6 +62,48 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
     // valorVault.test.ts's own afterEach) — guards the new ghlFetch timeout
     // tests below from leaking fake timers into later tests in this file.
     vi.useRealTimers();
+  });
+
+  describe('getGhlUser (rep-assignment ruling, calls_merge_plan_2026-08.md)', () => {
+    it('resolves email + name (firstName/lastName join) from GET /users/{userId}', async () => {
+      const fetchMock = mockFetchCapture({ email: 'rep@x.com', firstName: 'Jane', lastName: 'Rep' });
+      const result = await getGhlUser('ghl-user-1');
+
+      expect(result).toEqual({ email: 'rep@x.com', name: 'Jane Rep' });
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toContain('/users/ghl-user-1');
+    });
+
+    it('prefers an explicit name field over the firstName/lastName join', async () => {
+      mockFetchOnce({ email: 'rep@x.com', firstName: 'Jane', lastName: 'Rep', name: 'J. Rep (Display)' });
+      const result = await getGhlUser('ghl-user-1');
+      expect(result.name).toBe('J. Rep (Display)');
+    });
+
+    it('resolves a null name when neither name nor firstName/lastName is present', async () => {
+      mockFetchOnce({ email: 'rep@x.com' });
+      const result = await getGhlUser('ghl-user-1');
+      expect(result).toEqual({ email: 'rep@x.com', name: null });
+    });
+
+    it('degrades to nulls on a non-OK response rather than throwing', async () => {
+      const fetchMock = vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => { throw new Error('not json'); },
+        text: async () => 'Not Found',
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getGhlUser('missing-user');
+      expect(result).toEqual({ email: null, name: null });
+    });
+
+    it('degrades to nulls when HighLevel is not configured, rather than throwing', async () => {
+      delete process.env.HIGHLEVEL_API_KEY;
+      const result = await getGhlUser('ghl-user-1');
+      expect(result).toEqual({ email: null, name: null });
+    });
   });
 
   describe('findOpportunityForContact', () => {
@@ -593,6 +637,44 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect(String(url)).toContain('/contacts/c1/notes');
       expect((init as RequestInit).method).toBe('POST');
       expect(JSON.parse((init as RequestInit).body as string)).toEqual({ body: 'hello world' });
+    });
+  });
+
+  describe('createInternalComment', () => {
+    // Local non-ok fetch helper -- mockFetchStatus above is scoped to a
+    // different describe block, so this mirrors it rather than reaching
+    // across scopes.
+    function mockCommentFetchStatus(status: number, json: unknown) {
+      const fn = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => json,
+        text: async () => JSON.stringify(json),
+      }));
+      vi.stubGlobal('fetch', fn);
+      return fn;
+    }
+
+    it('POSTs /conversations/messages with type InternalComment, contactId, message, and no mentions', async () => {
+      const fetchMock = mockFetchCapture({ conversationId: 'conv-1', messageId: 'msg-1' });
+
+      await createInternalComment('c1', 'hello world');
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/conversations/messages');
+      expect((init as RequestInit).method).toBe('POST');
+      expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+        type: 'InternalComment',
+        contactId: 'c1',
+        message: 'hello world',
+        mentions: [],
+      });
+    });
+
+    it('a 400 (e.g. a rejected empty mentions array) surfaces as a HighLevelError with .status set', async () => {
+      mockCommentFetchStatus(400, { message: 'mentions is required' });
+      await expect(createInternalComment('c1', 'hello world')).rejects.toMatchObject({ status: 400 });
     });
   });
 

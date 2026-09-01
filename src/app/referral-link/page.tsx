@@ -29,7 +29,26 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
+import {
+  REFERRAL_CREDIT_USD,
+  REFERRAL_CREDIT_EXPIRY_YEARS,
+  REFERRAL_FRIEND_SPRITZERS,
+  REFERRAL_FRIEND_ALT_CREDIT_USD,
+} from '@/lib/referrals';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
+import { CompactTrustRow } from '@/components/portal/dark/CompactTrustRow';
+import { formatUsd } from '@/components/portal/format';
+import { PhoneFrame } from './PhoneFrame';
 import { ReferralLinkForm } from './ReferralLinkForm';
+
+// naldo/referral-link-preview: "2 free 16 inch spritzers" is trade jargon a
+// homeowner has no way to price on their own. Dollarized once here, from the
+// quote builder's own per-size rate, never a separate hardcoded number
+// (mirrors src/app/refer/[code]/page.tsx's own SPRITZER_VALUE_USD).
+const SPRITZER_VALUE_USD = spritzerRetailValueUsd(
+  REFERRAL_FRIEND_SPRITZERS.count,
+  REFERRAL_FRIEND_SPRITZERS.sizeInches,
+);
 
 // The flag is a runtime server env read, never statically pre-render this page.
 export const dynamic = 'force-dynamic';
@@ -58,12 +77,73 @@ export default async function ReferralLinkPage({
           <h1 className="font-display text-[32px] leading-[1.1] md:text-[42px] md:leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.02em]">
             Get your referral link
           </h1>
+          {/* Review fix 9: "you get $125 credit... They get $170 in free
+              lighting" used to sit in one sentence, reading as a direct
+              comparison ("why does my friend get more than me?"). Split
+              into two paragraphs, leading with what the referrer gets, and
+              the friend's reward framed as something being GIVEN rather
+              than a competing prize. */}
           <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1] leading-[1.6]">
-            Send friends and neighbors our way. When they book, you get $125 off your next job. They get 2 free
-            16&quot; spritzers.
+            Send friends and neighbors our way. When they book, you get {formatUsd(REFERRAL_CREDIT_USD)}{' '}
+            credit toward any Yule Love Lights service, holiday, permanent, event and wedding
+            lighting, or bistro.
+          </p>
+          <p className="mt-3 text-[16px] md:text-[17px] text-[#E0D7C1] leading-[1.6]">
+            You are also giving them {REFERRAL_FRIEND_SPRITZERS.count} free spritzers on their
+            first install, worth {formatUsd(SPRITZER_VALUE_USD)}, or{' '}
+            {formatUsd(REFERRAL_FRIEND_ALT_CREDIT_USD)} off instead,
+            their choice.
+          </p>
+          {/* Trust row (naldo/referral-link-preview, PIECE 1): the same
+              compact rating / license / guarantee signals the referral
+              landing page itself shows above its fold (ReferHero.tsx), so
+              someone deciding whether to bother generating a link sees the
+              same proof their friend will see. Kept to this one line on
+              purpose: this page has a single job, and the heavier trust
+              sections (logo marquee, review carousel, guarantee cards) are
+              built to carry a stranger through a whole buying decision,
+              which is not what a returning contact clicking one link needs. */}
+          <div className="mt-6">
+            <CompactTrustRow />
+          </div>
+        </div>
+
+        {/* Review fix 3: the form used to sit BELOW the ~505px sample phone
+            frame, pushing the email field/submit button roughly 900-1000px
+            down at 375px wide -- well past one scroll. The form is the
+            primary action (getting a link is the entire point of this
+            page), so it now renders right after the intro block, with the
+            sample preview moved below it as supporting proof rather than a
+            gate in front of the CTA. */}
+        <ReferralLinkForm
+          contactId={contactId}
+          creditUsd={REFERRAL_CREDIT_USD}
+          creditExpiryYears={REFERRAL_CREDIT_EXPIRY_YEARS}
+          spritzerCount={REFERRAL_FRIEND_SPRITZERS.count}
+          spritzerSizeInches={REFERRAL_FRIEND_SPRITZERS.sizeInches}
+          spritzerValueUsd={SPRITZER_VALUE_USD}
+        />
+
+        {/* Sample preview (naldo/referral-link-preview, PIECE 3a): the
+            enticement. Shows the no-database /refer/preview route (PIECE 2)
+            in a phone-shaped frame so a visitor sees exactly what their
+            friend receives. Moved below the form (review fix 3): still one
+            scroll away, but no longer standing in front of the primary
+            action.
+            Review fix 1: the caption used to say "This is what your friend
+            sees", which is only true for a recipient with no approved
+            design on file. resolveHero (src/app/refer/[code]/page.tsx)
+            shows a referrer's OWN rendered house whenever they have an
+            approved quote with a photo and haven't opted out, so the
+            wording now stays true for that group too, while still selling
+            the idea to everyone else. */}
+        <div className="mt-10 text-center">
+          <PhoneFrame src="/refer/preview" title="A sample of what your friend receives" />
+          <p className="mt-4 text-[13px] text-[#A89F87]">
+            A sample of the page. If you already have a design with us, your friend sees your
+            own home lit up instead.
           </p>
         </div>
-        <ReferralLinkForm contactId={contactId} />
       </div>
     </main>
   );

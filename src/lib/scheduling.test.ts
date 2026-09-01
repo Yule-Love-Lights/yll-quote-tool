@@ -7,6 +7,7 @@ import {
   getSchedule,
   isCalendarDate,
   listUnscheduledJobs,
+  propertyArchiveBlock,
   unassignCrewFromJob,
   type ScheduledJob,
 } from './scheduling';
@@ -27,7 +28,7 @@ type Chain = Record<string, (...args: unknown[]) => Chain> & {
 function chain(resp: DbResp): Chain {
   const calls: Array<[string, unknown[]]> = [];
   const p = { calls } as unknown as Chain;
-  for (const m of ['select', 'insert', 'delete', 'eq', 'gte', 'lte', 'in', 'not', 'order']) {
+  for (const m of ['select', 'insert', 'delete', 'eq', 'gte', 'lte', 'in', 'not', 'order', 'limit']) {
     (p as Record<string, unknown>)[m] = (...args: unknown[]) => {
       calls.push([m, args]);
       return p;
@@ -55,6 +56,8 @@ function makeDb(queues: Record<string, Chain[]>) {
 }
 
 const FIELD_CREW: DbResp = { data: { id: 'crew-1', active: true, is_office: false }, error: null };
+const JOB_WITH_PROPERTY: DbResp = { data: { id: 'j1', property_id: 'p1' }, error: null };
+const VERIFIED_PROPERTY: DbResp = { data: { id: 'p1', lat: 40.711, lng: -73.404 }, error: null };
 const ASSIGNMENT_ROW = { id: 'a1', job_id: 'j1', crew_member_id: 'crew-1', assigned_date: '2026-08-27' };
 
 beforeEach(() => {
@@ -65,6 +68,8 @@ describe('assignCrewToJob (rows 356 + 300)', () => {
   it('assigns an active field crew member and maps the row to camelCase', async () => {
     makeDb({
       crew_members: [chain(FIELD_CREW)],
+      jobs: [chain(JOB_WITH_PROPERTY)],
+      properties: [chain(VERIFIED_PROPERTY)],
       job_assignments: [chain({ data: ASSIGNMENT_ROW, error: null })],
     });
     const got = await assignCrewToJob('j1', 'crew-1', '2026-08-27');
@@ -105,6 +110,8 @@ describe('assignCrewToJob (rows 356 + 300)', () => {
   it('row 300: the 23505 double-click race recovers by returning the EXISTING row (the clockIn sibling pattern)', async () => {
     makeDb({
       crew_members: [chain(FIELD_CREW)],
+      jobs: [chain(JOB_WITH_PROPERTY)],
+      properties: [chain(VERIFIED_PROPERTY)],
       job_assignments: [
         chain({ data: null, error: { code: '23505', message: 'duplicate key' } }),
         chain({ data: ASSIGNMENT_ROW, error: null }),
@@ -117,9 +124,48 @@ describe('assignCrewToJob (rows 356 + 300)', () => {
   it('a non-23505 insert error throws with the message', async () => {
     makeDb({
       crew_members: [chain(FIELD_CREW)],
+      jobs: [chain(JOB_WITH_PROPERTY)],
+      properties: [chain(VERIFIED_PROPERTY)],
       job_assignments: [chain({ data: null, error: { code: '23503', message: 'fk violation' } })],
     });
     await expect(assignCrewToJob('j1', 'crew-1', '2026-08-27')).rejects.toThrow(/fk violation/);
+  });
+
+  // NALDO'S RULE 2026-08-27: no coordinates, no schedule. This is what makes a
+  // missing GPS timeline impossible to mistake for a crew that never showed up —
+  // a job that cannot be watched cannot be booked in the first place.
+  it("REFUSES a job whose property has no verified coordinates, before any write", async () => {
+    const queues = makeDb({
+      crew_members: [chain(FIELD_CREW)],
+      jobs: [chain(JOB_WITH_PROPERTY)],
+      properties: [chain({ data: { id: 'p1', lat: null, lng: null }, error: null })],
+      job_assignments: [chain({ data: ASSIGNMENT_ROW, error: null })],
+    });
+    const err = await assignCrewToJob('j1', 'crew-1', '2026-08-27').then(
+      () => null,
+      (e) => e as Error,
+    );
+    expect(err).toBeInstanceOf(AssignmentRefusedError);
+    expect(err?.message).toMatch(/no verified coordinates/);
+    expect(queues.job_assignments).toHaveLength(1); // never reached the write
+  });
+
+  it('refuses a job with no property linked at all', async () => {
+    makeDb({
+      crew_members: [chain(FIELD_CREW)],
+      jobs: [chain({ data: { id: 'j1', property_id: null }, error: null })],
+      job_assignments: [chain({ data: ASSIGNMENT_ROW, error: null })],
+    });
+    await expect(assignCrewToJob('j1', 'crew-1', '2026-08-27')).rejects.toThrow(/no property linked/);
+  });
+
+  it('refuses an unknown job', async () => {
+    makeDb({
+      crew_members: [chain(FIELD_CREW)],
+      jobs: [chain({ data: null, error: null })],
+      job_assignments: [chain({ data: ASSIGNMENT_ROW, error: null })],
+    });
+    await expect(assignCrewToJob('j1', 'crew-1', '2026-08-27')).rejects.toThrow(/Unknown job/);
   });
 
   it('rejects a malformed date before touching anything', async () => {
@@ -330,5 +376,50 @@ describe('computeDayCapacity — the derivation the plan insists be stated', () 
     const cap = computeDayCapacity('2026-08-18', jobs);
     const assigned = Object.values(cap.perCrew).reduce((s, h) => s + h, 0);
     expect(assigned + cap.unassignedHours).toBe(17);
+  });
+});
+
+// ─── propertyArchiveBlock (PR #1054) — the fix-list Archive guard ───────────
+describe('propertyArchiveBlock', () => {
+  const OWNED: DbResp = { data: { id: 'p1' }, error: null };
+  const NONE: DbResp = { data: [], error: null };
+
+  it("answers 'not-found' for a property the customer does not own", async () => {
+    makeDb({ properties: [chain({ data: null, error: null })] });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('not-found');
+  });
+
+  it("answers 'has-jobs' when a job references the property", async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain({ data: [{ id: 'j1' }], error: null })],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-jobs');
+  });
+
+  it("answers 'has-live-quote' when a sent/viewed/approved/booked quote references it", async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain(NONE)],
+      quotes: [chain({ data: [{ id: 'q1' }], error: null })],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-live-quote');
+  });
+
+  it("answers 'clear' when only draft/dead/abandoned quotes exist (the query filters them out)", async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain(NONE)],
+      quotes: [chain(NONE)],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('clear');
+  });
+
+  it('fails SAFE: a jobs lookup error blocks the archive', async () => {
+    makeDb({
+      properties: [chain(OWNED)],
+      jobs: [chain({ data: null, error: { message: 'boom' } })],
+    });
+    expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-jobs');
   });
 });

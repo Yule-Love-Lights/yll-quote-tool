@@ -92,14 +92,42 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
   '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest — same Bearer guard as low-stock-alert; a cron request carries no operator session so it must be allowlisted to reach its own CRON_SECRET check)
-  '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs. Deliberately NOT under /api/ops/v1, so it stays outside the crew surface.
+  '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs.
+  '/api/ops/vehicle-poll', // Vercel Cron (CRON_SECRET-guarded, row 403 fleet position poll) — same reason as every cron here: no operator session, so the perimeter must let it reach its own secret check. Writes vehicle positions and visits only; never payroll (constraint (a)).
   '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest — was silently 401'd by this perimeter from #666's merge until the S47 wrap review caught it)
+  '/api/ops/crew-day-digest', // Vercel Cron (CRON_SECRET-guarded, row 466 daily crew schedule notification — allowlisted in the SAME PR as the route, per the standing pitfall: without this the cron 401s here before it ever reaches its own secret check)
   '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping — same gap, same fix)
   '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
   // request carries no operator session, so it must be allowlisted here to reach
   // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +
   // POST/OPTIONS only, so it does NOT cover this GET sub-path). The sibling
   // /api/admin/leads* routes are requireAdmin (operator-session) and stay gated.
+  '/api/referrals/sweep', // Vercel Cron (CRON_SECRET-guarded, naldo/referral-link-sweep), same
+  // reason as every other cron above: a scheduled request carries no operator
+  // session, so it must be allowlisted here to reach its own CRON_SECRET check.
+  '/api/cron/calls-sync', // Vercel Cron (CRON_SECRET-guarded, calls_merge_plan_2026-08.md slice
+  // S2) — same reason as every other cron above: a scheduled request carries
+  // no operator session, so it must be allowlisted here to reach its own
+  // CRON_SECRET check. Also gated by its own CALLS_SYNC_ENABLED flag
+  // (default off) inside the route, per decision 5.
+  '/api/cron/calls-extract', // Vercel Cron (CRON_SECRET-guarded, calls_merge_plan_2026-08.md
+  // slice S6) — same reason as every other cron above: a scheduled request
+  // carries no operator session, so it must be allowlisted here to reach its
+  // own CRON_SECRET check. Also gated by its own CALLS_EXTRACT_ENABLED flag
+  // (default off) inside the route, per decision 5.
+  '/api/cron/calls-note', // Vercel Cron (CRON_SECRET-guarded, the post-call HighLevel
+  // note, 2026-08-29), same reason as every other cron above: a scheduled request
+  // carries no operator session, so it must be allowlisted here to reach its own
+  // CRON_SECRET check. Its own CALLS_NOTES_ENABLED flag defaults ON (Naldo asked for
+  // notes to run automatically on merge), so this entry is what the schedule needs.
+  '/api/ops/installment-run', // The installment runner (row 448). NOT in vercel.json yet — no
+  // cron is armed (Jason's call 2026-08-28, dry-run first) — but the entry lands
+  // WITH the route rather than with the schedule, because the failure this list
+  // exists to prevent is exactly a cron added later without it and silently 401'd
+  // before its own CRON_SECRET check runs (S42/S44/S47). Allowlisted here means
+  // "the perimeter lets it reach its own auth", not "public": the route answers a
+  // request with an Authorization header via cronDenial and one without via
+  // requireOperator, so an anonymous caller is refused either way.
 ]);
 
 // Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
@@ -119,23 +147,32 @@ const QUOTE_BY_ID_RE = /^\/api\/quotes\/[^/]+$/;
  * operator-only action and must stay gated.
  */
 /**
- * The crew-only surface: the Flow B time-capture API.
+ * The advertising-only surface: `/advertising` (pages) and `/api/advertising`
+ * (its APIs). Confined at the perimeter for the same reason the retired crew
+ * population was (row 438) — an
+ * advertising session must be confined to exactly this surface at the
+ * perimeter, which otherwise admits any authenticated user onto the operator
+ * surface and its customer PII.
  *
- * These paths are NOT public — they require a crew session — but they are also
- * the ONLY paths a crew session may reach. The perimeter in `src/proxy.ts` uses
- * this to 403 a crew login that wanders onto the operator surface, which matters
- * because that perimeter otherwise admits ANY authenticated user and the
- * operator surface holds customer PII.
+ * Naldo's 2026-08-27 ruling: advertising gets a real future surface here
+ * (`/advertising` pages, `/api/advertising/**` routes), never a widened
+ * `OperatorRole`. Both prefixes are EMPTY today — no advertising page or route
+ * exists yet — and that is expected: this ships the population lock (the
+ * marker + the perimeter confinement) before the first advertising surface
+ * does, so nothing has to race to land guard and surface in the same PR.
  *
- * Prefix-matched deliberately: the whole versioned namespace belongs to crew, so
- * adding `/api/ops/v1/breaks/start` later needs no change here. Note `/api/ops`
- * WITHOUT `/v1` is NOT crew — `/api/ops/digest` is a CRON_SECRET-guarded cron and
- * stays in the public allowlist above.
+ * Positive allowlist, prefix-matched: a future
+ * `/api/advertising/campaigns` needs no change here.
  */
-export function isCrewPath(pathname: string): boolean {
+export function isAdvertisingPath(pathname: string): boolean {
   const path =
     pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-  return path === '/api/ops/v1' || path.startsWith('/api/ops/v1/');
+  return (
+    path === '/advertising' ||
+    path.startsWith('/advertising/') ||
+    path === '/api/advertising' ||
+    path.startsWith('/api/advertising/')
+  );
 }
 
 export function isPublicPath(pathname: string, method: string = 'GET'): boolean {
@@ -165,6 +202,37 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // a future `/estimate/<something>` must be allowlisted deliberately, never
   // shipped public by a prefix (defense-in-depth, review 2026-07-20).
   if (path === '/estimate') return true;
+
+  // The home-screen install page (naldo/mobile-app-branding). It lists the two
+  // installable apps — the quote tool and the advertising capture — with a QR
+  // code and add-to-home-screen steps for each, so Naldo can text one URL to a
+  // new staffer instead of walking them through it. It reads no customer record
+  // and no database at all: the only thing on it is two of our own URLs, which
+  // is why it is safe signed-out. EXACT match, mirroring /estimate above, so a
+  // future /install/<something> must be allowlisted deliberately.
+  if (path === '/install') return true;
+
+  // The two web manifests those installs read. These MUST be public even though
+  // both apps behind them are operator-only: a <link rel="manifest"> is fetched
+  // with credentials omitted, so a gated manifest 401s for a SIGNED-IN operator
+  // too, and iOS then falls back to a screenshot of the page — the black square
+  // this whole change exists to fix. They contain nothing but app names, colours
+  // and icon paths. Note the middleware matcher already excludes .png, so the
+  // icon files themselves never reach this gate; .webmanifest is not on that
+  // extension list, which is why these two need naming here.
+  if (path === '/manifest-quote.webmanifest' || path === '/manifest-advertising.webmanifest') {
+    return true;
+  }
+
+  // The crew door (row 466). Crew logins were retired: field crew reach My Day
+  // through a SIGNED LINK that sets an httpOnly cookie, not a Supabase session,
+  // so this perimeter cannot recognise them and must let the surface answer for
+  // itself. Every /crew page and /api/crew route resolves that cookie through
+  // resolveCrewCaller() and refuses without it, exactly as /portal answers for
+  // its own capability token. Prefix-matched on a namespace that contains
+  // nothing else: a future /crew/<anything> is crew-gated by construction.
+  if (path === '/crew' || path.startsWith('/crew/')) return true;
+  if (path.startsWith('/api/crew/')) return true;
 
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;

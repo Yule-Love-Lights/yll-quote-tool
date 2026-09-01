@@ -93,7 +93,11 @@ function requireConfig(): { apiKey: string; locationId: string } {
 // CALL, not per logical operation.
 const GHL_TIMEOUT_MS = 10_000;
 
-async function ghlFetch<T>(
+// Exported for src/lib/calls/* (calls_merge_plan_2026-08.md slice S2):
+// reuse this file's auth/timeout/error-shape handling for the calls export
+// and transcription endpoints instead of standing up a second HighLevel
+// client, per the plan's decision to reconcile rather than duplicate.
+export async function ghlFetch<T>(
   path: string,
   init: RequestInit = {},
   version: string = API_VERSION_HEADER,
@@ -180,6 +184,54 @@ export async function searchContacts(query: string, limit = 20): Promise<CrmCont
   });
   const json = await ghlFetch<{ contacts?: HighLevelContact[] }>(`/contacts/?${params}`);
   return (json.contacts ?? []).map(c => toCrmContact(c));
+}
+
+// ─── Contacts: full paginated listing (referral sweep) ────────────────────
+// Unlike searchContacts above (a bounded, text-query autocomplete), this
+// pages through EVERY contact in the location, used by the referral sweep
+// (src/lib/referralSweep.ts) to eventually reach all of them. POST
+// /contacts/search with searchAfter cursor paging; shape confirmed live in
+// this repo already (scripts/winback-recon.ts, S31): a batch shorter than
+// the requested pageLimit means "last page", and the last returned row
+// carries its OWN `searchAfter` array, which is the cursor for the next
+// call. Sorted by dateAdded ascending on purpose: a brand-new contact lands
+// at the END of the list, so a cursor that only ever moves forward
+// eventually reaches it (see referralSweep.ts's cursor-persistence comment
+// for how a wrap-around keeps that true run after run).
+//
+// Returns RAW HighLevelContact objects (not the redacted CrmContact shape):
+// the sweep needs tags + customFields, which toCrmContact strips.
+export type ContactSearchPage = {
+  contacts: HighLevelContact[];
+  /** Cursor for the next page; undefined means this was the last page. */
+  nextSearchAfter?: unknown[];
+};
+
+export async function searchContactsPage(input: {
+  pageLimit?: number;
+  searchAfter?: unknown[];
+}): Promise<ContactSearchPage> {
+  const { locationId } = requireConfig();
+  const pageLimit = Math.min(Math.max(input.pageLimit ?? 100, 1), 100);
+  const body: Record<string, unknown> = {
+    locationId,
+    pageLimit,
+    filters: [],
+    sort: [{ field: 'dateAdded', direction: 'asc' }],
+    ...(input.searchAfter ? { searchAfter: input.searchAfter } : {}),
+  };
+  const json = await ghlFetch<{ contacts?: (HighLevelContact & { searchAfter?: unknown[] })[] }>(
+    '/contacts/search',
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+  const contacts = json.contacts ?? [];
+  const last = contacts[contacts.length - 1];
+  return {
+    contacts,
+    // A short page (fewer rows than asked for) is GHL's own "no more" signal:
+    // don't hand back a cursor even if the last row happens to carry one.
+    nextSearchAfter: contacts.length >= pageLimit ? last?.searchAfter : undefined,
+  };
 }
 
 // ─── Contact fetch ────────────────────────────────────────────────────────
@@ -271,6 +323,33 @@ export async function findOpportunityForContact(
   // desc order which matches "most recent activity" semantics.
   const open = list.find(o => o.status === 'open');
   return open ?? null;
+}
+
+// Unlike findOpportunityForContact above (which filters to status==='open',
+// right for the resurrect-vs-create quote flow), this returns EVERY
+// opportunity for the contact in the given pipeline regardless of status.
+// Needed by the referral sweep's suppression check (src/lib/referralSweep.ts):
+// a card sitting in a "Declined"/"Do Not Call" STAGE must be caught even if
+// its separate `status` field was never flipped away from 'open'. Per
+// UpdateOpportunityFields above, this app's own updateOpportunityStage NEVER
+// sets status at all, only pipelineStageId, so a stage-based suppression
+// check cannot safely filter on status the way findOpportunityForContact
+// does. Also used by the sweep's "ever booked" check across every known
+// pipeline (see ghlPipelineMap.ts's allPipelineStages).
+export async function findAllOpportunitiesForContact(
+  contactId: string,
+  pipelineId: string,
+): Promise<HighLevelOpportunity[]> {
+  const { locationId } = requireConfig();
+  const params = new URLSearchParams({
+    location_id: locationId,
+    pipeline_id: pipelineId,
+    contact_id: contactId,
+  });
+  const json = await ghlFetch<{ opportunities?: HighLevelOpportunity[] }>(
+    `/opportunities/search?${params}`,
+  );
+  return json.opportunities ?? [];
 }
 
 // ─── Opportunity create ───────────────────────────────────────────────────
@@ -776,12 +855,43 @@ export async function upsertContact(
 // POST /contacts/{contactId}/notes — attaches a free-text note to the
 // contact's timeline (e.g. the website lead's raw notes / UTM / landing-page
 // context, which don't fit any existing custom field).
-type ContactNoteResult = { id?: string; body?: string; [k: string]: unknown };
+// HighLevel WRAPS the created note rather than returning it bare: six real
+// notes were written with a null id before the database showed it (see
+// noteIdFrom in src/lib/calls/postNotes.ts). The type says so now, so the
+// next caller that wants the id does not inherit the same wrong assumption.
+type ContactNoteResult = {
+  id?: string;
+  note?: { id?: string; body?: string } | null;
+  notes?: { id?: string; body?: string }[] | null;
+  body?: string;
+  [k: string]: unknown;
+};
 
 export async function createContactNote(contactId: string, body: string): Promise<ContactNoteResult> {
   return ghlFetch<ContactNoteResult>(`/contacts/${encodeURIComponent(contactId)}/notes`, {
     method: 'POST',
     body: JSON.stringify({ body }),
+  });
+}
+
+// ─── Internal comment ───────────────────────────────────────────────────
+// POST /conversations/messages with type InternalComment — a DIFFERENT
+// surface from a contact Note. A Note lives on the contact's own Notes tab;
+// an InternalComment is posted INTO that contact's message/conversation
+// timeline, staff-only, interleaved with their calls/texts/emails. Naldo
+// asked for both (2026-08-30): the note is the durable record, the comment
+// is what a rep sees while they are already looking at the conversation.
+//
+// `mentions` is documented by HighLevel as required for this message type;
+// an empty array is what this repo sends when nobody is tagged, and the
+// live probe run before this shipped confirmed HighLevel accepts it rather
+// than rejecting an empty array outright.
+type InternalCommentResult = { conversationId?: string; messageId?: string; msg?: string; [k: string]: unknown };
+
+export async function createInternalComment(contactId: string, message: string): Promise<InternalCommentResult> {
+  return ghlFetch<InternalCommentResult>('/conversations/messages', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'InternalComment', contactId, message, mentions: [] }),
   });
 }
 
@@ -814,4 +924,37 @@ function toCrmContact(
     postalCode: hl.postalCode,
   };
   return opts?.includeRaw ? { ...base, raw: hl } : base;
+}
+
+// ─── Rep identity ───────────────────────────────────────────────────────────
+// Resolves a GHL staff user id (call_recordings.ghl_user_id, straight off the
+// call message -- ground truth, not a guess) to that user's email + display
+// name, for call_transcripts.rep_email/rep_name (calls_merge_plan_2026-08.md,
+// rep-assignment ruling). Pattern donor: the yll-call-copilot repo's
+// getGhlUserEmail (src/lib/ghl/recordings.ts, master fb1bf326) -- same
+// endpoint and same best-effort posture, extended here to also resolve a
+// display name (that repo never needed one) using the same firstName/
+// lastName-join-with-fallback convention toCrmContact already uses above.
+//
+// Endpoint: GET /users/{userId} -- unverified against a live payload, same
+// caveat the copilot's own version carries.
+//
+// Best-effort: ANY failure (network, 404, malformed body) degrades to
+// { email: null, name: null } rather than throwing -- src/lib/calls/
+// pipeline.ts stores null fields rather than failing the whole recording
+// over an identity lookup, matching the existing contact-hydrate posture in
+// that file.
+export type GhlUserIdentity = { email: string | null; name: string | null };
+
+export async function getGhlUser(userId: string): Promise<GhlUserIdentity> {
+  try {
+    const json = await ghlFetch<{ email?: string; firstName?: string; lastName?: string; name?: string }>(
+      `/users/${encodeURIComponent(userId)}`,
+    );
+    const name = json.name ?? ([json.firstName, json.lastName].filter(Boolean).join(' ') || null);
+    return { email: json.email ?? null, name };
+  } catch (err) {
+    console.error(`GHL user lookup failed for ${userId}:`, err);
+    return { email: null, name: null };
+  }
 }

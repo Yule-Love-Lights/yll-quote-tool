@@ -46,6 +46,29 @@ export function matchesCustomerRoute(q: DashboardQuote, routeId: string): boolea
 }
 
 /**
+ * Every HighLevel contact id a customer has EVER carried, expanded via
+ * customer_id — not just the ids on `matchedQuotes` (the routeId-only match).
+ * A merge or re-match can leave a customer's real quotes spread across two
+ * different HL ids over time. `matchedQuotes` alone cannot see the second one:
+ * when the route id IS an HL id (the dominant case — customerRouteId prefers
+ * it), matchesCustomerRoute's OR only ever matches quotes carrying that EXACT
+ * id, so the "every HL id" claim was false for a merged customer despite
+ * reading one from that narrower set (found by the S84 wrap integration lens
+ * — /customers/[contactId]'s call-notes panel silently showed less history
+ * than the quote-builder drawer for the identical customer). Mirrors the
+ * customer_id round trip the drawer's route (resolveAllContactIds) does
+ * server-side — this is the in-memory equivalent, since the profile page
+ * already has every quote loaded via `allQuotes`.
+ */
+export function expandHlContactIds(allQuotes: DashboardQuote[], matchedQuotes: DashboardQuote[]): string[] {
+  const customerIds = new Set(matchedQuotes.map(q => q.customer_id).filter((id): id is string => !!id));
+  const relevant = customerIds.size
+    ? allQuotes.filter(q => q.customer_id != null && customerIds.has(q.customer_id))
+    : matchedQuotes;
+  return [...new Set(relevant.map(q => q.highlevel_contact_id).filter((id): id is string => !!id))];
+}
+
+/**
  * Aggregate the quotes table into one row per customer (#58 Phase 3).
  * A "customer" = all quotes sharing a stable key (HL contact id, else
  * email/phone/name — same precedence as the KPI customer count). No separate
