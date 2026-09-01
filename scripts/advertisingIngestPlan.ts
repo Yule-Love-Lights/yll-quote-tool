@@ -161,3 +161,19 @@ export function resolveAdmin(users: AdminUser[], asked: string | undefined): str
       .join(', ')}.`,
   );
 }
+
+/**
+ * Read the approved total. Deliberately NOT `dollarsToCents` from
+ * `src/lib/hourlyRate.ts`: that one caps at $10,000 as a typo guard for an
+ * HOURLY rate, and its own comment says so. A season's backfill of 4,000
+ * photos at $2.50 is $10,000, so borrowing that cap would refuse a real
+ * batch and blame the number's format for it (delta-verify on this PR).
+ * There is no ceiling here; the ceiling is the plan the person just read.
+ */
+export function parseApprovedDollars(input: string): number | null {
+  const cleaned = input.trim().replace(/^\$/, '').replace(/,/g, '');
+  if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
+  const [whole, fracRaw = ''] = cleaned.split('.');
+  const cents = Number(whole) * 100 + Number(fracRaw.padEnd(2, '0'));
+  return Number.isSafeInteger(cents) ? cents : null;
+}

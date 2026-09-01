@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   checkApproval,
   dollars,
+  parseApprovedDollars,
   planIngest,
   resolveAdmin,
   resolveByNameOrId,
@@ -221,5 +222,29 @@ describe('resolveAdmin', () => {
 
   it('refuses when there are no admins at all', () => {
     expect(() => resolveAdmin([users[2]], undefined)).toThrow(/No admin account found/);
+  });
+});
+
+describe('parseApprovedDollars', () => {
+  it('reads an ordinary total', () => {
+    expect(parseApprovedDollars('117.50')).toBe(11750);
+    expect(parseApprovedDollars('$117.50')).toBe(11750);
+    expect(parseApprovedDollars(' 2.5 ')).toBe(250);
+    expect(parseApprovedDollars('7')).toBe(700);
+    expect(parseApprovedDollars('$1,234.56')).toBe(123456);
+  });
+
+  it('accepts a batch worth more than ten thousand dollars', () => {
+    // 4,000 photos at $2.50 is exactly $10,000, which is a plausible season
+    // backfill. The hourly-rate parser in the app refuses above that as a
+    // typo guard, which would refuse a real batch and blame its formatting.
+    expect(parseApprovedDollars('10000.00')).toBe(1000000);
+    expect(parseApprovedDollars('25000')).toBe(2500000);
+  });
+
+  it('refuses anything that is not a plain dollar amount', () => {
+    for (const bad of ['', 'abc', '1.234', '-5', '1.2.3', '$', '1e3']) {
+      expect(parseApprovedDollars(bad)).toBe(null);
+    }
   });
 });

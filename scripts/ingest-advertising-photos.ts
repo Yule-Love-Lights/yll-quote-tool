@@ -50,6 +50,7 @@ import sharp from 'sharp';
 import {
   checkApproval,
   dollars,
+  parseApprovedDollars,
   planIngest,
   resolveAdmin,
   resolveByNameOrId,
@@ -225,11 +226,10 @@ async function main(): Promise<void> {
     throw new Error('--limit must be a whole number, 1 or more');
   }
 
-  const { dollarsToCents } = await import('../src/lib/hourlyRate');
   const approvedRaw = arg('approved');
   let approvedCents: number | null = null;
   if (approvedRaw !== undefined) {
-    approvedCents = dollarsToCents(approvedRaw);
+    approvedCents = parseApprovedDollars(approvedRaw);
     if (approvedCents === null) {
       throw new Error(`--approved must be a plain dollar amount like 117.50, not "${approvedRaw}"`);
     }
@@ -386,6 +386,31 @@ async function main(): Promise<void> {
     return;
   }
 
+  // The plan was priced from a rate read at the top of this run, and the
+  // pipeline re-reads the campaign and stamps whatever the rate is at the
+  // moment each photo is written. Re-reading it here shrinks that window to
+  // almost nothing, and the summary below still checks every stamped rate,
+  // because almost nothing is not nothing (delta-verify on this PR).
+  const { getAdvertisingCampaign } = await import('../src/lib/advertising/campaigns');
+  const fresh = await getAdvertisingCampaign(c.row.id);
+  if (!fresh) throw new Error('The campaign disappeared between the plan and the run. Nothing was written.');
+  if (fresh.rateCents !== c.row.rateCents) {
+    console.log('');
+    console.log(
+      `REFUSED. The campaign rate moved from ${dollars(c.row.rateCents)} to ${dollars(fresh.rateCents)} while this ` +
+        'was being prepared, so the approved total is no longer the right one. Nothing was written. Run it again ' +
+        'without --live and look at the new plan.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!fresh.active) {
+    console.log('');
+    console.log('REFUSED. The campaign was closed while this was being prepared. Nothing was written.');
+    process.exitCode = 1;
+    return;
+  }
+
   const { data: userList, error: userError } = await db.auth.admin.listUsers({ page: 1, perPage: 200 });
   if (userError) throw new Error(`reading the admin accounts: ${userError.message}`);
   const adminUserId = resolveAdmin(
@@ -443,16 +468,25 @@ async function main(): Promise<void> {
   // Read the money back OUT of the database rather than trusting the
   // arithmetic above: what was actually stamped on the rows is the truth.
   let paidCents = 0;
+  let readBack = 0;
+  let driftedRates = 0;
+  let readBackError: string | null = null;
   if (created.length) {
-    const { data, error } = await db
-      .from('advertising_placements')
-      .select('id, accepted_rate_cents')
-      .in('id', created);
-    if (error) throw new Error(`reading back what was stamped: ${error.message}`);
-    const rows = (data ?? []) as { id: string; accepted_rate_cents: number | null }[];
-    paidCents = rows.reduce((sum, r) => sum + (r.accepted_rate_cents ?? 0), 0);
-    if (rows.length !== created.length) {
-      console.log(`WARNING: created ${created.length} rows but read back ${rows.length}`);
+    // Rows have already been created and paid by this point. A failure to
+    // read them back must never cost the summary, the total, or the line
+    // telling the operator how to undo any of it.
+    try {
+      const { data, error } = await db
+        .from('advertising_placements')
+        .select('id, accepted_rate_cents')
+        .in('id', created);
+      if (error) throw new Error(error.message);
+      const rows = (data ?? []) as { id: string; accepted_rate_cents: number | null }[];
+      readBack = rows.length;
+      paidCents = rows.reduce((sum, r) => sum + (r.accepted_rate_cents ?? 0), 0);
+      driftedRates = rows.filter((r) => (r.accepted_rate_cents ?? 0) !== c.row.rateCents).length;
+    } catch (e) {
+      readBackError = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -461,13 +495,33 @@ async function main(): Promise<void> {
   console.log(`skipped as already uploaded : ${skipped.length}`);
   const why = failed.length ? ` (${failed.map((f) => `${f.file}: ${f.why}`).join('; ')})` : '';
   console.log(`failed                      : ${failed.length}${why}`);
-  console.log(
-    `ADDED ${dollars(paidCents)} TO ${w.row.displayName.toUpperCase()}'S UNPAID BALANCE, read back from the rows rather than predicted`,
-  );
-  if (paidCents !== plan.payCents) {
+  if (readBackError) {
     console.log(
-      `note: the plan expected ${dollars(plan.payCents)}. Every photo that did not land is listed above, with why.`,
+      `The rows were created. Reading their stamped amounts back failed (${readBackError}), so the total below is ` +
+        `the plan's figure rather than the database's. Check the campaign in the admin app.`,
     );
+    console.log(`EXPECTED ${dollars(plan.payCents)} FOR ${w.row.displayName.toUpperCase()}, not confirmed`);
+  } else {
+    console.log(
+      `ADDED ${dollars(paidCents)} TO ${w.row.displayName.toUpperCase()}'S UNPAID BALANCE, read back from the rows rather than predicted`,
+    );
+    if (readBack !== created.length) {
+      console.log(`WARNING: created ${created.length} rows but only read back ${readBack}`);
+    }
+    if (driftedRates > 0) {
+      // Not a shortfall of photos: the same photos at a different price. The
+      // pipeline re-reads the campaign for every write, so a rate change
+      // during the run lands on whatever is left.
+      console.log(
+        `${driftedRates} photo${driftedRates === 1 ? ' was' : 's were'} stamped at a rate other than the ` +
+          `${dollars(c.row.rateCents)} this run was priced at. The campaign rate changed while the run was in ` +
+          'progress; every photo still landed.',
+      );
+    } else if (paidCents !== plan.payCents) {
+      console.log(
+        `note: the plan expected ${dollars(plan.payCents)}. Every photo that did not land is listed above, with why.`,
+      );
+    }
   }
   if (created.length) {
     console.log('');
