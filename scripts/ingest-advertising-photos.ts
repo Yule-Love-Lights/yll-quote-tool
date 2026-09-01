@@ -496,11 +496,20 @@ async function main(): Promise<void> {
   const why = failed.length ? ` (${failed.map((f) => `${f.file}: ${f.why}`).join('; ')})` : '';
   console.log(`failed                      : ${failed.length}${why}`);
   if (readBackError) {
+    // The estimate is built from the rows this run actually CREATED, not from
+    // the plan: photos that failed are listed above and never became rows, so
+    // quoting the plan's figure here would overstate what was written by
+    // exactly their value (delta-verify, round two on this PR).
+    const estimate = created.length * c.row.rateCents;
     console.log(
-      `The rows were created. Reading their stamped amounts back failed (${readBackError}), so the total below is ` +
-        `the plan's figure rather than the database's. Check the campaign in the admin app.`,
+      `The rows were created. Reading their stamped amounts back failed (${readBackError}), so the figure below is ` +
+        'counted from what this run created rather than read from the database. Check the campaign in the admin app.',
     );
-    console.log(`EXPECTED ${dollars(plan.payCents)} FOR ${w.row.displayName.toUpperCase()}, not confirmed`);
+    console.log(
+      `PROBABLY ${dollars(estimate)} FOR ${w.row.displayName.toUpperCase()}, not confirmed (${created.length} x ${dollars(
+        c.row.rateCents,
+      )})`,
+    );
   } else {
     console.log(
       `ADDED ${dollars(paidCents)} TO ${w.row.displayName.toUpperCase()}'S UNPAID BALANCE, read back from the rows rather than predicted`,
@@ -518,10 +527,13 @@ async function main(): Promise<void> {
           'progress; every photo still landed.',
       );
     } else if (paidCents !== plan.payCents) {
-      console.log(
-        `note: the plan expected ${dollars(plan.payCents)}. Every photo that did not land is listed above, with why.`,
-      );
+      console.log(`note: the plan expected ${dollars(plan.payCents)}.`);
     }
+  }
+  // Printed whatever else happened. A run can drift on rate AND lose a photo,
+  // and the drift explanation used to swallow this pointer entirely.
+  if (failed.length) {
+    console.log('Every photo that did not land is listed above, with why.');
   }
   if (created.length) {
     console.log('');
