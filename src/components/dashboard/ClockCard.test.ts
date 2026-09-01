@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 
 import { actionsFor, statusFor403, advertisingBlockedCopy, headerLabel, statusColor } from './ClockCard';
@@ -120,5 +121,45 @@ describe('statusColor', () => {
   it('shows no colour claim at all until the clock has answered', () => {
     expect(statusColor({ status: 'loading' })).toBe('var(--op-text-dim)');
     expect(statusColor({ status: 'error' })).toBe('var(--op-text-dim)');
+  });
+});
+
+// Two clocks on one screen (Jason, 2026-09-01). The dashboard card was kept
+// alongside the compact header one, so the dashboard shows both at once. They
+// each fetch their own state, which is fine until one of them is USED.
+describe('the two clocks stay in step', () => {
+  const SOURCE = readFileSync(new URL('./ClockCard.tsx', import.meta.url), 'utf8');
+  const EVENTS = readFileSync(new URL('./clockEvents.ts', import.meta.url), 'utf8');
+  const DASHBOARD = readFileSync(new URL('./DashboardHeader.tsx', import.meta.url), 'utf8');
+
+  it('announces a successful action to the other copy', () => {
+    // Without this, clocking out in the header leaves the dashboard card
+    // reading "In since 7:22" until the page is reloaded, and a staffer has
+    // two controls disagreeing about whether they are on the clock.
+    expect(SOURCE).toContain('notifyClockChanged()');
+  });
+
+  it('announces only AFTER a success, never on a failed action', () => {
+    // The call sits inside the `if (body)` success branch. Announcing on a
+    // failure would make the other clock re-read for nothing, and on a 403
+    // would hide the blocked state behind a refetch.
+    const success = SOURCE.slice(SOURCE.indexOf('if (body) {'));
+    expect(success.slice(0, 260)).toContain('notifyClockChanged()');
+  });
+
+  it('re-reads the SERVER on the signal rather than copying the payload', () => {
+    // This component's existing rule is that it never renders an optimistic
+    // guess about what a tap did. A listener that trusted a broadcast payload
+    // would break exactly that.
+    expect(SOURCE).toContain('window.addEventListener(CLOCK_CHANGED');
+    expect(SOURCE).toContain('setReload((n) => n + 1)');
+  });
+
+  it('is a no-op on the server, where there is no window', () => {
+    expect(EVENTS).toContain("typeof window === 'undefined'");
+  });
+
+  it('still renders the dashboard card, which Jason asked to keep', () => {
+    expect(DASHBOARD).toContain('<ClockCard />');
   });
 });

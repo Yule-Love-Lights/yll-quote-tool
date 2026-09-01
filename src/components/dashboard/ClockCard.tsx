@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { CLOCK_CHANGED, notifyClockChanged } from './clockEvents';
+
 /**
  * Office web clock (row 337) — a COMPACT widget that lives in the dashboard
  * header, next to "Good morning." The signed-in office staffer clocks
@@ -194,6 +196,16 @@ export function ClockCard({ variant = 'card' }: { variant?: 'card' | 'header' } 
     };
   }, [reload]);
 
+  // The other clock on this page moved the shift. Re-read the server rather
+  // than trusting whatever it did, which keeps this component's rule that it
+  // never renders an optimistic guess. Jason asked to keep the dashboard card
+  // alongside the header one, so on the dashboard there really are two.
+  useEffect(() => {
+    const onChanged = () => setReload((n) => n + 1);
+    window.addEventListener(CLOCK_CHANGED, onChanged);
+    return () => window.removeEventListener(CLOCK_CHANGED, onChanged);
+  }, []);
+
   async function act(action: string) {
     setBusy(true);
     setError(null);
@@ -218,7 +230,12 @@ export function ClockCard({ variant = 'card' }: { variant?: 'card' | 'header' } 
         setError(body?.error ?? 'Something went wrong. Try again.');
         return;
       }
-      if (body) setLoad({ status: 'ready', state: body });
+      if (body) {
+        setLoad({ status: 'ready', state: body });
+        // Tell the other copy. After the state is set, so a listener that
+        // re-reads immediately cannot race this one into an older answer.
+        notifyClockChanged();
+      }
     } catch {
       setError('Could not reach the clock. Check your connection and try again.');
     } finally {
