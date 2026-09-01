@@ -1,6 +1,6 @@
 import Link from 'next/link';
-
 import { ClockCard } from '@/components/dashboard/ClockCard';
+
 import { getOperator } from '@/lib/auth/supabaseServer';
 
 export async function DashboardHeader() {
@@ -23,6 +23,11 @@ export async function DashboardHeader() {
         </h1>
       </div>
       {/* The office time clock lives here, in the header (row 337, Naldo's placement). */}
+      {/* Kept, at Jason's request (2026-09-01), alongside the compact one in
+          the nav header. Both are on screen here at once, so they share a
+          refresh signal (clockEvents.ts): using either makes the other re-read
+          the server, or the two would sit side by side disagreeing about
+          whether someone is on the clock. */}
       <ClockCard />
       <Link
         href="/quote/new"

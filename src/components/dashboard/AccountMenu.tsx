@@ -40,8 +40,8 @@ export function AccountMenu({
   identity: AccountIdentity;
   onSignOut: () => void;
   /**
-   * Whether `identity.role` came from the SESSION answer rather than the
-   * localStorage hint. Admin-only rows wait for it. Defaults false, the
+   * Whether `identity.role` came from the SESSION answer rather than being
+   * unresolved. Admin-only rows and View-as wait for it. Defaults false, the
    * cautious answer, so a caller that forgets it shows fewer rows rather than
    * more.
    */
@@ -81,7 +81,13 @@ export function AccountMenu({
 
   const name = displayName(identity);
   const role = roleLabel(identity.role);
-  const isAdmin = identity.role === 'admin';
+  // CONFIRMED admin, not a hinted one. OperatorNav seeds the role from a
+  // localStorage echo of the last session answer so an admin's controls appear
+  // at first paint, and on a shared office computer that echo can still say
+  // 'admin' for the next person. The admin-only menu rows already waited for
+  // the real answer; this makes View-as agree with them rather than being the
+  // one control that still flashes (Naldo, 2026-09-01).
+  const isAdmin = roleConfirmed && identity.role === 'admin';
 
   return (
     <div ref={rootRef} className="relative">
