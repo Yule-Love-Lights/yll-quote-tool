@@ -882,8 +882,17 @@ export function resolveApprovalSelectionSeed(
   fallback: { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined },
 ): { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined } {
   if (!approval) return fallback;
-  if (approval.packageId === 'D') {
-    return { initialPackageId: 'D', initialSelectedItemIds: approval.selectedItemIds };
+  // 'D' and 'E' honour the FROZEN id list; A/B/C reseed from their own tier
+  // bundle. The split is about whether a package's contents can move after
+  // approval. A/B/C are fixed by the quote's own surfaces, so reseeding from
+  // the tier is the same set and stays right through an amendment. 'D' is the
+  // customer's own hand-picked set, and 'E' (permanent's "Our Recommendation")
+  // is whatever staff have ticked RIGHT NOW — untick a side after a customer
+  // approves and reseeding from the live card would silently show them a
+  // different order than they signed, or, once the ticked set stops matching
+  // anything, no items at all: the empty-booked-portal failure.
+  if (approval.packageId === 'D' || approval.packageId === 'E') {
+    return { initialPackageId: approval.packageId, initialSelectedItemIds: approval.selectedItemIds };
   }
   return { initialPackageId: approval.packageId, initialSelectedItemIds: undefined };
 }
@@ -1130,6 +1139,14 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
           ? pkg
           : {
               ...pkg,
+              // A locked tile must not also wear the "recommended" badge. Staff
+              // can tick a set that lands under the minimum (the derive has no
+              // sight of the gate, which is resolved here), and a tile reading
+              // "recommended" next to "Add $200 to book this" tells the customer
+              // we advise something we will not sell them. The portal already
+              // refuses to OPEN on such a tile; this stops it claiming to be our
+              // pick as well.
+              recommended: undefined,
               belowMinimum: true,
               amountToMinimum: roundMoney(approvalGate - gateBasisOf(pkg)),
             },

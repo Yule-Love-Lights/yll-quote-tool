@@ -159,7 +159,9 @@ export function derivePackagesPermanent(
   //     quote makes D byte-identical to its lone A/B/C package, and (post-#132) a
   //     left+right-only quote makes D identical to B — both redundant tiers.
   //     (One surface + a custom item is two lines that no A/B/C covers, so D
-  //     still appears and carries the custom line.)
+  //     still appears and carries the custom line — UNLESS that custom line is
+  //     marked bundleInAllTiers, which puts it in the surface package too and
+  //     makes D an identical set, correctly suppressed by the same dedupe.)
   const wholeHomeIds = lineItems
     .map((li) => li.id)
     .filter((id) => id !== MAINTENANCE_ID);
@@ -189,9 +191,17 @@ export function derivePackagesPermanent(
   //     because a second card with the same items and the same price is just a
   //     confusing duplicate (the same reasoning as holiday's same-price tier
   //     dedupe in the adapter).
-  //   • the ticked set is a mix no tier covers → its own card, LAST, so the
-  //     "Tier N" numbering the portal derives by position stays contiguous for
-  //     A/B/C/D.
+  //   • the ticked set is a mix no tier covers → its own card, FIRST.
+  //
+  // First, not last, because of a measured fact: on a 375-wide phone the tile
+  // grid starts around y=419 and each row is ~144px, so with five cards the
+  // third row lands behind the sticky Approve bar at rest. A browser probe on
+  // quote #1274 found the recommendation card fully occluded there — and it is
+  // the card the portal PRE-SELECTS, so the customer's own selection was the
+  // one thing they could not see. The surface tiers read fine one row lower.
+  // (The portal labels tiers by position; it counts past this card so A/B/C/D
+  // still read Tier 1 through Tier 4.)
+  //
   // Nothing ticked → no card and no badge, unchanged.
   //
   // The maintenance add-on is excluded for the same reason it is excluded from
@@ -205,7 +215,7 @@ export function derivePackagesPermanent(
       alreadyOffered.recommended = true;
     } else {
       const p = priceIds(recommendedIds, lineItems, charges);
-      packages.push({
+      packages.unshift({
         id: 'E',
         name: 'Our Recommendation',
         tagline: 'Hand-picked by our team for your home.',

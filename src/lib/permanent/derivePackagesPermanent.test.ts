@@ -274,7 +274,7 @@ describe('derivePackagesPermanent — staff recommendation', () => {
     expect(packages.some((p) => p.recommended)).toBe(false);
   });
 
-  it('a recommended set that is a custom mix → its own labelled E card, last', () => {
+  it('a recommended set that is a custom mix → its own labelled E card, FIRST', () => {
     // Front + back is no offered tier (A is front, C is back, D is everything),
     // so the recommendation needs a card of its own.
     const lineItems = [
@@ -285,7 +285,9 @@ describe('derivePackagesPermanent — staff recommendation', () => {
     ];
     const packages = derivePackagesPermanent(lineItems, RESULT);
 
-    expect(packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D', 'E']);
+    // First, not last: on a phone a fifth card lands behind the sticky
+    // Approve bar at rest, and this is the card the portal pre-selects.
+    expect(packages.map((p) => p.id)).toEqual(['E', 'A', 'B', 'C', 'D']);
     const e = packages.find((p) => p.id === 'E')!;
     expect(e.name).toBe('Our Recommendation');
     expect(e.recommended).toBe(true);

@@ -406,7 +406,14 @@ export function InteractiveHero({
                 aria-disabled={locked || undefined}
                 className={`grid grid-cols-2 gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                {packages.map((p, i) => (
+                {packages.map((p, i) => {
+                  // Tiers are numbered by POSITION so an omitted tier still
+                  // reads contiguously. Permanent's 'E' recommendation card is
+                  // not a tier and sits FIRST, so it must not consume a number
+                  // — count only the tiers before this one.
+                  const tierNumber =
+                    packages.slice(0, i).filter((x) => x.id !== 'E').length + 1;
+                  return (
                   <button
                     key={p.id}
                     type="button"
@@ -452,12 +459,12 @@ export function InteractiveHero({
                         it by position ("Tier 1"), never "Custom". */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
                       {legacyRebook === true
-                        ? `Tier ${i + 1}`
+                        ? `Tier ${tierNumber}`
                         : p.id === 'E'
                           ? 'Our pick'
                           : p.id === 'D' && (serviceType == null || serviceType === 'holiday')
                             ? 'Custom'
-                            : `Tier ${i + 1}`}
+                            : `Tier ${tierNumber}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
@@ -489,13 +496,19 @@ export function InteractiveHero({
                         option had ever existed. */}
                     {p.belowMinimum && (
                       <span className="w-full text-[10px] md:text-[11px] text-[#FFD07A]/85 leading-snug mt-0.5">
+                        {/* "before tax" is load-bearing: the price above this
+                            line is tax-inclusive while the job minimum, and so
+                            this shortfall, is measured before tax. Without it a
+                            customer doing the arithmetic in their head lands
+                            about 8.75% short. */}
                         {typeof p.amountToMinimum === 'number' && p.amountToMinimum > 0
-                          ? `Add ${formatUsd(p.amountToMinimum)} of work to book this on its own`
+                          ? `Add ${formatUsd(p.amountToMinimum)} of work (before tax) to book this on its own`
                           : 'Below our minimum on its own'}
                       </span>
                     )}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

@@ -2627,6 +2627,32 @@ describe('quoteRowToPortalQuote — permanent locks below-minimum tiles instead 
     expect(portal.packages[0].belowMinimum).toBeUndefined();
   });
 
+  it('a locked tile never also wears the recommended badge', () => {
+    // Staff can tick a set that lands under the minimum: derivePackagesPermanent
+    // badges it (it cannot see the gate, which is resolved here), and the gate
+    // then locks it. "recommended" next to "Add $X to book this" would advise a
+    // customer to buy something we refuse to sell.
+    const inputs = emptyInputs({
+      permanent: {
+        frontFootage: 38, leftFootage: 31, rightFootage: 31, backFootage: 39,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+        // Back only ($1,365) — under the $2,500 gate.
+        backRecommended: true,
+      },
+    });
+    const result = calculatePermanentQuote(inputs);
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    expect(c.belowMinimum).toBe(true);
+    expect(c.recommended).not.toBe(true);
+    expect(portal.packages.some((p) => p.belowMinimum === true && p.recommended === true)).toBe(false);
+  });
+
   it('the card the customer already approved is never locked', () => {
     // A rate change after approval could drop the approved tile under a newer
     // gate. Locking it would tell a booked customer their own order is not
@@ -2672,5 +2698,77 @@ describe('quoteRowToPortalQuote — permanent locks below-minimum tiles instead 
       );
       expect(subtotal).toBeGreaterThanOrEqual(1000);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A booked portal that approved the recommendation card must keep the items
+// the customer actually signed.
+//
+// Found by the pre-merge technical lens. resolveApprovalSelectionSeed honours a
+// frozen selectedItemIds list only for package 'D'; every other id discards the
+// list and reseeds from that package's own current bundle. That is safe for
+// A/B/C, whose contents are fixed by the quote's own surfaces, and unsafe for
+// 'E', whose contents are whatever staff have ticked RIGHT NOW. Untick a side
+// after a customer approves and their booked portal silently shows a different
+// set — or, if the recommendation set stops matching anything at all, no items,
+// which is the empty-booked-portal failure this repo has hit before.
+// ---------------------------------------------------------------------------
+describe('resolveApprovalSelectionSeed — the recommendation card is volatile', () => {
+  const fallback = { initialPackageId: 'A' as const, initialSelectedItemIds: undefined };
+
+  it("keeps the frozen items for an 'E' approval, exactly as it does for 'D'", () => {
+    const frozen = ['permanent-front', 'permanent-back'];
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'E', selectedItemIds: frozen },
+      fallback,
+    );
+    expect(seed.initialSelectedItemIds).toEqual(frozen);
+  });
+
+  it("a customer who approved 'E' still sees their own items after staff retick", () => {
+    // The staff set has since changed to front-only; the booked portal must
+    // still open on what was signed, not on the new recommendation.
+    const signed = ['permanent-front', 'permanent-back'];
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'E', selectedItemIds: signed },
+      fallback,
+    );
+    const selection = computeInitialSelection(
+      [
+        {
+          id: 'E',
+          name: 'Our Recommendation',
+          tagline: '',
+          total: 1,
+          deposit: 1,
+          includedItemIds: ['permanent-front'], // staff reticked since approval
+        },
+      ],
+      seed.initialPackageId,
+      seed.initialSelectedItemIds,
+    );
+    expect(selection.selectedItemIds).toEqual(signed);
+  });
+
+  it("a customer who approved 'E' is not emptied when the card stops existing", () => {
+    const signed = ['permanent-front', 'permanent-back'];
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'E', selectedItemIds: signed },
+      fallback,
+    );
+    // Staff cleared every recommendation, so no 'E' card is derived at all.
+    const selection = computeInitialSelection([], seed.initialPackageId, seed.initialSelectedItemIds);
+    expect(selection.selectedItemIds).toEqual(signed);
+    expect(selection.selectedItemIds.length).toBeGreaterThan(0);
+  });
+
+  it('A/B/C still reseed from their own tier bundle (unchanged)', () => {
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'B', selectedItemIds: ['stale-1'] },
+      fallback,
+    );
+    expect(seed.initialPackageId).toBe('B');
+    expect(seed.initialSelectedItemIds).toBeUndefined();
   });
 });
