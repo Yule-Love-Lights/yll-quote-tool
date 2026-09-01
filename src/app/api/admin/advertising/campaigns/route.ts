@@ -112,6 +112,17 @@ export async function PATCH(req: NextRequest) {
   const rate = readRateCents(body as Record<string, unknown> | null);
   if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
 
+  // A name that is present but blank (or not a string at all) is a user
+  // error, and it reads as one. Without this the data layer's throw lands in
+  // the catch below as a generic 500, which tells the admin nothing about
+  // what to fix; and a non-string name was silently DROPPED, the same shape
+  // as the rate bug this file's tests pin.
+  if (body?.name !== undefined) {
+    if (typeof body.name !== 'string' || !body.name.trim()) {
+      return NextResponse.json({ error: 'Give the campaign a name.' }, { status: 400 });
+    }
+  }
+
   const patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean } = {};
   if (typeof body?.name === 'string') patch.name = body.name;
   if (typeof body?.notes === 'string' || body?.notes === null) patch.notes = body?.notes as string | null;
