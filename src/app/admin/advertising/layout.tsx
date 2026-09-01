@@ -15,6 +15,8 @@
 
 import type { Metadata } from 'next';
 
+import { AppShell } from '@/components/advertising/simplecrew/ui';
+
 export const metadata: Metadata = {
   applicationName: 'YLL Advertising',
   manifest: '/manifest-advertising.webmanifest',
@@ -31,6 +33,8 @@ export const metadata: Metadata = {
   },
 };
 
+// Phone width on desktop, same as the crew app: see the note in
+// src/app/advertising/layout.tsx.
 export default function AdminAdvertisingLayout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <AppShell>{children}</AppShell>;
 }

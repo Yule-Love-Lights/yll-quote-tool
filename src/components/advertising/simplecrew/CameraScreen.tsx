@@ -32,7 +32,7 @@ import {
   writePhoto,
   type StoredPhoto,
 } from './photoQueueStorage';
-import { PrimaryButton, SC, Sheet, timeAgo } from './ui';
+import { PrimaryButton, SC, SHELL_MAX_PX, Sheet, timeAgo } from './ui';
 
 type Campaign = { id: string; name: string; kind: 'yard_sign' | 'door_hanger'; lastPhotoAt: string | null };
 
@@ -671,7 +671,10 @@ export default function CameraScreen({
   const filtered = campaigns.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-black text-white">
+    <div className="fixed inset-0 z-40 bg-black text-white">
+      {/* The black fills the window; the camera itself stays phone width,
+        * so on a desktop screen the controls do not sit at opposite edges. */}
+      <div className="mx-auto flex h-full w-full flex-col" style={{ maxWidth: SHELL_MAX_PX }}>
       {/* top bar */}
       <div className="flex items-center justify-between px-4 pb-3 pt-[max(env(safe-area-inset-top),14px)]">
         <button
@@ -1010,6 +1013,7 @@ export default function CameraScreen({
           </div>
         </div>
       </Sheet>
+      </div>
     </div>
   );
 }

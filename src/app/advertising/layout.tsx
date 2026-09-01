@@ -17,6 +17,8 @@
 
 import type { Metadata } from 'next';
 
+import { AppShell } from '@/components/advertising/simplecrew/ui';
+
 export const metadata: Metadata = {
   applicationName: 'YLL Advertising',
   manifest: '/manifest-advertising.webmanifest',
@@ -33,6 +35,10 @@ export const metadata: Metadata = {
   },
 };
 
+// The markup is no longer a bare passthrough: AppShell caps the surface at
+// phone width and centres it, because on a desktop screen every one of these
+// screens stretched the whole window (Naldo, 2026-09-01). Nothing about the
+// phone rendering changes: the cap only binds above 520px.
 export default function AdvertisingLayout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <AppShell>{children}</AppShell>;
 }
