@@ -37,7 +37,7 @@ export type CustomerCallTask = {
 // The note-posting state for one call, distinguished for the reader (a
 // staff-lens MED: 'pending' and 'quarantined' both read ghl_note_posted_at
 // as null, and conflating them made a permanently failed call look
-// identical to one still waiting on the hourly cron).
+// identical to one still waiting on the calls-note cron).
 export type CustomerCallNoteStatus = 'posted' | 'quarantined' | 'pending';
 
 export type CustomerCallNote = {

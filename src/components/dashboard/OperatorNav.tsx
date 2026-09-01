@@ -7,7 +7,11 @@ import type { OperatorArea } from '@/components/OperatorShell';
 import { OFFICE_TASKS_CHANGED } from './officeTasksEvents';
 import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { readRoleHint, writeRoleHint } from './roleHint';
-import { ViewAsMenu, useViewSwitcher } from './ViewAsMenu';
+import { AccountMenu } from './AccountMenu';
+import { accountLinksFor } from './accountLinks';
+import { displayName, roleLabel } from './accountIdentity';
+import { HeaderSearch } from './HeaderSearch';
+import { useViewSwitcher } from './useViewSwitcher';
 
 // The item list itself lives in operatorView.ts (ops hub workstream A slice
 // 2): it flows through navItemsForView(view) so the later Crew My Day and
@@ -98,6 +102,12 @@ export function OperatorNav({
   // admin-only View-as control below; null (pre-fetch, signed out, retry
   // exhausted) renders no control, so the safe default is "not admin".
   const [role, setRole] = useState<'admin' | 'operator' | null>(null);
+  // Who is signed in, for the account menu (Naldo, 2026-08-30). Same session
+  // answer as the role above, which already carried these on the Operator
+  // record and simply never returned them. Null before it resolves, which the
+  // menu renders as initials plus "Signed in" rather than an empty control.
+  const [name, setName] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
   // Hint-first (ops suggestions round): seed the role from the localStorage
   // echo of the LAST session answer, one tick after hydration, so an admin's
   // View-as menu does not wait a network round trip on every page mount.
@@ -121,7 +131,12 @@ export function OperatorNav({
         .then(res => {
           if (res.status === 401) return { signedIn: false }; // real answer, not a failure
           if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
-          return res.json() as Promise<{ signedIn?: boolean; role?: string }>;
+          return res.json() as Promise<{
+            signedIn?: boolean;
+            role?: string;
+            name?: string | null;
+            email?: string | null;
+          }>;
         })
         .then(body => {
           if (cancelled) return;
@@ -129,6 +144,8 @@ export function OperatorNav({
           const trueRole = signedIn ? (body.role === 'admin' ? 'admin' : 'operator') : null;
           setSessionState(signedIn ? 'signedIn' : 'signedOut');
           setRole(trueRole);
+          setName(signedIn ? (body.name ?? null) : null);
+          setEmail(signedIn ? (body.email ?? null) : null);
           writeRoleHint(trueRole);
         })
         .catch(() => {
@@ -251,13 +268,35 @@ export function OperatorNav({
       className="border-b"
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
-      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-3 h-12">
+      <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-2 h-12">
+        {/* The full wordmark at every width. It was shortened to YLL on
+            2026-08-30, when the search box had to be paid for out of a row
+            that already held 12 tabs; dropping Customers, Fleet, Insights and
+            Settings on 2026-08-31 bought that width back with room to spare.
+            The number that governs this row has not changed: it is
+            `max-w-6xl`, so its usable width tops out at 1152px however wide
+            the monitor, and a wider screen buys nothing. Re-measured with both
+            badges showing, the numbers are in OperatorNav.test.tsx. */}
         <span
           className="text-xs font-semibold uppercase tracking-widest shrink-0"
           style={{ color: 'var(--brand-evergreen-3)' }}
         >
           Yule Love Lights
         </span>
+
+        {/* Tablet-portrait and phone: the search box takes the width the nav
+            links are not using, since they live in the hamburger below. */}
+        <div className="flex-1 min-w-0 lg:hidden">
+          <HeaderSearch variant="mobile" />
+        </div>
+
+        {/* Desktop: 160px at 1024px, 224px at 1280px and up. Both numbers
+            come from the measured budget, not from taste: with the four tabs
+            gone the tightest width now leaves 46px of slack. Ctrl+K and Cmd+K
+            focus this one. */}
+        <div className="hidden lg:block lg:w-40 xl:w-56 shrink-0">
+          <HeaderSearch variant="desktop" />
+        </div>
 
         {/* Desktop / tablet-landscape: inline links. Shown at lg+ (1024px), NOT
             md (768px): the 9-item row needs ~832px, so at md it overflowed the
@@ -298,7 +337,7 @@ export function OperatorNav({
         <ul className="hidden lg:flex items-center gap-0 text-sm">
           {items.map(item => (
             <li key={item.href}>
-              <Link href={item.href} className="lg:px-0.5 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
+              <Link href={item.href} className="lg:px-1.5 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center whitespace-nowrap" style={linkStyle(item)}>
                 {item.label}
                 {badgeFor(item)}
               </Link>
@@ -318,9 +357,14 @@ export function OperatorNav({
                 width — that's the false-pass trap the lg:px-1.5 comment above
                 explains. Forcing single-line makes its true width count
                 toward the overflow check instead of hiding behind a wrap. */}
+            {/* Full label again. It was "+ Quote" for one day (2026-08-30)
+                to pay for the search box; the four tabs that left on
+                2026-08-31 covered that cost, so the button says what it does
+                once more. whitespace-nowrap keeps it single-line, which is
+                what stops a silent wrap hiding a real overflow. */}
             <Link
               href="/quote/new"
-              className="whitespace-nowrap px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              className="whitespace-nowrap lg:px-2 xl:px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
               + New quote
@@ -332,7 +376,18 @@ export function OperatorNav({
               unmount) keeps the space, drops it from hit-testing, AND
               removes it from the tab order — no separate disabled handling
               needed. */}
-          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
+          {/* NOT wrapped in the visibility toggle any more (premerge admin
+              lens, 2026-08-31). This slot held the Sign-out button, and
+              hiding it on a confirmed signedOut session was right: there is
+              nothing to sign out of. The account menu is a different thing.
+              It is now the ONLY door to Settings and Insights, so hiding the
+              whole control took those two with it whenever the session check
+              answered signedOut -- which happens for real while the auth gate
+              is deliberately dormant, where pages still render and the
+              session route still answers honestly. The menu therefore always
+              renders and reserves its width; only the Sign-out ITEM inside it
+              is conditional now. */}
+          <li>
             {/* lg:px-2 xl:px-3 + whitespace-nowrap (advertising-role-hardening
                 fix round): same reasoning as the CTA above — "Sign out" has a
                 space and was one of the two elements silently wrapping onto 2
@@ -342,26 +397,21 @@ export function OperatorNav({
                 margin measured at 1024px (see the lg:px-1.5 comment above for
                 the full before/after numbers at all 3 widths).
 
-                View-as lives HERE, not in a strip (Naldo's design,
-                2026-08-29): for an ADMIN this slot renders the compact
-                "View as" menu with Sign out as its last item, so the header
-                row's measured fit is spent once and nothing is added below
-                the bar. Everyone else keeps the plain Sign-out button —
-                zero change for operators. The swap happens when the role
-                resolves (hint or fetch); the slot itself is always mounted,
-                so the row never gains or loses an element. */}
-            {role === 'admin' ? (
-              <ViewAsMenu onSignOut={signOut} />
-            ) : (
-              <button
-                type="button"
-                onClick={signOut}
-                className="whitespace-nowrap lg:px-2 xl:px-3 py-1.5 rounded-md transition-colors"
-                style={{ color: 'var(--op-text-2)' }}
-              >
-                Sign out
-              </button>
-            )}
+                This slot is now the ACCOUNT MENU for everyone (Naldo,
+                2026-08-30), which is the second half of the header search
+                change: it names who is signed in, links to Settings and
+                Insights, folds in the admin View-as switcher that used to
+                live here on its own, and keeps Sign out as its last item.
+                Sign out MOVED, it did not disappear — removing it would
+                strand a staffer on a shared computer. The initials-only
+                trigger is also narrower than the "Sign out" text it replaces,
+                which is part of how the search box fits at 1024px. */}
+            <AccountMenu
+              identity={{ name, email, role }}
+              onSignOut={signOut}
+              canSignOut={!hideSignOut}
+              roleConfirmed={sessionState === 'signedIn'}
+            />
           </li>
         </ul>
 
@@ -397,6 +447,39 @@ export function OperatorNav({
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* Who is signed in, at the top of the hamburger menu — the mobile
+              half of the desktop account menu (Naldo, 2026-08-30). The View-as
+              rows and Sign out already live further down this same list, so
+              this adds the identity line they were missing rather than a
+              second control. */}
+          <li className="border-b" style={{ borderColor: 'var(--op-border)' }}>
+            <p className="px-4 pt-3 text-sm font-semibold" style={{ color: 'var(--op-text)' }}>
+              {displayName({ name, email, role })}
+            </p>
+            <p className="px-4 pb-3 text-xs" style={{ color: 'var(--op-text-2)' }}>
+              {roleLabel(role) ?? 'Signed in'}
+            </p>
+          </li>
+          {/* These pages left the tab list and live in the desktop account
+              menu. This dropdown IS the account menu on a phone, so they have
+              to appear here too, or they would be unreachable below 1024px.
+              Same array and same role filter both places, so a row added in
+              one is added in both and an admin-only row hides in both.
+              `sessionState === 'signedIn'` is the CONFIRMED answer, never the
+              localStorage role hint, which on a shared computer can still say
+              'admin' for the next person. */}
+          {accountLinksFor(role, sessionState === 'signedIn').map(link => (
+            <li key={link.href}>
+              <Link
+                href={link.href}
+                onClick={() => setOpen(false)}
+                className="flex items-center px-4 py-3 text-sm font-medium border-b"
+                style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+              >
+                {link.label}
+              </Link>
+            </li>
+          ))}
           {/* "+ New quote" first in the mobile menu — same one-click-access
               ask as the desktop CTA above. */}
           <li>

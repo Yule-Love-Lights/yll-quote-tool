@@ -18,5 +18,14 @@ export async function GET() {
   // this route is the session answer it already fetches. Never present when
   // signed out.
   if (!operator) return NextResponse.json({ signedIn: false });
-  return NextResponse.json({ signedIn: true, role: operator.role });
+  // Name and email ride along so the header account menu can say WHO is signed
+  // in (Naldo, 2026-08-30). Both were already on the Operator record; this
+  // route simply never returned them. Nothing secret: it is the caller's own
+  // identity, answered only for a caller who already holds the session.
+  return NextResponse.json({
+    signedIn: true,
+    role: operator.role,
+    name: operator.name,
+    email: operator.email,
+  });
 }
