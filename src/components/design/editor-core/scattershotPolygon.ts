@@ -57,7 +57,7 @@ export function finalizeScattershotPolygon(rawPoints: number[]): number[] | null
     if (pts.length >= 2) {
       const dx = x - pts[pts.length - 2];
       const dy = y - pts[pts.length - 1];
-      if (Math.hypot(dx, dy) < SCATTERSHOT_MIN_POINT_DIST) continue; // accidental double-click at (near) the same spot
+      if (Math.hypot(dx, dy) < SCATTERSHOT_MIN_POINT_DIST) continue; // accidental rapid click at (near) the same spot — see the triple-click-to-finish helper below
     }
     pts.push(x, y);
   }
@@ -73,4 +73,45 @@ export function finalizeScattershotPolygon(rawPoints: number[]): number[] | null
   }
   if (pts.length / 2 < SCATTERSHOT_MIN_POINTS) return null;
   return pts;
+}
+
+// Rapid-click window, in ms, for the "triple-click to finish" gesture that
+// replaces double-click (double-click already means DELETE elsewhere in
+// this editor — see the item click handlers — so double-click-to-finish
+// collided with that muscle memory). Matches Konva's own dblClickWindow
+// default (node_modules/konva/lib/Global.js) so the gesture feels the same
+// speed as every other rapid-click gesture in the editor.
+export const SCATTERSHOT_FINISH_CLICK_WINDOW_MS = 400;
+
+// How many rapid, same-spot clicks finish an in-progress polygon outline.
+export const SCATTERSHOT_FINISH_CLICK_COUNT = 3;
+
+export interface ScattershotClickStreak {
+  count: number;
+  at: number;
+  x: number;
+  y: number;
+}
+
+// Given the previous click in a same-spot rapid-click streak (or null when
+// there isn't one yet) and the current click's time and position, returns
+// the streak state AFTER this click. A click starts a fresh streak (count
+// 1) whenever it lands outside the time window OR more than
+// SCATTERSHOT_MIN_POINT_DIST away from the previous click — reusing that
+// same "same spot" threshold keeps streak detection in agreement with
+// finalizeScattershotPolygon's vertex dedup above about what counts as "the
+// same spot", so a genuine multi-click streak is exactly the run of clicks
+// that dedup would collapse to one vertex anyway.
+export function trackScattershotClick(
+  prev: ScattershotClickStreak | null,
+  now: number,
+  x: number,
+  y: number,
+  windowMs: number = SCATTERSHOT_FINISH_CLICK_WINDOW_MS,
+): ScattershotClickStreak {
+  const continuesStreak =
+    prev !== null &&
+    now - prev.at <= windowMs &&
+    Math.hypot(x - prev.x, y - prev.y) <= SCATTERSHOT_MIN_POINT_DIST;
+  return { count: continuesStreak ? prev!.count + 1 : 1, at: now, x, y };
 }

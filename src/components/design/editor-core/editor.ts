@@ -37,7 +37,13 @@ import {
   offPresetSizeSuffix,
 } from "./sizePresets";
 import { isLineDrawContext } from "./drawContext";
-import { finalizeScattershotPolygon, SCATTERSHOT_MIN_POINTS } from "./scattershotPolygon";
+import {
+  finalizeScattershotPolygon,
+  SCATTERSHOT_MIN_POINTS,
+  SCATTERSHOT_FINISH_CLICK_COUNT,
+  trackScattershotClick,
+  type ScattershotClickStreak,
+} from "./scattershotPolygon";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
 import { brightnessForPhoto, setBrightnessForPhoto, removeBrightnessForPhoto } from "@/lib/design/photoBrightness";
@@ -146,7 +152,7 @@ const STYLE_HELP: Record<DrawingStyle, string> = {
 // outline points around the real shape and close it (shape:"polygon", points
 // mirroring the "trace" style's click-to-place-points convention).
 const SCATTERSHOT_HELP =
-  "Drag a box, or click points around the outline and press Enter, double-click, or click the first point again to close it. Either way it fills with scattered mini-lights in the selected color pattern. Drag a box's corners after to refit it; set fill density in the edit panel.";
+  "Drag a box, or click points around the outline and press Enter, triple-click, or click the first point again to close it. Either way it fills with scattered mini-lights in the selected color pattern. Drag a box's corners after to refit it; set fill density in the edit panel.";
 
 // "Click near the first point closes the outline" tolerance, in SCREEN px
 // (divided by stageScale below before comparing against image-space click
@@ -585,6 +591,10 @@ export async function renderEditor(
   // once a scattershot mousedown resolves to a click (not a real box drag) —
   // see the mouseup handler below.
   let scatterPolyPts: number[] | null = null;
+  // Triple-click-to-finish tracking for the outline above — the run of
+  // rapid, same-spot clicks accumulated so far (or null between streaks).
+  // See scattershotPolygon.ts's trackScattershotClick for the rules.
+  let scatterClickStreak: ScattershotClickStreak | null = null;
   // Mini-group / scattershot / spritzer edit panels: when armed (via "+ Add to pattern"),
   // the next color tap APPENDS to the pattern instead of replacing it.
   let mgAddArmed = false;
@@ -5719,6 +5729,7 @@ export async function renderEditor(
     dragPts = null;
     tracePts = null;
     scatterPolyPts = null;
+    scatterClickStreak = null;
     drawOverItemId = null;
     drawPreview?.destroy();
     drawPreview = null;
@@ -5765,7 +5776,7 @@ export async function renderEditor(
     redrawScene();
   }
 
-  // Finish a scattershot polygon draw (Enter / double-click / mouseleave /
+  // Finish a scattershot polygon draw (Enter / triple-click / mouseleave /
   // "click near the first point" all route here — mirrors finishTrace()).
   // Drops the trailing cursor-tracking pair, same as finishTrace, then hands
   // the committed clicks to commitScattershotPolygon, which cancels instead
@@ -5775,6 +5786,7 @@ export async function renderEditor(
     const committed = scatterPolyPts.slice(0, -2);
     commitScattershotPolygon(committed);
     scatterPolyPts = null;
+    scatterClickStreak = null;
     drawPreview?.destroy();
     drawPreview = null;
     redrawScene();
@@ -5990,6 +6002,19 @@ export async function renderEditor(
         scatterPolyPts.push(p.x, p.y);
         drawPreview?.points([...scatterPolyPts]);
         drawLayer.batchDraw();
+        // Triple-click-to-finish: three rapid, same-spot clicks in a row
+        // close the outline instead of double-click (double-click already
+        // means delete elsewhere in this editor). Each of the 3 clicks
+        // still commits its own near-duplicate vertex above, same as
+        // double-click used to commit 2 — finishScattershotDraw's
+        // slice(0,-2) below plus finalizeScattershotPolygon's consecutive-
+        // near-duplicate dedup collapse them back to the single point the
+        // user actually clicked, so the committed polygon isn't left with
+        // 2 extra degenerate vertices.
+        scatterClickStreak = trackScattershotClick(scatterClickStreak, Date.now(), p.x, p.y);
+        if (scatterClickStreak.count >= SCATTERSHOT_FINISH_CLICK_COUNT) {
+          finishScattershotDraw();
+        }
         return;
       }
       // Not yet known whether this is a box drag or the first outline click
@@ -6188,6 +6213,7 @@ export async function renderEditor(
         // scene.items, which would immediately destroy the fresh preview
         // line below (nothing is committed to scene.items yet).
         scatterPolyPts = [start.x, start.y, start.x, start.y];
+        scatterClickStreak = null;
         newPreview(scatterPolyPts);
         drawLayer.batchDraw();
         return;
@@ -6232,10 +6258,13 @@ export async function renderEditor(
     if (tool.drawingStyle === "trace") finishTrace();
     if (tool.scattershot) finishScattershotDraw();
   });
-  // Double-click also finishes (extra safety / convention).
+  // Double-click also finishes a trace (extra safety / convention). NOT
+  // wired for scattershot: that outline finishes on a TRIPLE click instead
+  // (see the mid-outline mousedown handler above) because double-click
+  // already means DELETE on an existing item elsewhere in this editor —
+  // double-click-to-finish collided with that muscle memory.
   stage.on("dblclick", () => {
     if (tool.drawingStyle === "trace") finishTrace();
-    if (tool.scattershot) finishScattershotDraw();
   });
 
   // Keyboard:
@@ -6252,12 +6281,20 @@ export async function renderEditor(
     // (#98): pass no override and DEFAULT_KEYMAP reproduces the original
     // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Ctrl+C / Ctrl+V / Delete / Esc set.
     if (e.key === "Enter" && tool.drawingStyle === "trace" && tracePts) {
+      // preventDefault: this listener is on window, so it runs regardless of
+      // where focus is — including a side-panel button. Without this, the
+      // SAME Enter keypress also triggers the browser's native "Enter
+      // activates the focused button" behavior right after, firing that
+      // button's own click handler and stepping on the finish we just did.
+      e.preventDefault();
       finishTrace();
       return;
     }
     // Enter while placing a scattershot polygon outline closes it — same
-    // fixed, non-remappable behavior as trace's Enter-to-finish above.
+    // fixed, non-remappable behavior as trace's Enter-to-finish above
+    // (including the preventDefault, for the same reason).
     if (e.key === "Enter" && tool.scattershot && scatterPolyPts) {
+      e.preventDefault();
       finishScattershotDraw();
       return;
     }
@@ -6308,7 +6345,7 @@ export async function renderEditor(
         // valid, useful strand on their own, so "finish what's drawn so
         // far" makes sense; a 1-2 point polygon has no such value, and the
         // brief calls out Escape/cancel as distinct from the close-the-
-        // shape gestures (double-click / click-near-first-point / Enter).
+        // shape gestures (triple-click / click-near-first-point / Enter).
         if (tool.drawingStyle === "trace" && tracePts) {
           finishTrace();
         } else if (tool.scattershot && scatterPolyPts) {
