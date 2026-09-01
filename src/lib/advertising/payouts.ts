@@ -22,8 +22,13 @@ import { getAdvertisingWorker } from '@/lib/advertising/workers';
 // a derived one cannot.
 //
 // A PAID PHOTO CANNOT BE VOIDED (Naldo's ruling, 2026-08-30: "refuse the
-// void once paid"). The guard lives in voidPlacement, at the state change;
-// this module owns the question it asks (isPlacementSettled).
+// void once paid"), unless the payment itself has been voided. That guard
+// lives in voidPlacement, at the state change, and asks its own question
+// against advertising_settlement_lines: placements.ts cannot import this
+// module, which imports IT for the earnings engine. This module deliberately
+// exposes no second copy of that check. An earlier one sat here unused, and
+// a test reached for it instead of the real guard, which is how the guard
+// shipped without the voided filter (four-lens round, PR #1136).
 
 /** How the money physically moved. Naldo 2026-08-30: a fixed short list, so
  * "how much did we pay in cash this month" stays answerable. Anything else
@@ -54,6 +59,11 @@ export type AdvertisingSettlement = {
   paidBy: string | null;
   lineCount: number;
   createdAt: string;
+  /** Void overlay (ledger row 492): the row stays as the record of what was
+   * recorded, stops counting as paid, and releases its photos. */
+  voidedAt: string | null;
+  voidedBy: string | null;
+  voidReason: string | null;
 };
 
 export type WorkerPayoutSummary = {
@@ -69,8 +79,9 @@ const PAGE = 1000;
 /** PostgREST puts the `in` list in the URL; keep each one short. */
 const ID_CHUNK = 200;
 
-const SETTLEMENT_SELECT = 'id, worker_id, total_cents, method, note, paid_at, paid_by, created_at';
-const LINE_SELECT = 'id, settlement_id, placement_id, amount_cents';
+const SETTLEMENT_SELECT =
+  'id, worker_id, total_cents, method, note, paid_at, paid_by, created_at, voided_at, voided_by, void_reason';
+const LINE_SELECT = 'id, settlement_id, placement_id, amount_cents, voided_at';
 const PLACEMENT_SELECT =
   'id, worker_id, campaign_id, status, kind, accepted_rate_cents, captured_at, created_at, voided_at, is_test';
 
@@ -83,6 +94,9 @@ type SettlementRow = {
   paid_at: string;
   paid_by: string | null;
   created_at: string;
+  voided_at: string | null;
+  voided_by: string | null;
+  void_reason: string | null;
 };
 
 type LineRow = {
@@ -90,6 +104,10 @@ type LineRow = {
   settlement_id: string;
   placement_id: string;
   amount_cents: number;
+  /** Mirrors the settlement's stamp, written in the same call. The partial
+   * unique index keys on THIS, because an index cannot look at another
+   * table: a voided payment releases its photos. */
+  voided_at: string | null;
 };
 
 type PlacementRow = {
@@ -223,13 +241,18 @@ async function settledTotals(db: Db, workerId?: string): Promise<SettledTotals> 
   const lastPaidAt = new Map<string, string>();
   const paidPlacementIds = new Set<string>();
 
+  // A VOIDED payment counts for nothing (ledger row 492): not toward settled
+  // money, not as a claim on its photos, and not as the last time this worker
+  // was paid. The row itself survives as history and is still listed.
   for (const line of lines) {
+    if (line.voided_at) continue;
     const worker = workerBySettlement.get(line.settlement_id);
     if (!worker) continue;
     settledCents.set(worker, (settledCents.get(worker) ?? 0) + line.amount_cents);
     paidPlacementIds.add(line.placement_id);
   }
   for (const s of settlements) {
+    if (s.voided_at) continue;
     const current = lastPaidAt.get(s.worker_id);
     if (!current || Date.parse(s.paid_at) > Date.parse(current)) lastPaidAt.set(s.worker_id, s.paid_at);
   }
@@ -271,15 +294,6 @@ export async function listPayablePlacements(workerId: string): Promise<PayablePl
   const id = workerId.trim();
   const [accepted, settled] = await Promise.all([readAcceptedPlacements(db, id), settledTotals(db)]);
   return accepted.filter((row) => !settled.paidPlacementIds.has(row.id)).map(toPayable);
-}
-
-/** Has this placement been paid? The void guard's question — a paid photo
- * cannot be voided, because the money has already left. */
-export async function isPlacementSettled(placementId: string): Promise<boolean> {
-  const db = getSupabaseServiceClient();
-  if (!db) return false;
-  const lines = await readLinesForPlacements(db, [placementId.trim()]);
-  return lines.length > 0;
 }
 
 /** One worker's money at a glance: earned (history), paid, still owed. */
@@ -354,6 +368,9 @@ function toSettlement(row: SettlementRow, lineCount: number): AdvertisingSettlem
     paidBy: row.paid_by,
     lineCount,
     createdAt: row.created_at,
+    voidedAt: row.voided_at,
+    voidedBy: row.voided_by,
+    voidReason: row.void_reason,
   };
 }
 
@@ -378,6 +395,119 @@ export async function listSettlements(workerId: string): Promise<AdvertisingSett
   return settlements
     .map((s) => toSettlement(s, countBySettlement.get(s.id) ?? 0))
     .reverse();
+}
+
+/**
+ * VOID a settlement (ledger row 492, Naldo's ruling 2026-08-31): a payment
+ * recorded by mistake is undone WITHOUT losing the record that it was
+ * recorded. The row stays, carrying who recorded it, who undid it and why;
+ * it stops counting toward what the worker has been paid; and the photos it
+ * covered become payable again.
+ *
+ * An overlay, not a delete, matching how a placement is voided. There is no
+ * un-void: a payment voided in error is simply recorded again, which is also
+ * why the photos have to be released.
+ *
+ * The stamp goes on the settlement AND on its lines, because the partial
+ * unique index that releases the photos keys on the line (an index cannot
+ * read another table). The LINES are stamped FIRST: that write is the one
+ * that releases the money, and if it fails the payment must stay whole
+ * rather than end up half-voided, counting for nothing while still blocking
+ * its photos. CAS on voided_at IS NULL, so the first void wins and a retry
+ * returns it unchanged.
+ */
+export async function voidSettlement(
+  settlementId: string,
+  voidedBy: string,
+  reason: string,
+): Promise<AdvertisingSettlement> {
+  const db = requireDb();
+  const id = settlementId.trim();
+  const voidReason = reason.trim();
+  if (!voidReason) throw new Error('voidSettlement: a reason is required');
+
+  const { data: existingRows, error: readError } = await db
+    .from('advertising_settlements')
+    .select(SETTLEMENT_SELECT)
+    .eq('id', id)
+    .limit(1);
+  if (readError) throw new Error(`voidSettlement: ${readError.message}`);
+  const existing = ((existingRows ?? []) as SettlementRow[])[0];
+  if (!existing) throw new Error(`voidSettlement: no settlement found for id ${id}`);
+
+  const lines = await readLinesForSettlements(db, [id]);
+  if (existing.voided_at) {
+    // Idempotent: the first void stands, reason and actor included.
+    return toSettlement(existing, lines.filter((line) => !line.voided_at).length);
+  }
+
+  const voidedAt = new Date().toISOString();
+
+  // Release the photos first. Until these are stamped the money is still
+  // claimed, so a failure here leaves a whole, live payment rather than a
+  // settlement that counts for nothing while its photos stay locked.
+  const { error: linesError } = await db
+    .from('advertising_settlement_lines')
+    .update({ voided_at: voidedAt })
+    .eq('settlement_id', id)
+    .is('voided_at', null);
+  if (linesError) {
+    // Nothing has moved yet: this is the FIRST write, so the payment is
+    // still whole and still counts. Safe to say nothing changed.
+    throw new Error(`voidSettlement: the photos could not be released (${linesError.message}), nothing was voided`);
+  }
+
+  const { data, error } = await db
+    .from('advertising_settlements')
+    .update({ voided_at: voidedAt, voided_by: voidedBy, void_reason: voidReason })
+    .eq('id', id)
+    .is('voided_at', null)
+    .select(SETTLEMENT_SELECT)
+    .maybeSingle();
+  if (error) {
+    // The lines ARE already released, so this is NOT "nothing changed": the
+    // payment already counts as $0 while still reading as live. Retrying
+    // this same call heals it (the line update is a no-op second time), so
+    // say that rather than implying the books are untouched.
+    throw new Error(
+      `voidSettlement: the photos were released but settlement ${id} still reads as live (${error.message}) — run the undo again to finish it`,
+    );
+  }
+
+  const voided = data as SettlementRow | null;
+  if (!voided) {
+    // Another admin won the race between our read and our write. Their stamp
+    // stands, and the lines are released either way. Return THEIR row and
+    // write NO audit event: this call changed nothing, and a second
+    // settlement_voided carrying our actor and our reason would put a void
+    // in the trail that never happened, misattributed to the wrong admin.
+    // voidPlacement's own lost-race branch returns early for the same reason.
+    const { data: currentRows } = await db
+      .from('advertising_settlements')
+      .select(SETTLEMENT_SELECT)
+      .eq('id', id)
+      .limit(1);
+    const current = ((currentRows ?? []) as SettlementRow[])[0];
+    if (!current?.voided_at) {
+      throw new Error(`voidSettlement: settlement ${id} could not be voided`);
+    }
+    return toSettlement(current, lines.filter((line) => !line.voided_at).length);
+  }
+
+  await logAdvertisingActivity({
+    actor: voidedBy,
+    action: 'settlement_voided',
+    workerId: voided.worker_id,
+    detail: {
+      settlementId: voided.id,
+      totalCents: voided.total_cents,
+      lineCount: lines.length,
+      method: voided.method,
+      reason: voidReason,
+    },
+  });
+
+  return toSettlement(voided, lines.length);
 }
 
 /**
@@ -454,7 +584,7 @@ export async function recordSettlement(
     }
   }
 
-  const already = await readLinesForPlacements(db, ids);
+  const already = (await readLinesForPlacements(db, ids)).filter((line) => !line.voided_at);
   if (already.length > 0) {
     const names = already.map((l) => l.placement_id).join(', ');
     throw new Error(`recordSettlement: ${names} has already been paid — reload the pay screen`);
@@ -529,7 +659,7 @@ export async function recordSettlement(
 
   // Trap 8: the total is only true if the lines behind it actually landed.
   // Read them back rather than trusting the insert's own echo.
-  const stored = await readLinesForSettlements(db, [settlement.id]);
+  const stored = (await readLinesForSettlements(db, [settlement.id])).filter((line) => !line.voided_at);
   const storedSum = stored.reduce((sum, line) => sum + line.amount_cents, 0);
   if (stored.length !== ids.length || storedSum !== totalCents) {
     // Some lines may already be on the books here, and settled money is

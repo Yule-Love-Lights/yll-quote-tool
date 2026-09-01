@@ -23,7 +23,26 @@ export async function GET() {
       getWorkerPayoutSummary(caller.worker.id),
       listSettlements(caller.worker.id),
     ]);
-    return NextResponse.json({ summary, settlements });
+
+    // REDACT at the boundary, not in the shared type (customer lens, PR
+    // #1136). A settlement carries fields written for the office: the admin
+    // ids that recorded and undid it, and the free-text reason for undoing
+    // it. The Undo prompt asks "Why?" with nothing saying it is shown to the
+    // worker, so the office reasonably writes it for a colleague. Declaring
+    // a narrower type on the client does NOT keep those fields off the wire;
+    // only this does. The worker gets what they need: what they were paid,
+    // when, how, the note the office knowingly writes for them, and whether
+    // it was later undone.
+    const safe = settlements.map((s) => ({
+      id: s.id,
+      totalCents: s.totalCents,
+      method: s.method,
+      note: s.note,
+      paidAt: s.paidAt,
+      lineCount: s.lineCount,
+      voidedAt: s.voidedAt,
+    }));
+    return NextResponse.json({ summary, settlements: safe });
   } catch (e) {
     // Say the read failed rather than returning zeros, which a worker would
     // read as "they have paid me nothing".
