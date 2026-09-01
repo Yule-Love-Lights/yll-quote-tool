@@ -7,9 +7,9 @@ import { getAdvertisingWorker } from '@/lib/advertising/workers';
 // per week, and that's how we know how many they have... every time they
 // take a photo, we take it out of the stock we give them." Issuances are an
 // append-only ledger; a worker's REMAINING count is DERIVED — signs issued
-// minus yard-sign photos taken (any status: a placed sign is a used sign,
-// and a resubmission is the same sign, not a new one; door hangers never
-// draw signs down). Nothing blocks a submission at zero — a photo of a
+// minus yard-sign photos taken (ANY status, VOIDED OR NOT: a placed sign is
+// a used sign, and a resubmission is the same sign, not a new one; door
+// hangers never draw signs down). Nothing blocks a submission at zero — a photo of a
 // standing sign must never be refused over bookkeeping; the balance is how
 // the office KNOWS, not a gate.
 //
@@ -235,8 +235,16 @@ export async function getWorkerSignBalance(workerId: string): Promise<WorkerSign
     .from('advertising_placements')
     .select('id', { count: 'exact', head: true })
     .eq('worker_id', id)
-    .eq('kind', 'yard_sign')
-    .is('voided_at', null); // a voided placement gives the sign back
+    .eq('kind', 'yard_sign');
+  // NO voided_at filter, deliberately (Naldo's ruling 2026-08-31, ledger row
+  // 479): a placed sign is a USED sign. Voiding is about the photo and the
+  // pay; the plastic is still in the ground either way, so a voided
+  // placement keeps counting against the allotment.
+  //
+  // KNOWN AND ACCEPTED: a voided photo that is RE-UPLOADED becomes a second
+  // placement row, and both count, so one physical sign is charged twice.
+  // That is the mirror of the drift this rule fixes, and it was recorded as
+  // its own ledger row rather than designed around here.
   if (error) console.error('getWorkerSignBalance count error:', error);
   const signsUsed = count ?? 0;
 

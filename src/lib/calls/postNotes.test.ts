@@ -198,7 +198,7 @@ describe('postPendingCallNotes', () => {
   });
 
   it('retries the comment marker write once when the comment itself posted fine', async () => {
-    // S84 wrap finding: createInternalComment and its marker write used to
+    // S85 wrap finding: createInternalComment and its marker write used to
     // share one try/catch, so a transient DB blip on JUST the marker write
     // (the comment already succeeded in HighLevel) fell into the same log
     // path as an actual comment-post failure and left ghl_comment_posted_at
