@@ -53,6 +53,7 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 // builder-specific title text, not those components' migration-specific
 // copy — see the chip strip's own comment.
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { ReferralPrefillNotice } from '@/components/quote/ReferralPrefillNotice';
 import { QuoteBuilderCallNotesDrawer } from '@/components/quote/QuoteBuilderCallNotesDrawer';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
@@ -6253,6 +6254,19 @@ Send anyway?`,
 
             {/* Referral program (#41 "mention" attribution) — an existing
                 customer staff picks as "Referred by" while building THIS quote. */}
+            {/* ...and the prompt that stops that pick being missed. A referral
+                only pays if the referrer is set BEFORE the deposit; adding it
+                later does not accrue the credit. This reads back the 'link'
+                row the friend created at /refer/<code>, which nothing else in
+                the app has ever looked at. */}
+            <ReferralPrefillNotice
+              phone={form.customer.phone}
+              email={form.customer.email}
+              excludeCustomerId={linkedCustomerId}
+              alreadySet={!!referredBy}
+              quoteAlreadyBooked={bookedAmendEligible}
+              onUse={setReferredBy}
+            />
             <ReferredByPicker value={referredBy} onChange={setReferredBy} />
 
             {/* Referral program redemption (#41 PR 2) — referee side: this

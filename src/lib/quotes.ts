@@ -7,7 +7,7 @@ import type { QuoteStatus } from './quoteStatus';
 import { wasEverApproved } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from './customers';
-import { createPendingReferral } from './referrals';
+import { createPendingReferral, consumeLinkReferralForMention } from './referrals';
 
 export type QuoteListItem = {
   id: string;
@@ -407,6 +407,15 @@ export async function saveQuote(
           referrerCustomerId: referredByCustomerId,
           refereeQuoteId: data.id,
           ...(linkedCustomerId ? { refereeCustomerId: linkedCustomerId } : {}),
+        });
+        // Spend the 'link' row this came from, if there is one, so the same
+        // referral cannot be paid again on a later quote for the same lead.
+        // Here rather than in the suggestion UI on purpose: it covers a
+        // staffer who picked the referrer by hand too.
+        await consumeLinkReferralForMention({
+          referrerCustomerId: referredByCustomerId,
+          refereeCustomerId: linkedCustomerId,
+          quoteId: data.id,
         });
       } catch (err) {
         console.warn('saveQuote: createPendingReferral failed (non-fatal):', err);
@@ -893,6 +902,13 @@ export async function updateQuote(
             referrerCustomerId: referredByCustomerId,
             refereeQuoteId: id,
             ...(quoteRow.customer_id ? { refereeCustomerId: quoteRow.customer_id } : {}),
+          });
+          // See saveQuote's twin: spend the originating 'link' row so one
+          // referral can never be paid twice across two quotes.
+          await consumeLinkReferralForMention({
+            referrerCustomerId: referredByCustomerId,
+            refereeCustomerId: quoteRow.customer_id,
+            quoteId: id,
           });
         } catch (err) {
           console.warn('updateQuote: createPendingReferral failed (non-fatal):', err);
