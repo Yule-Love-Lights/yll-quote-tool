@@ -126,6 +126,60 @@ export function statusColor(load: {
   return load.state.onBreak ? '#d97706' : '#16a34a';
 }
 
+/**
+ * The SHAPE of the header marker, so the state does not rest on colour alone.
+ * PURE.
+ *
+ * Two things the premerge staff lens caught, both only visible between 1024
+ * and 1279px where the trigger has no room for words. Green and amber are the
+ * only thing separating "on the clock" from "on break", which a colour-blind
+ * staffer cannot use; and a FAILED clock rendered the same grey dot as a
+ * confirmed clocked-out, so "the widget is broken" and "you are off the clock"
+ * looked identical. Shape carries both distinctions:
+ *   filled  - on the clock
+ *   ring    - on break
+ *   hollow  - clocked out
+ *   warn    - could not read the clock, or nothing to read yet
+ */
+/**
+ * The marker's actual appearance for a shape. PURE, and it exists because the
+ * shape NAME alone proved not to be enough: statusShape returned four distinct
+ * strings while the render collapsed 'ring' and 'hollow' into the same
+ * transparent circle with the same border, so on-break and clocked-out still
+ * differed by colour only. The helper's test passed; a browser check is what
+ * caught it. Now the thing under test is what is drawn.
+ *
+ * Geometry does the work: a filled circle, a filled SQUARE, and a hollow
+ * circle are told apart without seeing colour at all.
+ */
+export function markerStyle(shape: 'filled' | 'ring' | 'hollow', colour: string): {
+  background: string;
+  border: string;
+  borderRadius: string;
+} {
+  if (shape === 'filled') {
+    return { background: colour, border: 'none', borderRadius: '9999px' };
+  }
+  if (shape === 'ring') {
+    // On break: a square, so it is not the clocked-out circle in another
+    // colour.
+    return { background: colour, border: 'none', borderRadius: '2px' };
+  }
+  return { background: 'transparent', border: `2px solid ${colour}`, borderRadius: '9999px' };
+}
+
+export function statusShape(load: {
+  status: string;
+  state?: { clockedIn: boolean; onBreak: boolean };
+}): 'filled' | 'ring' | 'hollow' | 'warn' {
+  if (load.status === 'ready' && load.state) {
+    if (!load.state.clockedIn) return 'hollow';
+    return load.state.onBreak ? 'ring' : 'filled';
+  }
+  if (load.status === 'loading') return 'hollow';
+  return 'warn';
+}
+
 /** The compact pill the header shows in every state. */
 function Pill({ children }: { children: React.ReactNode }) {
   return (
@@ -170,6 +224,17 @@ export function ClockCard({ variant = 'card' }: { variant?: 'card' | 'header' } 
   // unmount. `reload` re-runs it for the retry button.
   useEffect(() => {
     let cancelled = false;
+    // A failed RE-READ must not throw away a state we already have. The two
+    // clocks on the dashboard re-read each other's actions, so a single
+    // network blip on that refresh used to leave one of them saying "Time
+    // clock unavailable" while the other showed the live shift: two controls
+    // disagreeing, which is worse than either alone (premerge staff lens,
+    // 2026-09-01). A FIRST load still shows the error, because then there is
+    // nothing truer to show.
+    const failSoftly = () => {
+      if (cancelled) return;
+      setLoad((prev) => (prev.status === 'ready' ? prev : { status: 'error' }));
+    };
     (async () => {
       try {
         const res = await fetch('/api/office/clock', { method: 'GET' });
@@ -184,11 +249,11 @@ export function ClockCard({ variant = 'card' }: { variant?: 'card' | 'header' } 
           if (cancelled) return;
           return setLoad({ status: statusFor403(body.reason) });
         }
-        if (!res.ok) return setLoad({ status: 'error' });
+        if (!res.ok) return failSoftly();
         const state = (await res.json()) as ClockState;
         if (!cancelled) setLoad({ status: 'ready', state });
       } catch {
-        if (!cancelled) setLoad({ status: 'error' });
+        failSoftly();
       }
     })();
     return () => {
@@ -267,11 +332,30 @@ export function ClockCard({ variant = 'card' }: { variant?: 'card' | 'header' } 
           className="flex items-center gap-1.5 whitespace-nowrap rounded-md border lg:px-1.5 xl:px-2 py-1 text-xs"
           style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
         >
-          <span
-            aria-hidden
-            className="inline-block h-2 w-2 shrink-0 rounded-full"
-            style={{ background: statusColor(load) }}
-          />
+          {(() => {
+            // Shape as well as colour, so the state survives a colour-blind
+            // reader and a broken clock never looks like a clocked-out one.
+            const shape = statusShape(load);
+            const colour = statusColor(load);
+            if (shape === 'warn') {
+              return (
+                <span
+                  aria-hidden
+                  className="inline-flex h-3 w-3 shrink-0 items-center justify-center text-[9px] font-bold leading-none"
+                  style={{ color: 'var(--op-danger)' }}
+                >
+                  !
+                </span>
+              );
+            }
+            return (
+              <span
+                aria-hidden
+                className="inline-block h-2.5 w-2.5 shrink-0"
+                style={markerStyle(shape, colour)}
+              />
+            );
+          })()}
           {/* The words only at xl. At 1024 the row cannot afford them, and the
               dot plus the aria-label still carry the state. */}
           <span className="hidden xl:inline">{label}</span>

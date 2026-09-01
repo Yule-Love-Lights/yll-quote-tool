@@ -40,8 +40,8 @@ export function AccountMenu({
   identity: AccountIdentity;
   onSignOut: () => void;
   /**
-   * Whether `identity.role` came from the SESSION answer rather than the
-   * localStorage hint. Admin-only rows wait for it. Defaults false, the
+   * Whether `identity.role` came from the SESSION answer rather than being
+   * unresolved. Admin-only rows and View-as wait for it. Defaults false, the
    * cautious answer, so a caller that forgets it shows fewer rows rather than
    * more.
    */

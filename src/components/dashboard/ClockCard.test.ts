@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 
-import { actionsFor, statusFor403, advertisingBlockedCopy, headerLabel, statusColor } from './ClockCard';
+import { actionsFor, statusFor403, advertisingBlockedCopy, headerLabel, statusColor, statusShape, markerStyle } from './ClockCard';
 
 // The clock card's button state machine, tested without a DOM. The full fetch
 // wiring is exercised by the /api/office/clock route tests; this pins the rule
@@ -161,5 +161,85 @@ describe('the two clocks stay in step', () => {
 
   it('still renders the dashboard card, which Jason asked to keep', () => {
     expect(DASHBOARD).toContain('<ClockCard />');
+  });
+});
+
+describe('statusShape', () => {
+  const ready = (over: object) => ({ status: 'ready', state: { clockedIn: true, onBreak: false, ...over } });
+
+  it('separates every state by SHAPE, not only by colour', () => {
+    // Between 1024 and 1279px the header trigger has no room for words, so the
+    // marker is all there is. Green versus amber is unusable to a colour-blind
+    // staffer (premerge staff lens), so the shapes must differ too.
+    const shapes = [
+      statusShape(ready({})),
+      statusShape(ready({ onBreak: true })),
+      statusShape(ready({ clockedIn: false })),
+      statusShape({ status: 'error' }),
+    ];
+    expect(new Set(shapes).size).toBe(4);
+  });
+
+  it('never shows a broken clock as a confirmed clocked-out one', () => {
+    // The sharper half of that finding: both rendered the same grey dot, so
+    // "the widget failed" and "you are off the clock" looked identical, and
+    // they mean opposite things on a payroll control.
+    expect(statusShape({ status: 'error' })).not.toBe(statusShape(ready({ clockedIn: false })));
+    expect(statusShape({ status: 'signedout' })).toBe('warn');
+    expect(statusShape({ status: 'unlinked' })).toBe('warn');
+  });
+
+  it('does not warn merely because the clock has not answered yet', () => {
+    expect(statusShape({ status: 'loading' })).toBe('hollow');
+  });
+});
+
+describe('markerStyle', () => {
+  // The shape NAMES were already distinct and the render still collapsed two
+  // of them: 'ring' and 'hollow' both drew a transparent circle with the same
+  // border, so on-break and clocked-out differed by COLOUR alone, which is the
+  // finding this was meant to fix. The helper's test passed; a browser check
+  // caught it. So the assertion is now on what gets drawn.
+  it('draws every state differently WITHOUT relying on colour', () => {
+    const grey = 'var(--op-text-dim)';
+    const drawn = [
+      markerStyle('filled', '#16a34a'),
+      markerStyle('ring', '#d97706'),
+      markerStyle('hollow', grey),
+    ];
+    // Compare geometry only: same colour for all three, so any difference that
+    // survives is a difference a colour-blind reader can still see.
+    const shapesOnly = drawn.map((d) => ({
+      filled: d.background !== 'transparent',
+      radius: d.borderRadius,
+      outlined: d.border !== 'none',
+    }));
+    expect(new Set(shapesOnly.map((s) => JSON.stringify(s))).size).toBe(3);
+  });
+
+  it('does not draw on-break as the clocked-out marker in another colour', () => {
+    const same = 'red';
+    expect(markerStyle('ring', same)).not.toEqual(markerStyle('hollow', same));
+  });
+
+  it('draws the clocked-in marker solid and round', () => {
+    const m = markerStyle('filled', '#16a34a');
+    expect(m.background).toBe('#16a34a');
+    expect(m.borderRadius).toBe('9999px');
+  });
+});
+
+describe('a failed re-read keeps the state it already had', () => {
+  const SOURCE = readFileSync(new URL('./ClockCard.tsx', import.meta.url), 'utf8');
+
+  it('only falls to the error state when there is nothing better to show', () => {
+    // Two clocks re-read each other's actions, so a single network blip on the
+    // refresh used to leave one saying "Time clock unavailable" beside another
+    // showing the live shift: two controls disagreeing, which is worse than
+    // either alone (premerge staff lens).
+    expect(SOURCE).toContain('const failSoftly');
+    expect(SOURCE).toContain("setLoad((prev) => (prev.status === 'ready' ? prev : { status: 'error' }))");
+    // And nothing sets the error state the blunt way any more.
+    expect(SOURCE).not.toContain("setLoad({ status: 'error' })");
   });
 });

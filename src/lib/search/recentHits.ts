@@ -3,12 +3,18 @@
 // Naldo, 2026-09-01: the box shows nothing until you type, and the commonest
 // real action is going back to the customer you were just looking at.
 //
-// SESSION storage, not local (deliberate). These entries hold customer names,
-// addresses and money figures, and the office shares computers. sessionStorage
-// dies with the browser tab, so the list survives the afternoon's work and
-// never greets the next person with a record of who the last one was looking
-// at. The same session that added this removed a stored ROLE for that reason;
-// storing customer detail more permanently than a role would be backwards.
+// SESSION storage, not local (deliberate). These entries hold customer NAMES
+// and record numbers, and the office shares computers. sessionStorage dies
+// with the browser tab, so the list survives the afternoon's work and does not
+// outlive the browser. The same session that added this removed a stored ROLE
+// for that reason; storing customer detail more permanently than a role would
+// be backwards.
+//
+// That is not sufficient on its own, which the premerge staff lens caught: a
+// tab left open across a shift change keeps its session storage, so signing
+// out CLEARS this list (clearRecent, called from the nav's sign-out path).
+// Without that, the next person to sign in on the same tab is greeted by the
+// last person's customers.
 //
 // Everything except read/write is pure and tested directly.
 
@@ -25,6 +31,38 @@ const STORAGE_KEY = 'yll-op-recent-hits';
  * is worse than showing none. What is left is stable identity.
  */
 export type RecentHit = Pick<SearchHit, 'kind' | 'key' | 'href' | 'title' | 'label'>;
+
+/**
+ * Whether a stored href is an in-app path. PURE.
+ *
+ * Hand-rolled prefix checks are not enough here and this function exists
+ * because one was not: the first version blocked "//evil.example.com" and let
+ * "/\evil.example.com" through, which the URL parser reads as exactly the same
+ * protocol-relative authority and the Next router follows off-site. Found by
+ * the premerge technical lens, which traced it through the installed router
+ * rather than reasoning about it.
+ *
+ * So the check is no longer a guess about which prefixes are dangerous: the
+ * value is resolved against a throwaway origin and must still be ON that
+ * origin. Whatever the parser thinks the string means, that is what gets
+ * judged.
+ */
+export function isInAppPath(href: string): boolean {
+  if (typeof href !== 'string' || !href.startsWith('/')) return false;
+  // Control characters are stripped by the parser before it decides what the
+  // string means, so reject them outright rather than letting them smuggle a
+  // shape past the origin check.
+  for (let i = 0; i < href.length; i += 1) {
+    const code = href.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  const base = 'https://in-app.invalid';
+  try {
+    return new URL(href, base).origin === base;
+  } catch {
+    return false;
+  }
+}
 
 export function toRecent(hit: SearchHit): RecentHit {
   return { kind: hit.kind, key: hit.key, href: hit.href, title: hit.title, label: hit.label };
@@ -55,10 +93,7 @@ export function parseRecent(raw: unknown): RecentHit[] {
       (kind === 'customer' || kind === 'quote' || kind === 'job' || kind === 'invoice') &&
       typeof key === 'string' &&
       typeof href === 'string' &&
-      // Only in-app paths. A stored "https://..." would turn this list into an
-      // off-site redirect anyone with devtools could plant.
-      href.startsWith('/') &&
-      !href.startsWith('//') &&
+      isInAppPath(href) &&
       typeof title === 'string' &&
       (label === null || typeof label === 'string')
     ) {
@@ -81,6 +116,19 @@ export function readRecent(): RecentHit[] {
     return parseRecent(JSON.parse(raw));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Forget everything. Called when someone signs out, so a shared computer with
+ * the tab left open does not hand the next person the last one's customers.
+ */
+export function clearRecent(): void {
+  try {
+    sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Same reasoning as writeRecent: nothing here is worth interrupting a
+    // sign-out over. The list dies with the tab regardless.
   }
 }
 

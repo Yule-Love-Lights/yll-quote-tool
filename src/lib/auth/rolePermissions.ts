@@ -43,6 +43,20 @@ export type Capability = {
   gate?: Gate;
 };
 
+/**
+ * A "cannot" claim that names a PAGE, so the test can check it rather than
+ * take it on trust. The premerge admin lens found the `cannot` list had zero
+ * coverage while `can` had plenty, and the one claim it checked by hand was
+ * false: /admin/leads had no server-side gate at all, so office staff could
+ * open it. Anything checkable belongs here rather than in the prose list.
+ */
+export type CannotClaim = {
+  /** The sentence shown on the page. */
+  label: string;
+  /** A page this role must be refused, verified to redirect server-side. */
+  deniedPage?: string;
+};
+
 export type RoleSpec = {
   id: RoleId;
   name: string;
@@ -52,8 +66,20 @@ export type RoleSpec = {
   howTheySignIn: string;
   can: Capability[];
   /** Stated plainly, because "what they cannot do" is half the question. */
-  cannot: string[];
+  cannot: (string | CannotClaim)[];
 };
+
+/** The sentence for a cannot entry, whichever shape it is. PURE. */
+export function cannotLabel(entry: string | CannotClaim): string {
+  return typeof entry === 'string' ? entry : entry.label;
+}
+
+/** Every cannot entry that names a page the role must be refused. PURE. */
+export function deniedPages(role: RoleSpec): { label: string; page: string }[] {
+  return role.cannot
+    .filter((c): c is CannotClaim => typeof c !== 'string' && !!c.deniedPage)
+    .map((c) => ({ label: c.label, page: c.deniedPage as string }));
+}
 
 export const ROLES: ReadonlyArray<RoleSpec> = [
   {
@@ -132,7 +158,10 @@ export const ROLES: ReadonlyArray<RoleSpec> = [
     ],
     cannot: [
       'Add, remove or change staff accounts.',
-      'See the website-leads sync page, or retry a failed lead.',
+      {
+        label: 'See the website-leads sync page, or retry a failed lead.',
+        deniedPage: '/admin/leads',
+      },
       'Issue or revoke a crew link.',
       'Enter a manual shift or a time exception for payroll.',
       'Run the advertising review, pay workers, or issue signs.',

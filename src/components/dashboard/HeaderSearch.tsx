@@ -309,7 +309,9 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
                   sortedAt: null,
                 });
               }}
-              className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
+              // Same reasoning as the result rows: a customer name is the
+              // visible text of this control.
+              className="ph-no-capture block w-full px-3 py-1.5 text-left hover:bg-black/5"
             >
               <span className="flex items-baseline gap-1.5">
                 <span className="truncate text-sm font-medium" style={{ color: 'var(--op-text)' }}>
@@ -413,7 +415,12 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
                       aria-selected={highlighted}
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => go(hit)}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
+                      // ph-no-capture: these rows carry customer names as their
+                      // visible text, and analytics autocapture records the text
+                      // of what gets clicked, which sits OUTSIDE the session
+                      // replay masking (premerge customer lens, 2026-09-01).
+                      // Nothing here needs click analytics.
+                      className="ph-no-capture block w-full px-3 py-1.5 text-left hover:bg-black/5"
                       style={highlighted ? { background: 'rgba(0,0,0,0.05)' } : undefined}
                     >
                       <span className="flex items-baseline gap-1.5">

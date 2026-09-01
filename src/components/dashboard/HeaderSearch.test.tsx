@@ -101,6 +101,16 @@ describe('HeaderSearch — the behaviours a static render cannot see', () => {
     expect(SOURCE).toContain('pushRecent(readRecent(), toRecent(hit))');
   });
 
+  it('keeps customer names out of analytics autocapture', () => {
+    // Every clickable row here has a customer NAME as its visible text, and
+    // autocapture records the text of what was clicked, which sits outside the
+    // session-replay masking (premerge customer lens, 2026-09-01). Both the
+    // search results and the recently-opened rows opt out; nothing here needs
+    // click analytics.
+    const rows = SOURCE.match(/className="ph-no-capture block w-full/g) ?? [];
+    expect(rows.length).toBe(2);
+  });
+
   it('keeps a door to the full customer list, which lost its nav tab', () => {
     // The search box replaced the Customers tab for "I know who I want", but
     // not for browsing everyone or filtering by tag. Without this row the page

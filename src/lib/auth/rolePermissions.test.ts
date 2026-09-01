@@ -12,7 +12,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 
-import { ROLES, roleById, type Capability, type RoleId } from './rolePermissions';
+import { ROLES, deniedPages, roleById, type Capability, type RoleId } from './rolePermissions';
 import { isAdvertisingPath, isPublicPath } from './operatorGate';
 
 const APP_ROOT = new URL('../../app/', import.meta.url);
@@ -172,6 +172,31 @@ describe('the page that renders this table', () => {
     // and this whole file would be checking something nobody reads.
     expect(PAGE).toContain("from '@/lib/auth/rolePermissions'");
     expect(PAGE).toContain('ROLES.map');
+  });
+});
+
+describe('the "cannot" claims', () => {
+  // These had ZERO coverage while the "can" list had plenty, and the one claim
+  // checked by hand turned out to be false: /admin/leads had no server-side
+  // gate at all, so office staff could open the page while its API refused
+  // them (premerge admin lens, 2026-09-01).
+  it('are backed by a real server-side refusal wherever they name a page', () => {
+    let checked = 0;
+    for (const role of ROLES) {
+      for (const { label, page } of deniedPages(role)) {
+        const src = readFileSync(
+          new URL(`../../app${page}/page.tsx`, import.meta.url),
+          'utf8',
+        );
+        expect(src, `${role.id}: "${label}" but ${page} does not read the role`).toContain(
+          'getSessionRole',
+        );
+        expect(src, `${role.id}: "${label}" but ${page} does not redirect`).toContain('redirect(');
+        checked += 1;
+      }
+    }
+    // If this drops to zero the suite would pass while checking nothing.
+    expect(checked).toBeGreaterThan(0);
   });
 });
 

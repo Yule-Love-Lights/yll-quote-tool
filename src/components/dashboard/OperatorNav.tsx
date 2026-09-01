@@ -9,6 +9,7 @@ import { navItemsForView, OPERATOR_VIEWS, type NavItem } from './operatorView';
 import { AccountMenu } from './AccountMenu';
 import { accountLinksFor } from './accountLinks';
 import { displayName, roleLabel } from './accountIdentity';
+import { clearRecent } from '@/lib/search/recentHits';
 import { ClockCard } from './ClockCard';
 import { HeaderSearch } from './HeaderSearch';
 import { useViewSwitcher } from './useViewSwitcher';
@@ -216,6 +217,12 @@ export function OperatorNav({
   // The role hint this used to clear is gone: nothing stores a role in the
   // browser any more, so there is nothing left behind for the next person.
   const signOut = async () => {
+    // Forget what this browser opened. sessionStorage survives a sign-out on a
+    // tab that stays open, so on a shared office computer the next person
+    // would otherwise find the last person's customers waiting in the search
+    // box (premerge staff lens, 2026-09-01). Cleared BEFORE the network call,
+    // so even an aborted sign-out leaves nothing behind.
+    clearRecent();
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
@@ -452,6 +459,12 @@ export function OperatorNav({
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* The time clock below 1024px, where the header row is a hamburger
+              and the desktop control is hidden. Without this the "on every
+              page" claim held only on a desktop (premerge staff lens). */}
+          <li className="border-b px-4 py-3" style={{ borderColor: 'var(--op-border)' }}>
+            <ClockCard variant="header" />
+          </li>
           {/* Who is signed in, at the top of the hamburger menu — the mobile
               half of the desktop account menu (Naldo, 2026-08-30). The View-as
               rows and Sign out already live further down this same list, so

@@ -13,7 +13,7 @@ import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
 import { getSessionRole } from '@/lib/auth/sessionRole';
-import { ROLES } from '@/lib/auth/rolePermissions';
+import { ROLES, cannotLabel } from '@/lib/auth/rolePermissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,11 +100,14 @@ export default async function PermissionsPage() {
                   Cannot
                 </h3>
                 <ul className="flex flex-col gap-1.5">
-                  {r.cannot.map((line) => (
-                    <li key={line} className="text-sm text-gray-600">
-                      {line}
-                    </li>
-                  ))}
+                  {r.cannot.map((entry) => {
+                    const line = cannotLabel(entry);
+                    return (
+                      <li key={line} className="text-sm text-gray-600">
+                        {line}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </section>

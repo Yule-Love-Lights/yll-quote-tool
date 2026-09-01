@@ -4,6 +4,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   MAX_RECENT,
+  clearRecent,
+  isInAppPath,
   parseRecent,
   pushRecent,
   readRecent,
@@ -92,6 +94,33 @@ describe('parseRecent', () => {
     expect(parseRecent([{ ...hit({}), kind: 'wat' }])).toEqual([]);
   });
 
+  it('refuses a BACKSLASH authority, which the URL parser reads as protocol-relative', () => {
+    // The first version of this guard blocked "//evil" with a prefix check and
+    // let "/\evil" through, and the router follows it off-site just the same.
+    // Found by the premerge technical lens, which traced it through the
+    // installed router rather than reasoning about it. The check no longer
+    // guesses at prefixes: it resolves against a throwaway origin and requires
+    // the result to still be on it.
+    const BACKSLASH = String.fromCharCode(92);
+    const backslashAuthority = '/' + BACKSLASH + 'evil.example.com';
+    expect(parseRecent([{ ...hit({}), href: backslashAuthority }])).toEqual([]);
+    expect(isInAppPath(backslashAuthority)).toBe(false);
+    expect(isInAppPath('/' + BACKSLASH + BACKSLASH + 'evil.example.com')).toBe(false);
+  });
+
+  it('refuses control characters, which the parser strips before deciding', () => {
+    // Built from char codes on purpose: writing these as literals put REAL
+    // control bytes into the file the first time, and one assertion then
+    // silently tested a perfectly valid path.
+    expect(isInAppPath('/' + String.fromCharCode(0) + 'evil')).toBe(false);
+    expect(isInAppPath('/customers/1' + String.fromCharCode(31))).toBe(false);
+  });
+
+  it('still accepts ordinary in-app paths', () => {
+    expect(isInAppPath('/customers/abc')).toBe(true);
+    expect(isInAppPath('/admin/quotes/1?x=2#y')).toBe(true);
+  });
+
   it('refuses an off-site href, which devtools could otherwise plant', () => {
     // This value is hand-editable. A stored absolute URL would turn a
     // "recently opened" row into a link off the app entirely.
@@ -115,6 +144,9 @@ describe('readRecent and writeRecent', () => {
       getItem: (k: string) => store.get(k) ?? null,
       setItem: (k: string, v: string) => {
         store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
       },
     });
   });
@@ -147,6 +179,27 @@ describe('readRecent and writeRecent', () => {
     });
     expect(readRecent()).toEqual([]);
     expect(() => writeRecent([hit({})])).not.toThrow();
+  });
+
+  it('forgets everything on sign-out, for the tab left open across a shift change', () => {
+    // sessionStorage survives a sign-out on a tab nobody closed, so without
+    // this the next person to sign in on that tab is greeted by the last
+    // person's customers (premerge staff lens).
+    writeRecent([hit({ key: 'a' })]);
+    expect(readRecent()).toHaveLength(1);
+    clearRecent();
+    expect(readRecent()).toEqual([]);
+  });
+
+  it('does not throw when clearing is refused', () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {
+        throw new Error('blocked');
+      },
+    });
+    expect(() => clearRecent()).not.toThrow();
   });
 
   it('survives corrupted stored content', () => {
