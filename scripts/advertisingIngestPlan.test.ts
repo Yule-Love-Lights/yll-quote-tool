@@ -6,7 +6,14 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { dollars, planIngest, resolveByNameOrId, type IngestCandidate } from './advertisingIngestPlan';
+import {
+  checkApproval,
+  dollars,
+  planIngest,
+  resolveAdmin,
+  resolveByNameOrId,
+  type IngestCandidate,
+} from './advertisingIngestPlan';
 
 function candidate(over: Partial<IngestCandidate> = {}): IngestCandidate {
   return {
@@ -140,5 +147,79 @@ describe('planIngest - a duplicate inside the same folder', () => {
     );
     expect(plan.problems).toHaveLength(1);
     expect(plan.duplicates).toHaveLength(0);
+  });
+});
+
+// A live run pays exactly the figure that was read back and approved, or it
+// pays nothing. Without this the two numbers are connected only by hope: the
+// campaign rate can move between the dry run and the live one, and a folder
+// that syncs from Drive can gain a photo in the same window.
+describe('checkApproval', () => {
+  it('lets a dry run through with no approved figure', () => {
+    expect(checkApproval(11750, null, false).ok).toBe(true);
+  });
+
+  it('refuses a live run that was never given an approved figure', () => {
+    const r = checkApproval(11750, null, true);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toMatch(/without --live first/);
+  });
+
+  it('lets a live run through when the figures match to the cent', () => {
+    expect(checkApproval(11750, 11750, true).ok).toBe(true);
+  });
+
+  it('refuses a live run that would pay more than was approved', () => {
+    const r = checkApproval(12000, 11750, true);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.reason).toMatch(/\$120\.00/);
+    expect(!r.ok && r.reason).toMatch(/\$117\.50/);
+  });
+
+  it('refuses a live run that would pay LESS than was approved', () => {
+    // Paying less is not automatically safe: it means photos vanished from
+    // the plan, and the person approving should see why before it runs.
+    expect(checkApproval(10000, 11750, true).ok).toBe(false);
+  });
+
+  it('refuses an approved figure that is not whole cents', () => {
+    expect(checkApproval(11750, 11750.5, true).ok).toBe(false);
+    expect(checkApproval(11750, -1, true).ok).toBe(false);
+  });
+});
+
+// Every photo records WHO accepted it, as a real foreign key to an auth
+// user. Guessing puts a wrong fact in the audit trail, and this business has
+// more than one admin account (admin lens on this PR).
+describe('resolveAdmin', () => {
+  const users = [
+    { id: 'u-1', email: 'naldo@yulelovelights.com', app_metadata: { role: 'admin' } },
+    { id: 'u-2', email: 'jason@yulelovelights.com', app_metadata: { role: 'admin' } },
+    { id: 'u-3', email: 'crew@yulelovelights.com', app_metadata: { role: 'operator' } },
+  ];
+
+  it('refuses to guess when more than one admin exists, and names them', () => {
+    expect(() => resolveAdmin(users, undefined)).toThrow(/2 admin accounts/);
+    expect(() => resolveAdmin(users, undefined)).toThrow(/naldo@yulelovelights.com/);
+  });
+
+  it('takes the one admin when there is only one', () => {
+    expect(resolveAdmin([users[0], users[2]], undefined)).toBe('u-1');
+  });
+
+  it('matches by email, ignoring case', () => {
+    expect(resolveAdmin(users, 'JASON@yulelovelights.com')).toBe('u-2');
+  });
+
+  it('matches by id', () => {
+    expect(resolveAdmin(users, 'u-1')).toBe('u-1');
+  });
+
+  it('refuses a non-admin account even when named exactly', () => {
+    expect(() => resolveAdmin(users, 'crew@yulelovelights.com')).toThrow(/No admin account matches/);
+  });
+
+  it('refuses when there are no admins at all', () => {
+    expect(() => resolveAdmin([users[2]], undefined)).toThrow(/No admin account found/);
   });
 });

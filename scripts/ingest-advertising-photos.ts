@@ -3,7 +3,7 @@
  * campaign, through the REAL pipeline.
  *
  *   npx tsx scripts/ingest-advertising-photos.ts \
- *     --dir "C:/path/to/folder" --worker "Tiago" --campaign "Fall yard signs"
+ *     --dir "C:/path/to/folder" --worker "Tiago" --campaign "September Yard Signs"
  *
  * Naldo's ask (2026-09-01): he hands over a Google Drive folder link, a crew
  * member and a campaign, the photos get pulled down and pushed through the
@@ -17,17 +17,29 @@
  * already paid for, and prints the plan and the dollar total. It writes
  * nothing at all.
  *
+ * A live run must be given that approved total back, with --approved. If the
+ * run would pay anything else, it refuses and writes nothing. The two numbers
+ * are otherwise connected only by hope: the campaign rate can move between
+ * the two runs, and a folder that syncs from Drive can gain a photo.
+ *
  * Flags:
  *   --dir <path>         folder of photos (required)
  *   --worker <id|name>   the crew member being paid (required)
  *   --campaign <id|name> the campaign (required)
  *   --limit <n>          only the first n files, by name
  *   --env <path>         .env.local to read (default: ./.env.local)
+ *   --admin <email|id>   the admin this batch is recorded against
+ *   --approved <dollars> the total from the dry run, required with --live
  *   --live               actually create the rows and pay
  *
- * Re-running is safe by design: the pipeline skips a photo whose exact bytes
- * are already an accepted, unvoided row for this worker and campaign, so a
- * partial batch is resumed by running the same command again.
+ * Re-running is mostly safe, and the exception is worth knowing. The pipeline
+ * skips a photo whose PERCEPTUAL hash already belongs to an accepted,
+ * unvoided row for this worker and campaign, so an interrupted batch is
+ * resumed by running the same command again. Two things follow from it being
+ * perceptual rather than a hash of the bytes: a photo whose hash could not be
+ * computed carries no duplicate protection at all (this script says so, per
+ * photo), and two near-identical retakes of the same sign are usually
+ * different enough to both be paid.
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -35,7 +47,15 @@ import { extname, join, resolve } from 'node:path';
 
 import sharp from 'sharp';
 
-import { dollars, planIngest, resolveByNameOrId, type IngestCandidate } from './advertisingIngestPlan';
+import {
+  checkApproval,
+  dollars,
+  planIngest,
+  resolveAdmin,
+  resolveByNameOrId,
+  type AdminUser,
+  type IngestCandidate,
+} from './advertisingIngestPlan';
 
 // Match the browser's upload rules exactly (src/lib/clientImage.ts), so a
 // photo ingested here is the same artefact a phone would have produced.
@@ -47,7 +67,13 @@ const JPEG_QUALITY = 85;
 // halfway through.
 const PHOTO_MAX_BYTES = 4 * 1024 * 1024;
 
-const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+// What the server will store as-is. Anything else has to be re-encoded to
+// JPEG on the way, whatever its size, or the upload is refused.
+const SERVER_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+// What this script can read. HEIC is here because it is what an iPhone
+// camera produces by default, and dropping those silently would leave real
+// work unpaid with no trace (staff lens HIGH on this PR).
+const READABLE_EXTS = new Set([...SERVER_EXTS, '.heic', '.heif']);
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -90,15 +116,10 @@ function contentTypeFor(file: string): string {
   return 'image/jpeg';
 }
 
-/**
- * Read one photo the way the browser does: EXIF off the ORIGINAL (a re-encode
- * strips it), then downscale, then hash what will actually be stored.
- */
-async function prepare(path: string, file: string): Promise<Prepared> {
-  const original = readFileSync(path);
-  const base: IngestCandidate = {
+function blank(file: string, bytes: number): IngestCandidate {
+  return {
     file,
-    bytes: original.byteLength,
+    bytes,
     lat: null,
     lng: null,
     takenAt: null,
@@ -107,6 +128,16 @@ async function prepare(path: string, file: string): Promise<Prepared> {
     duplicateOfFile: null,
     problem: null,
   };
+}
+
+/**
+ * Read one photo the way the browser does: EXIF off the ORIGINAL (a re-encode
+ * strips it), then downscale, then hash what will actually be stored.
+ */
+async function prepare(path: string, file: string): Promise<Prepared> {
+  const original = readFileSync(path);
+  const base = blank(file, original.byteLength);
+  const ext = extname(file).toLowerCase();
   let contentType = contentTypeFor(file);
   let uploadName = file;
 
@@ -117,7 +148,14 @@ async function prepare(path: string, file: string): Promise<Prepared> {
       gps &&
       Number.isFinite(gps.latitude) &&
       Number.isFinite(gps.longitude) &&
-      !(gps.latitude === 0 && gps.longitude === 0)
+      !(gps.latitude === 0 && gps.longitude === 0) &&
+      // The server refuses the whole photo on an out-of-range pair rather
+      // than dropping the location, so a plan that counted it would promise
+      // pay for a photo that will 400.
+      gps.latitude >= -90 &&
+      gps.latitude <= 90 &&
+      gps.longitude >= -180 &&
+      gps.longitude <= 180
     ) {
       base.lat = gps.latitude;
       base.lng = gps.longitude;
@@ -136,7 +174,10 @@ async function prepare(path: string, file: string): Promise<Prepared> {
   try {
     const meta = await sharp(original).metadata();
     const longest = Math.max(meta.width ?? 0, meta.height ?? 0);
-    const skip = original.byteLength < SKIP_BELOW_BYTES && longest <= MAX_EDGE_PX;
+    // A format the server will not store has to be re-encoded whatever its
+    // size, so the size-based skip below never applies to it.
+    const mustConvert = !SERVER_EXTS.has(ext);
+    const skip = !mustConvert && original.byteLength < SKIP_BELOW_BYTES && longest <= MAX_EDGE_PX;
     if (!skip) {
       upload = await sharp(original)
         .rotate()
@@ -184,6 +225,16 @@ async function main(): Promise<void> {
     throw new Error('--limit must be a whole number, 1 or more');
   }
 
+  const { dollarsToCents } = await import('../src/lib/hourlyRate');
+  const approvedRaw = arg('approved');
+  let approvedCents: number | null = null;
+  if (approvedRaw !== undefined) {
+    approvedCents = dollarsToCents(approvedRaw);
+    if (approvedCents === null) {
+      throw new Error(`--approved must be a plain dollar amount like 117.50, not "${approvedRaw}"`);
+    }
+  }
+
   const { getSupabaseServiceClient } = await import('../src/lib/supabase');
   const { listAdvertisingCampaigns } = await import('../src/lib/advertising/campaigns');
   const { listAdvertisingWorkers } = await import('../src/lib/advertising/workers');
@@ -206,22 +257,28 @@ async function main(): Promise<void> {
     throw new Error(`"${c.row.name}" is closed, and the pipeline refuses submissions to a closed campaign.`);
   }
 
-  const flags = `${w.row.active ? '' : '  [inactive]'}${w.row.isTest ? '  [test]' : ''}`;
-  console.log(`crew member : ${w.row.displayName} (${w.row.id})${flags}`);
+  const workerFlags = `${w.row.active ? '' : '  [inactive]'}${w.row.isTest ? '  [test]' : ''}`;
+  console.log(`crew member : ${w.row.displayName} (${w.row.id})${workerFlags}`);
   console.log(
-    `campaign    : ${c.row.name} (${c.row.id})  ${c.row.kind}  ${dollars(c.row.rateCents)} per accepted photo`,
+    `campaign    : ${c.row.name} (${c.row.id})  ${c.row.kind}  ${dollars(c.row.rateCents)} per accepted photo${
+      c.row.isTest ? '  [test]' : ''
+    }`,
   );
   console.log(`folder      : ${resolve(dir)}`);
-  console.log(`mode        : ${live ? 'LIVE, this creates paid rows' : 'DRY RUN, nothing is written'}`);
+  console.log(
+    `mode        : ${live ? 'LIVE. This creates paid rows in the real database.' : 'DRY RUN. Nothing is written.'}`,
+  );
   console.log('');
 
-  const files = readdirSync(dir)
-    .filter((f) => PHOTO_EXTS.has(extname(f).toLowerCase()))
+  // EVERY file is listed, not only the ones this script can read. Filtering
+  // first is how a folder of iPhone photos would report a smaller batch than
+  // it holds and leave the rest silently unpaid.
+  const allFiles = readdirSync(dir)
     .filter((f) => statSync(join(dir, f)).isFile())
     .sort();
-  const chosen = limit ? files.slice(0, limit) : files;
-  const tail = limit ? `, taking the first ${chosen.length}` : '';
-  console.log(`${files.length} photo${files.length === 1 ? '' : 's'} in the folder${tail}`);
+  const chosen = limit ? allFiles.slice(0, limit) : allFiles;
+  const tail = limit ? `, looking at the first ${chosen.length}` : '';
+  console.log(`${allFiles.length} file${allFiles.length === 1 ? '' : 's'} in the folder${tail}`);
 
   const prepared: Prepared[] = [];
   // Two copies of one photo inside the same folder are a duplicate the
@@ -230,6 +287,18 @@ async function main(): Promise<void> {
   // pay for both and the run created one.
   const seenHashes = new Map<string, string>();
   for (const f of chosen) {
+    const ext = extname(f).toLowerCase();
+    if (!READABLE_EXTS.has(ext)) {
+      const size = statSync(join(dir, f)).size;
+      prepared.push({
+        candidate: { ...blank(f, size), problem: `not a photo this can read (${ext || 'no extension'})` },
+        upload: null,
+        contentType: '',
+        uploadName: f,
+      });
+      process.stdout.write('.');
+      continue;
+    }
     const p = await prepare(join(dir, f), f);
     if (!p.candidate.problem) {
       const hash = p.candidate.photoHash;
@@ -252,60 +321,77 @@ async function main(): Promise<void> {
     c.row.rateCents,
   );
 
-  console.log('file                        taken (EXIF)              location             outcome');
+  console.log('file                        date taken                where it was taken       what happens');
   for (const p of prepared) {
     const cd = p.candidate;
     const outcome = cd.problem
-      ? `SKIP: ${cd.problem}`
+      ? `SKIPPED: ${cd.problem}`
       : cd.duplicateOfPlacementId
-        ? `already paid (${cd.duplicateOfPlacementId.slice(0, 8)})`
+        ? `already paid for (${cd.duplicateOfPlacementId.slice(0, 8)})`
         : cd.duplicateOfFile
           ? `same photo as ${cd.duplicateOfFile}`
-          : `pay ${dollars(c.row.rateCents)}`;
+          : `earns ${dollars(c.row.rateCents)}${cd.photoHash ? '' : '  (no duplicate protection, see below)'}`;
     const where =
-      cd.lat !== null && cd.lng !== null ? `${cd.lat.toFixed(5)}, ${cd.lng.toFixed(5)}` : 'no GPS in the photo';
-    console.log(`${cd.file.padEnd(27)} ${(cd.takenAt ?? 'none').padEnd(25)} ${where.padEnd(20)} ${outcome}`);
+      cd.lat !== null && cd.lng !== null ? `${cd.lat.toFixed(5)}, ${cd.lng.toFixed(5)}` : 'no location in the photo';
+    console.log(`${cd.file.padEnd(27)} ${(cd.takenAt ?? 'none').padEnd(25)} ${where.padEnd(24)} ${outcome}`);
   }
 
+  const unhashed = plan.send.filter((cd) => !cd.photoHash);
   console.log('');
   console.log(`to create                   : ${plan.send.length}`);
-  console.log(`duplicates, skipped        : ${plan.duplicates.length}`);
+  console.log(`duplicates, skipped         : ${plan.duplicates.length}`);
   console.log(`cannot send                 : ${plan.problems.length}`);
   console.log(
-    `TOTAL THIS RUN WILL PAY ${w.row.displayName}: ${dollars(plan.payCents)}  (${plan.send.length} x ${dollars(c.row.rateCents)})`,
+    `THIS RUN ADDS ${dollars(plan.payCents)} TO ${w.row.displayName.toUpperCase()}'S UNPAID BALANCE  (${plan.send.length} x ${dollars(
+      c.row.rateCents,
+    )})`,
   );
+  console.log('That is money earned. Paying it out is a separate step on the Settings screen.');
+  if (unhashed.length) {
+    console.log('');
+    console.log(
+      `${unhashed.length} photo${unhashed.length === 1 ? '' : 's'} could not be fingerprinted, so re-running this ` +
+        'command would pay for them a second time. Send them once, or check them by hand afterwards.',
+    );
+  }
 
-  if (!live) {
+  const approval = checkApproval(plan.payCents, approvedCents, live);
+  if (!approval.ok) {
     console.log('');
-    console.log('Dry run, nothing written. Each photo above would go through:');
-    console.log('  handleBulkAcceptedSubmit(form, worker, adminUserId)');
-    console.log('  the same code behind POST /api/admin/advertising/placements/bulk');
-    const sample = plan.send[0];
-    if (sample) {
-      const bytes = prepared.find((p) => p.candidate.file === sample.file)?.upload?.byteLength ?? 0;
-      console.log('  payload for the first one:');
-      console.log(`    campaignId = ${c.row.id}`);
-      console.log(`    workerId   = ${w.row.id}`);
-      console.log(`    lat        = ${sample.lat ?? '(none)'}`);
-      console.log(`    lng        = ${sample.lng ?? '(none)'}`);
-      console.log(`    capturedAt = ${sample.takenAt ?? '(none)'}`);
-      console.log(`    photo      = ${sample.file}, downscaled to ${bytes} bytes`);
-    }
-    console.log('');
-    console.log('Re-run with --live to create these rows.');
+    console.log(`REFUSED. ${approval.reason}`);
+    process.exitCode = 1;
     return;
   }
 
-  // reviewed_by is a real FK to auth.users, so a live run needs a real admin
-  // id. Resolve it rather than asking anyone to paste one.
-  let adminUserId = process.env.ADVERTISING_INGEST_ADMIN_ID ?? '';
-  if (!adminUserId) {
-    const { data, error } = await db.auth.admin.listUsers({ page: 1, perPage: 200 });
-    if (error) throw new Error(`listUsers for reviewed_by: ${error.message}`);
-    const admin = data.users.find((u) => (u.app_metadata as { role?: string } | null)?.role === 'admin');
-    if (!admin) throw new Error('no admin auth user found for reviewed_by; set ADVERTISING_INGEST_ADMIN_ID');
-    adminUserId = admin.id;
+  if (!live) {
+    console.log('');
+    console.log('Dry run. Nothing was written. Each photo above would go through:');
+    console.log('  handleBulkAcceptedSubmit, the same code behind the admin bulk upload screen');
+    const sample = plan.send[0];
+    if (sample) {
+      const bytes = prepared.find((p) => p.candidate.file === sample.file)?.upload?.byteLength ?? 0;
+      console.log('  what gets sent for the first one:');
+      console.log(`    campaign   = ${c.row.name} (${c.row.id})`);
+      console.log(`    crew       = ${w.row.displayName} (${w.row.id})`);
+      console.log(`    location   = ${sample.lat ?? '(none)'}, ${sample.lng ?? '(none)'}`);
+      console.log(`    date taken = ${sample.takenAt ?? '(none)'}`);
+      console.log(`    photo      = ${sample.file}, resized to ${bytes} bytes`);
+    }
+    console.log('');
+    console.log('To run it for real, pass back the total above:');
+    console.log(
+      `  npx tsx scripts/ingest-advertising-photos.ts --dir "${resolve(dir)}" --worker "${w.row.displayName}" ` +
+        `--campaign "${c.row.name}" --approved ${(plan.payCents / 100).toFixed(2)} --live`,
+    );
+    return;
   }
+
+  const { data: userList, error: userError } = await db.auth.admin.listUsers({ page: 1, perPage: 200 });
+  if (userError) throw new Error(`reading the admin accounts: ${userError.message}`);
+  const adminUserId = resolveAdmin(
+    userList.users as unknown as AdminUser[],
+    arg('admin') ?? process.env.ADVERTISING_INGEST_ADMIN_ID,
+  );
 
   const { handleBulkAcceptedSubmit } = await import('../src/lib/advertising/captureSubmit');
   const created: string[] = [];
@@ -320,7 +406,6 @@ async function main(): Promise<void> {
     }
     const form = new FormData();
     form.set('campaignId', c.row.id);
-    form.set('workerId', w.row.id);
     if (cd.lat !== null && cd.lng !== null) {
       form.set('lat', String(cd.lat));
       form.set('lng', String(cd.lng));
@@ -328,21 +413,30 @@ async function main(): Promise<void> {
     if (cd.takenAt) form.set('capturedAt', cd.takenAt);
     form.set('photo', new File([new Uint8Array(p.upload)], p.uploadName, { type: p.contentType }), p.uploadName);
 
-    const res = await handleBulkAcceptedSubmit(form, w.row, adminUserId);
-    const body = (await res.json().catch(() => ({}))) as {
-      placement?: { id: string };
-      duplicate?: boolean;
-      error?: string;
-    };
-    if (res.status === 201 && body.placement) {
-      created.push(body.placement.id);
-      console.log(`created  ${cd.file}  ${body.placement.id.slice(0, 8)}`);
-    } else if (body.duplicate) {
-      skipped.push(cd.file);
-      console.log(`skipped  ${cd.file}  already uploaded`);
-    } else {
-      failed.push({ file: cd.file, why: body.error ?? `HTTP ${res.status}` });
-      console.log(`FAILED   ${cd.file}  ${body.error ?? res.status}`);
+    // A throw here would end the run with the earlier photos already paid and
+    // no summary printed, which is the worst way to stop.
+    try {
+      const res = await handleBulkAcceptedSubmit(form, w.row, adminUserId);
+      const body = (await res.json().catch(() => ({}))) as {
+        placement?: { id: string };
+        duplicate?: boolean;
+        error?: string;
+      };
+      if (res.status === 201 && body.placement) {
+        created.push(body.placement.id);
+        console.log(`created  ${cd.file}  ${body.placement.id.slice(0, 8)}`);
+      } else if (body.duplicate) {
+        skipped.push(cd.file);
+        console.log(`skipped  ${cd.file}  already uploaded`);
+      } else {
+        const whyNot = body.error ?? `refused with status ${res.status}`;
+        failed.push({ file: cd.file, why: whyNot });
+        console.log(`FAILED   ${cd.file}  ${whyNot}`);
+      }
+    } catch (e) {
+      const whyNot = e instanceof Error ? e.message : String(e);
+      failed.push({ file: cd.file, why: whyNot });
+      console.log(`FAILED   ${cd.file}  ${whyNot}`);
     }
   }
 
@@ -367,10 +461,19 @@ async function main(): Promise<void> {
   console.log(`skipped as already uploaded : ${skipped.length}`);
   const why = failed.length ? ` (${failed.map((f) => `${f.file}: ${f.why}`).join('; ')})` : '';
   console.log(`failed                      : ${failed.length}${why}`);
-  console.log(`PAID ${w.row.displayName}: ${dollars(paidCents)}, read back from the rows rather than predicted`);
+  console.log(
+    `ADDED ${dollars(paidCents)} TO ${w.row.displayName.toUpperCase()}'S UNPAID BALANCE, read back from the rows rather than predicted`,
+  );
   if (paidCents !== plan.payCents) {
     console.log(
-      `note: the dry run predicted ${dollars(plan.payCents)}. The difference is the skipped and failed photos above.`,
+      `note: the plan expected ${dollars(plan.payCents)}. Every photo that did not land is listed above, with why.`,
+    );
+  }
+  if (created.length) {
+    console.log('');
+    console.log(
+      'To undo any of these: open the campaign in the admin app, find the photo, and void it. ' +
+        'A voided photo stops counting for pay and can be re-sent later. Do it before the payout is settled.',
     );
   }
 }
