@@ -9,9 +9,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { BackIcon, DotsIcon, CameraIcon, MapFoldIcon, PersonIcon, PinIcon } from './icons';
+import { BackIcon, DotsIcon, CameraIcon, EditIcon, MapFoldIcon, PersonIcon, PinIcon } from './icons';
 import PlacementMap from './PlacementMap';
-import { dollars, SC } from './ui';
+import { dollars, PrimaryButton, SC, Sheet, SHELL_MAX_PX } from './ui';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { splitDuplicateSignals } from '@/components/admin/advertising/duplicateSignals';
 
@@ -51,6 +51,7 @@ export default function CampaignDetailScreen({
   backHref,
   captureHref,
   reviewUrl,
+  editUrl,
 }: {
   mode: 'worker' | 'admin';
   campaign: Campaign;
@@ -59,7 +60,23 @@ export default function CampaignDetailScreen({
   captureHref: string;
   /** admin only: the review POST endpoint. */
   reviewUrl?: string;
+  /** admin only: the campaign PATCH endpoint. Its presence is what puts
+   * the Edit control on screen, so a worker can never see one. */
+  editUrl?: string;
 }) {
+  // The name and description are editable in place (Naldo, 2026-09-01:
+  // there was no way to rename a campaign at all). The server prop is the
+  // seed; a successful save updates these so the screen is right without a
+  // reload. Deliberately NOT the rate: that is money config, it is stamped
+  // onto every future acceptance, and it gets its own decision.
+  const [name, setName] = useState(campaign.name);
+  const [notes, setNotes] = useState(campaign.notes ?? '');
+  const [editOpen, setEditOpen] = useState(false);
+  const [draftName, setDraftName] = useState(campaign.name);
+  const [draftNotes, setDraftNotes] = useState(campaign.notes ?? '');
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
   const [tab, setTab] = useState<'description' | 'photos'>('photos');
   const [view, setView] = useState<'map' | 'photos'>('map');
   const [placements, setPlacements] = useState<DetailPlacement[]>([]);
@@ -93,6 +110,40 @@ export default function CampaignDetailScreen({
       cancelled = true;
     };
   }, [placementsUrl, tick]);
+
+  const openEdit = () => {
+    setDraftName(name);
+    setDraftNotes(notes);
+    setEditError(null);
+    setEditOpen(true);
+  };
+
+  const saveEdit = async () => {
+    if (!editUrl) return;
+    setSaving(true);
+    setEditError(null);
+    try {
+      const res = await fetch(editUrl, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: campaign.id, name: draftName, notes: draftNotes }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { error?: string; campaign?: { name: string; notes: string | null } };
+      if (!res.ok) {
+        setEditError(body.error ?? 'Could not save the campaign.');
+        return;
+      }
+      // Take what the SERVER stored, not what was typed: it trims, and it
+      // turns an empty description into null.
+      setName(body.campaign?.name ?? draftName.trim());
+      setNotes(body.campaign?.notes ?? '');
+      setEditOpen(false);
+    } catch {
+      setEditError('Could not save the campaign. Try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const act = async (payload: Record<string, unknown>, id: string) => {
     if (!reviewUrl) return;
@@ -196,9 +247,22 @@ export default function CampaignDetailScreen({
       <div className="relative z-10 -mt-4 flex-1 rounded-t-3xl bg-white pb-28">
         <div className="mx-auto mt-2 h-1.5 w-12 rounded-full" style={{ background: '#D9D1BC' }} />
         <div className="px-5 pt-3">
-          <h1 className="text-2xl font-bold" style={{ color: SC.text }}>
-            {campaign.name}
-          </h1>
+          <div className="flex items-start gap-2">
+            <h1 className="min-w-0 flex-1 text-2xl font-bold" style={{ color: SC.text }}>
+              {name}
+            </h1>
+            {editUrl && (
+              <button
+                type="button"
+                onClick={openEdit}
+                aria-label="Edit campaign"
+                className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+                style={{ background: '#F1EAD8', color: SC.primary }}
+              >
+                <EditIcon size={18} />
+              </button>
+            )}
+          </div>
           <div className="mt-2 flex gap-6 border-b" style={{ borderColor: '#EFE9D8' }}>
             {(['description', 'photos'] as const).map((t) => (
               <button
@@ -231,7 +295,7 @@ export default function CampaignDetailScreen({
 
         {tab === 'description' ? (
           <div className="px-5 py-4 text-base" style={{ color: SC.text }}>
-            <p>{campaign.notes?.trim() || 'No description yet.'}</p>
+            <p className="whitespace-pre-wrap">{notes.trim() || 'No description yet.'}</p>
             {mode === 'admin' && campaign.rateCents !== undefined && (
               <p className="mt-3" style={{ color: SC.muted }}>
                 Pays {dollars(campaign.rateCents)} per accepted photo, stamped at acceptance.
@@ -436,8 +500,8 @@ export default function CampaignDetailScreen({
 
       {/* the detail screen's own bottom nav: Map | Capture | My photos */}
       <nav
-        className="fixed inset-x-0 bottom-0 z-40 flex items-start justify-around border-t px-2 pb-[max(env(safe-area-inset-bottom),10px)] pt-2"
-        style={{ background: '#fff', borderColor: '#EDE6D2' }}
+        className="fixed inset-x-0 bottom-0 z-40 mx-auto flex items-start justify-around border-t px-2 pb-[max(env(safe-area-inset-bottom),10px)] pt-2"
+        style={{ background: '#fff', borderColor: '#EDE6D2', maxWidth: SHELL_MAX_PX }}
       >
         <DetailNavButton
           label="Map"
@@ -462,6 +526,49 @@ export default function CampaignDetailScreen({
           icon={<PersonIcon size={24} />}
         />
       </nav>
+
+      <Sheet open={editOpen} onClose={() => setEditOpen(false)}>
+        <div style={{ color: SC.text }}>
+          <h2 className="text-xl font-bold">Edit campaign</h2>
+          <label className="mt-4 block text-sm" style={{ color: SC.muted }}>
+            Name
+            <input
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-4 py-3 text-lg"
+              style={{ borderColor: '#DCD4BE' }}
+              placeholder="Fall yard signs"
+            />
+          </label>
+          <label className="mt-3 block text-sm" style={{ color: SC.muted }}>
+            Description
+            <textarea
+              value={draftNotes}
+              onChange={(e) => setDraftNotes(e.target.value)}
+              rows={4}
+              className="mt-1 w-full rounded-xl border px-4 py-3 text-base"
+              style={{ borderColor: '#DCD4BE' }}
+              placeholder="What this campaign is for, and anything the crew should know."
+            />
+          </label>
+          <p className="mt-3 text-sm" style={{ color: SC.muted }}>
+            The pay rate is set when a campaign is created and cannot be
+            changed anywhere yet. It decides what every future acceptance is
+            worth, so it needs its own control rather than riding along in a
+            rename.
+          </p>
+          {editError && (
+            <p className="mt-3 text-sm" style={{ color: SC.danger }}>
+              {editError}
+            </p>
+          )}
+          <div className="mt-5">
+            <PrimaryButton disabled={saving || !draftName.trim()} onClick={() => void saveEdit()}>
+              {saving ? 'Saving…' : 'Save'}
+            </PrimaryButton>
+          </div>
+        </div>
+      </Sheet>
 
       {/* map pin hint */}
       {view === 'map' && markers.length === 0 && (

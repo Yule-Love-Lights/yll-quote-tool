@@ -26,6 +26,25 @@ export const SC = {
   ok: '#2E7D4F',
 };
 
+// How wide the advertising app is ever allowed to get. It is a PHONE app:
+// the crew use it on a phone and it is right there, but on a desktop screen
+// every screen stretched the full window and read as broken (Naldo,
+// 2026-09-01: "the desktop version is just too wide"). One number decides
+// it, and the fixed bars below cap themselves to the same width so they
+// stay attached to the column instead of spanning the whole window.
+export const SHELL_MAX_PX = 520;
+
+/** The page column. Background is full bleed; content is phone width. */
+export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-[100svh]" style={{ background: SC.bg }}>
+      <div className="mx-auto w-full" style={{ maxWidth: SHELL_MAX_PX }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function timeAgo(iso: string | null): string {
   if (!iso) return '';
   const s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
@@ -112,8 +131,8 @@ export type TabItem = { key: string; href: string; icon: ReactNode; active: bool
 export function TabBar({ items }: { items: TabItem[] }) {
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-40 flex items-center justify-around border-t px-2 pb-[max(env(safe-area-inset-bottom),8px)] pt-2"
-      style={{ background: SC.card, borderColor: '#EDE6D2' }}
+      className="fixed inset-x-0 bottom-0 z-40 mx-auto flex items-center justify-around border-t px-2 pb-[max(env(safe-area-inset-bottom),8px)] pt-2"
+      style={{ background: SC.card, borderColor: '#EDE6D2', maxWidth: SHELL_MAX_PX }}
     >
       {items.map((t) => (
         <a
@@ -137,8 +156,8 @@ export function Sheet({ open, onClose, children }: { open: boolean; onClose: () 
     <div className="fixed inset-0 z-50" role="dialog" aria-modal="true">
       <button type="button" aria-label="Close" className="absolute inset-0 bg-black/30" onClick={onClose} />
       <div
-        className="absolute inset-x-0 bottom-0 max-h-[85svh] overflow-y-auto rounded-t-3xl p-4 pb-[max(env(safe-area-inset-bottom),16px)]"
-        style={{ background: SC.card }}
+        className="absolute inset-x-0 bottom-0 mx-auto max-h-[85svh] w-full overflow-y-auto rounded-t-3xl p-4 pb-[max(env(safe-area-inset-bottom),16px)]"
+        style={{ background: SC.card, maxWidth: SHELL_MAX_PX }}
       >
         <div className="mx-auto mb-3 h-1.5 w-12 rounded-full" style={{ background: '#D9D1BC' }} />
         {children}
