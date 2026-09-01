@@ -158,7 +158,9 @@ export async function updateAdvertisingCampaign(
   // shared config the whole office reads, and until PR #1153 it changed with
   // no trace at all while every other write in this module left one.
   const changingRate = payload.rate_cents !== undefined;
-  const changingText = payload.name !== undefined || payload.notes !== undefined;
+  const changingName = payload.name !== undefined;
+  const changingNotes = payload.notes !== undefined;
+  const changingText = changingName || changingNotes;
   let prior: AdvertisingCampaign | null = null;
   if (changingRate || changingText) prior = await getAdvertisingCampaign(id);
   if (changingRate && !prior) {
@@ -178,19 +180,26 @@ export async function updateAdvertisingCampaign(
   }
   const updated = toCampaign(data as Row);
 
-  // Only a real move is recorded. Opening the sheet and pressing Save
-  // without typing is a normal thing to do, and it is not an edit.
-  if (changingText && prior && (prior.name !== updated.name || prior.notes !== updated.notes)) {
+  // Only a real move is recorded, and only for the fields this caller
+  // actually asked to change. Opening the sheet and pressing Save without
+  // typing is a normal thing to do, and it is not an edit. The per-field
+  // gate matters for a different reason: the comparison is between the row
+  // this caller READ and the row the write returned, so another admin's edit
+  // landing in that gap would otherwise be reported under THIS actor's name
+  // (adversarial delta-verify on this PR's own fix round).
+  if (changingText && prior) {
     const detail: Record<string, unknown> = { campaignId: updated.id };
-    if (prior.name !== updated.name) {
+    if (changingName && prior.name !== updated.name) {
       detail.priorName = prior.name;
       detail.newName = updated.name;
     }
-    if (prior.notes !== updated.notes) {
+    if (changingNotes && prior.notes !== updated.notes) {
       detail.priorNotes = prior.notes;
       detail.newNotes = updated.notes;
     }
-    await logAdvertisingActivity({ actor, action: 'campaign_edited', detail });
+    if (Object.keys(detail).length > 1) {
+      await logAdvertisingActivity({ actor, action: 'campaign_edited', detail });
+    }
   }
 
   if (changingRate && priorRateCents !== updated.rateCents) {

@@ -242,3 +242,44 @@ describe('updateAdvertisingCampaign — the name and description trail', () => {
     expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
   });
 });
+
+describe('updateAdvertisingCampaign — an edit row only claims the fields it was asked to change', () => {
+  it('a name-only patch never reports a description change made by someone else', async () => {
+    // The audit row is written by comparing the row this caller READ against
+    // the row that came back from the write. Another admin's description
+    // edit landing in that gap is not this caller's edit, and claiming it is
+    // puts one person's words under another person's name. Reported by the
+    // adversarial delta-verify on this PR's own fix round.
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.rows[0].notes = 'east side routes';
+    stateRef.current.staleReadOnce = { ...stateRef.current.rows[0], notes: null };
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { name: 'Fall yard signs' }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    const detail = audit[0].detail as Record<string, unknown>;
+    expect(detail.newName).toBe('Fall yard signs');
+    expect('priorNotes' in detail).toBe(false);
+    expect('newNotes' in detail).toBe(false);
+  });
+
+  it('a description-only patch never reports a rename made by someone else', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.rows[0].name = 'Renamed by someone else';
+    stateRef.current.staleReadOnce = { ...stateRef.current.rows[0], name: 'Fall signs' };
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { notes: 'east side routes' }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    const detail = audit[0].detail as Record<string, unknown>;
+    expect(detail.newNotes).toBe('east side routes');
+    expect('priorName' in detail).toBe(false);
+    expect('newName' in detail).toBe(false);
+  });
+});
