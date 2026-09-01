@@ -368,3 +368,37 @@ pending an accountant) are the open questions in this area. **Do not build again
 - Do **`below_min_dwell`** visits count, or show greyed? One of the three real job visits is
   already flagged.
 - Where is the **per-day van crew assignment** made, and by whom?
+
+---
+
+## 13. Answers to §12 (Jason, 2026-09-01)
+
+**(a) Depot-to-depot time is ALL payable**, driving and lunch included.
+
+> ⚠️ **Consequence to settle before phase 3, flagged rather than silently encoded.** The two
+> sources will disagree systematically. The manual clock subtracts unpaid breaks —
+> `paidSecondsForShift` is the clock envelope MINUS `breakSecondsForShift`, and the app has a
+> break button crew are expected to use. GPS knows nothing about breaks. So an accepted automatic
+> day pays MORE than the identical day clocked by hand with lunch punched, and a crew member who
+> forgets to clock in is paid more than one who does not.
+>
+> That may be exactly what Jason wants (if you forget, we pay the van's day, and the incentive is
+> to punch correctly). It is recorded here because it is a money rule, it will show up as a
+> discrepancy the first time both sources exist for one day, and whoever builds the accept flow
+> must not "fix" it by quietly deducting a break the GPS never saw. **Confirm the intent at
+> phase 3.**
+
+**(b) The job page shows ONE LINE PER VISIT**, not a single total. Each line carries:
+- the **date** (a job can span multiple days) and the **arrival time**
+- the **duration** of that visit
+- **which staff members were there**, and **how many hours each spent on that job**
+
+So the count of lines is itself the answer to "how many times did we go back". Note this needs
+per-person attribution at the JOB level, not just the day level: it is `vehicle_crew` (per-day,
+once it has a date column) crossed with `vehicle_visits`. If two crew rode the same van, both get
+that visit's duration; anyone who travelled separately will not appear until there is a source
+that knows they were there.
+
+**(c) `below_min_dwell` visits are IGNORED.** They are drive-bys, not work. One of the three real
+job visits in prod today is already flagged this way, so the filter is load-bearing from day one —
+without it that job would show a visit nobody made.
