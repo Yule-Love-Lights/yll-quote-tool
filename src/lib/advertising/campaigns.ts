@@ -152,15 +152,19 @@ export async function updateAdvertisingCampaign(
   }
   if (patch.active !== undefined) payload.active = patch.active;
 
-  // Read the prior rate BEFORE the write, so the audit row can say what the
-  // rate moved FROM — and CAS on it below, so what it says is TRUE.
+  // Read the prior row BEFORE the write, so the audit rows can say what each
+  // field moved FROM — and CAS on the rate below, so what that one says is
+  // TRUE. A name or description edit needs the same "from" value: it is
+  // shared config the whole office reads, and until PR #1153 it changed with
+  // no trace at all while every other write in this module left one.
   const changingRate = payload.rate_cents !== undefined;
-  let priorRateCents: number | null = null;
-  if (changingRate) {
-    const prior = await getAdvertisingCampaign(id);
-    if (!prior) throw new Error(`updateAdvertisingCampaign: no campaign found for id ${id.trim()}`);
-    priorRateCents = prior.rateCents;
+  const changingText = payload.name !== undefined || payload.notes !== undefined;
+  let prior: AdvertisingCampaign | null = null;
+  if (changingRate || changingText) prior = await getAdvertisingCampaign(id);
+  if (changingRate && !prior) {
+    throw new Error(`updateAdvertisingCampaign: no campaign found for id ${id.trim()}`);
   }
+  const priorRateCents: number | null = changingRate ? (prior as AdvertisingCampaign).rateCents : null;
 
   let query = db.from('advertising_campaigns').update(payload).eq('id', id.trim());
   if (changingRate) query = query.eq('rate_cents', priorRateCents);
@@ -173,6 +177,21 @@ export async function updateAdvertisingCampaign(
     return null;
   }
   const updated = toCampaign(data as Row);
+
+  // Only a real move is recorded. Opening the sheet and pressing Save
+  // without typing is a normal thing to do, and it is not an edit.
+  if (changingText && prior && (prior.name !== updated.name || prior.notes !== updated.notes)) {
+    const detail: Record<string, unknown> = { campaignId: updated.id };
+    if (prior.name !== updated.name) {
+      detail.priorName = prior.name;
+      detail.newName = updated.name;
+    }
+    if (prior.notes !== updated.notes) {
+      detail.priorNotes = prior.notes;
+      detail.newNotes = updated.notes;
+    }
+    await logAdvertisingActivity({ actor, action: 'campaign_edited', detail });
+  }
 
   if (changingRate && priorRateCents !== updated.rateCents) {
     await logAdvertisingActivity({

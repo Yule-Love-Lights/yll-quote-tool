@@ -552,8 +552,10 @@ export default function CampaignDetailScreen({
             />
           </label>
           <p className="mt-3 text-sm" style={{ color: SC.muted }}>
-            The pay rate is not edited here. It decides what every future
-            acceptance is worth, so it is changed deliberately, not in passing.
+            The pay rate is set when a campaign is created and cannot be
+            changed anywhere yet. It decides what every future acceptance is
+            worth, so it needs its own control rather than riding along in a
+            rename.
           </p>
           {editError && (
             <p className="mt-3 text-sm" style={{ color: SC.danger }}>

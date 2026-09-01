@@ -185,3 +185,60 @@ describe('updateAdvertisingCampaign', () => {
     expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
   });
 });
+
+// Renaming a campaign is a real edit to shared config: the name is what the
+// office, the crew and every audit detail read. Every other write in this
+// module leaves a trail; a rename left none until now (admin lens, PR #1153).
+describe('updateAdvertisingCampaign — the name and description trail', () => {
+  it('a rename writes a campaign_edited row carrying the prior and new name', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { name: 'Fall yard signs' }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('admin-user-1');
+    const detail = audit[0].detail as { priorName?: string; newName?: string };
+    expect(detail.priorName).toBe('Fall signs');
+    expect(detail.newName).toBe('Fall yard signs');
+  });
+
+  it('a description change is recorded too', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { notes: 'east side routes' }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    const detail = audit[0].detail as { priorNotes?: string | null; newNotes?: string | null };
+    expect(detail.priorNotes).toBe(null);
+    expect(detail.newNotes).toBe('east side routes');
+  });
+
+  it('re-saving the same name and description writes nothing', async () => {
+    // Opening the sheet and pressing Save without typing is a normal thing
+    // to do, and it is not an edit.
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { name: 'Fall signs', notes: null }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
+  });
+
+  it('a rate-only change writes rate_changed and no campaign_edited', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(1);
+    expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
+  });
+});
