@@ -439,3 +439,54 @@ Consequences to build to:
   hour collecting materials after the final install would be unpaid.
 - Is a day spent entirely **at the depot** (a shop day, no jobs) outside automatic hours
   altogether? As written, yes — it produces nothing.
+
+---
+
+## 15. What decides "the last job", and the double-back (Jason, 2026-09-01)
+
+### The schedule is EMPTY — measured, and it nearly took the spec with it
+
+Jason's §14 wording was "the last job **on the schedule** for that day". Measured in prod
+2026-09-01 before writing any of it down:
+
+| | |
+|---|---|
+| `jobs` total | **44** |
+| jobs with an `install_date` | **0** |
+| `job_assignments` | 2, **none in the last 30 days** |
+
+**Nothing has ever been scheduled.** (Consistent with the S57 note: "No install dates exist for
+any of the 20 yet and that is expected — dates come first, then scheduling.") Had the schedule
+been made authoritative, automatic hours would have computed **nothing at all** on every real day
+— shipped dead on arrival, waiting on an operational habit nobody has started. That is the
+inert-feature class AGENTS.md already names.
+
+GPS has no such problem: all **3** real job visits already carry the correct `job_id`, derived
+without the schedule.
+
+### Jason's rulings
+
+**(a) GPS now, schedule later.** The day's counted `kind='job'` `vehicle_visits` decide the last
+job. The schedule becomes a **cross-check** once install dates are actually being set — it makes
+the answer more correct, and must never be a precondition for producing an answer. Build it so
+an empty schedule degrades to "GPS only", never to "no hours".
+
+**(b) A double-back is ONE CONTINUOUS WINDOW.** Crew leave the last job at 14:00 and return
+16:00–18:00 to finish: payable time runs unbroken from the depot departure to the **final**
+departure at 18:00, **the 14:00–16:00 gap included**. Consistent with §13(a) (driving and lunch
+are payable). Simplest to compute and to explain at payroll time.
+
+So the complete automatic rule, superseding all earlier partial statements:
+
+> Payable automatic time for a crew member on a date =
+> from the **exit of that day's depot visit**
+> to the **`exited_at` of the LAST counted `kind='job'` visit of that date**,
+> as one continuous window, gaps included.
+> `below_min_dwell` visits never count, including as the "last" one.
+> A date with a depot departure but **no counted job visit** produces **nothing**.
+
+### Build note
+
+The continuous-window rule makes this cheap: it is two timestamps per crew member per date, not
+a sum of intervals. The per-visit detail (§13b, the job page) is a separate computation over the
+same visits — do not try to derive one from the other.
