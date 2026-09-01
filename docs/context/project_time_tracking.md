@@ -268,3 +268,103 @@ Recording it here rather than editing the ownership table unilaterally: an owner
 policy change, and AGENTS.md's own rule says those need both devs. **The ownership table should be
 updated in the first build PR, with Naldo's acknowledgement noted.** Until then this document is
 the record of the handoff.
+
+---
+
+# Part 2 — automatic hours, navigation, and P4P (Jason, 2026-09-01)
+
+Added after the plan above was written. Jason explained the "Automatic Hours" section of his
+sketch, which §4.3 above had flagged as unknown. **Where this contradicts Part 1, this section
+wins.**
+
+## 8. Corrections to Part 1
+
+- **§4.5 is WRONG.** Field crew are NOT permanently excluded from self-service. Little James,
+  SonSon and Big James **will** clock in and out through **Telegram** — that path exists
+  (`crewTimeHandler.ts`) and simply is not set up for them yet (only 1 of 8 staff has
+  `telegram_user_id`). They will never use a web login; Telegram is their door. So "every staff
+  member can see and track their own hours" IS the goal — the surface differs by population.
+- **The Fleet tab is now called Schedule.**
+
+## 9. What automatic hours actually is
+
+A **safety net and a measurement**, not the primary clock. Three distinct purposes:
+
+1. **Backup for a forgotten punch.** The van leaves Naldo's house (the depot) → the crew's hours
+   start. The van returns to the depot → they stop. If someone forgets to clock in or out, this
+   is the fallback record.
+2. **Time spent at each customer's house.** Surfaced on that **job's own page** ("time spent on
+   this job") when the job is marked installed, for accurate record-keeping.
+3. **Feeds future insights** — cost per job as labour + materials, for bookkeeping and expenses.
+
+### This is far more built than expected
+
+Measured in prod 2026-09-01:
+
+| | |
+|---|---|
+| vehicles tracked | 1 |
+| `vehicle_events` (raw GPS) | **2,524** |
+| `vehicle_visits` kind=`depot` | **8**, avg 6h27m, 1 open now |
+| `vehicle_visits` kind=`job` | **3**, **all 3 carry a `job_id`**, avg **1h48m** on site |
+| `vehicle_visits` flagged `below_min_dwell` | 1 of the 3 job visits |
+| **`vehicle_crew`** | **0 rows** |
+
+**Depot-vs-job detection already works and job visits are already linked to the right job.**
+Purpose 2 above is therefore mostly a display job on data that already exists.
+
+**The single blocker is `vehicle_crew` — the table saying who was in the van is empty.** Without
+it, GPS time has no owner. This is the S67 lesson again: the schema's shape is not the capability.
+
+Note also: `adminCreateShift` **already reconstructs a forgotten punch by reading the GPS
+timeline** — a human-assisted version of purpose 1 partly exists on `/admin/fleet/clocks`.
+
+### Jason's rulings on the mechanism (2026-09-01)
+
+- **Automatic hours are a SUGGESTION an admin accepts, never an automatic write.** The
+  GPS-derived day shows beside the clocked day; if the crew forgot to punch, an admin accepts it
+  and it becomes a real shift stamped as manually created. **Nothing becomes payable without a
+  human deciding.** This also avoids colliding with `shifts_one_open_per_person` and
+  `shifts_no_overlap`, which a silent auto-writer would trip the moment someone also clocked in
+  by hand.
+- **Van crew is assigned PER DAY, not standing.** The existing `vehicle_crew` table
+  (`vehicle_id, crew_member_id, active`) has **no date column**, so this needs a schema change.
+  Where the daily assignment is made (probably from the Schedule page, which already assigns crew
+  to jobs via `job_assignments`) is still open.
+
+## 10. Navigation — this is NOT a top-level tab
+
+Jason's placement, which supersedes any assumption that the page lives at a top-level nav item:
+
+- Top-level nav stays: Home, Inbox, Tasks, Quotes, Jobs, Schedule, Invoices, Inventory, New quote.
+- **Time tracking lives in the account dropdown** (the initials menu, e.g. "JB"), beside
+  Settings, Insights, Call recordings, Website leads. That menu is new — Naldo built it in
+  #1134 and added entries in #1144.
+- **The page itself has sub-tabs**, the same pattern Settings uses (Settings / Training /
+  Customer portal / Accounts):
+  - **Hours** — everything in Part 1. This is the focus.
+  - **P4P** — a separate tab, **explicitly not now**.
+
+The existing route is `/admin/time-tracking`. Reconcile the route with the account-menu placement
+before building; do not assume the current path is final.
+
+## 11. P4P — captured for context, NOT in scope
+
+Performance-based pay: crew earn extra when they finish a job faster than expected **and** the
+customer has no complaints. Its own tab, built later. Recorded here only so the Hours work does
+not accidentally foreclose it.
+
+Relevant existing pieces: `crew_members.pay_mode` already has a `'p4p'` value and an
+`in_p4p_pool` boolean; all four field crew currently sit at `pay_mode: 'shadow'`. Ledger row
+**283** (success metrics for P4P) and row **285** (the overtime regular-rate formula, parked
+pending an accountant) are the open questions in this area. **Do not build against any of it yet.**
+
+## 12. Still open after Part 2
+
+- Does depot-to-depot time include **driving and lunch** as payable? The manual clock has a break
+  button; GPS knows nothing about breaks.
+- A job with **two visits in one day** (a real double-back is recorded in S74) — one line per
+  visit on the job page, or one total?
+- Do **`below_min_dwell`** visits count, or show greyed? One of the three real job visits is
+  already flagged.
+- Where is the **per-day van crew assignment** made, and by whom?
