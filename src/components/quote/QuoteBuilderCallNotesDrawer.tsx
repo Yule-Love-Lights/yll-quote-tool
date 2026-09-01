@@ -107,7 +107,7 @@ export function QuoteBuilderCallNotesDrawer({ ghlContactId }: { ghlContactId: st
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="fixed right-4 top-24 z-40 rounded-full border bg-white shadow-md px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+        className="fixed right-4 top-24 z-40 rounded-full border bg-white shadow-md px-5 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
         style={{ borderColor: 'var(--op-border, #e5e7eb)' }}
         aria-expanded={open}
         aria-controls="quote-builder-call-notes-drawer"
