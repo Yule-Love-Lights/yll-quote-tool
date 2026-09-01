@@ -402,3 +402,40 @@ that knows they were there.
 **(c) `below_min_dwell` visits are IGNORED.** They are drive-bys, not work. One of the three real
 job visits in prod today is already flagged this way, so the filter is load-bearing from day one —
 without it that job would show a visit nobody made.
+
+---
+
+## 14. CORRECTION to §13(a) — where payable time ENDS (Jason, 2026-09-01)
+
+**§13(a) said depot-to-depot. That is WRONG. This section supersedes it.**
+
+Automatic payable time runs:
+
+> **START** — the van leaves Naldo's house (the depot).
+> **END** — the crew leave the **last install of the day**.
+
+**The drive home is NOT payable.** Driving out to the first job and driving between jobs IS
+payable; the return leg to the depot is not.
+
+In terms of the data that already exists: payable time = from the **exit of the day's depot
+visit** to the **`exited_at` of the last `kind='job'` visit of that day** — NOT to the
+`entered_at` of the evening depot visit. The evening depot visit still matters as a day boundary
+and as the signal the van is home, but it does not extend paid time.
+
+Consequences to build to:
+
+- `below_min_dwell` visits are ignored (§13c), so "the last job of the day" means the last
+  **counted** job visit. If the final stop is a drive-by, payable time ends at the previous real
+  job visit, not at the drive-by.
+- A day with a depot departure but **no counted job visit** yields **no automatic payable time**.
+  Do not fall back to the depot return — that is the exact rule this correction removes.
+- This narrows but does not close the §13(a) discrepancy: the return drive no longer inflates the
+  automatic figure, but **lunch is still payable in the automatic number and still deducted in
+  the manual clock**. The §13(a) warning otherwise stands, and is still for phase 3.
+
+**Still open, asked and not yet answered:**
+- If the last stop of the day is **not a job** (a supply run, fuel, a dump run), does payable time
+  end at the last JOB exit or the last STOP of any kind? As written it ends at the last job, so an
+  hour collecting materials after the final install would be unpaid.
+- Is a day spent entirely **at the depot** (a shop day, no jobs) outside automatic hours
+  altogether? As written, yes — it produces nothing.
