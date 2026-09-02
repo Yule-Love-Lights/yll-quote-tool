@@ -54,6 +54,14 @@ const SPRITZER_VALUE_USD = spritzerRetailValueUsd(
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
+  // The root layout advertises the OPERATOR app, whose manifest start_url is
+  // '/' — the login screen for anyone who is not staff. This page is public, so
+  // it drops the manifest rather than inheriting it: a visitor who adds it to
+  // their home screen gets a shortcut back to this page, not an app that opens
+  // our login. null is Next's remove-this-field value, not merely an absent key.
+  // The apple-touch-icon is deliberately still inherited, so they get the YLL
+  // logo rather than a screenshot of the page.
+  manifest: null,
   title: 'Get Your Referral Link | Yule Love Lights',
   description: 'Type your email to get your personal Yule Love Lights referral link.',
   robots: { index: false, follow: false },

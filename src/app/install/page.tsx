@@ -36,8 +36,6 @@ type InstallApp = {
   audience: string;
   path: string;
   icon: string;
-  /** Shown only when there is something the person must do before installing. */
-  caution?: string;
 };
 
 const APPS: InstallApp[] = [
@@ -59,12 +57,12 @@ const APPS: InstallApp[] = [
     // icon works for both. See src/app/advertising/go/page.tsx.
     path: '/advertising/go',
     icon: '/icons/yll-advertising-192.png',
-    // iOS reads the manifest of whatever page is ON SCREEN, and /login is a
-    // root-layout page carrying the QUOTE branding, so installing before
-    // signing in still saves the wrong icon. Both cameras carry the
-    // advertising branding, so once the camera is up either one is fine.
-    caution:
-      'Sign in first, and wait until the camera is on screen before you add it to your home screen. If you add it from the login screen you will save the wrong icon.',
+    // The caution that used to live here told people to wait for the camera
+    // before installing, because /login carried the QUOTE branding. That stopped
+    // being true when /login learned to serve the advertising identity for an
+    // advertising ?from= (src/app/login/page.tsx), so the instruction now
+    // describes a bug that no longer exists and only adds a step. Removed rather
+    // than reworded: a caution nobody needs teaches people to ignore cautions.
   },
 ];
 
@@ -112,12 +110,6 @@ export default async function InstallPage() {
               </div>
             </div>
 
-            {app.caution ? (
-              <p className="mt-4 rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-900">
-                {app.caution}
-              </p>
-            ) : null}
-
             <div className="mt-5 flex flex-col gap-5 sm:flex-row sm:items-center">
               {qr ? <QrSvg svg={qr} className="h-36 w-36 border" /> : null}
 
@@ -157,7 +149,12 @@ export default async function InstallPage() {
         ))}
       </div>
 
-      <p className="mt-8 text-xs" style={{ color: 'var(--op-text-dim)' }}>
+      <p className="mt-8 text-sm" style={{ color: 'var(--op-text)' }}>
+        Already have the old black square saved? Delete it first. A phone never updates an icon you
+        saved before, so adding it again just leaves you with two.
+      </p>
+
+      <p className="mt-3 text-xs" style={{ color: 'var(--op-text-dim)' }}>
         On an iPhone this only works in Safari. The other iPhone browsers cannot add an app to the
         home screen.
       </p>

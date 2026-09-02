@@ -26,6 +26,14 @@ export async function generateMetadata({
   // use; the fallback is a literal because a page has no request object.
   const base = (process.env.PORTAL_BASE_URL || 'https://quote.yulelovelights.com').replace(/\/+$/, '');
   return {
+  // The root layout advertises the OPERATOR app, whose manifest start_url is
+  // '/' — the login screen for anyone who is not staff. This page is public, so
+  // it drops the manifest rather than inheriting it: a visitor who adds it to
+  // their home screen gets a shortcut back to this page, not an app that opens
+  // our login. null is Next's remove-this-field value, not merely an absent key.
+  // The apple-touch-icon is deliberately still inherited, so they get the YLL
+  // logo rather than a screenshot of the page.
+  manifest: null,
     title: 'Instant Holiday Lighting Estimate | Yule Love Lights',
     description:
       "Type your address and see a real holiday lighting price for your home in seconds — or upload a photo and we'll design it by hand.",
