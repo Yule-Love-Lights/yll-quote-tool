@@ -531,7 +531,12 @@ describe('Valor webhook — deposit-notify Telegram fallback + durable marker (2
     expect(fallbackCall![1]).toContain('Jordan Smith');
     expect(fallbackCall![1]).toContain('$1350.00'); // deposit
     expect(fallbackCall![1]).toContain('$2700.00'); // total
-    expect(fallbackCall![1]).toContain('105: Email DND active for this contact');
+    // Fix round (staff lens): "HighLevel", never "GHL", on screen; states
+    // plainly the deposit is safe; points staff at the settings health check.
+    expect(fallbackCall![1]).toContain('HighLevel error: 105: Email DND active for this contact');
+    expect(fallbackCall![1]).not.toContain('GHL error');
+    expect(fallbackCall![1]).toContain('The deposit is recorded and the booking is safe');
+    expect(fallbackCall![1]).toContain('Check Settings → HighLevel');
 
     // Durable marker: updatePayloads[0] is the atomic payment-claim stamp,
     // [1] is the deposit-notify marker (nothing else in this batch writes to
@@ -609,6 +614,45 @@ describe('Valor webhook — deposit-notify Telegram fallback + durable marker (2
     expect(updatePayloads[1]).toMatchObject({ deposit_notify_error: 'GHL down' });
 
     notifyTelegramAudience.mockReset();
+  });
+
+  // Fix round (customer lens): sendTelegramMessage has no timeout of its own,
+  // and this fallback is awaited inside the Promise.allSettled batch that
+  // gates the 200 handed back to Valor — a hanging Telegram call could
+  // stretch that response indefinitely. Proves the bound: a Telegram send
+  // that NEVER resolves still lets the webhook complete (bounded by
+  // DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS = 5s), and the marker still gets
+  // written. The unrelated #82 prep ping (audience 'inventory') is left
+  // resolving normally so this test isolates the ONE hanging call — a
+  // sticky reject-everything mock (as the throwing-fallback test above uses)
+  // would also hang prepPing's own await, since nothing bounds THAT call.
+  it('a never-resolving Telegram send does not stall the batch — bounded by the 5s timeout, and the marker is still written', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    hl.sendEmail.mockImplementationOnce(async () => ({})); // customer receipt
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down')); // internal alert
+    notifyTelegramAudience.mockImplementation((audience: string, text: string) => {
+      if (audience === 'jobs' && text.includes('staff email failed')) {
+        return new Promise<void>(() => {}); // never resolves/rejects
+      }
+      return Promise.resolve(); // the #82 prep ping — unaffected
+    });
+
+    vi.useFakeTimers();
+    try {
+      const resPromise = POST(signedReq(APPROVED_PAYLOAD));
+      await vi.advanceTimersByTimeAsync(5_000);
+      const res = await resPromise;
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.booked).toBe(true);
+      expect(updatePayloads).toHaveLength(2);
+      expect(updatePayloads[1]).toMatchObject({ deposit_notify_error: 'GHL down' });
+    } finally {
+      vi.useRealTimers();
+      notifyTelegramAudience.mockReset();
+    }
   });
 });
 

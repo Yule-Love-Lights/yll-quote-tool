@@ -94,6 +94,17 @@ function safePayloadKeyNames(rawBody: string): string[] {
   return keyDump;
 }
 
+// 2026-09-02 incident fix round (customer lens): sendTelegramMessage
+// (src/lib/integrations/telegram.ts) carries no timeout of its own, and this
+// route awaits its Telegram fallback INSIDE the Promise.allSettled batch that
+// gates the 200 handed back to Valor — a hanging Telegram call could stretch
+// that response. telegram.ts is SHARED and prepPing (above) has the same
+// unbounded shape, both out of scope here; bounding it locally, at the one
+// call site that fires on a failure path, is the surgical fix. A timeout is
+// treated exactly like any other fallback failure: logged, and the durable
+// marker write below still runs regardless.
+const DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS = 5_000;
+
 function hlErrorMessage(err: unknown): string {
   return err instanceof HighLevelError
     ? err.message
@@ -913,22 +924,35 @@ export async function POST(req: NextRequest) {
       // staff alert and nobody noticed for two days. Two independent
       // fallbacks, both best-effort:
 
-      // (a) Telegram fallback to the 'jobs' audience (same audience the
-      // pay-balance route uses for a booking/money staff alert). Second belt —
-      // notifyTelegramAudience is documented never to throw (it already
-      // catches its own per-chat send errors), but this route's whole
-      // Promise.allSettled batch is itself belt-and-suspenders for exactly
-      // this kind of unforeseen throw, so mirror that posture here rather than
-      // lean on the batch alone.
+      // (a) Telegram fallback to the 'jobs' audience — confirmed as the real
+      // office/management staff-alert channel for a money/booking event by
+      // `GET/POST /api/ops/installment-run`'s own summary alert (that route's
+      // "Best-effort staff alert" comment + `notifyTelegramAudience('jobs',
+      // summary)`), not guessed. Bounded against DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS
+      // (fix round, customer lens): sendTelegramMessage carries no timeout of
+      // its own, and this await sits inside the Promise.allSettled batch that
+      // gates the 200 handed back to Valor, so an unbounded hang here could
+      // stretch that response. A timeout is just another fallback failure —
+      // logged, and the durable marker below still runs.
       try {
-        await notifyTelegramAudience(
-          'jobs',
-          `⚠️ Deposit received but the staff email failed\n` +
-            `${quote.customer_name ?? 'A customer'}${quote.quote_number ? ` (Quote #${quote.quote_number})` : ''} paid ` +
-            `$${depositUsd.toFixed(2)} of $${totalUsd.toFixed(2)} total.\n` +
-            `GHL error: ${errMsg}\n` +
-            `${adminUrl}`,
-        );
+        await Promise.race([
+          notifyTelegramAudience(
+            'jobs',
+            `⚠️ Deposit received but the staff email failed\n` +
+              `The deposit is recorded and the booking is safe — only the staff alert email didn't send.\n` +
+              `${quote.customer_name ?? 'A customer'}${quote.quote_number ? ` (Quote #${quote.quote_number})` : ''} paid ` +
+              `$${depositUsd.toFixed(2)} of $${totalUsd.toFixed(2)} total.\n` +
+              `HighLevel error: ${errMsg}\n` +
+              `Check Settings → HighLevel for details.\n` +
+              `${adminUrl}`,
+          ),
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(
+              () => reject(new Error(`Telegram fallback timed out after ${DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS}ms`)),
+              DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS,
+            );
+          }),
+        ]);
       } catch (telegramErr) {
         console.error(
           '[api/integrations/valor/webhook] telegram fallback for internal email failure also failed:',
