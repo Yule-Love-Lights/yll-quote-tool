@@ -41,6 +41,23 @@ function makeDb() {
       return {
         insert(payload: AnyRow) {
           if (table === 'advertising_sign_issuances') {
+            // The partial unique index on request_id (ledger row 480). A mock
+            // that cannot refuse a duplicate key cannot test the one thing
+            // the index is there for.
+            const key = payload.request_id;
+            if (key != null && stateRef.current.issuances.some((r) => r.request_id === key)) {
+              return {
+                select: () => ({
+                  maybeSingle: () => Promise.resolve({
+                    data: null,
+                    error: {
+                      code: '23505',
+                      message: 'duplicate key value violates unique constraint "advertising_sign_issuances_request_key"',
+                    },
+                  }),
+                }),
+              };
+            }
             const row = { id: `iss-${stateRef.current.issuances.length + 1}`, created_at: new Date().toISOString(), ...payload };
             stateRef.current.issuances.push(row);
             return {
@@ -96,6 +113,14 @@ function makeDb() {
                 }),
               };
             },
+            // An ARRAY read, used where two matches are possible and
+            // maybeSingle would answer with an error instead of a row.
+            limit(n: number) {
+              const hits = stateRef.current.issuances.filter((r) =>
+                Object.entries(filters).every(([k, v]) => r[k] === v),
+              );
+              return Promise.resolve({ data: hits.slice(0, n), error: null });
+            },
             then(resolve: (v: { count: number | null; error: null }) => void, reject?: (e: unknown) => void) {
               if (table === 'advertising_placements' && opts?.head) {
                 stateRef.current.lastPlacementFilters = { ...filters };
@@ -126,6 +151,56 @@ beforeEach(() => {
   getAdvertisingWorker.mockResolvedValue({
     id: 'worker-1', displayName: 'Joe Signs', authUserId: null, active: true, isTest: false,
     createdAt: 'x', updatedAt: 'x',
+  });
+});
+
+describe('row 480: a double-submitted hand-out lands once', () => {
+  // The old guard read the worker's latest row and compared qty and admin
+  // inside a 15-second window. Two genuinely simultaneous submits both read
+  // an empty window and both inserted, doubling the ledger and drawing the
+  // warehouse twice for one physical stack. The screen now mints one id per
+  // confirmed hand-out, so a retry of that click carries the same id.
+  it('records ONE issuance when the same request arrives twice', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    const requestId = '11111111-1111-4111-8111-111111111111';
+
+    const [a, b] = await Promise.all([
+      issueSigns('worker-1', 50, 'admin-1', undefined, requestId),
+      issueSigns('worker-1', 50, 'admin-1', undefined, requestId),
+    ]);
+
+    expect(stateRef.current.issuances).toHaveLength(1);
+    // Both callers get the hand-out that actually landed, not an error.
+    expect(a.issuance.id).toBe(b.issuance.id);
+    expect(a.issuedQty).toBe(50);
+    expect(b.issuedQty).toBe(50);
+  });
+
+  it('lets two REAL hand-outs through, even when they look identical', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    await issueSigns('worker-1', 50, 'admin-1', undefined, '22222222-2222-4222-8222-222222222222');
+    await issueSigns('worker-1', 50, 'admin-1', undefined, '33333333-3333-4333-8333-333333333333');
+
+    // Same worker, same qty, same admin, seconds apart: the old time window
+    // would have swallowed the second one.
+    expect(stateRef.current.issuances).toHaveLength(2);
+  });
+
+  it('draws the warehouse down once for a repeated request', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    const requestId = '44444444-4444-4444-8444-444444444444';
+    await issueSigns('worker-1', 10, 'admin-1', undefined, requestId);
+    await issueSigns('worker-1', 10, 'admin-1', undefined, requestId);
+
+    // One physical stack left the garage, so the pile moves once.
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(90);
+  });
+
+  it('still falls back to the time window when no id is sent', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    await issueSigns('worker-1', 50, 'admin-1');
+    await issueSigns('worker-1', 50, 'admin-1');
+    expect(stateRef.current.issuances).toHaveLength(1);
   });
 });
 

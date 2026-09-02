@@ -33,7 +33,7 @@ export type WorkerSignBalance = {
   remaining: number;
 };
 
-const SELECT = 'id, worker_id, qty, issued_by, note, created_at';
+const SELECT = 'id, worker_id, qty, issued_by, note, created_at, request_id';
 const PAGE = 1000;
 
 type Row = {
@@ -43,6 +43,7 @@ type Row = {
   issued_by: string;
   note: string | null;
   created_at: string;
+  request_id: string | null;
 };
 
 function toIssuance(row: Row): SignIssuance {
@@ -72,6 +73,12 @@ export async function issueSigns(
   qty: number,
   issuedBy: string,
   note?: string,
+  /** One id per confirmed hand-out on the screen (ledger row 480). A retry of
+   * that same click carries the same id and loses on the unique index, while
+   * two real hand-outs carry different ids and both land, which the time
+   * window below could never tell apart. Optional: a caller that sends none
+   * keeps the old window as its only guard. */
+  requestId?: string,
 ): Promise<{ issuance: SignIssuance; issuedQty: number }> {
   if (!Number.isInteger(qty) || qty <= 0) {
     throw new Error(`Invalid quantity: ${qty} — issue a whole number of signs, 1 or more`);
@@ -82,17 +89,41 @@ export async function issueSigns(
   const worker = await getAdvertisingWorker(workerId);
   if (!worker) throw new Error(`issueSigns: no advertising worker found for id ${workerId.trim()}`);
 
-  // Idempotency window: a retried/double-clicked identical hand-out returns
-  // the row that already landed instead of doubling the ledger and drawing
-  // the warehouse twice for one physical stack.
-  const { data: latestRows } = await db
-    .from('advertising_sign_issuances')
-    .select(SELECT)
-    .eq('worker_id', worker.id)
-    .order('created_at', { ascending: false })
-    .range(0, 0);
+  // An OPTIMISATION, not the guard: a request id already on the books means
+  // this exact hand-out landed, so skip a write that would only bounce off
+  // the unique index. Deleting this block changes no observable behaviour,
+  // which a mutation probe confirmed, because the duplicate branch below
+  // returns the same row. The GUARANTEE is the index; do not read this as
+  // the thing keeping a stack from being handed out twice.
+  if (requestId) {
+    const { data: seen } = await db
+      .from('advertising_sign_issuances')
+      .select(SELECT)
+      .eq('request_id', requestId)
+      .limit(1);
+    const already = ((seen ?? []) as Row[])[0];
+    if (already) return { issuance: toIssuance(already), issuedQty: already.qty };
+  }
+
+  // Fallback for callers that send no id: a retried/double-clicked identical
+  // hand-out returns the row that already landed instead of doubling the
+  // ledger and drawing the warehouse twice for one physical stack. Kept
+  // because it is the only guard those callers have; a request id is
+  // stronger and does not depend on the clock.
+  const { data: latestRows } = requestId
+    ? { data: null } // the id is the authority; see below
+    : await db
+        .from('advertising_sign_issuances')
+        .select(SELECT)
+        .eq('worker_id', worker.id)
+        .order('created_at', { ascending: false })
+        .range(0, 0);
   const latest = ((latestRows ?? []) as Row[])[0];
   if (
+    // Only when NO id was sent. With one, two hand-outs seconds apart are
+    // two different ids and both are real: the window would swallow the
+    // second, which is the false-refusal half of this problem and just as
+    // wrong as the double-write half.
     latest &&
     latest.qty === qty &&
     latest.issued_by === issuedBy && // a DIFFERENT admin's identical hand-out is a real second stack
@@ -108,10 +139,27 @@ export async function issueSigns(
       qty,
       issued_by: issuedBy,
       note: note?.trim() || null,
+      request_id: requestId ?? null,
     })
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`issueSigns: ${error.message}`);
+
+  if (error) {
+    // Lost the race on the unique index: the other submit of this same click
+    // got there first. Its row is the hand-out, so return that instead of
+    // failing a caller whose work actually succeeded.
+    const duplicate = (error as { code?: string }).code === '23505' || /duplicate key/i.test(error.message ?? '');
+    if (duplicate && requestId) {
+      const { data: winner } = await db
+        .from('advertising_sign_issuances')
+        .select(SELECT)
+        .eq('request_id', requestId)
+        .limit(1);
+      const row = ((winner ?? []) as Row[])[0];
+      if (row) return { issuance: toIssuance(row), issuedQty: row.qty };
+    }
+    throw new Error(`issueSigns: ${error.message}`);
+  }
   if (!data) throw new Error('issueSigns: no row returned');
   const issuance = toIssuance(data as Row);
 
