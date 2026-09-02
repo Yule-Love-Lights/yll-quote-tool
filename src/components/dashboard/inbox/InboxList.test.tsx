@@ -61,6 +61,24 @@ describe('InboxList customer links', () => {
     expect(html).toContain('https://app.gohighlevel.com/v2/location/loc-1/contacts/detail/hl-77');
   });
 
+  it('makes the customer NAME itself the link on a conversation row, matching Office Tasks', () => {
+    const html = renderToStaticMarkup(
+      <InboxList initialItems={[linked]} nowMs={now} hlLocationId="loc-1" />,
+    );
+    // The anchor's own text must be the customer's name, not a generic word
+    // sitting next to it. Pins the shape chosen for both surfaces.
+    expect(html).toMatch(/<a[^>]+href="\/customers\/hl-77"[^>]*>[^<]*Linked Customer/);
+  });
+
+  it('renders the name as plain text, not a link, when there is no HighLevel id', () => {
+    const unlinked = { ...linked, id: 'plain', ghlContactId: null };
+    const html = renderToStaticMarkup(
+      <InboxList initialItems={[unlinked]} nowMs={now} hlLocationId="loc-1" />,
+    );
+    expect(html).toContain('Linked Customer');
+    expect(html).not.toMatch(/<a[^>]+href="\/customers\//);
+  });
+
   it('opens the HighLevel link in a new tab, with rel protecting the opener', () => {
     const html = renderToStaticMarkup(
       <InboxList initialItems={[linked]} nowMs={now} hlLocationId="loc-1" />,

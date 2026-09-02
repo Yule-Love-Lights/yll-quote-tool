@@ -998,7 +998,7 @@ export default function OfficeTasksCard({
                       <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                         <Link
                           href={`/customers/${encodeURIComponent(task.customerContactId)}`}
-                          className="font-medium hover:underline"
+                          className="font-medium underline"
                           style={{ color: 'var(--op-primary)' }}
                         >
                           {customerLinkLabel(task.customerName)}
@@ -1008,7 +1008,7 @@ export default function OfficeTasksCard({
                             href={task.highLevelUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-xs hover:underline"
+                            className="text-xs underline"
                             style={{ color: 'var(--op-text-dim)' }}
                           >
                             HighLevel

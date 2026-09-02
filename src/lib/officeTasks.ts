@@ -264,10 +264,15 @@ function toOfficeTask(
     sourceSystem: row.source_system,
     title: row.title,
     // The name is rendered as a link above the detail now, so the
-    // producer's duplicated "Name - phone" block comes out. Only when a
-    // customer actually resolved: with no link on screen, that line is
-    // the only place the name appears and has to stay.
-    detail: customer ? stripCustomerLine(row.detail) : row.detail,
+    // producer's duplicated "Name - phone" block comes out.
+    //
+    // Gated on the NAME, not merely on a resolved customer. A contact with
+    // no display name renders as "View customer", so stripping the block
+    // there would take away the only name and phone number on the row and
+    // give back a link that names nobody. Measured 2026-09-02: 1 of 20 task
+    // contacts has no display name, so this is a real row, not a hypothetical.
+    // With no name on screen the line stays exactly as staff see it today.
+    detail: customer?.name ? stripCustomerLine(row.detail) : row.detail,
     status: row.status,
     dueAt: row.due_at,
     createdAt: row.created_at,

@@ -46,6 +46,32 @@ function contactName(item: OpenInboxItem): string {
  * HighLevel link additionally needs a configured location id, and is simply
  * left out when this environment has none.
  */
+/**
+ * Just the HighLevel link, for a row whose customer NAME is already the
+ * profile link (the per-conversation row). Renders nothing without a
+ * HighLevel id or a configured location id.
+ */
+function HighLevelOnlyLink({
+  ghlContactId,
+  hlLocationId,
+}: {
+  ghlContactId: string | null | undefined;
+  hlLocationId: string | null;
+}) {
+  if (!ghlContactId || !hlLocationId) return null;
+  return (
+    <a
+      href={highLevelContactUrl(hlLocationId, ghlContactId)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-xs underline"
+      style={{ color: 'var(--op-text-2)' }}
+    >
+      HighLevel
+    </a>
+  );
+}
+
 function CustomerLinks({
   ghlContactId,
   hlLocationId,
@@ -58,7 +84,7 @@ function CustomerLinks({
     <span className="flex items-center gap-2">
       <Link
         href={`/customers/${encodeURIComponent(ghlContactId)}`}
-        className="text-xs font-medium hover:underline"
+        className="text-xs font-medium underline"
         style={{ color: 'var(--op-primary)' }}
       >
         Customer
@@ -68,7 +94,7 @@ function CustomerLinks({
           href={highLevelContactUrl(hlLocationId, ghlContactId)}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs hover:underline"
+          className="text-xs underline"
           style={{ color: 'var(--op-text-2)' }}
         >
           HighLevel
@@ -180,10 +206,24 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               aria-hidden
               style={{ width: 8, height: 8, borderRadius: 9999, background: esc.dot, display: 'inline-block' }}
             />
-            <span className="font-medium truncate" style={{ color: 'var(--op-text)' }}>
-              {contactName(item)}
-            </span>
-            <CustomerLinks ghlContactId={item.ghlContactId} hlLocationId={hlLocationId} />
+            {/* The name itself is the link here, matching the Office Tasks row.
+                Only the grouped header below has to keep a separate
+                "Customer" link, because there the name lives inside the
+                expand <button> and an anchor cannot nest in one. */}
+            {item.ghlContactId ? (
+              <Link
+                href={`/customers/${encodeURIComponent(item.ghlContactId)}`}
+                className="font-medium truncate underline"
+                style={{ color: 'var(--op-text)' }}
+              >
+                {contactName(item)}
+              </Link>
+            ) : (
+              <span className="font-medium truncate" style={{ color: 'var(--op-text)' }}>
+                {contactName(item)}
+              </span>
+            )}
+            <HighLevelOnlyLink ghlContactId={item.ghlContactId} hlLocationId={hlLocationId} />
             <span className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-2)' }}>
               {SOURCE_LABEL[item.source] ?? item.source}
             </span>

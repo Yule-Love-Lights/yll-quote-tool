@@ -127,6 +127,10 @@ describe('listOfficeTasks customer resolution', () => {
     if (!result.ok) return;
     expect(result.tasks[0].customerContactId).toBe('hl-99');
     expect(result.tasks[0].customerName).toBeNull();
+    // And it KEEPS the name and phone in the detail. The link for this task
+    // reads "View customer" and names nobody, so stripping the block would
+    // take away the only place the customer is identified on the row.
+    expect(result.tasks[0].detail).toBe(TASK.detail);
   });
 
   it('leaves a task with no matching commitment unlinked, and keeps its detail intact', async () => {
