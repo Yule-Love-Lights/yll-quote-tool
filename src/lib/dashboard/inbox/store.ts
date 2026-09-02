@@ -26,6 +26,7 @@ import type {
 import { normalizeEmail, normalizePhone } from './normalize';
 import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
+import { leadForwardsAnsweredBy } from './leadForward';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
@@ -506,6 +507,67 @@ export type IngestOutcome =
   | { ok: false; error: string };
 
 /**
+ * Clear any open FORWARDED-LEAD row this outbound touch answers (Naldo,
+ * 2026-09-01). Best effort: a failure here must never fail the ingest that
+ * triggered it, because the touch itself is the thing that matters.
+ *
+ * Why it lives outside planIngest: that planner is keyed to ONE row, the one
+ * carrying this touch's own source + external id. A forwarded lead is a
+ * DIFFERENT row on a DIFFERENT channel, and its own channel is a no-reply
+ * relay it can never receive an outbound on, so nothing per-row could ever
+ * resolve it. See leadForward.ts for the real case that prompted this.
+ *
+ * Deliberately identity-matched, not contact-matched: see the same file for
+ * why a contact-level match would clear a real lead because an unrelated
+ * number on a merged contact was dialled.
+ */
+async function clearLeadForwardsAnsweredBy(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  touch: NormalizedTouch,
+  now: Date,
+): Promise<string[]> {
+  const phones = touch.identity.phones ?? [];
+  const emails = touch.identity.emails ?? [];
+  if (phones.length === 0 && emails.length === 0) return [];
+
+  // Only OPEN gmail rows can be forwarded leads awaiting an answer. Small by
+  // construction (the open list is a handful of rows), so this is one narrow
+  // read rather than a join.
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('id, subject, preview, status, last_message_at')
+    .eq('source', 'gmail')
+    .eq('status', 'unresponded');
+  if (error || !data) return [];
+
+  const rows = (data as { id: string; subject: string | null; preview: string | null; status: string; last_message_at: string | null }[]).map(
+    (r) => ({
+      id: r.id,
+      subject: r.subject,
+      preview: r.preview,
+      status: r.status,
+      lastMessageAt: r.last_message_at ? new Date(r.last_message_at) : null,
+    }),
+  );
+
+  const ids = leadForwardsAnsweredBy(rows, { phones, emails, at: touch.lastMessageAt });
+  if (ids.length === 0) return [];
+
+  // status only, plus the auto-resolve stamps the existing outbound path uses:
+  // handled_by null means the system did it, not a person.
+  const { error: updErr } = await sb
+    .from('inbox_items')
+    .update({ status: 'handled', handled_by: null, handled_at: now.toISOString(), updated_at: now.toISOString() })
+    .in('id', ids)
+    // Re-assert the open status in the WHERE clause: between the read above and
+    // this write, a person may have dismissed or completed the row, and the
+    // sweep must not overwrite a decision someone actually made.
+    .eq('status', 'unresponded');
+  if (updErr) return [];
+  return ids;
+}
+
+/**
  * Ingest one normalized touch: resolve identity, upsert the contact + item
  * idempotently (UNIQUE(source, external_id)), and log activity. Returns the
  * notifyLevel so the caller can fire an escalation email if a level was crossed.
@@ -599,6 +661,22 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     contact_id: contactId,
     detail: { source: touch.source, ambiguous: plan.ambiguous, autoResolved: plan.autoResolved },
   });
+
+  // 4. A forwarded lead answered by this outbound touch clears too. AFTER the
+  // touch's own write, so a failure here cannot cost us the touch.
+  if (isAnsweredByDirection(touch.direction)) {
+    const cleared = await clearLeadForwardsAnsweredBy(sb, touch, now);
+    for (const clearedId of cleared) {
+      if (clearedId === itemId) continue; // never log the row we just wrote twice
+      await sb.from('dashboard_activity').insert({
+        actor: 'system',
+        action: 'handled',
+        inbox_item_id: clearedId,
+        contact_id: null,
+        detail: { autoResolved: true, reason: 'lead-forward-answered-by-outbound', outboundSource: touch.source },
+      });
+    }
+  }
 
   return {
     ok: true,
