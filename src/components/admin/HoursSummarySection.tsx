@@ -6,6 +6,8 @@
 // renders carry no rate field at all, so a later edit here cannot multiply
 // anything by anything without first changing the data module.
 
+import Link from 'next/link';
+
 import { formatHours, type PersonHours } from '@/lib/hoursSummary';
 
 // ET regardless of the server's own timezone (prod renders on a UTC box).
@@ -53,20 +55,18 @@ export function HoursSummarySection({
       </p>
       {/* The fix path has to name a door that EXISTS for the row it is next
           to (AGENTS.md: a guard and the copy that narrates it are one change).
-          The only shift editor today is the two clocks page, and fleetDay.ts
-          shows FIELD shifts only (Naldo, 2026-08-28: "field group only"), so
-          an office person's auto-close cannot be reached from it. Say so,
-          rather than send the admin to a page that will not list the row.
-          Phase 2 of the time-tracking plan is the first editor for those. */}
+          As of phase 2 that door is the person's own page, reached by their
+          name below, and it works for office and field alike — the two clocks
+          page still shows field shifts only (fleetDay.ts). */}
       <p className="text-sm text-gray-500 mb-4">
         A day nobody clocked out of is closed at midnight by the system. Those rows are counted
-        here and flagged, because the figure is wrong until a human corrects the shift. Field
-        crew shifts are corrected on{' '}
+        here and flagged, because the figure is wrong until a human corrects the shift. Open
+        someone&apos;s name to see their shifts day by day and correct the times; field crew
+        shifts can also be corrected beside the GPS timeline on{' '}
         <a href="/admin/fleet/clocks" className="underline">
           the day&apos;s two clocks page
         </a>
-        ; office shifts have no editor in the app yet, so an office auto-close stays flagged until
-        one is built.
+        .
       </p>
 
       {errors.length > 0 && (
@@ -101,7 +101,17 @@ export function HoursSummarySection({
               {rows.map((r) => (
                 <tr key={r.crewMemberId} className={r.active ? '' : 'text-gray-400'}>
                   <td className="px-3 py-2 font-medium whitespace-nowrap">
-                    {r.displayName}
+                    {/* The name is the door to the person's own record (phase
+                        2). A '(unknown)' row links too: its id is a real crew
+                        id off a shift whose staff row is missing, and the
+                        detail page says exactly that instead of leaving a
+                        dead-end row nobody can investigate. */}
+                    <Link
+                      href={`/admin/time-tracking/${encodeURIComponent(r.crewMemberId)}`}
+                      className="underline"
+                    >
+                      {r.displayName}
+                    </Link>
                     {!r.active && <span className="ml-2 text-xs font-normal">(inactive)</span>}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">{r.isOffice ? 'Office' : 'Field'}</td>

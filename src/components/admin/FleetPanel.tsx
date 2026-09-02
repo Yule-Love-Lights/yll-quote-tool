@@ -13,6 +13,8 @@
 //
 // A server component, like the page it came from: it does its own reads.
 
+import Link from 'next/link';
+
 import { loadFleetDay, fmtFleetTime } from '@/lib/fleetDay';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { getSessionRole } from '@/lib/auth/sessionRole';
@@ -126,9 +128,12 @@ export async function FleetPanel() {
           <a href="/admin/fleet/clocks" className="underline text-gray-600">
             The day&apos;s two clocks →
           </a>
-          <a href="/admin/time-tracking" className="underline text-gray-600">
+          {/* next/link, not <a>: /admin/time-tracking gained a dynamic
+              child route (the per-person page), so the Next lint rule now
+              resolves this href to a real page and requires Link. */}
+          <Link href="/admin/time-tracking" className="underline text-gray-600">
             Time tracking →
-          </a>
+          </Link>
         </p>
       )}
 

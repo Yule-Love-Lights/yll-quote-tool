@@ -56,21 +56,20 @@ export function TimeExceptionsSection({
         live, so look at those first.
       </p>
       {/* The fix path (admin lens on the digest PR: a queue with no repair
-          door nags forever): the manual shift editor on the two-clocks page
-          is where a human corrects the times; closing the shift there closes
-          its stuck children. */}
-      {/* Scoped to FIELD shifts (S59, same class as the Hours copy above it):
-          the two clocks page lists field shifts only (fleetDay.ts), so an
-          office person's stuck record is not on it. Their open shift closes
-          when they clock out or when the midnight sweep runs; there is no
-          admin editor for office shifts yet. */}
+          door nags forever). It names the person's own hours page, which
+          serves office and field alike; the two clocks page is offered as
+          the second door because it puts the GPS timeline beside the shift,
+          and it lists FIELD shifts only (fleetDay.ts). An earlier version of
+          this comment said office shifts had no editor at all — true until
+          the person page shipped, false the moment it did. */}
       <p className="text-sm text-gray-500 -mt-2 mb-4">
-        To fix one for field crew, correct the shift&apos;s times on{' '}
+        To fix one, open the person&apos;s name in the hours table above and correct the
+        shift&apos;s times; closing the shift there closes its stuck children. Field crew shifts
+        can also be corrected beside the GPS timeline on{' '}
         <a href="/admin/fleet/clocks" className="underline">
           the day&apos;s two clocks page
         </a>
-        . An office person&apos;s open shift is not listed there; it closes when they clock out or
-        when the midnight sweep runs, and there is no admin editor for office shifts yet.
+        , which lists field shifts only.
       </p>
 
       {errors.length > 0 && (
