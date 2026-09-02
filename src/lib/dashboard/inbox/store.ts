@@ -525,7 +525,7 @@ async function clearLeadForwardsAnsweredBy(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   touch: NormalizedTouch,
   now: Date,
-): Promise<string[]> {
+): Promise<{ id: string; from: { status: string; wasFollowed: boolean } }[]> {
   const phones = touch.identity.phones ?? [];
   const emails = touch.identity.emails ?? [];
   if (phones.length === 0 && emails.length === 0) return [];
@@ -535,36 +535,66 @@ async function clearLeadForwardsAnsweredBy(
   // read rather than a join.
   const { data, error } = await sb
     .from('inbox_items')
-    .select('id, subject, preview, status, last_message_at')
+    .select('id, subject, preview, status, last_message_at, followed_up_at')
     .eq('source', 'gmail')
     .eq('status', 'unresponded');
-  if (error || !data) return [];
+  if (error || !data) {
+    // Say so. A swallowed schema, RLS or transient failure here would make the
+    // whole feature permanently inert with no signal anywhere, which looks
+    // exactly like "it was never built" (premerge technical lens, 2026-09-02).
+    console.error('[inbox] lead-forward auto-clear: candidate read failed:', error?.message);
+    return [];
+  }
 
-  const rows = (data as { id: string; subject: string | null; preview: string | null; status: string; last_message_at: string | null }[]).map(
-    (r) => ({
-      id: r.id,
-      subject: r.subject,
-      preview: r.preview,
-      status: r.status,
-      lastMessageAt: r.last_message_at ? new Date(r.last_message_at) : null,
-    }),
-  );
+  const raw = data as {
+    id: string;
+    subject: string | null;
+    preview: string | null;
+    status: string;
+    last_message_at: string | null;
+    followed_up_at: string | null;
+  }[];
+  const rows = raw.map((r) => ({
+    id: r.id,
+    subject: r.subject,
+    preview: r.preview,
+    status: r.status,
+    lastMessageAt: r.last_message_at ? new Date(r.last_message_at) : null,
+  }));
 
   const ids = leadForwardsAnsweredBy(rows, { phones, emails, at: touch.lastMessageAt });
   if (ids.length === 0) return [];
+  // The state each row is being moved OUT of, captured before the write. A
+  // Reverse reads detail.from to restore it (inverseOf in lifecycle.ts), so an
+  // auto-clear without this reverses to a guess rather than to what was there.
+  const priorById = new Map(
+    raw.filter((r) => ids.includes(r.id)).map((r) => [r.id, { status: r.status, wasFollowed: !!r.followed_up_at }]),
+  );
 
   // status only, plus the auto-resolve stamps the existing outbound path uses:
   // handled_by null means the system did it, not a person.
-  const { error: updErr } = await sb
+  const { data: updated, error: updErr } = await sb
     .from('inbox_items')
     .update({ status: 'handled', handled_by: null, handled_at: now.toISOString(), updated_at: now.toISOString() })
     .in('id', ids)
     // Re-assert the open status in the WHERE clause: between the read above and
     // this write, a person may have dismissed or completed the row, and the
     // sweep must not overwrite a decision someone actually made.
-    .eq('status', 'unresponded');
-  if (updErr) return [];
-  return ids;
+    .eq('status', 'unresponded')
+    // Report the rows the write ACTUALLY changed, the way every other guarded
+    // update in this file does. Returning the pre-write candidates instead
+    // would log a successful clear for a row this call lost the race on, which
+    // is a false line in the audit trail (premerge technical lens, 2026-09-02).
+    .select('id');
+  if (updErr) {
+    console.error('[inbox] lead-forward auto-clear: update failed:', updErr.message);
+    return [];
+  }
+  const changedIds = ((updated ?? []) as { id: string }[]).map((r) => r.id);
+  return changedIds.map((id) => ({
+    id,
+    from: priorById.get(id) ?? { status: 'unresponded', wasFollowed: false },
+  }));
 }
 
 /**
@@ -666,14 +696,21 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   // touch's own write, so a failure here cannot cost us the touch.
   if (isAnsweredByDirection(touch.direction)) {
     const cleared = await clearLeadForwardsAnsweredBy(sb, touch, now);
-    for (const clearedId of cleared) {
+    for (const { id: clearedId, from } of cleared) {
       if (clearedId === itemId) continue; // never log the row we just wrote twice
       await sb.from('dashboard_activity').insert({
         actor: 'system',
         action: 'handled',
         inbox_item_id: clearedId,
         contact_id: null,
-        detail: { autoResolved: true, reason: 'lead-forward-answered-by-outbound', outboundSource: touch.source },
+        // `auto` + `reason` + `from` is the shape the rest of this file uses
+        // for a system decision (see the quote_terminal auto-complete). It is
+        // not decoration: listActivity only surfaces a reason when
+        // `detail.auto` is set, and Reverse reads `detail.from` to restore the
+        // state the row came out of. The first cut used `autoResolved` and no
+        // `from`, so the explanation was write-only and a Reverse would have
+        // guessed (premerge staff lens, 2026-09-02).
+        detail: { auto: true, reason: 'lead_forward_answered_by_outbound', from, outboundSource: touch.source },
       });
     }
   }

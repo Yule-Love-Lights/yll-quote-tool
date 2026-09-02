@@ -300,10 +300,29 @@ export type ParsedLeadForwardDisplay = {
  * Deliberately lower-confidence than parseLeadForward (a subject substring,
  * not sender domain+display-name equality — see
  * LeadForwardPlatform.displaySubjectContains's doc) because the sender isn't
- * available here. That trade is fine: this function only controls what TEXT
- * renders in the UI. No write/mutation ever reads its result — worst case a
- * crafted subject shows a phone/email hint that isn't really a lead-forward;
- * there's no path from here to identity resolution or a database write.
+ * available here.
+ *
+ * ⚠️ A WRITE READS THIS NOW (2026-09-02), which was not true when the sentence
+ * above was written and is worth understanding before adding another caller.
+ * outboundAnswersLeadForward uses it to decide whether an outbound touch may
+ * auto-clear an open row, so a false parse no longer costs a wrong hint on
+ * screen, it costs a lead marked handled that nobody called. The premerge
+ * technical lens caught the old "no write/mutation ever reads its result"
+ * claim still standing here after that changed.
+ *
+ * Why the weaker check is still acceptable at that call site, stated so the
+ * next person inherits the reasoning rather than the conclusion: a false clear
+ * needs the row to carry BOTH the platform subject substring AND the template
+ * block ("Here ya go <name>: ... Areas to light up:") with a contact in it,
+ * AND an outbound touch to that exact number or address, AND for that touch to
+ * land after the row arrived. An ordinary customer email does not accidentally
+ * contain the template block, and a forger who constructs one gains only the
+ * auto-closing of a row that was already fake. The three other refusals in
+ * outboundAnswersLeadForward are what carry the safety; this parse is the
+ * cheapest of the four, not the load-bearing one.
+ *
+ * If a caller ever needs write-grade certainty on its own, use parseLeadForward
+ * (sender domain + display name + template) rather than widening this one.
  */
 export function parseLeadForwardDisplay(
   subject: string | null | undefined,
