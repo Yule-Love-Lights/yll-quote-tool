@@ -564,6 +564,47 @@ describe('voidShiftSettlement', () => {
     expect(summarize(await listSettlements('crew-1')).halfUndone).toEqual([]);
   });
 
+  it('tells the person their payment was undone, and says why', async () => {
+    // The delta-verify on this PR proved the gap by probe: removing the
+    // void-path notify broke NO test, while its record-path sibling was
+    // pinned. A future refactor could have dropped the notice silently.
+    const created = await recordOne();
+    sendTelegramMock.mockClear();
+    const { voidShiftSettlement } = await import('./shiftSettlements');
+    await voidShiftSettlement({
+      settlementId: created.id,
+      voidedBy: 'Jason (jason@x)',
+      reason: 'wrong person',
+    });
+    expect(sendTelegramMock).toHaveBeenCalledTimes(1);
+    const [chatId, text] = sendTelegramMock.mock.calls[0]!;
+    // Sent to the person the money was recorded against, not to the actor.
+    expect(chatId).toBe('555');
+    expect(text).toContain('wrong person');
+    expect(text).toContain('$40.00');
+  });
+
+  it('does not notify a second time when the same payment is undone twice', async () => {
+    const created = await recordOne();
+    const { voidShiftSettlement } = await import('./shiftSettlements');
+    await voidShiftSettlement({ settlementId: created.id, voidedBy: 'Ann', reason: 'first' });
+    sendTelegramMock.mockClear();
+    await voidShiftSettlement({ settlementId: created.id, voidedBy: 'Jason', reason: 'second' });
+    expect(sendTelegramMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails the undo because the note could not be sent', async () => {
+    const created = await recordOne();
+    sendTelegramMock.mockRejectedValueOnce(new Error('telegram down'));
+    const { voidShiftSettlement } = await import('./shiftSettlements');
+    const voided = await voidShiftSettlement({
+      settlementId: created.id,
+      voidedBy: 'Jason',
+      reason: 'oops',
+    });
+    expect(voided.voidedAt).not.toBeNull();
+  });
+
   it('refuses an id that is not a payment', async () => {
     const { voidShiftSettlement } = await import('./shiftSettlements');
     await expect(
