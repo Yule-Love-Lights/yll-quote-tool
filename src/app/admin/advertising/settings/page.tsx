@@ -24,6 +24,7 @@ export default async function AdminAdvertisingSettingsPage() {
         paySection={<PayScreen />}
         extraSection={<SignAllotmentSection />}
         extraRows={[
+          { label: 'Where to go, where not to (map)', href: '/admin/advertising/map' },
           { label: 'Back to the quote tool', href: '/' },
           { label: 'Inventory stock (yard-sign SKU)', href: '/inventory/stock' },
         ]}
