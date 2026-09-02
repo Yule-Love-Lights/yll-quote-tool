@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "source": "Mini Lights Measurement Quick Guide (Canva deck, 38 pages, built by YLL staff from 2025-season install photos)",
+    "canva_link": "https://canva.link/zam96kmuc9g7wye",
+    "extracted": "2026-09-02",
+    "extraction_method": "Page images read by assistant; customer names given per deck page by Naldo; addresses from the 2025 Ornament List roster (Google Drive)",
+    "spacing": "6 inch bulb spacing everywhere (Naldo, 2026-08-28): one 50-count 5MM strand covers 25 ft",
+    "unit": "counts are STRANDS installed per plant item unless noted",
+    "photo_convention": "each house has a lights-on night page (labeled blobs per item) and a lights-off day page (red handwritten tallies per item); day photos are the measurement substrate, night labels are the count truth",
+    "status": "section 1 (bushes/shrubs) fully named; section 2 (tall shrubs/trees, pages 21-31) awaiting customer names",
+    "known_conflicts": "recorded per house in flags; resolve during tracing, never silently"
+  },
+  "houses": [
+    {
+      "customer": "Morgan Hayes",
+      "address": "225 Circle Road, Syosset NY 11791",
+      "deck_pages": {"night": [3, 32], "day": [4, 33]},
+      "items": [
+        {"type": "bush_row", "strands": 6, "night_label": "6 MINIS (red blob, front-left long bed)"},
+        {"type": "bush_row", "strands": 5, "night_label": "5 MINIS (blue blob, next to red)"},
+        {"type": "bush_small", "strands": 1, "count_of_items": 5, "night_label": "five 1s above the 5-minis row"},
+        {"type": "tree_wrap", "strands": 7, "night_label": "7 MINIS (center-right tree, p3)"},
+        {"type": "tree_wrap", "strands": 7, "night_label": "7 MINIS (right tree, p3)", "flag": "p32 close-up labels the pair 7 and 6, not 7 and 7; p33 day tallies also read 7 and 6. Trust the close-up (7 and 6) but confirm at tracing."}
+      ],
+      "day_tallies": "p4 collage: [1,1,1,1, 6, 4, 3] along driveway hedge; [7, 5, 1s] near wreath bed; [6, 1x5, 5] window bed. Day shows a 4 and 3 not visible on the night page (side/driveway items outside the night frame).",
+      "flags": ["tree pair 7/7 vs 7/6 conflict between p3 and p32/33", "day tallies include items outside the night photo frame"]
+    },
+    {
+      "customer": "Eric Buonpastore",
+      "address": "70 Pine Street, Garden City NY 11530",
+      "deck_pages": {"night": [5], "day": [6]},
+      "items": [
+        {"type": "bush", "strands": 4, "night_label": "4 MINIS (yellow, far left by porch)"},
+        {"type": "bush", "strands": 6, "night_label": "6 MINIS (blue, left of walk)"},
+        {"type": "bush", "strands": 5, "night_label": "5 MINIS (red, right of walk)"},
+        {"type": "bush", "strands": 6, "night_label": "6 MINIS (blue, right)"},
+        {"type": "bush", "strands": 4, "night_label": "4 MINIS (purple, far right)"}
+      ],
+      "day_tallies": "p6: two large rounded hedges flanking walk tallied 6 and 6; smaller bushes 4, 5, 4. Multiset matches night exactly: {4,4,5,6,6}.",
+      "flags": []
+    },
+    {
+      "customer": "Sharen Phillips",
+      "address": "3 Moore Circle, Freeport NY 11520",
+      "deck_pages": {"night": [7], "day": [8]},
+      "items": [
+        {"type": "bush_small", "strands": 1, "count_of_items": 8, "night_label": "left driveway line, alternating red/white/blue singles (approx count, verify at tracing)"},
+        {"type": "bush_small", "strands": 1, "count_of_items": 7, "night_label": "right driveway line singles (approx count, verify at tracing)"},
+        {"type": "tree_small", "strands": 2, "night_label": "2 (green, tall by steps)"},
+        {"type": "bush_small", "strands": 1, "count_of_items": 3, "night_label": "three 1s (green, upper bed)"},
+        {"type": "bush", "strands": 4, "night_label": "4 Minis (purple, far right)"}
+      ],
+      "day_tallies": "p8: left bed tallies [1,1,1,1,1 ...], right area [2 ... 4] plus scattered 1s. Driveway single counts are approximate from the night photo; day tallies are the check.",
+      "flags": ["driveway singles counts approximate; night blobs partially occluded by labels"]
+    },
+    {
+      "customer": "Mary O'Connor",
+      "address": "1 Granada Place, Massapequa NY 11758",
+      "deck_pages": {"night": [9, 17], "day": [10, 18]},
+      "items": [
+        {"type": "bush", "strands": 2, "night_label": "2 Minis (green, far left, p9)"},
+        {"type": "bush", "strands": 3, "night_label": "3 Minis (purple, p9)"},
+        {"type": "bush", "strands": 3, "night_label": "3 Minis (yellow, p9)"},
+        {"type": "railing", "strands": 3, "night_label": "3 Minis (red, porch railing, p9); day collage p10 confirms railing 3"},
+        {"type": "bush_small", "strands": 1, "count_of_items": 4, "night_label": "1,1,1,1 (blue, right walk, p9)"},
+        {"type": "tree_small", "strands": 2, "night_label": "2 Minis (green tall, p9)"},
+        {"type": "bush_small", "strands": 1, "night_label": "1 (blue, p9)"},
+        {"type": "bush", "strands": 3, "night_label": "3 Minis (red, p9)"},
+        {"type": "bush", "strands": 4, "night_label": "4 Minis (red large, far right, p9)"},
+        {"type": "tree_small", "strands": 2, "night_label": "2 Minis (purple tall, p17 second angle)"},
+        {"type": "bush_small", "strands": 1, "night_label": "1 (red, p17)"},
+        {"type": "bush", "strands": 3, "night_label": "3 Minis (green, p17)"}
+      ],
+      "day_tallies": "p10 collage: [2,1,3] side bed; railing 3; [1s, 4, 4, 4] walk; [2,2,4,1] right bed. p18 collage: [1,1,1, 4(?), 4, 4] Santa bed; [2,2,4,1] right; [2,1,3] side. Same house, two photo angles (p9 and p17 confirmed same property by Naldo).",
+      "flags": ["two night angles overlap; dedupe items during tracing so shared bushes are not double-counted"]
+    },
+    {
+      "customer": "Morisson Taylor",
+      "address": "21 Dale Drive, Farmingdale NY 11735",
+      "deck_pages": {"night": [11], "day": [12]},
+      "items": [
+        {"type": "vine_or_pergola", "strands": 5, "night_label": "5 Minis (purple, over fence far left)"},
+        {"type": "bush_small", "strands": 1, "count_of_items": 3, "night_label": "1,1,1 (blue)"},
+        {"type": "bush", "strands": 4, "night_label": "4 Minis (green, by porch)"},
+        {"type": "tree_cone", "strands": 5, "night_label": "5 Minis (red-lit cone, right of door)"},
+        {"type": "bush", "strands": 3, "night_label": "3 Minis (purple, right)"}
+      ],
+      "day_tallies": "p12: [5] weeping tree, [1,1,1], [4] boxwood by porch. Right-side 5 and 3 confirmed on day photo edge.",
+      "flags": []
+    },
+    {
+      "customer": "Todd Marion",
+      "address": "24 Midland Street, Cold Spring Harbor NY 11724",
+      "deck_pages": {"night": [13], "day": [14]},
+      "items": [
+        {"type": "hedge_segment", "strands": 3, "night_label": "3 MINIS (green, left)"},
+        {"type": "hedge_segment", "strands": 2, "night_label": "2 MINIS (red, narrow)"},
+        {"type": "hedge_segment", "strands": 5, "night_label": "5 MINIS (green, center wide)"},
+        {"type": "hedge_segment", "strands": 3, "night_label": "3 MINIS (green, right)"}
+      ],
+      "day_tallies": "p14: hedge tallied 2, 5, 3 (left 3 out of frame on the day shot).",
+      "flags": []
+    },
+    {
+      "customer": "Cathy Rende",
+      "address": "9 Montrose Avenue, Babylon NY 11702",
+      "deck_pages": {"night": [15], "day": [16]},
+      "items": [
+        {"type": "bush", "strands": 4, "night_label": "4 Minis (green, far left)"},
+        {"type": "hedge_run", "strands": 11, "night_label": "11 Minis (red, left hedge run)"},
+        {"type": "bush", "strands": 6, "night_label": "6 Minis (green, by steps)"},
+        {"type": "bush", "strands": 4, "night_label": "4 Minis (green, center porch)"},
+        {"type": "hedge_run", "strands": 11, "night_label": "11 Minis (red, right hedge run)"},
+        {"type": "bush", "strands": 4, "night_label": "4 Minis (green, far right)"}
+      ],
+      "day_tallies": "p16 two photos: [4, 11, 4] brick-walk side; [6, 11, 4] lawn side with flag pole.",
+      "flags": []
+    },
+    {
+      "customer": "Enda Finlay",
+      "address": "90 Mystic Circle, Bay Shore NY 11706",
+      "deck_pages": {"night": [19], "day": [19]},
+      "items": [
+        {"type": "column_ivy", "strands": 4, "night_label": "4 (red tally on day half; tall ivy column at porch corner)"}
+      ],
+      "day_tallies": "p19 right half: ivy column tallied 4, plus a stray 1 upper right (verify at tracing).",
+      "flags": ["single-page house (night and day share page 19)"]
+    }
+  ],
+  "tall_shrubs_trees_section": {
+    "status": "UNNAMED - customer names pending from Naldo",
+    "entries": [
+      {"deck_pages": [21, 22], "candidate": "Joe DeGaetano, 3 Frank Circle, Islip (photo-match certain, unconfirmed by Naldo)", "items": [{"type": "arborvitae", "strands": 4, "height_ft": "11-12"}, {"type": "arborvitae", "strands": 5, "height_ft": "13-14"}, {"type": "arborvitae", "strands": 7, "height_ft": "15-16"}], "note": "heights estimated by staff using crew member as reference (p22); HAPPY BIRTHDAY JESUS rope sign on lawn"},
+      {"deck_pages": [23, 24], "items": [{"type": "branch_wrap_tree", "strands": 16, "height_ft": "25-30"}], "note": "SAMPLE watermark on photo; ladder used as height reference (p24)"},
+      {"deck_pages": [25, 26, 27], "items": [{"type": "spruce", "strands": 22, "height_ft": "20-25"}, {"type": "tree", "strands": 15, "height_ft": "18-22"}], "note": "two properties or one? p25 shows the 22 spruce and a separate red/green roofline house with the 15 tree"},
+      {"deck_pages": [28, 29], "items": [{"type": "branch_wrap_sycamore", "strands": 16, "height_ft": "55-65"}, {"type": "branch_wrap_sycamore", "strands": 22, "height_ft": "55-65"}], "note": "street trees, mature sycamore/plane per staff estimate"},
+      {"deck_pages": [30], "items": [{"type": "branch_wrap_tree", "strands": 15, "count_of_items": 3, "note": "15 Minis each; shown in white and green lighting"}]},
+      {"deck_pages": [31], "items": [{"type": "cherry_tree_wrap", "strands": null, "note": "pink-wrapped cherry trees, long stone ranch; no counts labeled on this page"}]}
+    ]
+  }
+}
