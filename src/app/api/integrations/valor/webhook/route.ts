@@ -17,7 +17,11 @@
 //   3. Idempotently stamp deposit_paid_at + the Valor txn / vault / receipt fields
 //      (Valor retries up to 3× — dedupe so side effects fire at most once).
 //   4. Move the HighLevel opportunity to ⏰Approved.
-//   5. Email + text the customer their receipt, and email staff "deposit received."
+//   5. Email + text the customer their receipt, and email staff "deposit received"
+//      — a failed staff email also gets a Telegram fallback (best-effort) and a
+//      durable deposit_notify_failed_at/deposit_notify_error marker (2026-09-02
+//      incident: the internal contact's Email DND silently ate this email for
+//      two days with no other signal — see internalEmail() below).
 // Steps 4–5 are best-effort: the payment is already recorded even if they fail.
 //
 // Verification probe: Valor's Settings → WebHook "Verify and Update" button (and
@@ -900,7 +904,57 @@ export async function POST(req: NextRequest) {
       });
       internalEmailSent = true;
     } catch (err) {
-      console.warn('[api/integrations/valor/webhook] internal email failed:', hlErrorMessage(err));
+      const errMsg = hlErrorMessage(err);
+      console.warn('[api/integrations/valor/webhook] internal email failed:', errMsg);
+
+      // 2026-09-02 incident: the internal contact's GHL Email DND flipped on
+      // (code 105, "user clicked unsubscribe"), so every send here failed and
+      // this console.warn was the ONLY signal — two real deposits produced no
+      // staff alert and nobody noticed for two days. Two independent
+      // fallbacks, both best-effort:
+
+      // (a) Telegram fallback to the 'jobs' audience (same audience the
+      // pay-balance route uses for a booking/money staff alert). Second belt —
+      // notifyTelegramAudience is documented never to throw (it already
+      // catches its own per-chat send errors), but this route's whole
+      // Promise.allSettled batch is itself belt-and-suspenders for exactly
+      // this kind of unforeseen throw, so mirror that posture here rather than
+      // lean on the batch alone.
+      try {
+        await notifyTelegramAudience(
+          'jobs',
+          `⚠️ Deposit received but the staff email failed\n` +
+            `${quote.customer_name ?? 'A customer'}${quote.quote_number ? ` (Quote #${quote.quote_number})` : ''} paid ` +
+            `$${depositUsd.toFixed(2)} of $${totalUsd.toFixed(2)} total.\n` +
+            `GHL error: ${errMsg}\n` +
+            `${adminUrl}`,
+        );
+      } catch (telegramErr) {
+        console.error(
+          '[api/integrations/valor/webhook] telegram fallback for internal email failure also failed:',
+          telegramErr,
+        );
+      }
+
+      // (b) Durable marker on the quote — mirrors approve route's
+      // approval_notify_failed_at/approval_notify_error pair (same best-effort
+      // posture: its own failure only logs, never undoes the recorded
+      // payment). Test Quote (#93): never write it for is_test — mirrors the
+      // approve route's rule, though in practice this webhook already refuses
+      // is_test quotes earlier (see the is_test guard above), so this branch
+      // is unreachable for them today; kept for parity/defense.
+      if (!quote.is_test) {
+        const { error: markErr } = await sb
+          .from('quotes')
+          .update({
+            deposit_notify_failed_at: new Date().toISOString(),
+            deposit_notify_error: errMsg,
+          })
+          .eq('id', quote.id);
+        if (markErr) {
+          console.warn('[api/integrations/valor/webhook] deposit-notify-marker write failed:', markErr.message);
+        }
+      }
     }
   };
 
