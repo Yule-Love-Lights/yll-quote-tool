@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  attributeAuditRows,
   groupPersonDays,
   isRangeKey,
   rangeFromDay,
@@ -118,6 +119,35 @@ describe('groupPersonDays', () => {
     expect(out.totalSeconds).toBe(2 * H);
   });
 
+  it('leaves a future-dated shift out of a range, the way the summary table does', () => {
+    // No such row can exist today: the manual routes refuse a future
+    // timestamp and a live clock-in cannot be ahead of now. The bound is
+    // here so the two modules cannot silently diverge if one ever appears,
+    // because this page and the summary row beside it must never quote
+    // different totals for the same shift.
+    const future = shift({
+      id: 'future',
+      clockInAt: '2026-09-20T16:00:00Z',
+      clockOutAt: '2026-09-20T17:00:00Z',
+    });
+    const ranged = groupPersonDays([future], [], rangeFromDay('30', NOW), NOW);
+    expect(ranged.shiftCount).toBe(0);
+    expect(ranged.totalSeconds).toBe(0);
+
+    const summary = summarizeHours(
+      [{ id: 'p', displayName: 'P', active: true, isOffice: true }],
+      [{ ...future, crewMemberId: 'p' }],
+      [],
+      NOW,
+    );
+    expect(summary[0]!.last30Seconds).toBe(0);
+
+    // All time has no bounds at either end, so it still shows the row rather
+    // than hiding a real record nobody could then investigate.
+    const all = groupPersonDays([future], [], rangeFromDay('all', NOW), NOW);
+    expect(all.shiftCount).toBe(1);
+  });
+
   it('counts an open shift up to now and reports it', () => {
     const out = groupPersonDays(
       [shift({ id: 'a', clockInAt: '2026-09-02T12:00:00Z', source: 'telegram' })],
@@ -175,12 +205,13 @@ describe('groupPersonDays', () => {
     expect(out.totalSeconds).toBe(0);
   });
 
-  // NOTE, so nobody mistakes this for a pin on the `day !== 'unknown'` guard
-  // in groupPersonDays: removing that guard alone does NOT fail this test,
-  // because 'unknown' also sorts after every YYYY-MM-DD string and so
-  // survives the `day < fromDay` comparison anyway. The guard is kept as the
-  // stated intent (it would still hold if the key format ever changed); this
-  // test pins the OUTCOME, which two independent things currently protect.
+  // This test DID only pin an outcome, back when the range had a low bound
+  // only: 'unknown' sorts after every YYYY-MM-DD string, so it survived
+  // `day < fromDay` whether or not the guard existed. Adding the upper bound
+  // (`day > todayKey`) for cross-module agreement inverted that — 'unknown'
+  // is now greater than today's key too, so the `day !== 'unknown'` guard
+  // became load-bearing and a probe that removes it fails this test. Kept as
+  // a record of why the guard is not decorative.
   it('keeps an unreadable clock-in even when a range is set, rather than filtering it away', () => {
     const out = groupPersonDays(
       [shift({ id: 'a', clockInAt: 'not-a-date' })],
@@ -311,5 +342,104 @@ describe('toAuditEntry', () => {
     expect(e?.actor).toBe('unknown');
     const noActor = toAuditEntry({ ...base, actor: null, action: 'shift-manual-edit', detail: {} });
     expect(noActor?.actor).toBe('unknown');
+  });
+});
+
+
+describe('attributeAuditRows', () => {
+  const row = (over: Record<string, unknown>) => ({
+    id: String(over.id),
+    actor: 'Ann (ann@x)',
+    created_at: String(over.created_at),
+    action: String(over.action),
+    detail: (over.detail ?? {}) as Record<string, unknown>,
+  });
+
+  it('keeps a removal-called-off entry that arrives BEFORE the row naming its shift', () => {
+    // Newest first, the order the query returns. The abort is newer than the
+    // void it corrects, and carries no crewMemberId — only a shift id. A
+    // single pass would classify it as belonging to nobody and drop it,
+    // leaving the false "Shift removed" claim standing alone.
+    const out = attributeAuditRows(
+      [
+        row({
+          id: 'abort',
+          created_at: '2026-09-01T12:00:05Z',
+          action: 'shift-manual-void-aborted',
+          detail: { shiftId: 's1', reason: 'edit-race' },
+        }),
+        row({
+          id: 'void',
+          created_at: '2026-09-01T12:00:00Z',
+          action: 'shift-manual-void',
+          detail: { shiftId: 's1', crewMemberId: 'p', before: { clock_in_at: 'x' } },
+        }),
+      ],
+      'p',
+      [], // the shift is already gone, so it is not in the live shift list
+    );
+    expect(out.entries.map((e) => e.id)).toEqual(['abort', 'void']);
+    expect(out.partial).toBe(false);
+  });
+
+  it('says the trail is partial when a called-off removal names no shift it can place', () => {
+    const out = attributeAuditRows(
+      [
+        row({
+          id: 'abort',
+          created_at: '2026-09-01T12:00:05Z',
+          action: 'shift-manual-void-aborted',
+          detail: { shiftId: 'someone-elses-shift', reason: 'edit-race' },
+        }),
+      ],
+      'p',
+      ['s1'],
+    );
+    expect(out.entries).toHaveLength(0);
+    expect(out.partial).toBe(true);
+  });
+
+  it('takes another person’s rows out, and never reports that as partial', () => {
+    const out = attributeAuditRows(
+      [
+        row({ id: 'mine', created_at: '2026-09-01T12:00:00Z', action: 'shift-manual-edit', detail: { shiftId: 's1', crewMemberId: 'p' } }),
+        row({ id: 'theirs', created_at: '2026-09-01T13:00:00Z', action: 'shift-manual-edit', detail: { shiftId: 's9', crewMemberId: 'other' } }),
+      ],
+      'p',
+      [],
+    );
+    expect(out.entries.map((e) => e.id)).toEqual(['mine']);
+    expect(out.partial).toBe(false);
+  });
+
+  it('places an abort against a shift the person still has', () => {
+    const out = attributeAuditRows(
+      [row({ id: 'abort', created_at: '2026-09-01T12:00:00Z', action: 'shift-manual-void-aborted', detail: { shiftId: 's1', reason: 'delete-failed' } })],
+      'p',
+      ['s1'],
+    );
+    expect(out.entries.map((e) => e.id)).toEqual(['abort']);
+    expect(out.partial).toBe(false);
+  });
+
+  it('returns the trail newest first, so a correction sits above what it corrects', () => {
+    const out = attributeAuditRows(
+      [
+        row({ id: 'older', created_at: '2026-08-01T00:00:00Z', action: 'shift-manual-create', detail: { shiftId: 's1', crewMemberId: 'p' } }),
+        row({ id: 'newer', created_at: '2026-09-01T00:00:00Z', action: 'shift-manual-edit', detail: { shiftId: 's1', crewMemberId: 'p' } }),
+      ],
+      'p',
+      [],
+    );
+    expect(out.entries.map((e) => e.id)).toEqual(['newer', 'older']);
+  });
+
+  it('ignores activity rows that are not manual shift writes', () => {
+    const out = attributeAuditRows(
+      [row({ id: 'x', created_at: '2026-09-01T00:00:00Z', action: 'handled', detail: { crewMemberId: 'p' } })],
+      'p',
+      [],
+    );
+    expect(out.entries).toHaveLength(0);
   });
 });

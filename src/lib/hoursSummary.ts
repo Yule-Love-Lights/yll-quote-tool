@@ -298,7 +298,13 @@ export async function loadHoursSummary(nowIso?: string): Promise<HoursSummary> {
       return [] as ShiftRow[];
     }),
     readAllBreaks(db).catch((e: unknown) => {
-      errors.push(e instanceof Error ? e.message : 'shift_breaks read failed');
+      // Same wording as personHours.ts, for the same reason: with no break
+      // rows nothing is subtracted and every figure is TOO HIGH. Fixed in
+      // both surfaces at once rather than leaving the sibling to be found
+      // later, which is this repo's sibling-parity pitfall.
+      errors.push(
+        `${e instanceof Error ? e.message : 'shift_breaks read failed'} — break time could not be subtracted, so the hours below are too HIGH, not too low`,
+      );
       return [] as BreakRow[];
     }),
   ]);

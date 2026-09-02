@@ -100,6 +100,7 @@ export default async function PersonTimePage({
 
         <PersonHoursSection
           crewName={person.displayName}
+          isOffice={person.isOffice}
           days={time.days}
           range={time.range}
           totalSeconds={time.totalSeconds}

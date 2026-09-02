@@ -126,6 +126,7 @@ export function groupPersonDays(
 ): { days: PersonDay[]; totalSeconds: number; shiftCount: number; openShift: PersonTime['openShift']; autoClosed: { count: number; seconds: number } } {
   const nowMs = resolveNowMs(nowIso);
   const now = new Date(nowMs).toISOString();
+  const todayKey = etDayKey(new Date(nowMs));
 
   const breaksByShift = new Map<string, BreakInterval[]>();
   for (const b of breaks) {
@@ -146,7 +147,15 @@ export function groupPersonDays(
     // it lands under the sentinel day below, which the page renders with an
     // explicit label rather than leaving the row invisible.
     const day = Number.isNaN(startMs) ? 'unknown' : etDayKey(new Date(startMs));
-    if (fromDay !== null && day !== 'unknown' && day < fromDay) continue;
+    // Both ends, matching summarizeHours exactly. It bounds its windows with
+    // `day >= from && day <= today`; bounding only the low end here would put
+    // a future-dated shift in this page's range total and not in the summary
+    // row beside it, which is the one thing this module's header promises can
+    // never happen (technical lens on PR #1178). No such row exists today —
+    // adminCreateShift and adminUpdateShiftTimes both refuse a future
+    // timestamp, and a live clock-in cannot be ahead of now — so this is a
+    // guard against divergence, not against a known row.
+    if (fromDay !== null && day !== 'unknown' && (day < fromDay || day > todayKey)) continue;
 
     const envelope: ShiftEnvelope = { clockInAt: s.clockInAt, clockOutAt: s.clockOutAt };
     const shiftBreaks = breaksByShift.get(s.id) ?? [];
@@ -216,7 +225,7 @@ const AUDIT_ACTIONS = [
   'shift-manual-void-aborted',
 ] as const;
 
-type ActivityRow = {
+export type ActivityRow = {
   id: string;
   actor: string | null;
   action: string;
@@ -246,6 +255,48 @@ export function toAuditEntry(row: ActivityRow): ShiftAuditEntry | null {
     after: timesFrom(detail.after),
     reason: typeof detail.reason === 'string' ? detail.reason : null,
   };
+}
+
+/**
+ * PURE. Splits raw activity rows into this person's trail.
+ *
+ * TWO passes, because the rows arrive newest-first and an aborted void is
+ * attributed through the shift ids of OTHER rows. In one pass the abort is
+ * seen before the older row that would have named its shift, so the exact
+ * case this trail exists for — two admins racing a void, one winning, the
+ * other's "removal called off" entry being the correction to a standing
+ * "Shift removed" claim — dropped the correction and kept the claim
+ * (technical lens on PR #1178). Pass one learns every shift id that is this
+ * person's; pass two places the aborts.
+ */
+export function attributeAuditRows(
+  rows: ReadonlyArray<ActivityRow>,
+  crewMemberId: string,
+  knownShiftIds: ReadonlyArray<string>,
+): { entries: ShiftAuditEntry[]; partial: boolean } {
+  const known = new Set(knownShiftIds);
+  const mine: ShiftAuditEntry[] = [];
+  const aborts: ShiftAuditEntry[] = [];
+  for (const row of rows) {
+    const entry = toAuditEntry(row);
+    if (!entry) continue;
+    const detail = row.detail ?? {};
+    if (typeof detail.crewMemberId === 'string' && detail.crewMemberId === crewMemberId) {
+      mine.push(entry);
+      if (entry.shiftId) known.add(entry.shiftId);
+    } else if (entry.action === 'shift-manual-void-aborted') {
+      aborts.push(entry);
+    }
+  }
+
+  let sawUnattributableAbort = false;
+  for (const abort of aborts) {
+    if (abort.shiftId && known.has(abort.shiftId)) mine.push(abort);
+    else sawUnattributableAbort = true;
+  }
+  // Newest first, so a correction sits directly above the claim it corrects.
+  mine.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return { entries: mine, partial: sawUnattributableAbort };
 }
 
 /**
@@ -286,26 +337,7 @@ async function readAudit(
     if (page.length < PAGE) break;
   }
 
-  const known = new Set(knownShiftIds);
-  const entries: ShiftAuditEntry[] = [];
-  let sawUnattributableAbort = false;
-  for (const row of rows) {
-    const entry = toAuditEntry(row);
-    if (!entry) continue;
-    const detail = row.detail ?? {};
-    const belongsByCrew =
-      typeof detail.crewMemberId === 'string' && detail.crewMemberId === crewMemberId;
-    if (belongsByCrew) {
-      entries.push(entry);
-      if (entry.shiftId) known.add(entry.shiftId);
-      continue;
-    }
-    if (entry.action === 'shift-manual-void-aborted') {
-      if (entry.shiftId && known.has(entry.shiftId)) entries.push(entry);
-      else sawUnattributableAbort = true;
-    }
-  }
-  return { entries, partial: sawUnattributableAbort };
+  return attributeAuditRows(rows, crewMemberId, knownShiftIds);
 }
 
 async function readShifts(db: Db, crewMemberId: string) {
@@ -417,7 +449,14 @@ export async function loadPersonTime(
 
   const [breakRows, audit] = await Promise.all([
     readBreaks(db, shiftIds).catch((e: unknown) => {
-      errors.push(e instanceof Error ? e.message : 'shift_breaks read failed');
+      // The DIRECTION matters and a generic "incomplete" hides it: with no
+      // break rows, paidSecondsForShift subtracts nothing and every total on
+      // the page is TOO HIGH. On a payroll screen an overstatement that reads
+      // like an undercount is the dangerous way round (technical lens on
+      // PR #1178).
+      errors.push(
+        `${e instanceof Error ? e.message : 'shift_breaks read failed'} — break time could not be subtracted, so the hours below are too HIGH, not too low`,
+      );
       return [] as Awaited<ReturnType<typeof readBreaks>>;
     }),
     readAudit(db, crewMemberId, shiftIds).catch((e: unknown) => {

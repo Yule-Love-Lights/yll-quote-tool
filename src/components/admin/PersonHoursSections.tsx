@@ -57,7 +57,19 @@ const SOURCE_LABEL: Record<string, string> = {
 
 const sourceLabel = (s: string) => SOURCE_LABEL[s] ?? s;
 
-function ShiftRow({ shift, crewName }: { shift: PersonShift; crewName: string }) {
+function ShiftRow({
+  shift,
+  crewName,
+  evidenceHref,
+}: {
+  shift: PersonShift;
+  crewName: string;
+  /** Where the admin can SEE what really happened that day, or null when
+      nothing in the app knows. A badge saying "correct it" with no evidence
+      to correct it from invites a confident guess typed into payroll (admin
+      lens on PR #1178). */
+  evidenceHref: string | null;
+}) {
   const open = shift.clockOutAt === null;
   const autoClosed = shift.closeSource === 'system';
   return (
@@ -89,11 +101,19 @@ function ShiftRow({ shift, crewName }: { shift: PersonShift; crewName: string })
             Clocked in now
           </span>
         )}
-        {autoClosed && (
-          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 whitespace-nowrap">
-            Closed by the midnight sweep — correct it
-          </span>
-        )}
+        {autoClosed &&
+          (evidenceHref ? (
+            <Link
+              href={evidenceHref}
+              className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 underline whitespace-nowrap"
+            >
+              Closed by the midnight sweep — check the van&apos;s day
+            </Link>
+          ) : (
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 whitespace-nowrap">
+              Closed by the midnight sweep — ask them what time they stopped
+            </span>
+          ))}
         {shift.manualBy && (
           <span className="text-xs text-gray-400">typed by {shift.manualBy}</span>
         )}
@@ -103,10 +123,14 @@ function ShiftRow({ shift, crewName }: { shift: PersonShift; crewName: string })
             clockInAt={shift.clockInAt}
             clockOutAt={shift.clockOutAt}
           />
-          {/* Only on rows the office TYPED, mirroring adminVoidShift's guard:
-              a shift the person clocked themselves is their own record and is
-              corrected, never erased. Offering a button the server refuses
-              would be a door into a dead end. */}
+          {/* Only on rows the office TYPED: a shift the person clocked
+              themselves is their own record and is corrected, never erased.
+              This mirrors the FIRST of adminVoidShift's guards, not all of
+              them — the server also refuses a row carrying a break or job
+              segment, and that one is not mirrored here, so Remove can still
+              come back with a refusal an admin reads inline (technical lens
+              on PR #1178). Checking it client-side would mean shipping the
+              child rows to the page for a case that has never occurred. */}
           {shift.removable && (
             <VoidShiftButton
               shiftId={shift.id}
@@ -121,8 +145,23 @@ function ShiftRow({ shift, crewName }: { shift: PersonShift; crewName: string })
   );
 }
 
+/**
+ * The day's GPS timeline, when there is one for this person.
+ *
+ * Only for FIELD crew: the two clocks page lists field shifts beside the van
+ * track (fleetDay.ts drops is_office rows), so for office staff there is no
+ * second record of the day and the badge must not pretend otherwise. Also
+ * null for the sentinel 'unknown' day, which is not a date the page accepts.
+ */
+function evidenceHrefFor(isOffice: boolean, day: string): string | null {
+  if (isOffice) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  return `/admin/fleet/clocks?date=${day}`;
+}
+
 export function PersonHoursSection({
   crewName,
+  isOffice,
   days,
   range,
   totalSeconds,
@@ -133,6 +172,8 @@ export function PersonHoursSection({
   basePath,
 }: {
   crewName: string;
+  /** Decides whether a midnight-closed shift can point at any evidence. */
+  isOffice: boolean;
   days: PersonDay[];
   range: RangeKey;
   totalSeconds: number;
@@ -220,7 +261,12 @@ export function PersonHoursSection({
               </div>
               <ul className="divide-y divide-gray-100">
                 {d.shifts.map((s) => (
-                  <ShiftRow key={s.id} shift={s} crewName={crewName} />
+                  <ShiftRow
+                    key={s.id}
+                    shift={s}
+                    crewName={crewName}
+                    evidenceHref={evidenceHrefFor(isOffice, d.day)}
+                  />
                 ))}
               </ul>
             </div>
@@ -263,10 +309,20 @@ export function ShiftAuditSection({
   return (
     <section>
       <h2 className="text-lg font-semibold text-gray-900 mb-1">Manual changes</h2>
+      {/* NOT "every time" (admin lens on PR #1178). The audit row for a
+          create or an edit is written best-effort — shifts.ts logs a failed
+          insert and carries on, because the shift itself is still on screen
+          and recoverable — so a change can land with no entry here. Only the
+          VOID path refuses to proceed without its entry. Copy that promised
+          completeness would make a missing entry read as "nobody touched
+          it", which is the opposite of the truth. */}
       <p className="text-sm text-gray-500 mb-4">
-        Every time someone added, corrected or removed this person&apos;s shifts by hand. The
-        clock itself is not listed here — only office edits. For a removed shift this is the only
-        surviving record of what it said.
+        Changes made by hand to this person&apos;s shifts: added, corrected or removed. The clock
+        itself is not listed here — only office edits. A removal cannot be recorded here and go
+        ahead anyway, so a removed shift always leaves its entry, and that entry is the only
+        surviving record of what the shift said. An add or a correction is recorded on a
+        best-effort basis, so a gap here means it was not recorded, which is not the same as it
+        not having happened.
       </p>
 
       {entries.length === 0 ? (
