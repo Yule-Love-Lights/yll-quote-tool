@@ -65,12 +65,13 @@ export function TimeExceptionsSection({
           when they clock out or when the midnight sweep runs; there is no
           admin editor for office shifts yet. */}
       <p className="text-sm text-gray-500 -mt-2 mb-4">
-        To fix one for field crew, correct the shift&apos;s times on{' '}
+        To fix one, open the person&apos;s name in the hours table above and correct the
+        shift&apos;s times; closing the shift there closes its stuck children. Field crew shifts
+        can also be corrected beside the GPS timeline on{' '}
         <a href="/admin/fleet/clocks" className="underline">
           the day&apos;s two clocks page
         </a>
-        . An office person&apos;s open shift is not listed there; it closes when they clock out or
-        when the midnight sweep runs, and there is no admin editor for office shifts yet.
+        , which lists field shifts only.
       </p>
 
       {errors.length > 0 && (

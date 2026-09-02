@@ -26,14 +26,14 @@
 //  - A midnight auto-close is reported separately AND left inside the totals.
 //    Leaving it out would silently under-report a real day the person simply
 //    forgot to close; hiding that it is in would make a 14-hour phantom look
-//    like work. The admin sees both numbers. A FIELD shift is fixed on the
-//    two clocks page (fleetDay.ts lists field shifts only); an OFFICE shift
-//    has no editor in the app yet, and the section copy says so. Note for
-//    whoever builds that editor: adminUpdateShiftTimes and adminVoidShift in
-//    shifts.ts carry no is_office guard today (only adminCreateShift does),
-//    so the write layer will accept an office shift id the moment a screen
-//    hands it one; decide the rule there, not by accident (delta-verify on
-//    PR #1176).
+//    like work. The admin sees both numbers and corrects the shift on the
+//    person's own page (phase 2), which serves office and field alike; the
+//    two clocks page also corrects FIELD shifts beside the GPS timeline
+//    (fleetDay.ts lists field shifts only). adminUpdateShiftTimes and
+//    adminVoidShift carry no is_office condition and never did, which is why
+//    the person page needed no guard change; adminCreateShift DOES refuse
+//    office rows by name, so adding an office shift from nothing is still
+//    impossible and is a decision of its own.
 //  - A shift whose crew id matches no staff row is NOT dropped: it renders
 //    under '(unknown)'. Hiding a payroll row behind a failed lookup is the
 //    silent-empty class this repo keeps getting bitten by (fleetDay.ts has the
