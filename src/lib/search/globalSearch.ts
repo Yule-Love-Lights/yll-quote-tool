@@ -194,6 +194,8 @@ type JobRow = {
   id: string;
   job_number: number | null;
   quote_id: string | null;
+  customer_id: string | null;
+  property_id: string | null;
   status: string | null;
   install_date: string | null;
   created_at: string | null;
@@ -203,6 +205,7 @@ type InvoiceRow = {
   id: string;
   invoice_number: number | null;
   quote_id: string | null;
+  customer_id: string | null;
   status: string | null;
   balance: number | null;
   total: number | null;
@@ -212,9 +215,10 @@ type InvoiceRow = {
 const CUSTOMER_COLUMNS = 'id, name, email, phone, hl_contact_id, updated_at';
 const QUOTE_COLUMNS =
   'id, quote_number, customer_name, customer_address, status, total, created_at';
-const JOB_COLUMNS = 'id, job_number, quote_id, status, install_date, created_at';
+const JOB_COLUMNS =
+  'id, job_number, quote_id, customer_id, property_id, status, install_date, created_at';
 const INVOICE_COLUMNS =
-  'id, invoice_number, quote_id, status, balance, total, created_at';
+  'id, invoice_number, quote_id, customer_id, status, balance, total, created_at';
 
 function money(n: number | null): string | null {
   if (n == null) return null;
@@ -325,6 +329,23 @@ export async function globalSearch(
   ]);
 
   const customerRows = (customersRes.data ?? []) as CustomerRow[];
+
+  // --- Properties ----------------------------------------------------------
+  // A job points at a PROPERTY, and a property carries its own address. Until
+  // now a job was findable by address only through the address stored on its
+  // quote, so a job whose property address was corrected after the quote was
+  // written, or one with no quote at all, could be found by its number and
+  // nothing else. Text queries only: a phone number is not an address.
+  const propertyRes =
+    textSafe && number == null
+      ? await sb
+          .from('properties')
+          .select('id, customer_id')
+          .ilike('address', `%${q}%`)
+          .limit(MAX_PER_GROUP * 4)
+      : { data: [] as { id: string; customer_id: string | null }[] };
+  const propertyRows = (propertyRes.data ?? []) as { id: string; customer_id: string | null }[];
+  const matchedPropertyIds = propertyRows.map((r) => r.id);
   const quoteRowsById = new Map<string, QuoteRow>();
   for (const r of [
     ...((liveQuotesRes.data ?? []) as QuoteRow[]),
@@ -334,6 +355,15 @@ export async function globalSearch(
   }
   const quoteRows = [...quoteRowsById.values()];
   const matchedQuoteIds = quoteRows.map((r) => r.id);
+  // Customers whose own row matched, plus the owners of any matched property.
+  // Jobs and invoices carry customer_id, so this is what makes them findable
+  // by WHO they are for rather than only by what their quote happens to say.
+  const matchedCustomerIds = [
+    ...new Set([
+      ...customerRows.map((r) => r.id),
+      ...propertyRows.map((r) => r.customer_id).filter((id): id is string => !!id),
+    ]),
+  ];
   // Every id here came from a read filtered on is_test=false, which is what
   // lets the job and invoice rows scoped by these ids skip their own check.
   const nonTestQuoteIds = new Set(matchedQuoteIds);
@@ -348,6 +378,12 @@ export async function globalSearch(
   if (matchedQuoteIds.length > 0) {
     jobClauses.push(`quote_id.in.(${matchedQuoteIds.join(',')})`);
   }
+  if (matchedCustomerIds.length > 0) {
+    jobClauses.push(`customer_id.in.(${matchedCustomerIds.join(',')})`);
+  }
+  if (matchedPropertyIds.length > 0) {
+    jobClauses.push(`property_id.in.(${matchedPropertyIds.join(',')})`);
+  }
   const jobsRes = jobClauses.length
     ? await sb
         .from('jobs')
@@ -361,6 +397,9 @@ export async function globalSearch(
   if (number != null) invoiceClauses.push(`invoice_number.eq.${number}`);
   if (matchedQuoteIds.length > 0) {
     invoiceClauses.push(`quote_id.in.(${matchedQuoteIds.join(',')})`);
+  }
+  if (matchedCustomerIds.length > 0) {
+    invoiceClauses.push(`customer_id.in.(${matchedCustomerIds.join(',')})`);
   }
   const invoicesRes = invoiceClauses.length
     ? await sb
@@ -425,8 +464,35 @@ export async function globalSearch(
   const visibleJobRows = jobRows.filter(notFromTestQuote);
   const visibleInvoiceRows = invoiceRows.filter(notFromTestQuote);
 
-  const nameFor = (quoteId: string | null): string =>
-    (quoteId ? nameByQuoteId.get(quoteId) : null) ?? 'Unknown customer';
+  // Names for rows matched by CUSTOMER or PROPERTY rather than by their quote.
+  // Those rows may have no quote at all, and their customer may not be among
+  // the handful the customers group returned, so the missing ones are looked
+  // up. Without this a job found by its address renders as "Unknown customer",
+  // which is the one thing the searcher was trying to establish.
+  const nameByCustomerId = new Map<string, string>();
+  for (const r of customerRows) {
+    if (r.name) nameByCustomerId.set(r.id, r.name);
+  }
+  const missingCustomerIds = [
+    ...new Set(
+      [...visibleJobRows, ...visibleInvoiceRows]
+        .map((r) => r.customer_id)
+        .filter((id): id is string => !!id && !nameByCustomerId.has(id)),
+    ),
+  ];
+  if (missingCustomerIds.length > 0) {
+    const extra = await sb.from('customers').select('id, name').in('id', missingCustomerIds);
+    for (const r of (extra.data ?? []) as { id: string; name: string | null }[]) {
+      if (r.name) nameByCustomerId.set(r.id, r.name);
+    }
+  }
+
+  // The quote's name first, because it is the name written on the paperwork
+  // for this specific piece of work; the customer record second.
+  const nameFor = (row: { quote_id: string | null; customer_id: string | null }): string =>
+    (row.quote_id ? nameByQuoteId.get(row.quote_id) : null) ??
+    (row.customer_id ? nameByCustomerId.get(row.customer_id) : null) ??
+    'Unknown customer';
 
   const customers: SearchHit[] = customerRows.map((r) => ({
     kind: 'customer' as const,
@@ -458,7 +524,7 @@ export async function globalSearch(
     kind: 'job' as const,
     key: `job:${r.id}`,
     href: `/admin/jobs/${r.id}`,
-    title: nameFor(r.quote_id),
+    title: nameFor(r),
     subtitle: r.install_date ? `Install ${r.install_date}` : null,
     label: r.job_number != null ? `#${r.job_number}` : null,
     status: humanStatus(r.status),
@@ -470,7 +536,7 @@ export async function globalSearch(
     kind: 'invoice' as const,
     key: `invoice:${r.id}`,
     href: `/admin/invoices/${r.id}`,
-    title: nameFor(r.quote_id),
+    title: nameFor(r),
     // An open invoice is about what is still owed; a settled one is about what
     // it was worth. Showing a balance of zero on a paid invoice reads as a bug.
     subtitle: isActiveInvoice(r.status)

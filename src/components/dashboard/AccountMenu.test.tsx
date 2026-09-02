@@ -19,6 +19,7 @@ describe('AccountMenu — closed initial render', () => {
     <AccountMenu
       identity={{ name: 'Naldo Vengeance', email: 'naldo@example.com', role: 'admin' }}
       onSignOut={() => {}}
+      roleConfirmed
     />,
   );
 
@@ -146,8 +147,12 @@ describe('AccountMenu — the items the dropdown must carry', () => {
     expect(SOURCE).toContain('accountLinksFor(identity.role, roleConfirmed)');
   });
 
-  it('shows the View-as switcher to admins only', () => {
-    expect(SOURCE).toContain("const isAdmin = identity.role === 'admin'");
+  it('shows the View-as switcher to CONFIRMED admins only', () => {
+    // Not a hinted admin. Until 2026-09-01 this read the role alone, so on a
+    // shared computer the previous person's stored role could draw the
+    // switcher for the next one. It now agrees with the admin-only menu rows,
+    // which already waited for the session answer.
+    expect(SOURCE).toContain("const isAdmin = roleConfirmed && identity.role === 'admin'");
     expect(SOURCE).toContain('{isAdmin && (');
   });
 });

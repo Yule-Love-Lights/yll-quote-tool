@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 
 export default function AdminCallsPage() {
   return (
-    <OperatorShell active="settings">
+    <OperatorShell active="calls">
       <main className="max-w-3xl mx-auto">
         <div className="mb-6">
           <p
