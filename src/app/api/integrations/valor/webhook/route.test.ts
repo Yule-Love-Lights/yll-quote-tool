@@ -497,6 +497,202 @@ describe('Valor webhook — internal alert reads the FROZEN deposit percent (#17
   });
 });
 
+// 2026-09-02 incident fix: the internal "✅ deposit received" staff email is a
+// single GHL send to HIGHLEVEL_INTERNAL_CONTACT_ID. When that contact's Email
+// DND is on, GHL refuses the send and the route's only reaction used to be a
+// console.warn — two real deposits produced no staff alert for two days. Now
+// a failed internal email also fires a Telegram fallback (audience 'jobs') and
+// stamps a durable deposit_notify_failed_at/deposit_notify_error marker.
+describe('Valor webhook — deposit-notify Telegram fallback + durable marker (2026-09-02 incident)', () => {
+  it('internal email throws → Telegram fallback fires with the customer name + deposit amount, and the marker is written', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    // 1st sendEmail call = customer receipt (succeeds); 2nd = internal alert
+    // (fails) — same call-order convention the "runs AFTER the customer
+    // notifications settle" test above relies on.
+    hl.sendEmail.mockImplementationOnce(async () => ({}));
+    hl.sendEmail.mockRejectedValueOnce(new Error('105: Email DND active for this contact'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    expect(json.internalEmailSent).toBe(false);
+
+    // Telegram fallback: fired once (in addition to the unrelated prep ping),
+    // to the 'jobs' audience, and the text carries the customer name and the
+    // deposit amount.
+    const fallbackCall = notifyTelegramAudience.mock.calls.find(
+      (c) => typeof c[1] === 'string' && c[1].includes('staff email failed'),
+    );
+    expect(fallbackCall).toBeTruthy();
+    expect(fallbackCall![0]).toBe('jobs');
+    expect(fallbackCall![1]).toContain('Jordan Smith');
+    expect(fallbackCall![1]).toContain('$1350.00'); // deposit
+    expect(fallbackCall![1]).toContain('$2700.00'); // total
+    // Fix round (staff lens): "HighLevel", never "GHL", on screen; states
+    // plainly the deposit is safe; points staff at the settings health check.
+    expect(fallbackCall![1]).toContain('HighLevel error: 105: Email DND active for this contact');
+    expect(fallbackCall![1]).not.toContain('GHL error');
+    expect(fallbackCall![1]).toContain('The deposit is recorded and the booking is safe');
+    expect(fallbackCall![1]).toContain('Check Settings → HighLevel');
+
+    // Durable marker: updatePayloads[0] is the atomic payment-claim stamp,
+    // [1] is the deposit-notify marker (nothing else in this batch writes to
+    // `quotes`).
+    expect(updatePayloads).toHaveLength(2);
+    expect(updatePayloads[1]).toMatchObject({
+      deposit_notify_failed_at: expect.any(String),
+      deposit_notify_error: expect.stringContaining('Email DND active'),
+    });
+  });
+
+  it('internal email succeeds → neither the Telegram fallback nor the marker fires', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.internalEmailSent).toBe(true);
+    // Only the atomic payment-claim stamp — no marker write.
+    expect(updatePayloads).toHaveLength(1);
+    // Only the unrelated #82 prep ping fired — no fallback text.
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][1]).not.toContain('staff email failed');
+  });
+
+  // The webhook refuses ANY is_test quote before it ever reaches the payment
+  // claim or the notification batch (the existing is_test guard, above the
+  // booking logic) — Test Quotes book only via /simulate-deposit. That makes
+  // the new `if (!quote.is_test)` guard around the marker write structurally
+  // unreachable through this route today; it exists purely for parity with
+  // the approve route's identical rule and as a defense against a future
+  // change to the early return. This test pins the REACHABLE invariant (an
+  // is_test quote never gets a marker or a fallback ping from this route) —
+  // it does not, and cannot, mutation-probe the new guard line itself, since
+  // reverting that line changes no observable behavior on this path. See the
+  // brief report for the honest disposition of this.
+  it('an is_test quote never reaches the notify code at all (existing early-return guard) — no marker, no fallback', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE, is_test: true }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ignored).toBe('test-quote');
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
+  });
+
+  it('a throwing Telegram fallback does not reject the batch or change the webhook response (still writes the marker)', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    hl.sendEmail.mockImplementationOnce(async () => ({})); // customer receipt
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down')); // internal alert
+    // Sticky (not -Once): the batch also fires the unrelated #82 prep ping
+    // through the SAME notifyTelegramAudience mock, and the two calls are not
+    // guaranteed to resolve in literal source order (they start from
+    // different await points) — rejecting every call removes the ordering
+    // assumption entirely. Reset afterwards so this doesn't leak into other
+    // tests (beforeEach only calls clearAllMocks, which clears call history,
+    // not a sticky implementation).
+    notifyTelegramAudience.mockRejectedValue(new Error('telegram down'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+    // The marker write is a separate best-effort branch — a thrown Telegram
+    // fallback must not stop it from running.
+    expect(updatePayloads).toHaveLength(2);
+    expect(updatePayloads[1]).toMatchObject({ deposit_notify_error: 'GHL down' });
+
+    notifyTelegramAudience.mockReset();
+  });
+
+  // Fix round (customer lens): sendTelegramMessage has no timeout of its own,
+  // and this fallback is awaited inside the Promise.allSettled batch that
+  // gates the 200 handed back to Valor — a hanging Telegram call could
+  // stretch that response indefinitely. Proves the bound: a Telegram send
+  // that NEVER resolves still lets the webhook complete (bounded by
+  // DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS = 5s), and the marker still gets
+  // written. The unrelated #82 prep ping (audience 'inventory') is left
+  // resolving normally so this test isolates the ONE hanging call — a
+  // sticky reject-everything mock (as the throwing-fallback test above uses)
+  // would also hang prepPing's own await, since nothing bounds THAT call.
+  it('a never-resolving Telegram send does not stall the batch — bounded by the 5s timeout, and the marker is still written', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    hl.sendEmail.mockImplementationOnce(async () => ({})); // customer receipt
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down')); // internal alert
+    notifyTelegramAudience.mockImplementation((audience: string, text: string) => {
+      if (audience === 'jobs' && text.includes('staff email failed')) {
+        return new Promise<void>(() => {}); // never resolves/rejects
+      }
+      return Promise.resolve(); // the #82 prep ping — unaffected
+    });
+
+    vi.useFakeTimers();
+    try {
+      const resPromise = POST(signedReq(APPROVED_PAYLOAD));
+      await vi.advanceTimersByTimeAsync(5_000);
+      const res = await resPromise;
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.booked).toBe(true);
+      expect(updatePayloads).toHaveLength(2);
+      expect(updatePayloads[1]).toMatchObject({ deposit_notify_error: 'GHL down' });
+    } finally {
+      vi.useRealTimers();
+      notifyTelegramAudience.mockReset();
+    }
+  });
+
+  // Fix round: the fallback's setTimeout was never cleared, so in the common
+  // case (Telegram answers fine) a dangling timer kept the serverless
+  // invocation alive ~4.8s longer for a rejection nobody reads (reproduced
+  // in a standalone Node run). vi.getTimerCount() reads the fake-timer
+  // scheduler directly — it is 0 only if the timer was actually cleared, not
+  // merely "didn't fire yet".
+  it('clears the fallback timeout once Telegram resolves first — no timer left armed', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    hl.sendEmail.mockImplementationOnce(async () => ({})); // customer receipt
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down')); // internal alert
+    notifyTelegramAudience.mockImplementation(() => Promise.resolve()); // Telegram wins the race immediately
+
+    vi.useFakeTimers();
+    try {
+      const res = await POST(signedReq(APPROVED_PAYLOAD));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.booked).toBe(true);
+      expect(updatePayloads).toHaveLength(2);
+      expect(updatePayloads[1]).toMatchObject({ deposit_notify_error: 'GHL down' });
+
+      // The 5s fallback timer must already be cleared — not merely pending
+      // and not-yet-fired.
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advancing the full 5s confirms nothing further is scheduled (a
+      // lingering timer would still be counted here even before it fires).
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      notifyTelegramAudience.mockReset();
+    }
+  });
+});
+
 describe('Valor webhook — verification probe (Verify and Update)', () => {
   it('GET returns 200 for a reachability check', async () => {
     const res = await GET();

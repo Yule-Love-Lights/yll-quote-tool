@@ -299,7 +299,13 @@ alter table quotes
   -- 2026-08-05 NCE tag (#198) — row 188 true-up 2026-08-26: applied by
   -- migrations/2026-08-05-nce-customer-tags.sql, never folded into this file
   -- (predates the same-PR fold-in rule).
-  add column if not exists is_nce boolean not null default false;
+  add column if not exists is_nce boolean not null default false,
+  -- 2026-09-02 deposit-notify failure marker (Email-DND incident) — mirrors
+  -- approval_notify_failed_at/approval_notify_error above, for the webhook's
+  -- own "✅ deposit received" staff alert. migrations/2026-09-02-deposit-
+  -- notify-failed.sql.
+  add column if not exists deposit_notify_failed_at timestamptz,
+  add column if not exists deposit_notify_error text;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -347,6 +353,8 @@ create index if not exists quotes_ghl_stage_unsynced_idx
   on quotes (quote_sent_at desc) where quote_sent_at is not null and ghl_stage_synced_at is null;
 create index if not exists quotes_approval_notify_failed_idx
   on quotes (approval_notify_failed_at desc) where approval_notify_failed_at is not null;
+create index if not exists quotes_deposit_notify_failed_idx
+  on quotes (deposit_notify_failed_at desc) where deposit_notify_failed_at is not null;
 create index if not exists quotes_is_test_idx on quotes (is_test);
 -- quotes_customer_id_idx is created later, alongside the customer_id column
 -- itself (see the "Quote ⇄ customer/property linkage" block near the
