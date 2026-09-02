@@ -62,6 +62,7 @@ export default async function PersonTimePage({
         return null;
       })
     : null;
+  const settlementSummary = summarize(settlements ?? []);
   const basePath = `/admin/time-tracking/${encodeURIComponent(crewMemberId)}`;
 
   if (!time.person) {
@@ -132,7 +133,8 @@ export default async function PersonTimePage({
           days={time.days}
           range={time.range}
           settlements={settlements ?? []}
-          settledCents={summarize(settlements ?? []).settledCents}
+          settledCents={settlementSummary.settledCents}
+          halfUndone={settlementSummary.halfUndone}
           // Both reads have to have worked: the marks say which shifts are
           // already paid, the list says what was paid. Either failing makes
           // the panel misleading rather than merely incomplete.

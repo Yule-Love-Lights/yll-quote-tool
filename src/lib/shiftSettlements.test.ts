@@ -133,6 +133,53 @@ describe('summarize', () => {
 
   it('is zero, not null-ish, for somebody never paid', () => {
     const out = summarize([]);
-    expect(out).toEqual({ settledCents: 0, settlementCount: 0, lastPaidAt: null });
+    expect(out).toEqual({ settledCents: 0, settlementCount: 0, lastPaidAt: null, halfUndone: [] });
+  });
+
+  // voidShiftSettlement releases the lines FIRST and stamps the payment
+  // second. If the second write fails, the shifts are payable again while the
+  // payment still reads as live — counting it would show the same money
+  // twice (technical lens on PR #1179).
+  it('does not count a payment whose shifts were released but which never got its own void stamp', () => {
+    const out = summarize([
+      settlement({ id: 'good', totalCents: 50000, lines: [{ id: 'l1', shiftId: 's1', paidSeconds: 3600, rateCentsPerHour: 2500, referenceCents: 2500, voidedAt: null }] }),
+      settlement({
+        id: 'half-undone',
+        totalCents: 99900,
+        // Not voided itself, but every line released.
+        lines: [{ id: 'l2', shiftId: 's2', paidSeconds: 3600, rateCentsPerHour: 2500, referenceCents: 2500, voidedAt: '2026-09-02T10:00:00Z' }],
+      }),
+    ]);
+    expect(out.settledCents).toBe(50000);
+    expect(out.settlementCount).toBe(1);
+    expect(out.halfUndone).toEqual(['half-undone']);
+  });
+
+  it('still counts a payment that has at least one live line', () => {
+    const out = summarize([
+      settlement({
+        id: 'partly',
+        totalCents: 50000,
+        lines: [
+          { id: 'l1', shiftId: 's1', paidSeconds: 3600, rateCentsPerHour: 2500, referenceCents: 2500, voidedAt: '2026-09-02T10:00:00Z' },
+          { id: 'l2', shiftId: 's2', paidSeconds: 3600, rateCentsPerHour: 2500, referenceCents: 2500, voidedAt: null },
+        ],
+      }),
+    ]);
+    expect(out.settledCents).toBe(50000);
+    expect(out.halfUndone).toEqual([]);
+  });
+
+  it('does not call a properly voided payment half-undone', () => {
+    const out = summarize([
+      settlement({
+        id: 'voided',
+        totalCents: 50000,
+        voidedAt: '2026-09-02T10:00:00Z',
+        lines: [{ id: 'l1', shiftId: 's1', paidSeconds: 3600, rateCentsPerHour: 2500, referenceCents: 2500, voidedAt: '2026-09-02T10:00:00Z' }],
+      }),
+    ]);
+    expect(out.settledCents).toBe(0);
+    expect(out.halfUndone).toEqual([]);
   });
 });

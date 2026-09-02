@@ -27,6 +27,16 @@ export type PayableShift = {
   id: string;
   clockInAt: string;
   paidSeconds: number;
+  /** True when the midnight sweep closed this shift, so its clock-out is a
+   * placeholder and its hours are probably wrong.
+   *
+   * This travels into the pay panel ON PURPOSE (admin lens on PR #1179). The
+   * Hours section above already flags these in amber, but THIS is the panel
+   * where ticking one locks those hours into a payment record, and dropping
+   * the warning here left the loudest place to say it as the one place that
+   * did not. Live today: 5 of 27 real shifts are sweep-closed, averaging 14h
+   * against a normal day of about 4h 40m. */
+  needsReview: boolean;
 };
 
 const fmtDay = (iso: string) =>
@@ -62,6 +72,7 @@ export function ShiftPayPanel({
 
   const chosen = useMemo(() => payable.filter((s) => selected.has(s.id)), [payable, selected]);
   const chosenSeconds = chosen.reduce((sum, s) => sum + s.paidSeconds, 0);
+  const chosenUnverified = chosen.filter((s) => s.needsReview);
   const referenceCents = referenceCentsFor(chosenSeconds, rateCentsPerHour);
   const typedCents = parseAmountCents(amount);
 
@@ -100,10 +111,29 @@ export function ShiftPayPanel({
         if (!ok) return;
       }
     }
-    const ok = window.confirm(
-      `Record a payment to ${crewName}?\n\n${dollars(typedCents)} by ${method}, covering ${chosen.length} ${chosen.length === 1 ? 'shift' : 'shifts'} (${formatHours(chosenSeconds)}).\n\nThose shifts become locked: their times cannot be corrected until this payment is undone.`,
+    // Built as lines rather than one long template, so the sweep warning can
+    // be added without another round of escaping inside a template literal.
+    const lines = [
+      `Record a payment to ${crewName}?`,
+      '',
+      `${dollars(typedCents)} by ${method}, covering ${chosen.length} ${chosen.length === 1 ? 'shift' : 'shifts'} (${formatHours(chosenSeconds)}).`,
+    ];
+    // Named BEFORE the lock, not discovered after it (admin lens on PR #1179).
+    // Paying a sweep-closed shift freezes a clock-out nobody made, and the
+    // correction then has to go the long way round, through undoing a payment.
+    if (chosenUnverified.length > 0) {
+      lines.push(
+        '',
+        chosenUnverified.length === 1
+          ? 'One of them was closed by the midnight sweep, so its clock-out is a placeholder rather than a real time. Correct it first if you can.'
+          : `${chosenUnverified.length} of them were closed by the midnight sweep, so their clock-outs are placeholders rather than real times. Correct them first if you can.`,
+      );
+    }
+    lines.push(
+      '',
+      'Those shifts become locked: their times cannot be corrected until this payment is undone.',
     );
-    if (!ok) return;
+    if (!window.confirm(lines.join('\n'))) return;
 
     setBusy(true);
     setError(null);
@@ -119,10 +149,16 @@ export function ShiftPayPanel({
           note: note.trim() || null,
         }),
       });
-      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      const data = (await res.json().catch(() => null)) as { error?: string; code?: string } | null;
       setBusy(false);
       if (!res.ok) {
         setError(data?.error ?? `Could not record the payment (${res.status}).`);
+        // The two refusals that mean THE WORLD MOVED refresh the list right
+        // here, so the message can say "brought up to date" truthfully and
+        // the admin keeps their typed amount. Telling them to reload would
+        // throw away work this code otherwise takes care to preserve (staff
+        // lens on PR #1179).
+        if (data?.code === 'already-settled' || data?.code === 'lost-race') router.refresh();
         return;
       }
       setSelected(new Set());
@@ -151,6 +187,9 @@ export function ShiftPayPanel({
         </button>
         <span className="text-sm tabular-nums text-gray-700">
           {chosen.length} selected · {formatHours(chosenSeconds)}
+          {chosenUnverified.length > 0 && (
+            <span className="text-amber-800"> · {chosenUnverified.length} with unverified times</span>
+          )}
           {referenceCents > 0 && (
             <span className="text-gray-500">
               {' '}
@@ -171,6 +210,11 @@ export function ShiftPayPanel({
                 className="h-4 w-4"
               />
               <span className="tabular-nums">{fmtDay(s.clockInAt)}</span>
+              {s.needsReview && (
+                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                  times not verified
+                </span>
+              )}
               <span className="ml-auto tabular-nums text-gray-700">{formatHours(s.paidSeconds)}</span>
             </label>
           </li>

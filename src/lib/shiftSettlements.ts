@@ -34,6 +34,7 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { paidSecondsForShift } from '@/lib/shiftBreaks';
 import { resolveNowMs } from '@/lib/timeSpans';
+import { sendTelegramMessage } from '@/lib/integrations/telegram';
 
 /**
  * How the money physically moved. The SAME four values as
@@ -306,10 +307,33 @@ export type SettlementSummary = {
   settledCents: number;
   settlementCount: number;
   lastPaidAt: string | null;
+  /** Payments stuck HALF-UNDONE: their shifts were released but the payment
+   * itself never got its stamp. Running the undo again finishes them. They
+   * are excluded from settledCents — see below. */
+  halfUndone: string[];
 };
 
+/**
+ * PURE.
+ *
+ * A settlement that is not voided but has NO live lines is a half-undone
+ * payment, not a live one: `voidShiftSettlement` releases the lines first and
+ * stamps the parent second, and the code says out loud what happens if the
+ * second write fails. Counting it toward "recorded as paid" would overstate
+ * what this person has been handed while its shifts are already payable
+ * again — the same money counted twice (technical lens on PR #1179).
+ *
+ * A real settlement always has at least one live line: recordShiftSettlement
+ * refuses to return until it has asserted the lines it sent are the lines
+ * that landed. So "no live lines" identifies the broken state exactly, with
+ * no false positives to worry about.
+ */
 export function summarize(settlements: readonly ShiftSettlement[]): SettlementSummary {
-  const live = settlements.filter((s) => !s.voidedAt);
+  const halfUndone = settlements
+    .filter((s) => !s.voidedAt && s.lines.length > 0 && s.lines.every((l) => l.voidedAt))
+    .map((s) => s.id);
+  const stuck = new Set(halfUndone);
+  const live = settlements.filter((s) => !s.voidedAt && !stuck.has(s.id));
   return {
     settledCents: live.reduce((sum, s) => sum + s.totalCents, 0),
     settlementCount: live.length,
@@ -317,6 +341,7 @@ export function summarize(settlements: readonly ShiftSettlement[]): SettlementSu
       (latest, s) => (latest === null || s.paidAt > latest ? s.paidAt : latest),
       null,
     ),
+    halfUndone,
   };
 }
 
@@ -423,9 +448,12 @@ export async function recordShiftSettlement(input: {
   // give a person a sentence instead of a constraint violation.
   const alreadySettled = await settledShiftIds(ids);
   if (alreadySettled.size > 0) {
+    // No "reload": the panel refreshes itself and keeps the typed amount, and
+    // telling an office staffer to hit F5 would throw that away (staff lens
+    // on PR #1179).
     throw new SettlementRefusedError(
       'already-settled',
-      `${alreadySettled.size} of those shifts ${alreadySettled.size === 1 ? 'has' : 'have'} already been paid. Reload and try again.`,
+      `${alreadySettled.size} of those shifts ${alreadySettled.size === 1 ? 'has' : 'have'} already been paid. The list below has been brought up to date — check it and record again.`,
     );
   }
 
@@ -507,7 +535,7 @@ export async function recordShiftSettlement(input: {
     if (lostRace) {
       throw new SettlementRefusedError(
         'lost-race',
-        'Someone recorded a payment for one of those shifts while you were on this page. Nothing was recorded here. Reload and try again.',
+        'Someone recorded a payment for one of those shifts while you were on this page. Nothing was recorded here. The list below has been brought up to date — check it and record again.',
       );
     }
     throw new Error(`recordShiftSettlement: ${lineError.message}; nothing was recorded`);
@@ -522,7 +550,43 @@ export async function recordShiftSettlement(input: {
     );
   }
 
+  await notifyCrewOfPayment(db, {
+    crewMemberId,
+    text: `${input.paidBy} recorded a payment to you of ${dollars(input.totalCents)} by ${input.method}, covering ${lines.length} ${lines.length === 1 ? 'shift' : 'shifts'}. Tell the office if that does not match what you received. This bot only understands clock commands, so a reply here will not reach anyone.`,
+  });
+
   return toSettlement(settlement, lines);
+}
+
+/**
+ * Tell the person their own pay record moved — the same courtesy, and the
+ * same log-not-throw posture, that a manual change to their SHIFT already
+ * gets from notifyCrewOfManualWrite in shifts.ts.
+ *
+ * Recording a payment was the one payroll write that told them nothing, and
+ * it is the write with the highest stakes: it locks the shift against
+ * correction (customer lens on PR #1179). A DM to their own account is not
+ * the /crew page, which stays deliberately money-free because the whole crew
+ * can open it; this is one person's own receipt.
+ *
+ * Best-effort by design. The payment has already landed, and a failed notify
+ * must never make a retry record it twice.
+ */
+async function notifyCrewOfPayment(
+  db: Db,
+  entry: { crewMemberId: string; text: string },
+): Promise<void> {
+  try {
+    const { data } = await db
+      .from('crew_members')
+      .select('telegram_user_id')
+      .eq('id', entry.crewMemberId)
+      .maybeSingle();
+    const chatId = (data as { telegram_user_id: string | null } | null)?.telegram_user_id;
+    if (chatId) await sendTelegramMessage(chatId, entry.text);
+  } catch (notifyError) {
+    console.error('notifyCrewOfPayment: failed:', notifyError);
+  }
 }
 
 /**
@@ -609,6 +673,11 @@ export async function voidShiftSettlement(input: {
     }
     return toSettlement(current, await readLinesForSettlements(db, [id]));
   }
+
+  await notifyCrewOfPayment(db, {
+    crewMemberId: voided.crew_member_id,
+    text: `${input.voidedBy} undid the record of a ${dollars(voided.total_cents)} payment to you: ${reason}. Tell the office if that looks wrong. This bot only understands clock commands, so a reply here will not reach anyone.`,
+  });
 
   return toSettlement(voided, await readLinesForSettlements(db, [id]));
 }

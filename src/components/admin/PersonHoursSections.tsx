@@ -308,6 +308,7 @@ export function ShiftPaySection({
   settlements,
   settledCents,
   settlementsReadable,
+  halfUndone,
 }: {
   crewMemberId: string;
   crewName: string;
@@ -317,11 +318,21 @@ export function ShiftPaySection({
   settlements: ShiftSettlement[];
   settledCents: number;
   settlementsReadable: boolean;
+  /** Payments whose shifts were released but which never got their own void
+   * stamp. Running the undo again finishes them. */
+  halfUndone: string[];
 }) {
   const payable: PayableShift[] = days
     .flatMap((d) => d.shifts)
     .filter((s) => s.clockOutAt !== null && !s.settlementId)
-    .map((s) => ({ id: s.id, clockInAt: s.clockInAt, paidSeconds: s.paidSeconds }));
+    .map((s) => ({
+      id: s.id,
+      clockInAt: s.clockInAt,
+      paidSeconds: s.paidSeconds,
+      // Carried through so the warning reaches the panel where paying LOCKS
+      // these hours, not only the list above it.
+      needsReview: s.closeSource === 'system',
+    }));
 
   return (
     <section className="mb-10">
@@ -350,12 +361,36 @@ export function ShiftPaySection({
             </span>
           </div>
 
+          {/* A payment stuck half-undone: its shifts were released but the
+              payment never got its own stamp, so it reads as live while
+              covering nothing. It is already excluded from the total above;
+              this says how to finish it. */}
+          {halfUndone.length > 0 && (
+            <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {halfUndone.length === 1 ? 'One payment was' : `${halfUndone.length} payments were`}{' '}
+              only half undone: the shifts were released but the record still reads as live, so it
+              is not counted above. Press Undo on it again to finish.
+            </div>
+          )}
+
+          {/* KEYED ON THE RANGE (staff lens on PR #1179). Switching range is a
+              same-route search-param navigation, which does NOT remount a
+              client component, so a selection made under "Last 7 days" would
+              survive into "Last 90 days" against a different list while the
+              typed amount stayed put. The key forces a clean slate. */}
           <ShiftPayPanel
+            key={range}
             crewMemberId={crewMemberId}
             crewName={crewName}
             rateCentsPerHour={rateCentsPerHour}
             payable={payable}
           />
+          {range !== 'all' && (
+            <p className="mt-2 text-xs text-gray-500">
+              Only unpaid shifts inside {rangeLabel(range).toLowerCase()} are listed. Switch to All
+              time to be sure nothing older is still unpaid.
+            </p>
+          )}
 
           <h3 className="text-sm font-semibold text-gray-900 mt-6 mb-2">Payments recorded</h3>
           {settlements.length === 0 ? (
