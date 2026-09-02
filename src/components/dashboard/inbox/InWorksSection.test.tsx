@@ -37,6 +37,7 @@ import {
   replyRowAction,
   replyOutcomeMessage,
   followedButtonFor,
+  withRowFollowedNow,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -613,5 +614,43 @@ describe('followedButtonFor', () => {
     for (const group of ['awaiting', 'handled'] as const) {
       expect(followedButtonFor(group).title.length).toBeGreaterThan(10);
     }
+  });
+});
+
+// ── withRowFollowedNow — the awaiting row has to visibly change ────────────
+//
+// Found by the pre-merge staff lens. "Followed again" acts on a row that is
+// ALREADY in the awaiting bucket, so the existing moveGroup(id,'awaiting',
+// 'awaiting') returns immediately (`if (from === to) return`), and this
+// component seeds its list with useState(awaiting) and never syncs props, so
+// router.refresh() does not touch these rows either. The click therefore
+// changed nothing a staffer could see: the amber "45d quiet" tag still read
+// 45d. This is the optimistic update that makes it real.
+describe('withRowFollowedNow', () => {
+  const NOW = '2026-09-02T12:00:00.000Z';
+  const rows: InWorksItem[] = [
+    { id: 'a', source: 'ghl', channel: 'sms', preview: null, customerName: 'A', lastActivityAt: '2026-07-20T00:00:00.000Z', needsLookReason: 'Follow-up due' },
+    { id: 'b', source: 'ghl', channel: 'sms', preview: null, customerName: 'B', lastActivityAt: '2026-07-21T00:00:00.000Z', needsLookReason: 'Follow-up due' },
+  ];
+
+  it('restarts the quiet counter on the row that was acted on', () => {
+    const next = withRowFollowedNow(rows, 'a', NOW);
+    expect(next.find((r) => r.id === 'a')!.lastActivityAt).toBe(NOW);
+  });
+
+  it('clears the follow-up-due marker on that row, which the click just answered', () => {
+    const next = withRowFollowedNow(rows, 'a', NOW);
+    expect(next.find((r) => r.id === 'a')!.needsLookReason).toBeNull();
+  });
+
+  it('never touches another row', () => {
+    const next = withRowFollowedNow(rows, 'a', NOW);
+    const b = next.find((r) => r.id === 'b')!;
+    expect(b.lastActivityAt).toBe('2026-07-21T00:00:00.000Z');
+    expect(b.needsLookReason).toBe('Follow-up due');
+  });
+
+  it('returns the SAME array when the id is not present, so no needless re-render', () => {
+    expect(withRowFollowedNow(rows, 'missing', NOW)).toBe(rows);
   });
 });

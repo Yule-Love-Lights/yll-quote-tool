@@ -1105,8 +1105,18 @@ async function recordActionFailed(
 
 /** How a follow-up was recorded. 'call' is written by the automatic sweep that
  *  reads outbound calls (callFollowUp.ts); the manual button and a sent reply
- *  pass nothing and keep their original audit shape. */
+ *  pass nothing and keep their original audit shape.
+ *
+ *  It rides the SAME `detail.auto` + `detail.reason` channel the terminal-quote
+ *  auto-complete already uses (row 317 FIX 4), because that channel is the one
+ *  ActivityLog actually renders — see AUTO_REASON_LABEL there. A bespoke key
+ *  would have been written and read by nobody, which the pre-merge staff lens
+ *  caught it being in the first cut of this change. */
 export type FollowedVia = 'call';
+
+/** The `detail.reason` value a call-driven follow-up carries. Must stay in step
+ *  with AUTO_REASON_LABEL in ActivityLog.tsx, which turns it into words. */
+export const FOLLOWED_VIA_CALL_REASON = 'phone_call';
 
 export type HandledTarget = {
   source: InboxSource;
@@ -1330,7 +1340,7 @@ export async function markItemFollowed(
   itemId: string,
   operatorId: string,
   now: Date,
-  opts?: { allowRestamp?: boolean; via?: FollowedVia },
+  opts?: { allowRestamp?: boolean; via?: FollowedVia; requireNoInboundAfter?: Date },
 ): Promise<{ ok: true } | { ok: false; error: string; alreadyFollowed?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1343,6 +1353,19 @@ export async function markItemFollowed(
     .in('status', ['unresponded', 'handled']);
   if (!allowRestamp) {
     query = query.is('followed_up_at', null);
+  }
+  // Enforce the caller's anchor AT THE WRITE, not only at the read that chose
+  // this row. The automatic call sweep reads a snapshot of eligible items and
+  // then writes them one by one, so a customer reply landing through the
+  // ingest webhook in that gap would be overwritten: planIngest clears
+  // followed_up_at on any newer inbound, and a stale stamp written afterwards
+  // would push that unanswered customer back into "awaiting their reply" and
+  // hide them from the list whose job is to surface them. Found by the
+  // pre-merge technical lens. This makes the update itself refuse when a newer
+  // inbound has arrived, which check-then-act cannot do.
+  if (opts?.requireNoInboundAfter) {
+    const iso = opts.requireNoInboundAfter.toISOString();
+    query = query.or(`last_inbound_at.is.null,last_inbound_at.lte.${iso}`);
   }
   const { data, error } = await query.select('id').maybeSingle();
   if (error) {
@@ -1382,10 +1405,14 @@ export async function markItemFollowed(
   // `via` records HOW this follow-up happened, so the activity log can tell a
   // phone call apart from a text. Omitted by the two original callers (the
   // manual button and a sent reply), which keeps their audit rows the shape
-  // they already were.
-  await sb
-    .from('dashboard_activity')
-    .insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from, ...(opts?.via ? { via: opts.via } : {}) } });
+  // they already were. Written as auto/reason because that is the pair
+  // listActivity maps into ActivityRow.autoReason and ActivityLog renders.
+  await sb.from('dashboard_activity').insert({
+    actor: operatorId,
+    action: 'followed',
+    inbox_item_id: itemId,
+    detail: { from, ...(opts?.via === 'call' ? { auto: true, reason: FOLLOWED_VIA_CALL_REASON } : {}) },
+  });
   // PR #1005 (premerge STAFF lens, HIGH): "I followed up" is the answer to
   // "you should follow up", so it retires this item's due nag. Before this,
   // the ONLY staff-initiated way to close a quote_sent_no_reply follow-up was
@@ -2602,10 +2629,15 @@ export async function sweepCallFollowUps(
   // just avoids dragging every ring-out across the wire.
   const { data: callRows, error: callErr } = await sb
     .from('call_recordings')
-    .select('ghl_contact_id, direction, called_at, duration_seconds, is_test')
+    .select('ghl_contact_id, direction, called_at, duration_seconds, is_test, skip_reason')
     .in('ghl_contact_id', contactIds)
     .eq('direction', 'outbound')
     .gte('duration_seconds', MIN_CALL_SECONDS)
+    // Newest first, so that if the cap ever bites it drops the OLDEST calls —
+    // the ones least likely to be the latest qualifying call for any row.
+    // Without an order the surviving set past the cap is non-deterministic, and
+    // so is which call the planner picks as "latest" (pre-merge admin lens).
+    .order('called_at', { ascending: false })
     .limit(limit);
   if (callErr) return { ok: false, error: callErr.message };
 
@@ -2617,6 +2649,7 @@ export async function sweepCallFollowUps(
       durationSeconds: typeof row.duration_seconds === 'number' ? row.duration_seconds : null,
       calledAt: new Date(String(row.called_at)),
       isTest: row.is_test === true,
+      junkReason: (row.skip_reason as string | null) ?? null,
     };
   });
 
@@ -2634,6 +2667,11 @@ export async function sweepCallFollowUps(
     const res = await markItemFollowed(stamp.itemId, 'system', stamp.calledAt, {
       allowRestamp: true,
       via: 'call',
+      // The same instant the plan was built against. If the customer has
+      // written since this snapshot was read, the UPDATE matches nothing and
+      // their row correctly stays in the needs-reply state the webhook put it
+      // in, instead of being snoozed by a call that predates their reply.
+      requireNoInboundAfter: stamp.calledAt,
     });
     if (res.ok) stamped += 1;
     else failed += 1;

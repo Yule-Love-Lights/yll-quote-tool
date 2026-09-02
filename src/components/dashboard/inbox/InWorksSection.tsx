@@ -40,6 +40,32 @@ const SOURCE_LABEL: Record<string, string> = {
  *     ask for the restamp explicitly, and it has to SAY "again", because on an
  *     already-followed row a bare "Followed" claims nothing new.
  */
+/**
+ * Optimistically mark ONE row as just-followed: restart its quiet counter and
+ * drop the follow-up-due marker the click has now answered.
+ *
+ * "Followed again" acts on a row already in the awaiting bucket, so
+ * moveGroup(id, 'awaiting', 'awaiting') returns immediately (`if (from === to)
+ * return`) and changes nothing. router.refresh() does not rescue it either:
+ * this component seeds its lists with useState(awaiting) and never syncs the
+ * props again, so fresh server data does not reach these rows. Without this
+ * the click was invisible — the amber "45d quiet" tag still read 45d, which
+ * reads as a broken button. Found by the pre-merge staff lens.
+ *
+ * Returns the SAME array when the id is absent, so an unrelated row's action
+ * never forces a re-render (the withRowFlagCleared / omitKey convention above).
+ */
+export function withRowFollowedNow(
+  items: InWorksItem[],
+  itemId: string,
+  nowIso: string,
+): InWorksItem[] {
+  if (!items.some((i) => i.id === itemId)) return items;
+  return items.map((i) =>
+    i.id === itemId ? { ...i, lastActivityAt: nowIso, needsLookReason: null } : i,
+  );
+}
+
 export function followedButtonFor(group: 'awaiting' | 'handled'): {
   label: string;
   title: string;
@@ -348,7 +374,14 @@ export function InWorksSection({
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (data?.ok) {
-        if (outcome === 'remove') {
+        if (outcome === group) {
+          // Same-bucket action (the awaiting row's "Followed again"): moveGroup
+          // is a no-op here, so update the row in place or the click shows
+          // nothing. See withRowFollowedNow.
+          const nowIso = new Date().toISOString();
+          if (group === 'awaiting') setAwaitingItems((prev) => withRowFollowedNow(prev, item.id, nowIso));
+          else setHandledItems((prev) => withRowFollowedNow(prev, item.id, nowIso));
+        } else if (outcome === 'remove') {
           removeFromGroup(item.id, group);
         } else {
           moveGroup(item.id, group, outcome);

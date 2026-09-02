@@ -3880,6 +3880,11 @@ create unique index if not exists call_recordings_ghl_message_id_key
 create index if not exists call_recordings_status_created_idx
   on public.call_recordings (status, created_at);
 
+-- 2026-09-02: the inbox call follow-up sweep (sweepCallFollowUps) filters by
+-- contact on every reconcile tick, roughly every five minutes, forever.
+create index if not exists call_recordings_ghl_contact_id_idx
+  on public.call_recordings (ghl_contact_id);
+
 alter table public.call_recordings enable row level security;
 
 create table if not exists public.recording_sync_state (

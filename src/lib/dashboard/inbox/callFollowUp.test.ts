@@ -9,6 +9,7 @@ function call(over: Partial<CallRow> = {}): CallRow {
     durationSeconds: 120,
     calledAt: d('2026-09-01T15:00:00Z'),
     isTest: false,
+    junkReason: null,
     ...over,
   };
 }
@@ -80,6 +81,24 @@ describe('callQualifies', () => {
 
   it('a call with no recorded duration does not count', () => {
     expect(callQualifies(call({ durationSeconds: null }), anchor)).toBe(false);
+  });
+
+  it('a call the transcriber judged ONE-SIDED does not count, however long', () => {
+    // This repo already classifies calls: call_recordings.skip_reason carries
+    // 'single_speaker' / 'automated_speaker' / 'too_short' from lib/calls/junk.
+    // Measured in prod on 2026-09-02: of 28 outbound calls of 30s or more, SIX
+    // are single_speaker. Duration alone would have snoozed one customer in
+    // five on a voicemail nobody answered.
+    expect(callQualifies(call({ junkReason: 'single_speaker' }), anchor)).toBe(false);
+    expect(callQualifies(call({ junkReason: 'automated_speaker' }), anchor)).toBe(false);
+    expect(callQualifies(call({ junkReason: 'too_short' }), anchor)).toBe(false);
+  });
+
+  it('a call with NO verdict still counts, because unknown is not a rejection', () => {
+    // status 'failed' means transcription never produced a verdict, not that
+    // the call was junk. Duration is then the only evidence we have, and it is
+    // the same evidence we already accept everywhere else.
+    expect(callQualifies(call({ junkReason: null }), anchor)).toBe(true);
   });
 
   it('a test call never counts', () => {

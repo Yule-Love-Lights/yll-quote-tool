@@ -30,6 +30,11 @@ export type CallRow = {
   durationSeconds: number | null;
   calledAt: Date;
   isTest: boolean;
+  /** call_recordings.skip_reason — this repo's OWN verdict on whether the call
+   *  was a real two-way conversation (src/lib/calls/junk.ts writes it:
+   *  'single_speaker', 'automated_speaker', 'too_short'). null means no verdict
+   *  was reached, which is not the same as a clean one. */
+  junkReason: string | null;
 };
 
 export type AnchorInput = {
@@ -84,6 +89,14 @@ export function callQualifies(call: CallRow, anchor: Date | null): boolean {
   if (call.isTest) return false;
   if (call.direction !== 'outbound') return false;
   if (call.durationSeconds == null || call.durationSeconds < MIN_CALL_SECONDS) return false;
+  // Duration alone cannot tell a conversation from a voicemail, and this repo
+  // already knows the difference: the transcription pipeline classifies calls
+  // and records WHY it skipped one. Measured in prod 2026-09-02: of 28 outbound
+  // calls of 30 seconds or more, SIX carry 'single_speaker'. Trusting duration
+  // alone would have snoozed roughly one customer in five on a voicemail.
+  // A null verdict is NOT a rejection (a failed transcription reached no
+  // conclusion), so only a positive junk verdict disqualifies.
+  if (call.junkReason != null) return false;
   if (anchor != null && call.calledAt.getTime() <= anchor.getTime()) return false;
   return true;
 }
