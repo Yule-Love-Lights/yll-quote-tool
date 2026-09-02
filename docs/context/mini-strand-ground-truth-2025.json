@@ -7,7 +7,8 @@
     "spacing": "6 inch bulb spacing everywhere (Naldo, 2026-08-28): one 50-count 5MM strand covers 25 ft",
     "unit": "counts are STRANDS installed per plant item unless noted",
     "photo_convention": "each house has a lights-on night page (labeled blobs per item) and a lights-off day page (red handwritten tallies per item); day photos are the measurement substrate, night labels are the count truth",
-    "status": "section 1 (bushes/shrubs) fully named; section 2 (tall shrubs/trees, pages 21-31) awaiting customer names",
+    "status": "section 1 (bushes/shrubs) fully named and CONFIRMED against the team's registry Sheet (2026-09-02, zero disagreements); section 2 (tall shrubs/trees) names known from the Sheet, page binding partial",
+    "registry_sheet": "https://docs.google.com/spreadsheets/d/1Hd7lHtYOLGgaIReUjx-9rPVW_S0pJqbaK7yOXtH5uP0 - NAME/ADDRESS filled by team; ORIGINAL PHOTOS and NUMBER OF MINIS columns empty as of 2026-09-02, so the Canva deck remains the count source. Table 1 lists a 9th house not in the deck yet: John Mezetta, 152 Harbor Lane, Massapequa Park 11762. Table 3 queues 8 more properties (Jason S 6 Carman Mill Rd Massapequa, Vincent B 138 Country Club Dr Commack, Victor Falci 3 Jilland Ct East Northport, Annie Ortiz 703 Peconic St Ronkonkoma, Angelo Ditroia 163 Brewster Rd Massapequa, Marrie Mulligan 4 Pine Acre Ct Dix Hills, Andrew Bykov 10 Ashland Dr Huntington, Marriott Hotel).",
     "known_conflicts": "recorded per house in flags; resolve during tracing, never silently"
   },
   "houses": [
@@ -128,9 +129,9 @@
     }
   ],
   "tall_shrubs_trees_section": {
-    "status": "UNNAMED - customer names pending from Naldo",
+    "status": "names known from the registry Sheet table 2 (Joe DG, Morgan Hayes, Cindy Small, Francessa Woll, Kevin Egan 3786 Clark St Seaford, John Pierson 231 Tinton Pl East Northport, Marriott Hotel); page-to-name binding pending for entries not marked confirmed",
     "entries": [
-      {"deck_pages": [21, 22], "candidate": "Joe DeGaetano, 3 Frank Circle, Islip (photo-match certain, unconfirmed by Naldo)", "items": [{"type": "arborvitae", "strands": 4, "height_ft": "11-12"}, {"type": "arborvitae", "strands": 5, "height_ft": "13-14"}, {"type": "arborvitae", "strands": 7, "height_ft": "15-16"}], "note": "heights estimated by staff using crew member as reference (p22); HAPPY BIRTHDAY JESUS rope sign on lawn"},
+      {"deck_pages": [21, 22], "customer": "Joe DeGaetano (Joe DG in Sheet), 3 Frank Circle, Islip - photo-match certain AND listed first in the Sheet's tree table", "items": [{"type": "arborvitae", "strands": 4, "height_ft": "11-12"}, {"type": "arborvitae", "strands": 5, "height_ft": "13-14"}, {"type": "arborvitae", "strands": 7, "height_ft": "15-16"}], "note": "heights estimated by staff using crew member as reference (p22); HAPPY BIRTHDAY JESUS rope sign on lawn"},
       {"deck_pages": [23, 24], "items": [{"type": "branch_wrap_tree", "strands": 16, "height_ft": "25-30"}], "note": "SAMPLE watermark on photo; ladder used as height reference (p24)"},
       {"deck_pages": [25, 26, 27], "items": [{"type": "spruce", "strands": 22, "height_ft": "20-25"}, {"type": "tree", "strands": 15, "height_ft": "18-22"}], "note": "two properties or one? p25 shows the 22 spruce and a separate red/green roofline house with the 15 tree"},
       {"deck_pages": [28, 29], "items": [{"type": "branch_wrap_sycamore", "strands": 16, "height_ft": "55-65"}, {"type": "branch_wrap_sycamore", "strands": 22, "height_ft": "55-65"}], "note": "street trees, mature sycamore/plane per staff estimate"},
