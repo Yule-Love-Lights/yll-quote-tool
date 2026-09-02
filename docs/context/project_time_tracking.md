@@ -274,6 +274,10 @@ policy change, and AGENTS.md's own rule says those need both devs. **The ownersh
 updated in the first build PR, with Naldo's acknowledgement noted.** Until then this document is
 the record of the handoff.
 
+**Done 2026-09-02 (Jason's S59; session numbers are per dev, Naldo's own S59 was 2026-08-19):** Naldo gave his written one-line ack to Jason's direct message; the
+AGENTS.md ownership table now carries the surface under Jason, in its own docs PR rather than the
+build PR (#1176), so the policy change is reviewable on its own.
+
 ---
 
 # Part 2 — automatic hours, navigation, and P4P (Jason, 2026-09-01)
