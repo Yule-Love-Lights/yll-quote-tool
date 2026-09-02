@@ -270,11 +270,30 @@ export async function getContactInternal(contactId: string): Promise<CrmContactI
 // Read it narrowly here rather than widen that shared type for one settings
 // check; the untyped shape is confined to this one function + its pure
 // parser below.
+//
+// FAILS CLOSED (fix round, 2026-09-02): two more blocked shapes exist beyond
+// Email.status==='active', both confirmed against real GHL payloads elsewhere
+// in this repo, not guessed. (1) scripts/winback-recon.ts (line ~266-268,
+// live off a real contact 2026-07-27): GHL's own AUTO opt-out (a STOP-keyword
+// reply, or here an unsubscribe click) sets status:'permanent', not 'active'
+// — the original predicate would have read that contact as healthy. (2)
+// scripts/winback-send.ts (line ~152-156): a BLANKET contact-level `dnd:true`
+// exists independent of dndSettings entirely. Treating only 'active' as
+// blocked and everything else (undefined, 'permanent', a future GHL status
+// the parser has never seen) as healthy is exactly the silent-green failure
+// mode this whole feature exists to catch — so the predicate is inverted:
+// blocked unless the status is explicitly the known-healthy 'inactive' (or
+// absent), or contact-level dnd is true, which blocks regardless of Email.
 type RawDndChannel = { status?: string; message?: string; code?: string };
-type RawContactWithDnd = { dndSettings?: { Email?: RawDndChannel } };
+type RawContactWithDnd = { dnd?: boolean; dndSettings?: { Email?: RawDndChannel } };
 
 export type ContactDndState = {
   emailDnd: boolean;
+  // Which shape tripped it — 'active' | 'permanent' (both confirmed live GHL
+  // states) | 'contact-dnd' (the blanket contact.dnd flag) | 'unknown:<status>'
+  // (a future/unrecognized Email.status — fails closed rather than reading as
+  // healthy). Absent when emailDnd is false.
+  reason?: 'active' | 'permanent' | 'contact-dnd' | string;
   message?: string;
   code?: string;
 };
@@ -282,17 +301,24 @@ export type ContactDndState = {
 // Pure — no network — so it's unit-testable without mocking fetch. `contact`
 // is `unknown` because it comes straight off the wire: null/absent (a
 // malformed response, or a caller passing through a failed lookup) → null,
-// "can't tell"; anything else → a definite emailDnd reading (false when
-// dndSettings/Email is missing, which is GHL's normal shape for a contact
-// that has never toggled DND).
+// "can't tell"; anything else → a definite emailDnd reading. Blocked when
+// EITHER the blanket contact.dnd flag is true OR Email.status is any
+// non-empty string other than 'inactive' — an unknown future status reads as
+// blocked, never as healthy (fail closed).
 export function parseContactDndState(contact: unknown): ContactDndState | null {
   if (!contact || typeof contact !== 'object') return null;
-  const email = (contact as RawContactWithDnd).dndSettings?.Email;
-  return {
-    emailDnd: email?.status === 'active',
-    message: email?.message,
-    code: email?.code,
-  };
+  const c = contact as RawContactWithDnd;
+  const email = c.dndSettings?.Email;
+  if (c.dnd === true) {
+    return { emailDnd: true, reason: 'contact-dnd', message: email?.message, code: email?.code };
+  }
+  const status = email?.status;
+  if (!status || status === 'inactive') {
+    return { emailDnd: false };
+  }
+  const reason: ContactDndState['reason'] =
+    status === 'active' || status === 'permanent' ? status : `unknown:${status}`;
+  return { emailDnd: true, reason, message: email?.message, code: email?.code };
 }
 
 export async function getContactDndState(contactId: string): Promise<ContactDndState | null> {

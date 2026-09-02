@@ -495,22 +495,55 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
   // 2026-09-02 incident: Settings → HighLevel's DND health check. The pure
   // parser is tested directly (no network); getContactDndState's own test
   // proves it wires ghlFetch's `{ contact }` envelope into that parser.
-  describe('parseContactDndState (2026-09-02 incident — internal-alert DND health check)', () => {
-    it('active Email DND → emailDnd:true, carrying the message + code', () => {
+  describe('parseContactDndState (2026-09-02 incident — internal-alert DND health check, fails closed)', () => {
+    it('active Email DND → emailDnd:true, reason "active", carrying the message + code', () => {
       const result = parseContactDndState({
         id: 'c1',
         dndSettings: { Email: { status: 'active', message: 'User clicked on the unsubscribe link', code: '105' } },
       });
-      expect(result).toEqual({ emailDnd: true, message: 'User clicked on the unsubscribe link', code: '105' });
+      expect(result).toEqual({
+        emailDnd: true,
+        reason: 'active',
+        message: 'User clicked on the unsubscribe link',
+        code: '105',
+      });
+    });
+
+    // scripts/winback-recon.ts ~266-268: GHL's own auto opt-out (STOP keyword
+    // / unsubscribe) sets status:'permanent', observed live 2026-07-27 — the
+    // pre-fix predicate (status==='active') would have read this as healthy.
+    it('permanent Email DND (GHL auto opt-out) → emailDnd:true, reason "permanent"', () => {
+      const result = parseContactDndState({
+        id: 'c1',
+        dndSettings: { Email: { status: 'permanent', message: 'STOP keyword', code: '106' } },
+      });
+      expect(result).toEqual({ emailDnd: true, reason: 'permanent', message: 'STOP keyword', code: '106' });
+    });
+
+    // scripts/winback-send.ts ~152-156: a blanket contact-level dnd flag,
+    // independent of dndSettings entirely.
+    it('contact-level dnd:true (no dndSettings) → emailDnd:true, reason "contact-dnd"', () => {
+      const result = parseContactDndState({ id: 'c1', dnd: true });
+      expect(result).toEqual({ emailDnd: true, reason: 'contact-dnd', message: undefined, code: undefined });
+    });
+
+    it('an unrecognized future Email.status → emailDnd:true, reason "unknown:<status>" (fails closed)', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { Email: { status: 'snoozed' } } });
+      expect(result).toEqual({ emailDnd: true, reason: 'unknown:snoozed', message: undefined, code: undefined });
     });
 
     it('missing dndSettings entirely → emailDnd:false', () => {
       const result = parseContactDndState({ id: 'c1' });
-      expect(result).toEqual({ emailDnd: false, message: undefined, code: undefined });
+      expect(result).toEqual({ emailDnd: false });
     });
 
-    it('Email DND present but inactive → emailDnd:false', () => {
+    it('Email DND present but inactive, no contact-level dnd → emailDnd:false — the real prod contact\'s current shape', () => {
       const result = parseContactDndState({ id: 'c1', dndSettings: { Email: { status: 'inactive' } } });
+      expect(result).toEqual({ emailDnd: false });
+    });
+
+    it('status undefined (Email object present but empty) → emailDnd:false', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { Email: {} } });
       expect(result?.emailDnd).toBe(false);
     });
 
@@ -527,7 +560,7 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
         contact: { id: 'c1', dndSettings: { Email: { status: 'active', message: 'unsubscribed', code: '105' } } },
       });
       const result = await getContactDndState('c1');
-      expect(result).toEqual({ emailDnd: true, message: 'unsubscribed', code: '105' });
+      expect(result).toEqual({ emailDnd: true, reason: 'active', message: 'unsubscribed', code: '105' });
       const [url] = fetchMock.mock.calls[0];
       expect(url).toContain('/contacts/c1');
     });
