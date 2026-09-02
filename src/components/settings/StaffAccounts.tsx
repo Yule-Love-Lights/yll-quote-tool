@@ -247,12 +247,17 @@ export function StaffAccounts() {
   }
 
   function moveType(row: StaffRow) {
-    // The flag's only effect is the job-assignment roster, so the confirm says
-    // exactly that rather than implying something about their login or clock.
+    // The flag has THREE effects, and the confirm names all of them (admin lens
+    // on PR #1176; an earlier version of this comment claimed the roster was
+    // the only one): the job-assignment roster (listActiveFieldCrew), whether
+    // their shifts appear on the two clocks page (fleetDay.ts lists field
+    // shifts only), and whether an admin can add or fix their shifts by hand
+    // (adminCreateShift refuses office crew). It says nothing about their
+    // login or their own clock, because it changes neither.
     const next = !row.isOffice;
     const message = next
-      ? `Move ${row.displayName} to office? They will no longer be offered when you assign crew to a job.`
-      : `Move ${row.displayName} to field crew? They will start being offered when you assign crew to a job.`;
+      ? `Move ${row.displayName} to office? They will no longer be offered when you assign crew to a job, their shifts will leave the two clocks page, and their shifts can no longer be added or corrected by hand there. Their login and their own clock are unchanged.`
+      : `Move ${row.displayName} to field crew? They will start being offered when you assign crew to a job, their shifts will appear on the two clocks page, and their shifts can be added or corrected by hand there. Their login and their own clock are unchanged.`;
     if (!window.confirm(message)) return;
     void patchRow(
       row,

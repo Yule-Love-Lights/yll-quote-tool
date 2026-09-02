@@ -38,7 +38,7 @@ import { paidSecondsForShift } from '@/lib/shiftBreaks';
 import { resolveNowMs } from '@/lib/timeSpans';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { addDays } from '@/lib/opsMidnightClose';
-import { listAllStaff, type StaffMember } from '@/lib/crewMembers';
+import type { StaffMember } from '@/lib/crewMembers';
 
 export type HoursShift = {
   id: string;
@@ -214,6 +214,22 @@ type ShiftRow = {
 
 type BreakRow = { shift_id: string; started_at: string; ended_at: string | null };
 
+type StaffRow = { id: string; display_name: string; active: boolean; is_office: boolean };
+
+// Read here rather than through listAllStaff(), which logs a read error and
+// returns [] as if there were simply no staff. On this page that would render
+// every shift under '(unknown)' and drop anyone with zero shifts, with no
+// error card to say why (technical lens on PR #1176). This read throws, and
+// the caller puts the message on screen.
+async function readAllStaff(db: Db): Promise<StaffRow[]> {
+  const { data, error } = await db
+    .from('crew_members')
+    .select('id, display_name, active, is_office')
+    .order('display_name', { ascending: true });
+  if (error) throw new Error(`crew_members: ${error.message}`);
+  return (data ?? []) as StaffRow[];
+}
+
 // PostgREST caps a single read at 1000 rows. Every window here is all-time,
 // so the read pages until a short page rather than trusting one call. A
 // truncated read would understate someone's hours and look exactly like a
@@ -266,11 +282,11 @@ export async function loadHoursSummary(nowIso?: string): Promise<HoursSummary> {
   const db = getSupabaseServiceClient();
   if (!db) return { rows: [], asOf, errors: ['no service client'] };
 
-  // listAllStaff logs and returns [] on error; an empty staff list with shifts
-  // present is not silent here because every shift then renders as
-  // '(unknown)', which is the visible failure it should be.
   const [staff, shifts, breaks] = await Promise.all([
-    listAllStaff(),
+    readAllStaff(db).catch((e: unknown) => {
+      errors.push(e instanceof Error ? e.message : 'crew_members read failed');
+      return [] as StaffRow[];
+    }),
     readAllShifts(db).catch((e: unknown) => {
       errors.push(e instanceof Error ? e.message : 'shifts read failed');
       return [] as ShiftRow[];
@@ -282,7 +298,12 @@ export async function loadHoursSummary(nowIso?: string): Promise<HoursSummary> {
   ]);
 
   const rows = summarizeHours(
-    staff,
+    staff.map((s) => ({
+      id: s.id,
+      displayName: s.display_name,
+      active: s.active,
+      isOffice: s.is_office,
+    })),
     shifts.map((r) => ({
       id: r.id,
       crewMemberId: r.crew_member_id,

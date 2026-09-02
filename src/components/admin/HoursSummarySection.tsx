@@ -43,18 +43,30 @@ export function HoursSummarySection({
   return (
     <section className="mb-10">
       <h2 className="text-lg font-semibold text-gray-900 mb-1">Hours</h2>
+      {/* "Clocked", not "paid" (admin lens on PR #1176): nothing on this
+          page is approved or paid, and the lead sentence is the one an
+          owner reads before the numbers. */}
       <p className="text-sm text-gray-500 mb-2">
-        Paid time from the clock: clock-in to clock-out, minus breaks. A shift counts on the day it
-        started (New York time), and someone still clocked in counts up to now. Rolling windows,
-        today included.
+        Clocked time: clock-in to clock-out, minus breaks. Nothing here is approved or paid. A
+        shift counts on the day it started (New York time), and someone still clocked in counts
+        up to now. Rolling windows, today included.
       </p>
+      {/* The fix path has to name a door that EXISTS for the row it is next
+          to (AGENTS.md: a guard and the copy that narrates it are one change).
+          The only shift editor today is the two clocks page, and fleetDay.ts
+          shows FIELD shifts only (Naldo, 2026-08-28: "field group only"), so
+          an office person's auto-close cannot be reached from it. Say so,
+          rather than send the admin to a page that will not list the row.
+          Phase 2 of the time-tracking plan is the first editor for those. */}
       <p className="text-sm text-gray-500 mb-4">
         A day nobody clocked out of is closed at midnight by the system. Those rows are counted
-        here and flagged, because the figure is wrong until a human fixes the shift on{' '}
+        here and flagged, because the figure is wrong until a human corrects the shift. Field
+        crew shifts are corrected on{' '}
         <a href="/admin/fleet/clocks" className="underline">
           the day&apos;s two clocks page
         </a>
-        .
+        ; office shifts have no editor in the app yet, so an office auto-close stays flagged until
+        one is built.
       </p>
 
       {errors.length > 0 && (
@@ -132,7 +144,7 @@ export function HoursSummarySection({
       <p className="mt-2 text-xs text-gray-400">
         As of {fmtEtDateTime(asOf)} ET.
         {anyAutoClosed
-          ? ' Amber rows include hours the system closed at midnight; correct those shifts before treating the totals as payroll.'
+          ? ' Amber rows include hours the system closed at midnight; nothing here is approved or paid, and those totals are wrong until the shifts are corrected.'
           : ''}
       </p>
     </section>
