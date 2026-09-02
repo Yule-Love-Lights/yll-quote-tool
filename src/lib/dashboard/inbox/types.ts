@@ -85,6 +85,13 @@ export type OpenInboxItem = {
   isReturning: boolean;
   /** The linked contact id (for claim/assign actions); null on an unlinked item. */
   contactId: string | null;
+  /** The contact's HighLevel id, which is a DIFFERENT thing from contactId
+   *  above: that is the dashboard_contacts row id used for claim and assign,
+   *  this is what /customers/[contactId] and the HighLevel app both address a
+   *  customer by. Null on a contact never linked to the CRM, and the row then
+   *  renders its name as plain text with no links. Optional so existing
+   *  fixtures that do not set it keep reading as "no HighLevel id". */
+  ghlContactId?: string | null;
   /** The contact's current assignee (auth.users id), or null when unclaimed. */
   assignedTo: string | null;
   contact: { displayName: string | null; email: string | null; phone: string | null } | null;
