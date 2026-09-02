@@ -256,6 +256,50 @@ export async function getContactInternal(contactId: string): Promise<CrmContactI
   return toCrmContact(json.contact, { includeRaw: true });
 }
 
+// ─── Contact DND state (2026-09-02 incident) ──────────────────────────────
+// Every staff-facing alert email goes to ONE contact (HIGHLEVEL_INTERNAL_
+// CONTACT_ID). On 2026-08-31 that contact's Email DND got switched on in GHL
+// (a customer unsubscribe click, not a staff action) and every send to it was
+// silently refused for two days before anyone noticed — see internalEmail()
+// in src/app/api/integrations/valor/webhook/route.ts. This lets Settings →
+// HighLevel show a live health check.
+//
+// GHL's raw /contacts/{id} response carries a `dndSettings` object keyed by
+// channel (Email, SMS, ...) that HighLevelContact (above) never modeled —
+// only the fields the rest of the app actively consumes are typed there.
+// Read it narrowly here rather than widen that shared type for one settings
+// check; the untyped shape is confined to this one function + its pure
+// parser below.
+type RawDndChannel = { status?: string; message?: string; code?: string };
+type RawContactWithDnd = { dndSettings?: { Email?: RawDndChannel } };
+
+export type ContactDndState = {
+  emailDnd: boolean;
+  message?: string;
+  code?: string;
+};
+
+// Pure — no network — so it's unit-testable without mocking fetch. `contact`
+// is `unknown` because it comes straight off the wire: null/absent (a
+// malformed response, or a caller passing through a failed lookup) → null,
+// "can't tell"; anything else → a definite emailDnd reading (false when
+// dndSettings/Email is missing, which is GHL's normal shape for a contact
+// that has never toggled DND).
+export function parseContactDndState(contact: unknown): ContactDndState | null {
+  if (!contact || typeof contact !== 'object') return null;
+  const email = (contact as RawContactWithDnd).dndSettings?.Email;
+  return {
+    emailDnd: email?.status === 'active',
+    message: email?.message,
+    code: email?.code,
+  };
+}
+
+export async function getContactDndState(contactId: string): Promise<ContactDndState | null> {
+  const json = await ghlFetch<{ contact?: unknown }>(`/contacts/${encodeURIComponent(contactId)}`);
+  return parseContactDndState(json.contact);
+}
+
 // ─── Contact create ───────────────────────────────────────────────────────
 // Creates a brand-new GHL contact — used by the referral landing page (#41
 // /refer/<code> submit) to get a referred lead into HighLevel immediately, so

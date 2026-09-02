@@ -21,6 +21,8 @@ import {
   sendSms,
   updateOpportunity,
   getContactInternal,
+  getContactDndState,
+  parseContactDndState,
   getGhlUser,
   HighLevelError,
 } from './highlevel';
@@ -487,6 +489,53 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect((contact.raw as HighLevelContact).customFields).toEqual([
         { id: 'ed_field_1', value: '11/27/2026' },
       ]);
+    });
+  });
+
+  // 2026-09-02 incident: Settings → HighLevel's DND health check. The pure
+  // parser is tested directly (no network); getContactDndState's own test
+  // proves it wires ghlFetch's `{ contact }` envelope into that parser.
+  describe('parseContactDndState (2026-09-02 incident — internal-alert DND health check)', () => {
+    it('active Email DND → emailDnd:true, carrying the message + code', () => {
+      const result = parseContactDndState({
+        id: 'c1',
+        dndSettings: { Email: { status: 'active', message: 'User clicked on the unsubscribe link', code: '105' } },
+      });
+      expect(result).toEqual({ emailDnd: true, message: 'User clicked on the unsubscribe link', code: '105' });
+    });
+
+    it('missing dndSettings entirely → emailDnd:false', () => {
+      const result = parseContactDndState({ id: 'c1' });
+      expect(result).toEqual({ emailDnd: false, message: undefined, code: undefined });
+    });
+
+    it('Email DND present but inactive → emailDnd:false', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { Email: { status: 'inactive' } } });
+      expect(result?.emailDnd).toBe(false);
+    });
+
+    it('malformed/absent contact → null', () => {
+      expect(parseContactDndState(null)).toBeNull();
+      expect(parseContactDndState(undefined)).toBeNull();
+      expect(parseContactDndState('not-an-object')).toBeNull();
+    });
+  });
+
+  describe('getContactDndState', () => {
+    it('fetches /contacts/{id} and parses the envelope\'s contact.dndSettings.Email', async () => {
+      const fetchMock = mockFetchCapture({
+        contact: { id: 'c1', dndSettings: { Email: { status: 'active', message: 'unsubscribed', code: '105' } } },
+      });
+      const result = await getContactDndState('c1');
+      expect(result).toEqual({ emailDnd: true, message: 'unsubscribed', code: '105' });
+      const [url] = fetchMock.mock.calls[0];
+      expect(url).toContain('/contacts/c1');
+    });
+
+    it('no contact in the response → null', async () => {
+      mockFetchOnce({});
+      const result = await getContactDndState('c1');
+      expect(result).toBeNull();
     });
   });
 

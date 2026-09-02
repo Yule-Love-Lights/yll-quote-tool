@@ -10,7 +10,12 @@ import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
-import { isHighLevelConfigured, listPipelines } from '@/lib/integrations/highlevel';
+import {
+  isHighLevelConfigured,
+  listPipelines,
+  getContactDndState,
+  type ContactDndState,
+} from '@/lib/integrations/highlevel';
 import { parsePipelines, guessAssignments, type Pipeline } from '@/lib/integrations/highlevelPipelines';
 import { resolvePipelineStages, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
 import { SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -70,6 +75,26 @@ export default async function HighLevelSettingsPage() {
   }
   // Best-guess mapping for each env var (suggestion only — confirm below).
   const guesses = guessAssignments(pipelines);
+
+  // 2026-09-02 incident: the internal alert contact's Email DND flipped on in
+  // GHL and every staff alert email (deposit received, approval, decline...)
+  // was silently refused for two days — the only prior signal was a
+  // console.warn nobody was watching. Live health check, rendered inline on
+  // the HIGHLEVEL_INTERNAL_CONTACT_ID row below. Three states, all rendered
+  // (never nothing): dndState.emailDnd true → red, false → a quiet green
+  // "off", and unconfigured/unreachable → amber "could not verify" — a
+  // silent-empty read here is exactly the class this repo has been bitten by
+  // before (AGENTS.md Pitfalls, S74 geocoding).
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  let dndState: ContactDndState | null = null;
+  let dndCheckError: string | null = null;
+  if (configured && internalContactId) {
+    try {
+      dndState = await getContactDndState(internalContactId);
+    } catch (err) {
+      dndCheckError = err instanceof Error ? err.message : 'Failed to check DND status';
+    }
+  }
 
   // Cross-check the hardcoded per-vertical pipeline map (ghlPipelineMap.ts)
   // against the live pipelines just fetched above, so a renamed/deleted
@@ -144,6 +169,37 @@ export default async function HighLevelSettingsPage() {
                         <code className="font-mono text-gray-500 break-all">{guess.value}</code>
                       </p>
                     )}
+                    {name === 'HIGHLEVEL_INTERNAL_CONTACT_ID' &&
+                      (!configured || !internalContactId ? (
+                        <p className="text-[11px] font-semibold text-amber-700 mt-2">
+                          Email DND: could not verify (HighLevel not connected, or this var isn&apos;t set)
+                        </p>
+                      ) : dndCheckError ? (
+                        <p className="text-[11px] font-semibold text-amber-700 mt-2">
+                          Email DND: could not verify ({dndCheckError})
+                        </p>
+                      ) : dndState === null ? (
+                        <p className="text-[11px] font-semibold text-amber-700 mt-2">
+                          Email DND: could not verify (contact not found in HighLevel)
+                        </p>
+                      ) : dndState.emailDnd ? (
+                        <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-2">
+                          <p className="text-[11px] font-semibold text-red-700">
+                            ⚠️ Email DND is ON for this contact — every staff alert email (deposit received,
+                            approval, decline, low stock, inbox escalation...) is being refused by HighLevel
+                            right now.
+                          </p>
+                          <p className="text-[11px] text-red-700 mt-1">
+                            HighLevel: {dndState.message ?? 'no message'}
+                            {dndState.code ? ` (code ${dndState.code})` : ''}
+                          </p>
+                          <p className="text-[11px] text-red-700 mt-1">
+                            Fix: open this contact in HighLevel and switch Email DND off.
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] font-semibold text-green-700 mt-2">Email DND: off</p>
+                      ))}
                   </div>
                   <div className="text-right shrink-0">
                     {set ? (
