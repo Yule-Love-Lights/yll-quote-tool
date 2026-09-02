@@ -96,11 +96,20 @@ export default function SignAllotmentSection() {
       return;
     }
     setBusy(true);
+    // One id per CONFIRMED hand-out (ledger row 480). A retry of this same
+    // click carries it again and the database refuses the second write, so a
+    // slow network or a second tab cannot hand out the same stack twice.
+    const requestId = crypto.randomUUID();
     try {
       const res = await fetch('/api/admin/advertising/issuances', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workerId: issueFor.workerId, qty: count, note: note.trim() || undefined }),
+        body: JSON.stringify({
+          workerId: issueFor.workerId,
+          qty: count,
+          note: note.trim() || undefined,
+          requestId,
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {

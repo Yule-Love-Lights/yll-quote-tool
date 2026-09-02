@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
   if ('response' in auth) return auth.response;
 
   const body = (await req.json().catch(() => null)) as
-    | { workerId?: unknown; qty?: unknown; note?: unknown }
+    | { workerId?: unknown; qty?: unknown; note?: unknown; requestId?: unknown }
     | null;
   const workerId = String(body?.workerId ?? '').trim();
   const qty = body?.qty;
@@ -62,7 +62,23 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await issueSigns(workerId, qty, auth.operator.id, typeof body?.note === 'string' ? body.note : undefined);
+    // One id per confirmed hand-out (ledger row 480). Validated as a uuid so
+    // a malformed value is refused rather than silently stored, which would
+    // hand back a key that guards nothing.
+    const rawId = typeof body?.requestId === 'string' ? body.requestId.trim() : '';
+    const requestId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)
+      ? rawId
+      : undefined;
+    if (rawId && !requestId) {
+      return NextResponse.json({ error: 'Bad request id.' }, { status: 400 });
+    }
+    await issueSigns(
+      workerId,
+      qty,
+      auth.operator.id,
+      typeof body?.note === 'string' ? body.note : undefined,
+      requestId,
+    );
     const balance = await getWorkerSignBalance(workerId);
     return NextResponse.json({ balance }, { status: 201 });
   } catch (e) {
