@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute, expandHlContactIds } from './customers';
+import { aggregateCustomers, statusOf, customerRouteId, matchesCustomerRoute, expandHlContactIds, resolveHlContactId } from './customers';
 import type { DashboardQuote } from './types';
 
 function makeQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
@@ -207,5 +207,24 @@ describe('expandHlContactIds', () => {
     const mine = makeQuote({ customer_id: 'cust-1', highlevel_contact_id: 'hl-1' });
     const other = makeQuote({ customer_id: 'cust-2', highlevel_contact_id: 'hl-2' });
     expect(expandHlContactIds([mine, other], [mine])).toEqual(['hl-1']);
+  });
+});
+
+describe('resolveHlContactId', () => {
+  it('prefers the HighLevel id recorded on the customer\'s own quotes', () => {
+    const q = makeQuote({ customer_id: 'cust-1', highlevel_contact_id: 'hl-from-quote' });
+    expect(resolveHlContactId([q], 'hl-route')).toBe('hl-from-quote');
+  });
+
+  it('falls back to the route id for a customer with no quotes, so a never-quoted contact still renders', () => {
+    // The regression this exists for: the profile page 404s when nothing
+    // resolves, so returning null here made every never-quoted contact a dead
+    // link from the Office Tasks and inbox customer links.
+    expect(resolveHlContactId([], 'hl-route')).toBe('hl-route');
+  });
+
+  it('returns null for a customer who HAS quotes but no HighLevel id, so the page keeps saying "not linked"', () => {
+    const q = makeQuote({ customer_id: 'cust-1', highlevel_contact_id: null });
+    expect(resolveHlContactId([q], 'cust-1')).toBeNull();
   });
 });
