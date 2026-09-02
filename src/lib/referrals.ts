@@ -418,6 +418,220 @@ export async function hasRecentPendingLinkReferral(
   );
 }
 
+/** A pending 'link' referral matched to an inbound lead, for the quote
+ *  builder's "Referred by" prefill. */
+export type PendingLinkReferralMatch = {
+  referralId: string;
+  referrerCustomerId: string;
+  referrerName: string | null;
+  refereeName: string | null;
+  createdAt: string;
+  matchedOn: 'phone' | 'email';
+};
+
+/**
+ * Find the pending 'link' referral belonging to an inbound lead, so the quote
+ * builder can SAY "this person came from someone's referral link" instead of
+ * relying on a staffer's memory.
+ *
+ * Why this exists: `accrueOnBooking` only ever matches on `referee_quote_id`,
+ * which is set solely when staff pick a referrer in ReferredByPicker while
+ * building the friend's quote, before the deposit. Miss that moment and the
+ * referrer's credit is unreachable without a developer editing the database.
+ * Nothing previously connected the 'link' row the friend created to the quote
+ * someone later builds for them.
+ *
+ * This SUGGESTS, it never auto-attributes. A phone or email match is strong
+ * evidence but not proof, and the consequence of being wrong is paying the
+ * wrong person, so a human still confirms.
+ *
+ * Matching notes:
+ *  - phone is compared through normalizePhone, so (516) 555-0123 and
+ *    +15165550123 are the same lead.
+ *  - email is compared lowercased and trimmed.
+ *  - 'mention' rows are excluded: those already HAVE a quote attached, and a
+ *    mention row means a staffer already did this job.
+ *  - only 'pending' status: a booked/credited/expired referral is settled.
+ *  - `excludeCustomerId` drops a self-referral, so the builder never invites
+ *    a staffer to pay someone for referring themselves.
+ *
+ * Never throws: this decorates a staff surface and must not be able to break
+ * the quote builder.
+ */
+export async function findPendingLinkReferralForContact(input: {
+  phone?: string | null;
+  email?: string | null;
+  excludeCustomerId?: string | null;
+}): Promise<PendingLinkReferralMatch | null> {
+  try {
+    const sb = svc();
+    if (!sb) return null;
+
+    const wantPhone = normalizePhone(input.phone ?? '');
+    const wantEmail = (input.email ?? '').trim().toLowerCase();
+    if (!wantPhone && !wantEmail) return null;
+
+    const { data, error } = await sb
+      .from('referrals')
+      .select('id, referrer_customer_id, referee_contact_name, referee_contact_email, referee_contact_phone, created_at')
+      .eq('source', 'link' satisfies ReferralSource)
+      .eq('status', 'pending' satisfies ReferralStatus)
+      // A link row already turned into a mention is spent. Without this, a
+      // repeat customer's SECOND quote re-surfaces the SAME row and pays one
+      // referral twice: UNIQUE(referee_quote_id) only guards a single quote.
+      .is('consumed_at', null)
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('[referrals] findPendingLinkReferralForContact failed:', error);
+      return null;
+    }
+
+    type Row = {
+      id: string;
+      referrer_customer_id: string | null;
+      referee_contact_name: string | null;
+      referee_contact_email: string | null;
+      referee_contact_phone: string | null;
+      created_at: string | null;
+    };
+
+    const matches: Array<{ row: Row; matchedOn: 'phone' | 'email' }> = [];
+    for (const row of (data ?? []) as Row[]) {
+      if (!row.referrer_customer_id) continue;
+      if (input.excludeCustomerId && row.referrer_customer_id === input.excludeCustomerId) continue;
+      if (wantPhone && normalizePhone(row.referee_contact_phone) === wantPhone) {
+        matches.push({ row, matchedOn: 'phone' });
+        continue;
+      }
+      if (wantEmail && (row.referee_contact_email ?? '').trim().toLowerCase() === wantEmail) {
+        matches.push({ row, matchedOn: 'email' });
+      }
+    }
+    if (matches.length === 0) return null;
+
+    // Newest first: if a lead somehow used two different links, the most
+    // recent one is the one they actually followed in. The query already
+    // orders DB-side; this keeps that order stable after the JS filtering
+    // above, comparing real instants rather than raw ISO strings (string
+    // comparison ranks '10:00:00Z' as newer than '10:00:00.500Z', which is
+    // backwards, and real timestamps carry milliseconds).
+    const at = (v: string | null) => {
+      const t = Date.parse(v ?? '');
+      return Number.isNaN(t) ? 0 : t;
+    };
+    matches.sort((a, b) => at(b.row.created_at) - at(a.row.created_at));
+    const best = matches[0];
+
+    const { data: referrer } = await sb
+      .from('customers')
+      .select('name')
+      .eq('id', best.row.referrer_customer_id as string)
+      .maybeSingle<{ name: string | null }>();
+
+    return {
+      referralId: best.row.id,
+      referrerCustomerId: best.row.referrer_customer_id as string,
+      referrerName: referrer?.name ?? null,
+      refereeName: best.row.referee_contact_name ?? null,
+      createdAt: best.row.created_at ?? '',
+      matchedOn: best.matchedOn,
+    };
+  } catch (err) {
+    console.error('[referrals] findPendingLinkReferralForContact threw:', err);
+    return null;
+  }
+}
+
+/**
+ * Spend the 'link' row that a new 'mention' referral came from, so one
+ * referral can only ever be paid once.
+ *
+ * The hole this closes: a link row's status never changes on its own
+ * (accrueOnBooking matches only on referee_quote_id, which a link row does not
+ * have), so it sits 'pending' forever. UNIQUE(referee_quote_id) stops two
+ * referral rows on the SAME quote and does nothing across different quotes.
+ * With the quote builder now reading link rows back as suggestions, a repeat
+ * customer's second quote would re-surface the same row, create a second
+ * mention on a different quote id, and creditBalanceFor would sum both. One
+ * referral, $250.
+ *
+ * Called from the save path rather than the suggestion UI on purpose: it then
+ * also covers a staffer who picked the referrer by hand, not just one who
+ * accepted the prompt.
+ *
+ * Best-effort by contract, exactly like createPendingReferral beside it: a
+ * failure here must never fail a quote save. Returns how many rows it closed.
+ */
+export async function consumeLinkReferralForMention(input: {
+  referrerCustomerId: string;
+  phone?: string | null;
+  email?: string | null;
+  /** Resolve the phone/email from this customer when they aren't to hand.
+   *  The save call sites know who the referee IS, not their contact details. */
+  refereeCustomerId?: string | null;
+  quoteId: string;
+}): Promise<number> {
+  try {
+    const sb = svc();
+    if (!sb || !input.referrerCustomerId || !input.quoteId) return 0;
+
+    let phone = input.phone ?? null;
+    let email = input.email ?? null;
+    if (!phone && !email && input.refereeCustomerId) {
+      const { data: referee } = await sb
+        .from('customers')
+        .select('phone, email')
+        .eq('id', input.refereeCustomerId)
+        .maybeSingle<{ phone: string | null; email: string | null }>();
+      phone = referee?.phone ?? null;
+      email = referee?.email ?? null;
+    }
+
+    const wantPhone = normalizePhone(phone ?? '');
+    const wantEmail = (email ?? '').trim().toLowerCase();
+    if (!wantPhone && !wantEmail) return 0;
+
+    const { data, error } = await sb
+      .from('referrals')
+      .select('id, referee_contact_email, referee_contact_phone')
+      .eq('referrer_customer_id', input.referrerCustomerId)
+      .eq('source', 'link' satisfies ReferralSource)
+      .eq('status', 'pending' satisfies ReferralStatus)
+      .is('consumed_at', null);
+    if (error) {
+      console.error('[referrals] consumeLinkReferralForMention lookup failed:', error);
+      return 0;
+    }
+
+    type Row = { id: string; referee_contact_email: string | null; referee_contact_phone: string | null };
+    const hits = ((data ?? []) as Row[]).filter((row) => {
+      if (wantPhone && normalizePhone(row.referee_contact_phone) === wantPhone) return true;
+      if (wantEmail && (row.referee_contact_email ?? '').trim().toLowerCase() === wantEmail) return true;
+      return false;
+    });
+
+    let closed = 0;
+    for (const hit of hits) {
+      // Conditional on still being unconsumed: a concurrent save can only
+      // ever win this claim once, the same idiom accrueOnBooking uses.
+      const { error: updErr } = await sb
+        .from('referrals')
+        .update({ consumed_at: new Date().toISOString(), consumed_by_quote_id: input.quoteId })
+        .eq('id', hit.id)
+        .is('consumed_at', null);
+      if (updErr) {
+        console.error('[referrals] consumeLinkReferralForMention update failed:', updErr);
+        continue;
+      }
+      closed += 1;
+    }
+    return closed;
+  } catch (err) {
+    console.error('[referrals] consumeLinkReferralForMention threw:', err);
+    return 0;
+  }
+}
+
 // ─── Accrual ────────────────────────────────────────────────────────────────
 
 /**

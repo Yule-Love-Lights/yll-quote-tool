@@ -9,7 +9,26 @@ import type { PermanentWarranty } from '@/lib/permanent/types';
 import type { SceneEffect } from '@/lib/design/permanentScenes';
 import type { PortalImageVisibility } from '@/lib/portal/imageVisibility';
 
-export type PackageId = 'A' | 'B' | 'C' | 'D';
+// The package ids any derive path may emit. Kept as a runtime list with the
+// type derived FROM it (rather than a hand-written union repeated at each
+// validator) because the union used to be spelled out literally in six places
+// — the portal type, the approve route's body type + its 400 guard, the
+// selection route's type + guard, and the adapter's snapshot parser. Adding
+// 'E' meant every one of those had to change together or a customer landing on
+// the new card would have been refused at approval. Validate with isPackageId
+// and the list stays the single source of truth.
+//
+// A/B/C/D mean different things per vertical (holiday's tier ladder, permanent's
+// surfaces, event/bistro's single bundle, a legacy rebook's one tile) — see each
+// derive function. 'E' is permanent's staff-recommendation card and is never
+// emitted by any other vertical.
+export const PACKAGE_IDS = ['A', 'B', 'C', 'D', 'E'] as const;
+
+export type PackageId = (typeof PACKAGE_IDS)[number];
+
+export function isPackageId(value: unknown): value is PackageId {
+  return typeof value === 'string' && (PACKAGE_IDS as readonly string[]).includes(value);
+}
 
 export type PortalPackage = {
   id: PackageId;
@@ -19,6 +38,13 @@ export type PortalPackage = {
   deposit: number;      // dollars, this quote's deposit rate (default 50%) of total
   recommended?: boolean;
   includedItemIds: string[]; // which line items are bundled in this package
+  // Permanent only. This tile's basis (its items plus any default-on fees) sits
+  // under the quote's approval minimum, so the portal renders it locked with
+  // `amountToMinimum` still needed rather than hiding it. Every other service
+  // type still HIDES a below-minimum tile (see the adapter's gate handling), so
+  // these two fields are undefined there.
+  belowMinimum?: boolean;
+  amountToMinimum?: number;
 };
 
 export type PortalLineItemKind =
@@ -67,6 +93,12 @@ export type PortalLineItem = {
   // wrapped-mini collapse) recognize a renamed item and break it out into its
   // own row instead of folding it into a generic "Trees"-style summary line.
   labelOverridden?: boolean;
+  // Permanent only, custom/manual lines only. Staff chose "bundle into every
+  // package" for this line (inputs.customLineItems[].allTiers) instead of the
+  // default, which puts a custom line in the Whole Home bundle alone. Set by
+  // the adapter; read by derivePackagesPermanent. Defaults to undefined, so an
+  // existing quote's packages and prices are untouched.
+  bundleInAllTiers?: boolean;
 };
 
 // The mutually-exclusive roofline group for the portal (#17 Phase 2). Present

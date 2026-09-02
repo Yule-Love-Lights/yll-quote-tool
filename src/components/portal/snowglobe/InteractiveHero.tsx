@@ -406,13 +406,30 @@ export function InteractiveHero({
                 aria-disabled={locked || undefined}
                 className={`grid grid-cols-2 gap-2 md:gap-2.5 ${locked ? 'opacity-60 pointer-events-none' : ''}`}
               >
-                {packages.map((p, i) => (
+                {packages.map((p, i) => {
+                  // Tiers are numbered by POSITION so an omitted tier still
+                  // reads contiguously. Permanent's 'E' recommendation card is
+                  // not a tier and sits FIRST, so it must not consume a number
+                  // — count only the tiers before this one.
+                  const tierNumber =
+                    packages.slice(0, i).filter((x) => x.id !== 'E').length + 1;
+                  return (
                   <button
                     key={p.id}
                     type="button"
                     role="radio"
                     aria-checked={packageId === p.id}
+                    // Permanent only: this tile's items sit under the quote's
+                    // approval minimum, so it is shown (the customer can see the
+                    // surface exists and what it costs) but cannot be chosen —
+                    // choosing it would only walk them into the approval wall.
+                    // The shortfall is printed under the price. Every other
+                    // service type hides such a tile instead, so belowMinimum is
+                    // never set there and this is inert.
+                    disabled={p.belowMinimum === true}
+                    aria-disabled={p.belowMinimum === true || undefined}
                     onClick={() => {
+                      if (p.belowMinimum) return;
                       selectPackage(p.id);
                       track('package_selected', { quote_id: quoteId, package: p.id });
                       // #238 (review fix): 'D' is overloaded across verticals
@@ -427,7 +444,9 @@ export function InteractiveHero({
                       if (isEmptyCustomSlot(p)) goToIncluded();
                     }}
                     data-active={packageId === p.id}
-                    className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
+                    className={`portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]${
+                      p.belowMinimum ? ' opacity-55 cursor-not-allowed' : ''
+                    }`}
                   >
                     {/* Internal ids stay A/B/C/D; the customer sees "Tier N" by
                         position (so omitting an unavailable tier stays contiguous)
@@ -440,10 +459,12 @@ export function InteractiveHero({
                         it by position ("Tier 1"), never "Custom". */}
                     <span className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.20em] uppercase text-[#FFB744]">
                       {legacyRebook === true
-                        ? `Tier ${i + 1}`
-                        : p.id === 'D' && (serviceType == null || serviceType === 'holiday')
-                          ? 'Custom'
-                          : `Tier ${i + 1}`}
+                        ? `Tier ${tierNumber}`
+                        : p.id === 'E'
+                          ? 'Our pick'
+                          : p.id === 'D' && (serviceType == null || serviceType === 'holiday')
+                            ? 'Custom'
+                            : `Tier ${tierNumber}`}
                       {p.recommended && (packageId !== 'D' || activeName === p.name) && (
                         <span className="text-[9px] tracking-[0.14em] text-[#FFD07A]/90 normal-case">
                           · recommended
@@ -468,8 +489,26 @@ export function InteractiveHero({
                             : 'You pick'
                         : formatUsd(p.total)}
                     </span>
+                    {/* Says WHY the tile cannot be chosen, on the tile itself.
+                        Hiding it (what permanent used to do) left the customer
+                        believing the surface could not be lit at all, and left
+                        the staff member who built the quote with no sign the
+                        option had ever existed. */}
+                    {p.belowMinimum && (
+                      <span className="w-full text-[10px] md:text-[11px] text-[#FFD07A]/85 leading-snug mt-0.5">
+                        {/* "before tax" is load-bearing: the price above this
+                            line is tax-inclusive while the job minimum, and so
+                            this shortfall, is measured before tax. Without it a
+                            customer doing the arithmetic in their head lands
+                            about 8.75% short. */}
+                        {typeof p.amountToMinimum === 'number' && p.amountToMinimum > 0
+                          ? `Add ${formatUsd(p.amountToMinimum)} of work (before tax) to book this on its own`
+                          : 'Below our minimum on its own'}
+                      </span>
+                    )}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

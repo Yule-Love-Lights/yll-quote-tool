@@ -200,6 +200,10 @@ function makeSb(queues: Record<string, unknown[][]>, calls: Call[]): SupabaseCli
         calls.push({ table, op: 'or', arg: filter });
         return builder;
       },
+      ilike: (col: string, pattern: string) => {
+        calls.push({ table, op: 'ilike', arg: `${col}:${pattern}` });
+        return builder;
+      },
       in: (col: string, vals: unknown[]) => {
         calls.push({ table, op: 'in', arg: `${col}:${vals.join('|')}` });
         return finish();
@@ -641,6 +645,118 @@ describe('globalSearch', () => {
     // A read capped AT the group size cannot tell a full group from an
     // overflowing one, so the group would always claim to be complete.
     expect(customerLimit?.arg).toBe(String(MAX_PER_GROUP + 1));
+  });
+
+  // Naldo, 2026-09-01. Before this, a job was findable by its own number and
+  // by the text on its QUOTE, and nothing else. A job whose property address
+  // was corrected after the quote was written, or one with no quote at all,
+  // was effectively invisible to an address search.
+  it('finds a job by its property address, with no quote involved', async () => {
+    const calls: Call[] = [];
+    const sb = makeSb(
+      {
+        customers: [[], [{ id: 'cust1', name: 'Raymond Diaz' }]],
+        quotes: [[], []],
+        properties: [[{ id: 'prop1', customer_id: 'cust1' }]],
+        jobs: [
+          [
+            {
+              id: 'jNoQuote',
+              job_number: 1400,
+              quote_id: null,
+              customer_id: 'cust1',
+              property_id: 'prop1',
+              status: 'scheduled',
+              install_date: '2026-11-20',
+              created_at: '2026-08-01T00:00:00Z',
+            },
+          ],
+        ],
+        invoices: [[]],
+      },
+      calls,
+    );
+
+    const out = await globalSearch(sb, 'Birch Road');
+    expect(out.jobs).toHaveLength(1);
+    // The name comes from the CUSTOMER record, since there is no quote to
+    // read it from. Rendering "Unknown customer" here would defeat the search.
+    expect(out.jobs[0].title).toBe('Raymond Diaz');
+
+    const propIlike = calls.find((c) => c.table === 'properties' && c.op === 'ilike');
+    expect(propIlike?.arg).toBe('address:%Birch Road%');
+    const jobOr = calls.find((c) => c.table === 'jobs' && c.op === 'or');
+    expect(jobOr?.arg).toContain('property_id.in.(prop1)');
+    expect(jobOr?.arg).toContain('customer_id.in.(cust1)');
+  });
+
+  it('finds a customer’s jobs and invoices even when no quote text matched', async () => {
+    const calls: Call[] = [];
+    const sb = makeSb(
+      {
+        customers: [
+          [
+            {
+              id: 'cust2',
+              name: 'Kristie Tibbetts',
+              email: null,
+              phone: null,
+              hl_contact_id: null,
+              updated_at: '2026-08-02T00:00:00Z',
+            },
+          ],
+        ],
+        quotes: [[], []],
+        properties: [[]],
+        jobs: [
+          [
+            {
+              id: 'j2',
+              job_number: 1401,
+              quote_id: null,
+              customer_id: 'cust2',
+              property_id: null,
+              status: 'scheduled',
+              install_date: null,
+              created_at: '2026-08-03T00:00:00Z',
+            },
+          ],
+        ],
+        invoices: [
+          [
+            {
+              id: 'i2',
+              invoice_number: 1401,
+              quote_id: null,
+              customer_id: 'cust2',
+              status: 'awaiting_payment',
+              balance: 500,
+              total: 500,
+              created_at: '2026-08-04T00:00:00Z',
+            },
+          ],
+        ],
+      },
+      calls,
+    );
+
+    const out = await globalSearch(sb, 'Tibbetts');
+    expect(out.jobs[0].title).toBe('Kristie Tibbetts');
+    expect(out.invoices[0].title).toBe('Kristie Tibbetts');
+  });
+
+  it('does not run an address search for a display number', async () => {
+    // "1262" is a quote number, not a street. Searching addresses for it would
+    // drag in every property with 1262 anywhere in the line.
+    const calls: Call[] = [];
+    await globalSearch(makeSb({ customers: [[]], quotes: [[], []] }, calls), '1262');
+    expect(calls.some((c) => c.table === 'properties')).toBe(false);
+  });
+
+  it('does not run an address search for a punctuated phone number', async () => {
+    const calls: Call[] = [];
+    await globalSearch(makeSb({ customers: [[]], quotes: [[], []] }, calls), '(516) 555-0123');
+    expect(calls.some((c) => c.table === 'properties')).toBe(false);
   });
 
   it('flattens the four groups in the order the keyboard walks them', () => {

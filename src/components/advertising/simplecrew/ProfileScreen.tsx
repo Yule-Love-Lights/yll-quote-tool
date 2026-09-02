@@ -39,6 +39,10 @@ type Settlement = {
   note: string | null;
   paidAt: string;
   lineCount: number;
+  /** A payment the office undid (ledger row 492). Shown, struck through and
+   * labelled, rather than vanishing from the worker's history with no
+   * explanation, and it counts for nothing in the total above. */
+  voidedAt: string | null;
 };
 type PayoutSummary = { earnedCents: number; settledCents: number; unpaidCents: number };
 type PayoutsPayload = { summary: PayoutSummary; settlements: Settlement[] };
@@ -187,9 +191,12 @@ export default function ProfileScreen({ displayName, email }: { displayName: str
                   <span style={{ color: SC.muted }}>
                     {paidOn(s.paidAt)} · {METHOD_LABEL[s.method]}
                     {s.note ? ` · ${s.note}` : ''}
+                    {s.voidedAt && <span style={{ color: SC.danger }}> · undone</span>}
                   </span>
-                  <span className="whitespace-nowrap" style={{ color: SC.text }}>
-                    {dollars(s.totalCents)}
+                  <span className="whitespace-nowrap" style={{ color: s.voidedAt ? SC.muted : SC.text }}>
+                    <span style={{ textDecoration: s.voidedAt ? 'line-through' : undefined }}>
+                      {dollars(s.totalCents)}
+                    </span>
                     <span style={{ color: SC.muted }}>
                       {' '}
                       ({s.lineCount} {s.lineCount === 1 ? 'photo' : 'photos'})
