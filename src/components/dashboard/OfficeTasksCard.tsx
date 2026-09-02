@@ -92,6 +92,14 @@ interface OfficeTask {
   dismissedAt: string | null;
   createdByLabel: string | null;
   assignedToLabel: string | null;
+  /** HighLevel contact id, which is also the /customers/[contactId] route id.
+   *  Null when nothing resolved, and the row then renders no customer links. */
+  customerContactId: string | null;
+  /** The customer's display name, or null when the contact row carries none. */
+  customerName: string | null;
+  /** Prebuilt HighLevel URL. Built server-side (the location id lives in the
+   *  environment and this is a client component), null when unconfigured. */
+  highLevelUrl: string | null;
 }
 
 interface ActionEditor {
@@ -183,6 +191,18 @@ export function personalLabel(sourceSystem: TaskSourceSystem, createdByLabel: st
 export function assignedLabel(assignedToLabel: string | null): string | null {
   if (!assignedToLabel) return null;
   return assignedToLabel === 'You' ? 'Assigned to you' : `Assigned to ${assignedToLabel}`;
+}
+
+/**
+ * The text of the customer link on a task row. The name when the contact
+ * carries one, and a plain "View customer" when it does not: measured in
+ * prod, 1 of 20 task contacts has no display name, and the link is still
+ * worth offering there because /customers/[contactId] loads the contact
+ * live from HighLevel and will show who it is. Never invents a name.
+ */
+export function customerLinkLabel(customerName: string | null): string {
+  const trimmed = customerName?.trim();
+  return trimmed ? trimmed : 'View customer';
 }
 
 /** Human name for a source system, used by the /tasks source filter. */
@@ -974,6 +994,28 @@ export default function OfficeTasksCard({
                         </span>
                       ) : null}
                     </div>
+                    {task.customerContactId ? (
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                        <Link
+                          href={`/customers/${encodeURIComponent(task.customerContactId)}`}
+                          className="font-medium hover:underline"
+                          style={{ color: 'var(--op-primary)' }}
+                        >
+                          {customerLinkLabel(task.customerName)}
+                        </Link>
+                        {task.highLevelUrl ? (
+                          <a
+                            href={task.highLevelUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs hover:underline"
+                            style={{ color: 'var(--op-text-dim)' }}
+                          >
+                            HighLevel
+                          </a>
+                        ) : null}
+                      </p>
+                    ) : null}
                     {task.detail ? (
                       <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5" style={{ color: 'var(--op-text-dim)' }}>
                         {task.detail}

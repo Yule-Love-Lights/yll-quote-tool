@@ -65,6 +65,23 @@ export type OfficeTask = {
    * call_commitment tasks to reps by email match).
    */
   assignedToLabel: string | null;
+  /**
+   * The customer this task is about, resolved through the call it came from:
+   * office_tasks.source_event_id -> call_commitments.ghl_contact_id ->
+   * dashboard_contacts. Null for a task with no resolvable contact (a manual
+   * task always, a call task whose commitment or contact row is missing).
+   *
+   * customerContactId is a HighLevel contact id, which is exactly what
+   * /customers/[contactId] takes as its route id (matchesCustomerRoute in
+   * src/lib/dashboard/customers.ts), so the profile link is a direct use of
+   * this value rather than a second lookup.
+   */
+  customerContactId: string | null;
+  /** The customer's display name, or null when the contact row has none. */
+  customerName: string | null;
+  /** The customer's phone, used only to recognise and remove the duplicated
+   *  name line the producer appends to `detail`. Not rendered on its own. */
+  customerPhone: string | null;
 };
 
 type Row = {
@@ -82,10 +99,11 @@ type Row = {
   dismissed_at: string | null;
   created_by: string | null;
   assigned_to: string | null;
+  source_event_id: string | null;
 };
 
 const TASK_SELECT =
-  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by,assigned_to';
+  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by,assigned_to,source_event_id';
 
 /**
  * A display label for one operator id: 'You' for the viewer, a resolved name
@@ -98,18 +116,151 @@ function labelFor(id: string | null, actorId: string, labels: ReadonlyMap<string
   return labels.get(id) ?? 'a teammate';
 }
 
-function toOfficeTask(row: Row, actorId: string, userLabels: ReadonlyMap<string, string>): OfficeTask {
+/** What one task's customer resolves to, or null when nothing resolved. */
+export type TaskCustomer = {
+  contactId: string;
+  name: string | null;
+  phone: string | null;
+};
+
+/**
+ * The producer (office_tasks_create_from_commitment in
+ * migrations/2026-08-29-call-commitments.sql) builds `detail` by appending
+ * blank-line separated blocks to the commitment's own text: first a customer
+ * line shaped "Name - +phone", then a "Call taken by ..." line. Now that the
+ * customer is rendered as a real link above the detail, that first appended
+ * block would say the same name a second time, so it is removed here.
+ *
+ * Deliberately conservative. A block is removed ONLY when it matches that
+ * exact producer shape: some text, then " - ", then a phone number, and only
+ * when it is not the first block (the commitment's own text always is). A
+ * customer line carrying a name with no phone, or a phone with no name, is
+ * NOT recognised and is left alone: showing a name twice is a cosmetic
+ * problem, and deleting a line of a staffer's real detail is not.
+ */
+export function stripCustomerLine(detail: string | null): string | null {
+  if (!detail) return detail;
+  const blocks = detail.split('\n\n');
+  if (blocks.length < 2) return detail;
+  // Skip index 0: the commitment's own detail text is always the first block.
+  const kept = blocks.filter((block, index) => index === 0 || !isCustomerLine(block));
+  if (kept.length === blocks.length) return detail;
+  const rebuilt = kept.join('\n\n').trim();
+  return rebuilt === '' ? null : rebuilt;
+}
+
+/** True for the producer's "Name - +phone" customer line, and nothing else. */
+function isCustomerLine(block: string): boolean {
+  const trimmed = block.trim();
+  if (trimmed.includes('\n')) return false;
+  // "<name> - <phone>": the phone is everything after the last " - ", and is
+  // digits plus the punctuation a phone number carries, nothing else.
+  return /^.+ - \+?\d[\d\s().-]{5,}$/.test(trimmed);
+}
+
+/**
+ * Resolves the customer behind every call-derived task in `rows`, keyed by
+ * task id. Two reads, both bounded by the task list (a small working list,
+ * the same assumption resolveUserLabels already rests on):
+ *
+ *   office_tasks.source_event_id -> call_commitments.ghl_contact_id
+ *   ghl_contact_id -> dashboard_contacts (display name, phone)
+ *
+ * Best-effort throughout, exactly like resolveUserLabels: any failure leaves
+ * the affected tasks with no customer rather than failing the whole list
+ * read. A task list that renders without links is a degraded screen; a task
+ * list that refuses to render is a broken one.
+ *
+ * A contact id that resolves but has no dashboard_contacts row still returns
+ * a TaskCustomer with a null name, because the id alone is enough to link:
+ * /customers/[contactId] loads the contact live from HighLevel.
+ */
+async function resolveTaskCustomers(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  rows: Row[],
+): Promise<Map<string, TaskCustomer>> {
+  const byTask = new Map<string, TaskCustomer>();
+  const commitmentIds = Array.from(
+    new Set(
+      rows
+        .filter((r) => r.source_system === 'call_commitment' && r.source_event_id)
+        .map((r) => r.source_event_id as string),
+    ),
+  );
+  if (!commitmentIds.length) return byTask;
+
+  try {
+    const { data: commitments, error: commitmentError } = await db
+      .from('call_commitments')
+      .select('id,ghl_contact_id')
+      .in('id', commitmentIds);
+    if (commitmentError || !commitments) return byTask;
+
+    const contactIdByCommitment = new Map<string, string>();
+    for (const c of commitments as Array<{ id: string; ghl_contact_id: string | null }>) {
+      if (c.ghl_contact_id) contactIdByCommitment.set(String(c.id), c.ghl_contact_id);
+    }
+    if (!contactIdByCommitment.size) return byTask;
+
+    // Names are a nice-to-have: a failure here still leaves every link
+    // working, so it degrades to an id-only customer rather than to nothing.
+    const details = new Map<string, { name: string | null; phone: string | null }>();
+    const contactIds = Array.from(new Set(contactIdByCommitment.values()));
+    const { data: contacts, error: contactError } = await db
+      .from('dashboard_contacts')
+      .select('ghl_contact_id,display_name,primary_phone')
+      .in('ghl_contact_id', contactIds);
+    if (!contactError && contacts) {
+      for (const c of contacts as Array<{
+        ghl_contact_id: string | null;
+        display_name: string | null;
+        primary_phone: string | null;
+      }>) {
+        if (!c.ghl_contact_id) continue;
+        const name = c.display_name != null && c.display_name.trim() !== '' ? c.display_name.trim() : null;
+        details.set(c.ghl_contact_id, { name, phone: c.primary_phone ?? null });
+      }
+    }
+
+    for (const row of rows) {
+      if (!row.source_event_id) continue;
+      const contactId = contactIdByCommitment.get(row.source_event_id);
+      if (!contactId) continue;
+      const detail = details.get(contactId);
+      byTask.set(row.id, {
+        contactId,
+        name: detail?.name ?? null,
+        phone: detail?.phone ?? null,
+      });
+    }
+  } catch {
+    // best-effort: leave every task without a customer.
+  }
+  return byTask;
+}
+
+function toOfficeTask(
+  row: Row,
+  actorId: string,
+  userLabels: ReadonlyMap<string, string>,
+  customers: ReadonlyMap<string, TaskCustomer>,
+): OfficeTask {
   // createdByLabel stays manual-only on purpose: it drives the "Personal"
   // badge, which has no meaning for a call-derived task. assignedToLabel is
   // computed for EVERY source_system, because a call_commitment task is
   // exactly the kind that carries an assignee.
   const createdByLabel =
     row.source_system === 'manual' ? labelFor(row.created_by, actorId, userLabels) : null;
+  const customer = customers.get(row.id) ?? null;
   return {
     id: row.id,
     sourceSystem: row.source_system,
     title: row.title,
-    detail: row.detail,
+    // The name is rendered as a link above the detail now, so the
+    // producer's duplicated "Name - phone" block comes out. Only when a
+    // customer actually resolved: with no link on screen, that line is
+    // the only place the name appears and has to stay.
+    detail: customer ? stripCustomerLine(row.detail) : row.detail,
     status: row.status,
     dueAt: row.due_at,
     createdAt: row.created_at,
@@ -120,6 +271,9 @@ function toOfficeTask(row: Row, actorId: string, userLabels: ReadonlyMap<string,
     dismissedAt: row.dismissed_at,
     createdByLabel,
     assignedToLabel: labelFor(row.assigned_to, actorId, userLabels),
+    customerContactId: customer?.contactId ?? null,
+    customerName: customer?.name ?? null,
+    customerPhone: customer?.phone ?? null,
   };
 }
 
@@ -225,8 +379,14 @@ export async function listOfficeTasks(
     };
   }
   const rows = (data ?? []) as Row[];
-  const userLabels = await resolveUserLabels(db, rows, actorId);
-  return { ok: true, tasks: rows.map((row) => toOfficeTask(row, actorId, userLabels)) };
+  const [userLabels, customers] = await Promise.all([
+    resolveUserLabels(db, rows, actorId),
+    resolveTaskCustomers(db, rows),
+  ]);
+  return {
+    ok: true,
+    tasks: rows.map((row) => toOfficeTask(row, actorId, userLabels, customers)),
+  };
 }
 
 export type OfficeTaskCounts = { open: number; overdue: number };
