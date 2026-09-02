@@ -56,7 +56,8 @@ describe('issuances route', () => {
   it('POST issues with the ADMIN session as issuer, never one from the body', async () => {
     const res = await POST(makeReq({ workerId: 'worker-1', qty: 50, issuedBy: 'someone-else' }));
     expect(res.status).toBe(201);
-    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined);
+    // Fifth argument is the idempotency key (row 480); this caller sends none.
+    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, undefined);
   });
 
   it('POST refuses zero, negative, fractional and string quantities', async () => {
@@ -77,5 +78,27 @@ describe('issuances route', () => {
     const body = await one.json();
     expect(body.balance).toEqual(BALANCE);
     expect(listIssuances).toHaveBeenCalledWith('worker-1');
+  });
+});
+
+describe('POST idempotency key (ledger row 480)', () => {
+  const ID = '55555555-5555-4555-8555-555555555555';
+
+  it('passes a valid request id through to the data layer', async () => {
+    const res = await POST(makeReq({ workerId: 'worker-1', qty: 50, requestId: ID }));
+    expect(res.status).toBe(201);
+    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, ID);
+  });
+
+  it('refuses a malformed id instead of storing a key that guards nothing', async () => {
+    const res = await POST(makeReq({ workerId: 'worker-1', qty: 50, requestId: 'not-a-uuid' }));
+    expect(res.status).toBe(400);
+    expect(issueSigns).not.toHaveBeenCalled();
+  });
+
+  it('still works with no id at all', async () => {
+    const res = await POST(makeReq({ workerId: 'worker-1', qty: 50 }));
+    expect(res.status).toBe(201);
+    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, undefined);
   });
 });
