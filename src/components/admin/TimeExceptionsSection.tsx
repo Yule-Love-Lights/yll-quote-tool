@@ -59,12 +59,18 @@ export function TimeExceptionsSection({
           door nags forever): the manual shift editor on the two-clocks page
           is where a human corrects the times; closing the shift there closes
           its stuck children. */}
+      {/* Scoped to FIELD shifts (S59, same class as the Hours copy above it):
+          the two clocks page lists field shifts only (fleetDay.ts), so an
+          office person's stuck record is not on it. Their open shift closes
+          when they clock out or when the midnight sweep runs; there is no
+          admin editor for office shifts yet. */}
       <p className="text-sm text-gray-500 -mt-2 mb-4">
-        To fix one, correct the shift&apos;s times on{' '}
+        To fix one for field crew, correct the shift&apos;s times on{' '}
         <a href="/admin/fleet/clocks" className="underline">
           the day&apos;s two clocks page
         </a>
-        .
+        . An office person&apos;s open shift is not listed there; it closes when they clock out or
+        when the midnight sweep runs, and there is no admin editor for office shifts yet.
       </p>
 
       {errors.length > 0 && (
