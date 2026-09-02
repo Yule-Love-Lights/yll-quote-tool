@@ -547,6 +547,14 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect(result?.emailDnd).toBe(false);
     });
 
+    // Fix round: GHL's channel-key casing is inconsistent (already observed
+    // for SMS in scripts/winback-recon.ts:208) — a lowercase `email` key must
+    // still be read, or an active DND under that key renders green.
+    it('lowercase "email" channel key (GHL casing inconsistency) → still reads status:active as blocked', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { email: { status: 'active', code: '105' } } });
+      expect(result).toEqual({ emailDnd: true, reason: 'active', message: undefined, code: '105' });
+    });
+
     it('malformed/absent contact → null', () => {
       expect(parseContactDndState(null)).toBeNull();
       expect(parseContactDndState(undefined)).toBeNull();

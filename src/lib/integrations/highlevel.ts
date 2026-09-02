@@ -284,8 +284,17 @@ export async function getContactInternal(contactId: string): Promise<CrmContactI
 // mode this whole feature exists to catch — so the predicate is inverted:
 // blocked unless the status is explicitly the known-healthy 'inactive' (or
 // absent), or contact-level dnd is true, which blocks regardless of Email.
+// Fix round: GHL is inconsistent about the dndSettings CHANNEL KEY's casing —
+// scripts/winback-recon.ts:208 already needed `SMS ?? sms` for the exact same
+// reason (learned live off a real contact). A lowercase `email` key would
+// read as MISSING under an Email-only lookup and render green while blocked,
+// the exact class this feature exists to catch. Deliberately NOT the same
+// fix for the STATUS value: case-folding `'inactive'`/`'active'` is the
+// UNSAFE direction here (it would treat some as-yet-unobserved status like
+// 'Active'/'ACTIVE' as the exact-match healthy case by accident), so the
+// status comparison below stays exact.
 type RawDndChannel = { status?: string; message?: string; code?: string };
-type RawContactWithDnd = { dnd?: boolean; dndSettings?: { Email?: RawDndChannel } };
+type RawContactWithDnd = { dnd?: boolean; dndSettings?: { Email?: RawDndChannel; email?: RawDndChannel } };
 
 export type ContactDndState = {
   emailDnd: boolean;
@@ -308,7 +317,7 @@ export type ContactDndState = {
 export function parseContactDndState(contact: unknown): ContactDndState | null {
   if (!contact || typeof contact !== 'object') return null;
   const c = contact as RawContactWithDnd;
-  const email = c.dndSettings?.Email;
+  const email = c.dndSettings?.Email ?? c.dndSettings?.email;
   if (c.dnd === true) {
     return { emailDnd: true, reason: 'contact-dnd', message: email?.message, code: email?.code };
   }

@@ -654,6 +654,43 @@ describe('Valor webhook — deposit-notify Telegram fallback + durable marker (2
       notifyTelegramAudience.mockReset();
     }
   });
+
+  // Fix round: the fallback's setTimeout was never cleared, so in the common
+  // case (Telegram answers fine) a dangling timer kept the serverless
+  // invocation alive ~4.8s longer for a rejection nobody reads (reproduced
+  // in a standalone Node run). vi.getTimerCount() reads the fake-timer
+  // scheduler directly — it is 0 only if the timer was actually cleared, not
+  // merely "didn't fire yet".
+  it('clears the fallback timeout once Telegram resolves first — no timer left armed', async () => {
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    hl.sendEmail.mockImplementationOnce(async () => ({})); // customer receipt
+    hl.sendEmail.mockRejectedValueOnce(new Error('GHL down')); // internal alert
+    notifyTelegramAudience.mockImplementation(() => Promise.resolve()); // Telegram wins the race immediately
+
+    vi.useFakeTimers();
+    try {
+      const res = await POST(signedReq(APPROVED_PAYLOAD));
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.booked).toBe(true);
+      expect(updatePayloads).toHaveLength(2);
+      expect(updatePayloads[1]).toMatchObject({ deposit_notify_error: 'GHL down' });
+
+      // The 5s fallback timer must already be cleared — not merely pending
+      // and not-yet-fired.
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advancing the full 5s confirms nothing further is scheduled (a
+      // lingering timer would still be counted here even before it fires).
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      notifyTelegramAudience.mockReset();
+    }
+  });
 });
 
 describe('Valor webhook — verification probe (Verify and Update)', () => {

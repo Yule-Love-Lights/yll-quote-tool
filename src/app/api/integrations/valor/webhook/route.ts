@@ -935,24 +935,37 @@ export async function POST(req: NextRequest) {
       // stretch that response. A timeout is just another fallback failure —
       // logged, and the durable marker below still runs.
       try {
-        await Promise.race([
-          notifyTelegramAudience(
-            'jobs',
-            `⚠️ Deposit received but the staff email failed\n` +
-              `The deposit is recorded and the booking is safe — only the staff alert email didn't send.\n` +
-              `${quote.customer_name ?? 'A customer'}${quote.quote_number ? ` (Quote #${quote.quote_number})` : ''} paid ` +
-              `$${depositUsd.toFixed(2)} of $${totalUsd.toFixed(2)} total.\n` +
-              `HighLevel error: ${errMsg}\n` +
-              `Check Settings → HighLevel for details.\n` +
-              `${adminUrl}`,
-          ),
-          new Promise<never>((_resolve, reject) => {
-            setTimeout(
-              () => reject(new Error(`Telegram fallback timed out after ${DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS}ms`)),
-              DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS,
-            );
-          }),
-        ]);
+        // Fix round: hold the timer id and clear it in a `finally` once the
+        // race settles either way — a bare `new Promise((_,reject) =>
+        // setTimeout(...))` with nothing clearing it leaves the timer armed
+        // even after Telegram wins (the common case), keeping the serverless
+        // invocation alive for the remaining ~5s before it fires a rejection
+        // nobody reads (reproduced in a standalone Node run). Clearing it
+        // changes nothing about the invariant: a real timeout is still
+        // caught below and treated as an ordinary fallback failure.
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            notifyTelegramAudience(
+              'jobs',
+              `⚠️ Deposit received but the staff email failed\n` +
+                `The deposit is recorded and the booking is safe — only the staff alert email didn't send.\n` +
+                `${quote.customer_name ?? 'A customer'}${quote.quote_number ? ` (Quote #${quote.quote_number})` : ''} paid ` +
+                `$${depositUsd.toFixed(2)} of $${totalUsd.toFixed(2)} total.\n` +
+                `HighLevel error: ${errMsg}\n` +
+                `Check Settings → HighLevel for details.\n` +
+                `${adminUrl}`,
+            ),
+            new Promise<never>((_resolve, reject) => {
+              timeoutId = setTimeout(
+                () => reject(new Error(`Telegram fallback timed out after ${DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS}ms`)),
+                DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timeoutId);
+        }
       } catch (telegramErr) {
         console.error(
           '[api/integrations/valor/webhook] telegram fallback for internal email failure also failed:',
