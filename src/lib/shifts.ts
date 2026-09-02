@@ -181,10 +181,17 @@ export async function clockOut(
 // form and TYPING the times. GPS never writes payroll: these functions write
 // only what a human typed, and stamp who typed it (`manual_by`).
 //
-// NO PAID-DAY GUARD YET, on purpose and on record: the tool has no
-// paid/approved marker on shifts today (payroll approval still happens in
-// Copilot). When the Staff payroll build lands a paid marker, editing a paid
-// day must start refusing here. Until then the audit stamp is the protection.
+// PAID-SHIFT GUARD, added 2026-09-02 (ledger row 459, time-tracking plan
+// phase 3). This note used to say there was no such guard because the tool
+// had no paid marker; shift_settlements is that marker, so the guard is now
+// armed. A shift sitting on a LIVE settlement line cannot have its times
+// rewritten or be removed, because somebody has already been paid against
+// the hours it records. Undo the payment first, which releases its shifts.
+//
+// Scoped to the SHIFT, not the day: settlement is per shift, so ADDING a
+// shift to a day that already contains a paid one is still allowed. That is
+// a correction which adds hours nobody has been paid for yet, and refusing
+// it would strand real work behind a payment for different hours.
 
 /** A typed refusal, so the route can answer with the real reason. */
 export class ManualShiftRefusedError extends Error {
@@ -197,7 +204,8 @@ export class ManualShiftRefusedError extends Error {
       | 'not-field-crew'
       | 'not-manual'
       | 'has-children'
-      | 'audit-failed',
+      | 'audit-failed'
+      | 'already-paid',
     message: string,
   ) {
     super(message);
@@ -552,6 +560,9 @@ export async function adminUpdateShiftTimes(input: {
   // and closing it needs a DB transaction this codebase does not use yet.
   await assertContainsChildren(db, shiftId, input.clockInAt, input.clockOutAt);
 
+  // Row 459: refuse if somebody has already been paid for these hours.
+  await assertNotSettled(db, shiftId, 'edited');
+
   const payload: Record<string, unknown> = {
     clock_in_at: input.clockInAt,
     clock_out_at: input.clockOutAt,
@@ -653,6 +664,11 @@ export async function adminVoidShift(input: { shiftId: string; actor: string }):
 
   await assertNoChildren(db, shiftId);
 
+  // Row 459: refuse if somebody has already been paid for these hours. Before
+  // the audit write, so a refused void leaves no trail entry describing a
+  // removal that never happened.
+  await assertNotSettled(db, shiftId, 'removed');
+
   // The audit row goes in BEFORE the row is destroyed, and a failure REFUSES
   // the void (S78 wrap, technical lens). It used to be written afterwards by
   // the same best-effort helper the create and edit paths use, which meant a
@@ -704,6 +720,45 @@ export async function adminVoidShift(input: { shiftId: string; actor: string }):
     actor: input.actor,
     shift: data as Row,
   });
+}
+
+/**
+ * Refuses when the shift sits on a LIVE settlement line — somebody has been
+ * paid against the hours this row records (ledger row 459).
+ *
+ * The question is asked HERE, against the lines table, rather than by
+ * importing shiftSettlements.ts: the guard belongs at the state change it
+ * protects, and a second copy of it exported from that module is something a
+ * test can reach for instead of the real one, which is how the advertising
+ * equivalent once shipped with a missing filter.
+ *
+ * Fails CLOSED. An unreadable lookup refuses the write, because on payroll a
+ * refusal costs a retry and rewriting hours somebody was already paid for
+ * costs a correction nobody can see.
+ */
+async function assertNotSettled(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  shiftId: string,
+  what: 'edited' | 'removed',
+): Promise<void> {
+  const { data, error } = await db
+    .from('shift_settlement_lines')
+    .select('id, settlement_id')
+    .eq('shift_id', shiftId)
+    .is('voided_at', null)
+    .limit(1);
+  if (error) {
+    throw new ManualShiftRefusedError(
+      'already-paid',
+      `Could not check whether this shift has been paid (${error.message}). Nothing was changed; try again.`,
+    );
+  }
+  if ((data ?? []).length > 0) {
+    throw new ManualShiftRefusedError(
+      'already-paid',
+      `This shift has already been paid, so it cannot be ${what}. Undo that payment on this person's page first — that releases the shift.`,
+    );
+  }
 }
 
 /**

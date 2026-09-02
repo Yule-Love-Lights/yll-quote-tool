@@ -23,6 +23,7 @@ import { paidSecondsForShift, breakSecondsForShift } from '@/lib/shiftBreaks';
 import { resolveNowMs } from '@/lib/timeSpans';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { addDays } from '@/lib/opsMidnightClose';
+import { settledShiftIds } from '@/lib/shiftSettlements';
 
 /** Rolling windows, in ET days counted back from today INCLUSIVE. Same
  * vocabulary as the summary table: no "this week" or "this month", because a
@@ -53,9 +54,14 @@ export type PersonShift = {
   breakSeconds: number;
   /** True when this row is one the office TYPED (source 'office' with a
    * manual_by stamp) — the only kind the server will let anyone remove.
-   * Mirrors adminVoidShift's guard so the page offers no button the server
-   * would refuse. */
+   * Mirrors the FIRST of adminVoidShift's guards; the server also refuses a
+   * shift carrying a break or job segment, which is not mirrored here.
+   * ALSO false once the shift is paid — see settlementId. */
   removable: boolean;
+  /** The live settlement this shift sits on, or null. A paid shift can be
+   * neither edited nor removed (ledger row 459, guarded in shifts.ts), so the
+   * page shows the reason instead of controls the server would refuse. */
+  settlementId: string | null;
 };
 
 export type PersonDay = {
@@ -78,7 +84,15 @@ export type ShiftAuditEntry = {
 };
 
 export type PersonTime = {
-  person: { id: string; displayName: string; active: boolean; isOffice: boolean } | null;
+  person: {
+    id: string;
+    displayName: string;
+    active: boolean;
+    isOffice: boolean;
+    /** For the pay panel's REFERENCE figure only. Never used to compute a
+     * payment: the amount is typed by an admin (see shiftSettlements.ts). */
+    baseRateCents: number;
+  } | null;
   range: RangeKey;
   days: PersonDay[];
   /** Paid seconds across the whole window (the sum of the days below). */
@@ -91,6 +105,9 @@ export type PersonTime = {
    * totals, flagged, same rule as the summary table. */
   autoClosed: { count: number; seconds: number };
   audit: ShiftAuditEntry[];
+  /** False when the settlement read FAILED. The page hides the pay panel
+   * rather than showing shifts as payable that may already be paid. */
+  settlementsReadable: boolean;
   /** True when the audit list could be scoped only by this person's KNOWN
    * shift ids — see readAudit. Nothing is hidden that we could have found;
    * this says the trail may be incomplete for shifts already voided. */
@@ -123,6 +140,9 @@ export function groupPersonDays(
   breaks: ReadonlyArray<{ shiftId: string } & BreakInterval>,
   fromDay: string | null,
   nowIso?: string,
+  /** shiftId to the live settlement that paid it. Empty until somebody is
+   * actually paid, which is every case before phase 3 is used. */
+  settledByShiftId: ReadonlyMap<string, string> = new Map(),
 ): { days: PersonDay[]; totalSeconds: number; shiftCount: number; openShift: PersonTime['openShift']; autoClosed: { count: number; seconds: number } } {
   const nowMs = resolveNowMs(nowIso);
   const now = new Date(nowMs).toISOString();
@@ -157,6 +177,7 @@ export function groupPersonDays(
     // guard against divergence, not against a known row.
     if (fromDay !== null && day !== 'unknown' && (day < fromDay || day > todayKey)) continue;
 
+    const settledOn = settledByShiftId.get(s.id);
     const envelope: ShiftEnvelope = { clockInAt: s.clockInAt, clockOutAt: s.clockOutAt };
     const shiftBreaks = breaksByShift.get(s.id) ?? [];
     const paidSeconds = paidSecondsForShift(envelope, shiftBreaks, now);
@@ -171,7 +192,8 @@ export function groupPersonDays(
       manualBy: s.manualBy,
       paidSeconds,
       breakSeconds,
-      removable: s.source === 'office' && Boolean(s.manualBy),
+      removable: s.source === 'office' && Boolean(s.manualBy) && settledOn === undefined,
+      settlementId: settledOn ?? null,
     };
 
     const bucket = byDay.get(day);
@@ -424,6 +446,7 @@ export async function loadPersonTime(
     autoClosed: { count: 0, seconds: 0 },
     audit: [],
     auditPartial: false,
+    settlementsReadable: false,
     asOf,
     errors,
   };
@@ -433,7 +456,7 @@ export async function loadPersonTime(
 
   const { data: personData, error: personError } = await db
     .from('crew_members')
-    .select('id, display_name, active, is_office')
+    .select('id, display_name, active, is_office, base_rate_cents')
     .eq('id', crewMemberId)
     .maybeSingle();
   if (personError) return { ...empty, errors: [`crew_members: ${personError.message}`] };
@@ -442,6 +465,7 @@ export async function loadPersonTime(
     display_name: string;
     active: boolean;
     is_office: boolean;
+    base_rate_cents: number;
   } | null;
   if (!personRow) return empty;
   const person = {
@@ -449,6 +473,7 @@ export async function loadPersonTime(
     displayName: personRow.display_name,
     active: personRow.active,
     isOffice: personRow.is_office,
+    baseRateCents: personRow.base_rate_cents,
   };
 
   const shiftRows = await readShifts(db, crewMemberId).catch((e: unknown) => {
@@ -457,7 +482,7 @@ export async function loadPersonTime(
   });
   const shiftIds = shiftRows.map((r) => r.id);
 
-  const [breakRows, audit] = await Promise.all([
+  const [breakRows, audit, settled] = await Promise.all([
     readBreaks(db, shiftIds).catch((e: unknown) => {
       // The DIRECTION matters and a generic "incomplete" hides it: with no
       // break rows, paidSecondsForShift subtracts nothing and every total on
@@ -473,6 +498,16 @@ export async function loadPersonTime(
       errors.push(e instanceof Error ? e.message : 'activity read failed');
       return { entries: [] as ShiftAuditEntry[], partial: false };
     }),
+    // Which shifts are already paid. A failure must NOT read as "none are
+    // paid": that would offer Edit and Remove on rows the server refuses, and
+    // list an already-paid shift as payable a second time. Null means unknown,
+    // and the page hides the pay panel on it.
+    settledShiftIds(shiftIds).catch((e: unknown) => {
+      errors.push(
+        `${e instanceof Error ? e.message : 'settlement read failed'} — payments could not be read, so nothing can be paid or corrected from this page until that works`,
+      );
+      return null;
+    }),
   ]);
 
   const grouped = groupPersonDays(
@@ -487,6 +522,7 @@ export async function loadPersonTime(
     breakRows.map((b) => ({ shiftId: b.shift_id, startedAt: b.started_at, endedAt: b.ended_at })),
     rangeFromDay(range, asOf),
     asOf,
+    settled ?? new Map(),
   );
 
   return {
@@ -499,6 +535,7 @@ export async function loadPersonTime(
     autoClosed: grouped.autoClosed,
     audit: audit.entries,
     auditPartial: audit.partial,
+    settlementsReadable: settled !== null,
     asOf,
     errors,
   };

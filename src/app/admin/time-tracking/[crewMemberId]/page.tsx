@@ -24,9 +24,14 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
-import { PersonHoursSection, ShiftAuditSection } from '@/components/admin/PersonHoursSections';
+import {
+  PersonHoursSection,
+  ShiftAuditSection,
+  ShiftPaySection,
+} from '@/components/admin/PersonHoursSections';
 import { getSessionRole } from '@/lib/auth/sessionRole';
 import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
+import { listSettlements, summarize } from '@/lib/shiftSettlements';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,6 +53,15 @@ export default async function PersonTimePage({
   const range: RangeKey = isRangeKey(rawRange) ? rawRange : DEFAULT_RANGE;
 
   const time = await loadPersonTime(crewMemberId, range);
+  // Read separately from the hours so a settlement-read failure cannot empty
+  // the hours table; the pay section hides itself instead (see
+  // settlementsReadable).
+  const settlements = time.person
+    ? await listSettlements(crewMemberId).catch((e: unknown) => {
+        console.error('[time-tracking] settlements read failed:', e);
+        return null;
+      })
+    : null;
   const basePath = `/admin/time-tracking/${encodeURIComponent(crewMemberId)}`;
 
   if (!time.person) {
@@ -109,6 +123,20 @@ export default async function PersonTimePage({
           openShift={time.openShift}
           errors={time.errors}
           basePath={basePath}
+        />
+
+        <ShiftPaySection
+          crewMemberId={person.id}
+          crewName={person.displayName}
+          rateCentsPerHour={person.baseRateCents}
+          days={time.days}
+          range={time.range}
+          settlements={settlements ?? []}
+          settledCents={summarize(settlements ?? []).settledCents}
+          // Both reads have to have worked: the marks say which shifts are
+          // already paid, the list says what was paid. Either failing makes
+          // the panel misleading rather than merely incomplete.
+          settlementsReadable={time.settlementsReadable && settlements !== null}
         />
 
         <ShiftAuditSection entries={time.audit} partial={time.auditPartial} />

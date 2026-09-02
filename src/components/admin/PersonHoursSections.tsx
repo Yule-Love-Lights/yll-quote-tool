@@ -11,6 +11,8 @@
 import Link from 'next/link';
 
 import { EditShiftTimes, VoidShiftButton } from '@/components/admin/ManualShiftEditor';
+import { ShiftPayPanel, VoidSettlementButton, type PayableShift } from '@/components/admin/ShiftPayPanel';
+import { dollars, type ShiftSettlement } from '@/lib/shiftSettlements';
 import { formatHours } from '@/lib/hoursSummary';
 import {
   RANGE_KEYS,
@@ -118,11 +120,22 @@ function ShiftRow({
           <span className="text-xs text-gray-400">typed by {shift.manualBy}</span>
         )}
         <span className="ml-auto inline-flex items-center gap-3">
-          <EditShiftTimes
-            shiftId={shift.id}
-            clockInAt={shift.clockInAt}
-            clockOutAt={shift.clockOutAt}
-          />
+          {/* A paid shift is locked (ledger row 459): shifts.ts refuses both
+              the edit and the void. Showing the controls anyway would be a
+              door into a refusal, so the row says what is true and names the
+              way out — undoing the payment releases it. The guard and the
+              copy that narrates it are one change. */}
+          {shift.settlementId ? (
+            <span className="text-xs text-gray-500">
+              Paid — undo the payment below to change these times
+            </span>
+          ) : (
+            <EditShiftTimes
+              shiftId={shift.id}
+              clockInAt={shift.clockInAt}
+              clockOutAt={shift.clockOutAt}
+            />
+          )}
           {/* Only on rows the office TYPED: a shift the person clocked
               themselves is their own record and is corrected, never erased.
               This mirrors the FIRST of adminVoidShift's guards, not all of
@@ -272,6 +285,127 @@ export function PersonHoursSection({
             </div>
           ))}
         </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Recording what has been paid, and what is still owed against hours nobody
+ * has been paid for — time-tracking plan phase 3, ledger row 459.
+ *
+ * The payable list is the shifts ON SCREEN that are closed and unpaid, so it
+ * always agrees with the hours above it. It is deliberately scoped to the
+ * chosen range rather than to all time: an admin paying "the last two weeks"
+ * should not be one click away from settling a shift from March.
+ */
+export function ShiftPaySection({
+  crewMemberId,
+  crewName,
+  rateCentsPerHour,
+  days,
+  range,
+  settlements,
+  settledCents,
+  settlementsReadable,
+}: {
+  crewMemberId: string;
+  crewName: string;
+  rateCentsPerHour: number;
+  days: PersonDay[];
+  range: RangeKey;
+  settlements: ShiftSettlement[];
+  settledCents: number;
+  settlementsReadable: boolean;
+}) {
+  const payable: PayableShift[] = days
+    .flatMap((d) => d.shifts)
+    .filter((s) => s.clockOutAt !== null && !s.settlementId)
+    .map((s) => ({ id: s.id, clockInAt: s.clockInAt, paidSeconds: s.paidSeconds }));
+
+  return (
+    <section className="mb-10">
+      <h2 className="text-lg font-semibold text-gray-900 mb-1">Pay</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        You pay {crewName} however you normally do, then record it here against the shifts it
+        covered. The tool does not work out what to pay — it keeps the record of what you paid and
+        which hours it was for. A paid shift is locked until the payment is undone.
+      </p>
+
+      {!settlementsReadable ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          Payments could not be read, so nothing can be recorded here right now. The hours above
+          are still correct; reload in a moment.
+        </div>
+      ) : (
+        <>
+          <div className="mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold tabular-nums">{dollars(settledCents)}</span> recorded
+              as paid, all time
+            </span>
+            <span className="text-sm text-gray-500 tabular-nums">
+              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'} in{' '}
+              {rangeLabel(range).toLowerCase()}
+            </span>
+          </div>
+
+          <ShiftPayPanel
+            crewMemberId={crewMemberId}
+            crewName={crewName}
+            rateCentsPerHour={rateCentsPerHour}
+            payable={payable}
+          />
+
+          <h3 className="text-sm font-semibold text-gray-900 mt-6 mb-2">Payments recorded</h3>
+          {settlements.length === 0 ? (
+            <p className="text-sm text-gray-500">Nothing recorded yet.</p>
+          ) : (
+            <ul className="rounded-md border border-gray-200 divide-y divide-gray-100">
+              {settlements.map((st) => {
+                const liveLines = st.lines.filter((l) => !l.voidedAt);
+                return (
+                  <li key={st.id} className={`px-3 py-2 ${st.voidedAt ? 'text-gray-400' : ''}`}>
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="text-sm font-medium tabular-nums">
+                        {dollars(st.totalCents)}
+                      </span>
+                      <span className="text-xs">{st.method}</span>
+                      <span className="text-xs text-gray-400">{fmtDateTime(st.paidAt)} ET</span>
+                      {st.paidBy && <span className="text-xs text-gray-400">by {st.paidBy}</span>}
+                      <span className="text-xs text-gray-500">
+                        {liveLines.length} {liveLines.length === 1 ? 'shift' : 'shifts'} ·{' '}
+                        {formatHours(st.coveredSeconds)}
+                        {/* The reference is shown only when it DIFFERS, so the
+                            common case stays quiet and a real gap (overtime, an
+                            advance) is the thing that stands out. */}
+                        {st.referenceCents !== st.totalCents && !st.voidedAt && (
+                          <> · {dollars(st.referenceCents)} at the stamped rate</>
+                        )}
+                      </span>
+                      {st.voidedAt ? (
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium">
+                          Undone{st.voidedBy ? ` by ${st.voidedBy}` : ''}
+                          {st.voidReason ? `: ${st.voidReason}` : ''}
+                        </span>
+                      ) : (
+                        <span className="ml-auto">
+                          <VoidSettlementButton
+                            settlementId={st.id}
+                            crewName={crewName}
+                            amountLabel={dollars(st.totalCents)}
+                            shiftCount={liveLines.length}
+                          />
+                        </span>
+                      )}
+                    </div>
+                    {st.note && <p className="text-xs text-gray-500 mt-1">{st.note}</p>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
       )}
     </section>
   );
