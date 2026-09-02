@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { parseLeadForwardDisplay } from '@/lib/dashboard/inbox/leadForward';
 import { useRouter } from 'next/navigation';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
@@ -481,26 +482,44 @@ export function InWorksSection({
           </div>
           <div className="flex shrink-0 gap-2 flex-wrap justify-end">
             {item.source === 'gmail' ? (
-              // #268 fix round (sibling-guard check against InboxList.tsx's
-              // matching fix), UPDATED round 3: InboxList's real fix is a
-              // "call/text directly" affordance driven by
-              // parseLeadForwardDisplay(subject, preview) — deliberately
-              // MESSAGE-level, not contact-level (round 2's contact.phone
-              // gate was a false-positive HIGH: dashboard_contacts.
-              // primary_phone is a cross-channel MERGED field, so a
-              // returning customer's ordinary reply could carry a phone from
-              // an earlier quote). NOT done here — `InWorksItem` (store.ts,
-              // embargoed for this fix round) only selects
-              // `dashboard_contacts.display_name` via IN_WORKS_SELECT; it has
-              // `preview` but NOT `subject`, and parseLeadForwardDisplay
-              // needs both (subject carries the platform marker, preview
-              // carries the phone/email). Fixing this needs a store.ts
-              // change (add `subject` to IN_WORKS_SELECT + InWorksItem)
-              // that's out of scope here — tracked as a follow-up, not
-              // silently left both broken AND undocumented.
-              <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
-                Reply in Gmail
-              </span>
+              // #268 fix round's documented follow-up, done 2026-09-02.
+              // InboxList shows a "call or text them directly" affordance for
+              // a forwarded lead, driven by parseLeadForwardDisplay(subject,
+              // preview) -- deliberately MESSAGE-level, not contact-level
+              // (round 2's contact.phone gate was a false-positive HIGH:
+              // dashboard_contacts.primary_phone is a cross-channel MERGED
+              // field, so a returning customer's ordinary reply could carry a
+              // phone from an earlier quote). This section could not do the
+              // same because IN_WORKS_SELECT never selected `subject`, which
+              // the parser needs alongside `preview`; it does now.
+              //
+              // It matters more here than it looks: an outbound touch can
+              // auto-clear a forwarded lead into this very section, so this is
+              // where staff meet the row after the system moved it, and
+              // "Reply in Gmail" is the one instruction guaranteed to reach
+              // nobody -- the thread's addressable party is the platform's
+              // no-reply relay.
+              (() => {
+                const forwarded = parseLeadForwardDisplay(item.subject, item.preview);
+                if (!forwarded) {
+                  return (
+                    <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
+                      Reply in Gmail
+                    </span>
+                  );
+                }
+                return (
+                  <span
+                    className="px-3 py-1.5 text-sm text-right max-w-[220px]"
+                    style={{ color: 'var(--op-text-2)' }}
+                  >
+                    Forwarded lead — call or text the customer directly:{' '}
+                    {forwarded.phone && <span style={{ color: 'var(--op-text)' }}>{forwarded.phone}</span>}
+                    {forwarded.phone && forwarded.email ? ' · ' : null}
+                    {forwarded.email && <span style={{ color: 'var(--op-text)' }}>{forwarded.email}</span>}
+                  </span>
+                );
+              })()
             ) : (
               // Fix round 2 delta-verify LOW (decided, not fixed): after an
               // 'error' outcome (onSent below) this button stays live and

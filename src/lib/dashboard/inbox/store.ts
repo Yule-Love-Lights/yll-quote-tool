@@ -3116,6 +3116,10 @@ export type InWorksItem = {
   source: InboxSource;
   channel: string | null;
   preview: string | null;
+  /** Needed with `preview` to recognise a forwarded lead. See IN_WORKS_SELECT.
+   *  Optional so the existing fixtures that omit it keep compiling, the same
+   *  concession isColorRequest makes just below. */
+  subject?: string | null;
   customerName: string | null;
   lastActivityAt: string | null;
   // #307: null for every 'awaiting' row (the rule set below only evaluates the
@@ -3157,8 +3161,14 @@ export type InWorksResult =
 // Handled -> Followed/snooze path) read isColorRequest:false unconditionally
 // no matter what, because the column was never fetched at all. That earlier
 // scoping call is overruled here; every InWorksItem now carries external_id.
+// `subject` (2026-09-02): parseLeadForwardDisplay needs BOTH subject and
+// preview -- the subject carries the platform marker, the preview carries the
+// phone and email -- so without it InWorksSection could only ever show
+// "Reply in Gmail" on a forwarded lead, which is the one thing replying will
+// not do. #268's fix round found that and deliberately left it, documented, as
+// a follow-up needing this change. This is that follow-up.
 const IN_WORKS_SELECT =
-  'id, source, external_id, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+  'id, source, external_id, channel, subject, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
 
 // #307: the 'handled' bucket alone also needs direction (rule b) to compute
 // "Needs a look" — the 'awaiting' bucket's query stays on the narrower
@@ -3182,6 +3192,7 @@ function mapInWorksRow(
       source: row.source as InboxSource,
       channel: (row.channel as string | null) ?? null,
       preview: (row.preview as string | null) ?? null,
+      subject: (row.subject as string | null) ?? null,
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
