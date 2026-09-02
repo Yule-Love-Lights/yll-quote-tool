@@ -434,6 +434,23 @@ describe('attributeAuditRows', () => {
     expect(out.entries.map((e) => e.id)).toEqual(['newer', 'older']);
   });
 
+  it('breaks a same-millisecond tie by id, so a correction cannot sort below its claim', () => {
+    // The two source lists are concatenated (this person's rows first, then
+    // the aborts), so on a pure timestamp sort an abort written in the same
+    // millisecond as the void it corrects would land underneath it. The
+    // query asks for created_at desc, id desc; this keeps that order.
+    const at = '2026-09-01T12:00:00.000Z';
+    const out = attributeAuditRows(
+      [
+        row({ id: 'b-void', created_at: at, action: 'shift-manual-void', detail: { shiftId: 's1', crewMemberId: 'p' } }),
+        row({ id: 'c-abort', created_at: at, action: 'shift-manual-void-aborted', detail: { shiftId: 's1', reason: 'edit-race' } }),
+      ],
+      'p',
+      [],
+    );
+    expect(out.entries.map((e) => e.id)).toEqual(['c-abort', 'b-void']);
+  });
+
   it('ignores activity rows that are not manual shift writes', () => {
     const out = attributeAuditRows(
       [row({ id: 'x', created_at: '2026-09-01T00:00:00Z', action: 'handled', detail: { crewMemberId: 'p' } })],

@@ -294,8 +294,18 @@ export function attributeAuditRows(
     if (abort.shiftId && known.has(abort.shiftId)) mine.push(abort);
     else sawUnattributableAbort = true;
   }
-  // Newest first, so a correction sits directly above the claim it corrects.
-  mine.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  // Newest first, so a correction sits directly above the claim it corrects
+  // — and tie-broken by id descending, the SAME order the query asks for.
+  // Sorting on the timestamp alone dropped that tiebreak, and the two lists
+  // are concatenated (this person's rows, then the aborts), so an abort
+  // written in the same millisecond as the void it corrects would have sorted
+  // BELOW it, which is the one ordering this list must not produce
+  // (delta-verify on PR #1178).
+  mine.sort((a, b) => {
+    const byTime = Date.parse(b.at) - Date.parse(a.at);
+    if (byTime !== 0 && Number.isFinite(byTime)) return byTime;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
   return { entries: mine, partial: sawUnattributableAbort };
 }
 
