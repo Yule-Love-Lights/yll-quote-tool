@@ -25,6 +25,13 @@ import type {
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
 import { isUuid } from './validate';
+import {
+  planCallFollowUps,
+  MIN_CALL_SECONDS,
+  type CallFollowUpItem,
+  type CallFollowUpStamp,
+  type ContactCall,
+} from './callFollowUp';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
@@ -1096,6 +1103,11 @@ async function recordActionFailed(
   }
 }
 
+/** How a follow-up was recorded. 'call' is written by the automatic sweep that
+ *  reads outbound calls (callFollowUp.ts); the manual button and a sent reply
+ *  pass nothing and keep their original audit shape. */
+export type FollowedVia = 'call';
+
 export type HandledTarget = {
   source: InboxSource;
   externalId: string;
@@ -1318,7 +1330,7 @@ export async function markItemFollowed(
   itemId: string,
   operatorId: string,
   now: Date,
-  opts?: { allowRestamp?: boolean },
+  opts?: { allowRestamp?: boolean; via?: FollowedVia },
 ): Promise<{ ok: true } | { ok: false; error: string; alreadyFollowed?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1367,7 +1379,13 @@ export async function markItemFollowed(
     await recordActionFailed(itemId, operatorId, 'followed', msg);
     return { ok: false, error: msg };
   }
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
+  // `via` records HOW this follow-up happened, so the activity log can tell a
+  // phone call apart from a text. Omitted by the two original callers (the
+  // manual button and a sent reply), which keeps their audit rows the shape
+  // they already were.
+  await sb
+    .from('dashboard_activity')
+    .insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from, ...(opts?.via ? { via: opts.via } : {}) } });
   // PR #1005 (premerge STAFF lens, HIGH): "I followed up" is the answer to
   // "you should follow up", so it retires this item's due nag. Before this,
   // the ONLY staff-initiated way to close a quote_sent_no_reply follow-up was
@@ -2518,6 +2536,111 @@ export function findViewOnlyFollowUpItems(
  * match. Fails open (closes nothing) on a lookup error rather than guessing.
  * Returns how many follow-ups were closed.
  */
+/**
+ * Mark inbox items followed when staff have PHONED that person, using the
+ * calls already recorded in `call_recordings`. Naldo's ask, 2026-09-02: the
+ * /inbox "In the works" list kept nagging about people staff had rung, because
+ * nothing but a text or a button click ever cleared a row.
+ *
+ * The rule lives in callFollowUp.ts and is pure; this function is the thin
+ * database wrapper around it. See planCallFollowUps for why it stamps at the
+ * CALL's time (that is what makes re-running this a no-op) and callQualifies
+ * for the outbound / 30-second / after-the-anchor clauses.
+ *
+ * SCOPE is deliberately the "In the works" section and nothing else, matching
+ * what was asked for: the two buckets that section renders (see
+ * applyBucketFilter in lifecycle.ts) are
+ *   • awaiting  — followed_up_at set, status not completed/dismissed
+ *   • handled   — status 'handled', followed_up_at null
+ * The needs-reply list at the TOP of /inbox (status 'unresponded' with no
+ * follow-up stamp) is EXCLUDED on purpose. Those are people waiting on US, and
+ * snoozing one because somebody phoned would hide a live unanswered customer
+ * from the list whose entire job is to show them.
+ *
+ * `dryRun` returns the plan without writing, which is how the one-off backfill
+ * over historical calls was reviewed before it ran.
+ *
+ * Best-effort per row, like the other sweeps here: one failed stamp is counted
+ * and skipped rather than aborting the tick.
+ */
+export async function sweepCallFollowUps(
+  opts: { dryRun?: boolean; limit?: number } = {},
+): Promise<{ ok: true; planned: CallFollowUpStamp[]; stamped: number; failed: number } | { ok: false; error: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const limit = opts.limit ?? 5000;
+
+  // Both "In the works" buckets in one read: anything not terminal that either
+  // carries a follow-up stamp or is sitting handled. The `.or` mirrors
+  // applyBucketFilter's two predicates rather than re-deriving them loosely —
+  // a row must be in one of those two buckets to be eligible.
+  const { data: itemRows, error: itemErr } = await sb
+    .from('inbox_items')
+    .select('id, status, followed_up_at, last_inbound_at, last_message_at, contact_id, dashboard_contacts(ghl_contact_id)')
+    .not('status', 'in', '(completed,dismissed)')
+    .or('followed_up_at.not.is.null,status.eq.handled')
+    .limit(limit);
+  if (itemErr) return { ok: false, error: itemErr.message };
+
+  const items: CallFollowUpItem[] = (itemRows ?? []).map((raw) => {
+    const row = raw as unknown as Record<string, unknown>;
+    const contact = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
+    return {
+      id: String(row.id),
+      ghlContactId: (contact?.ghl_contact_id as string | null) ?? null,
+      followedUpAt: row.followed_up_at ? new Date(String(row.followed_up_at)) : null,
+      lastInboundAt: row.last_inbound_at ? new Date(String(row.last_inbound_at)) : null,
+      lastMessageAt: row.last_message_at ? new Date(String(row.last_message_at)) : null,
+    };
+  });
+
+  const contactIds = [...new Set(items.map((i) => i.ghlContactId).filter((id): id is string => !!id))];
+  if (contactIds.length === 0) return { ok: true, planned: [], stamped: 0, failed: 0 };
+
+  // Filter on the qualifying clauses in the QUERY as well as in the pure rule.
+  // The rule is still the authority (callQualifies re-checks every clause); this
+  // just avoids dragging every ring-out across the wire.
+  const { data: callRows, error: callErr } = await sb
+    .from('call_recordings')
+    .select('ghl_contact_id, direction, called_at, duration_seconds, is_test')
+    .in('ghl_contact_id', contactIds)
+    .eq('direction', 'outbound')
+    .gte('duration_seconds', MIN_CALL_SECONDS)
+    .limit(limit);
+  if (callErr) return { ok: false, error: callErr.message };
+
+  const calls: ContactCall[] = (callRows ?? []).map((raw) => {
+    const row = raw as unknown as Record<string, unknown>;
+    return {
+      ghlContactId: (row.ghl_contact_id as string | null) ?? null,
+      direction: (row.direction as string | null) ?? null,
+      durationSeconds: typeof row.duration_seconds === 'number' ? row.duration_seconds : null,
+      calledAt: new Date(String(row.called_at)),
+      isTest: row.is_test === true,
+    };
+  });
+
+  const planned = planCallFollowUps({ items, calls });
+  if (opts.dryRun) return { ok: true, planned, stamped: 0, failed: 0 };
+
+  let stamped = 0;
+  let failed = 0;
+  for (const stamp of planned) {
+    // allowRestamp: this is the re-chase case by design. A row already marked
+    // followed that has gone quiet again SHOULD have its clock reset by a real
+    // phone call — that is the behaviour Naldo chose, and the reason the manual
+    // button refuses to restamp (a duplicate click must not move the customer's
+    // waiting clock) does not apply to a genuine new conversation.
+    const res = await markItemFollowed(stamp.itemId, 'system', stamp.calledAt, {
+      allowRestamp: true,
+      via: 'call',
+    });
+    if (res.ok) stamped += 1;
+    else failed += 1;
+  }
+  return { ok: true, planned, stamped, failed };
+}
+
 export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;

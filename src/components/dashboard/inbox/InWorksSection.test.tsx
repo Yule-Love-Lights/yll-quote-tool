@@ -36,6 +36,7 @@ import {
   retiresFollowUp,
   replyRowAction,
   replyOutcomeMessage,
+  followedButtonFor,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -573,5 +574,44 @@ describe('replyOutcomeMessage (fix round 2 — worded differently per outcome)',
 
   it('the two messages are different strings — a staffer must not see the same note for both', () => {
     expect(replyOutcomeMessage('refused')).not.toBe(replyOutcomeMessage('error'));
+  });
+});
+
+// ── followedButtonFor — the "I followed up" button, per bucket ─────────────
+//
+// Naldo 2026-09-02: the awaiting bucket (every row carrying an amber "Nd
+// quiet" or blue "Follow-up due" tag) had no such button at all. It rendered
+// for the handled bucket only, so a staffer who phoned one of those people
+// could either reply by text or complete the whole conversation, and nothing
+// else. These pin the two things that button has to get right.
+describe('followedButtonFor', () => {
+  it('a never-followed row gets a plain first stamp with no restamp flag', () => {
+    const fb = followedButtonFor('handled');
+    expect(fb.label).toBe('Followed');
+    expect(fb.body).toBeUndefined();
+  });
+
+  it('an already-followed row asks for the restamp EXPLICITLY', () => {
+    // Without `again` the click is a silent no-op: the store refuses a second
+    // stamp, the route turns that refusal into a 200, and the row never moves.
+    const fb = followedButtonFor('awaiting');
+    expect(fb.body).toEqual({ again: true });
+  });
+
+  it('says "again" on a row that is already followed', () => {
+    // A bare "Followed" on an already-followed row claims nothing new.
+    expect(followedButtonFor('awaiting').label).toBe('Followed again');
+  });
+
+  it('the two buckets never share a label, so the row lock targets one action', () => {
+    // act() records WHICH action was attempted by its visible label
+    // (unreachableActions); two buttons sharing a label would cross the locks.
+    expect(followedButtonFor('awaiting').label).not.toBe(followedButtonFor('handled').label);
+  });
+
+  it('both buckets carry a title that explains what the click does', () => {
+    for (const group of ['awaiting', 'handled'] as const) {
+      expect(followedButtonFor(group).title.length).toBeGreaterThan(10);
+    }
   });
 });
