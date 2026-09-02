@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { matchLeadForwardPlatform, parseLeadForward, parseLeadForwardDisplay } from './leadForward';
+import {
+  leadForwardsAnsweredBy,
+  matchLeadForwardPlatform,
+  outboundAnswersLeadForward,
+  parseLeadForward,
+  parseLeadForwardDisplay,
+  type LeadForwardCandidateRow,
+} from './leadForward';
 
 // Synthetic fixtures only — never real customer PII in git history (repo
 // precedent: a real customer's name was scrubbed from a code comment in S37).
@@ -232,5 +239,129 @@ describe('parseLeadForward — fail-closed invariant', () => {
   it('returns null when the platform matches but the body is empty/missing', () => {
     expect(parseLeadForward({ ...GML_FROM, body: null })).toBeNull();
     expect(parseLeadForward({ ...GML_FROM })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound auto-clear (Naldo, 2026-09-01).
+//
+// The real row this comes from, with the customer's details replaced by the
+// synthetic fixtures above: a GML Media lead arrived at 13:56, the office
+// called at 14:22 and texted at 14:43, and the Gmail row sat "waiting" until
+// somebody marked it by hand at 15:22. Naldo's rule: ANY outbound touch
+// clears it, a voicemail included.
+
+const SUBJECT = 'New Lead from GML Media! - Jamie Test';
+const ARRIVED = new Date('2026-09-01T13:56:47Z');
+const CALLED = new Date('2026-09-01T14:22:06Z');
+
+const openLead = (over: Partial<LeadForwardCandidateRow> = {}): LeadForwardCandidateRow => ({
+  id: 'row-1',
+  subject: SUBJECT,
+  preview: DIRECT_BODY,
+  status: 'unresponded',
+  lastMessageAt: ARRIVED,
+  ...over,
+});
+
+describe('outboundAnswersLeadForward', () => {
+  it('clears the row when the office calls the number the LEAD ITSELF names', () => {
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: CALLED }),
+    ).toBe(true);
+  });
+
+  it('accepts the same number written any ordinary way', () => {
+    for (const written of ['555-123-4567', '(555) 123-4567', '15551234567']) {
+      expect(
+        outboundAnswersLeadForward(openLead(), { phones: [written], emails: [], at: CALLED }),
+      ).toBe(true);
+    }
+  });
+
+  it('clears on an outbound EMAIL to the customer, not only a call', () => {
+    expect(
+      outboundAnswersLeadForward(openLead(), {
+        phones: [],
+        emails: ['JAMIE.TEST@example.com'],
+        at: CALLED,
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT clear on a call to somebody else', () => {
+    // The whole risk of this feature. A different number must never close a
+    // lead nobody has actually contacted.
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15550009999'], emails: [], at: CALLED }),
+    ).toBe(false);
+  });
+
+  it('does NOT clear on a call placed BEFORE the lead arrived', () => {
+    // An earlier call answered something else; it cannot answer a lead that
+    // did not exist yet.
+    const earlier = new Date(ARRIVED.getTime() - 60_000);
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: earlier }),
+    ).toBe(false);
+  });
+
+  it('does not treat the arrival instant itself as an answer', () => {
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: ARRIVED }),
+    ).toBe(false);
+  });
+
+  it('leaves a dismissed row dismissed, and a resolved row alone', () => {
+    for (const status of ['dismissed', 'handled', 'completed']) {
+      expect(
+        outboundAnswersLeadForward(openLead({ status }), {
+          phones: ['+15551234567'],
+          emails: [],
+          at: CALLED,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('refuses a row with no arrival time rather than guessing', () => {
+    expect(
+      outboundAnswersLeadForward(openLead({ lastMessageAt: null }), {
+        phones: ['+15551234567'],
+        emails: [],
+        at: CALLED,
+      }),
+    ).toBe(false);
+  });
+
+  it('ignores an ordinary email that is not a forwarded lead at all', () => {
+    // Matching is on the ROW's own subject and preview. An ordinary customer
+    // email is answered in its own channel and is none of this feature's
+    // business.
+    expect(
+      outboundAnswersLeadForward(
+        openLead({ subject: 'Question about my quote', preview: 'Hi, can you call me on +15551234567?' }),
+        { phones: ['+15551234567'], emails: [], at: CALLED },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('leadForwardsAnsweredBy', () => {
+  it('returns only the rows the touch actually answers', () => {
+    const mine = openLead({ id: 'mine' });
+    const someoneElse = openLead({ id: 'other', preview: REACTION_BODY });
+    const ids = leadForwardsAnsweredBy([mine, someoneElse], {
+      phones: ['+15551234567'],
+      emails: [],
+      at: CALLED,
+    });
+    expect(ids).toEqual(['mine']);
+  });
+
+  it('returns nothing when the touch names nobody in the list', () => {
+    expect(
+      leadForwardsAnsweredBy([openLead()], { phones: ['+15550009999'], emails: [], at: CALLED }),
+    ).toEqual([]);
   });
 });
