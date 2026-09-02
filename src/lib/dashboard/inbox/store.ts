@@ -864,7 +864,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // bidirectional generic inference on the inline argument).
   const baseQuery = sb.from('inbox_items').select(
     'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
-      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
+      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to, ghl_contact_id )',
     { count: 'exact' },
   );
   const { data, error, count } = await applyBucketFilter(baseQuery, 'needs_reply')
@@ -986,6 +986,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       quoteValue: (row.quote_value as number | null) ?? null,
       isReturning: row.contact_id ? returning.has(row.contact_id as string) : false,
       contactId: (row.contact_id as string | null) ?? null,
+      // The HighLevel contact id, distinct from contactId above: that one is
+      // the dashboard_contacts row id used for claim/assign, this one is what
+      // /customers/[contactId] and the HighLevel app both address a customer
+      // by. Null on a contact that has never been linked to the CRM.
+      ghlContactId: (c?.ghl_contact_id as string | null) ?? null,
       assignedTo: (c?.assigned_to as string | null) ?? null,
       contact: c
         ? {

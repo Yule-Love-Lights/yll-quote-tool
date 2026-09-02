@@ -17,6 +17,7 @@ import { CustomerPropertiesPanel } from '@/components/dashboard/CustomerProperti
 import { getPropertiesForCustomer, getCustomer } from '@/lib/customers';
 import { getCustomerTenure, tenureHeaderLabel } from '@/lib/customerTenure';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import { highLevelContactUrlFromEnv } from '@/lib/highLevelLinks';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { listJobsForCustomer } from '@/lib/jobs';
@@ -36,12 +37,12 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/** HighLevel app URL for a contact, built from the location id. Null if the
- *  location id isn't configured. (locationId is not a secret — it's in HL URLs.) */
+/** HighLevel app URL for a contact, or null when this environment has no
+ *  location id configured. The URL shape itself now lives in one place
+ *  (src/lib/highLevelLinks.ts) so it cannot drift between the surfaces that
+ *  build it. Kept as a local name because this file calls it several times. */
 function highLevelContactUrl(contactId: string): string | null {
-  const loc = process.env.HIGHLEVEL_LOCATION_ID;
-  if (!loc) return null;
-  return `https://app.gohighlevel.com/v2/location/${loc}/contacts/detail/${encodeURIComponent(contactId)}`;
+  return highLevelContactUrlFromEnv(contactId);
 }
 
 function fieldList(contact: CrmContact): Array<{ label: string; value: string }> {

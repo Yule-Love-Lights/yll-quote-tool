@@ -42,6 +42,74 @@ function makeGroup(members: OpenInboxItem[]): InboxGroup {
   };
 }
 
+describe('InboxList customer links', () => {
+  const linked = {
+    ...base,
+    id: 'solo',
+    source: 'gmail' as const,
+    contactId: 'c1',
+    ghlContactId: 'hl-77',
+    contact: { displayName: 'Linked Customer', email: null, phone: null },
+    lastMessageAt: at(3 * 3_600_000),
+  };
+
+  it('links a row with a HighLevel id to the customer profile and to the CRM', () => {
+    const html = renderToStaticMarkup(
+      <InboxList initialItems={[linked]} nowMs={now} hlLocationId="loc-1" />,
+    );
+    expect(html).toContain('/customers/hl-77');
+    expect(html).toContain('https://app.gohighlevel.com/v2/location/loc-1/contacts/detail/hl-77');
+  });
+
+  it('opens the HighLevel link in a new tab, with rel protecting the opener', () => {
+    const html = renderToStaticMarkup(
+      <InboxList initialItems={[linked]} nowMs={now} hlLocationId="loc-1" />,
+    );
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it('renders no links at all for a contact that was never linked to HighLevel', () => {
+    const unlinked = { ...linked, id: 'nolink', ghlContactId: null };
+    const html = renderToStaticMarkup(
+      <InboxList initialItems={[unlinked]} nowMs={now} hlLocationId="loc-1" />,
+    );
+    expect(html).toContain('Linked Customer');
+    expect(html).not.toContain('/customers/');
+    expect(html).not.toContain('app.gohighlevel.com');
+  });
+
+  it('keeps the profile link but drops the CRM link when no location id is configured', () => {
+    const html = renderToStaticMarkup(<InboxList initialItems={[linked]} nowMs={now} />);
+    expect(html).toContain('/customers/hl-77');
+    expect(html).not.toContain('app.gohighlevel.com');
+  });
+
+  it('links the collapsed group header, whose name sits inside the expand button', () => {
+    const items: OpenInboxItem[] = [
+      { ...linked, id: 'g1', contactId: 'c9', ghlContactId: 'hl-88', source: 'gmail', lastMessageAt: at(3_600_000) },
+      { ...linked, id: 'g2', contactId: 'c9', ghlContactId: 'hl-88', source: 'ghl', lastMessageAt: at(2 * 3_600_000) },
+    ];
+    const html = renderToStaticMarkup(
+      <InboxList initialItems={items} nowMs={now} hlLocationId="loc-1" />,
+    );
+    expect(html).toContain('aria-expanded');
+    expect(html).toContain('/customers/hl-88');
+    // The anchor must never nest inside the expand button: an <a> inside a
+    // <button> is invalid and swallows the toggle. Scoped to THAT button's
+    // own inner markup on purpose. An earlier draft compared index positions
+    // against the first '</button>' in the document, which is one of the
+    // channel filter buttons at the top of the page, so the assertion was
+    // true no matter where the link went. A mutation probe that moved the
+    // link inside the button did not fail it, which is how that was caught.
+    const toggleStart = html.indexOf('aria-expanded');
+    const toggleEnd = html.indexOf('</button>', toggleStart);
+    expect(toggleStart).toBeGreaterThan(-1);
+    expect(toggleEnd).toBeGreaterThan(toggleStart);
+    expect(html.slice(toggleStart, toggleEnd)).not.toContain('/customers/');
+  });
+});
+
 describe('InboxList (#252 slice D rollup)', () => {
   it('renders a single-conversation contact as one bare row (no group header)', () => {
     const items: OpenInboxItem[] = [

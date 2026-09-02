@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { leadServiceToQuoteServiceType } from './leadServiceVocab';
 import { LeadsListSkeleton } from './LeadsListSkeleton';
+import { highLevelContactUrl } from '@/lib/highLevelLinks';
 
 // Operator view of the website lead-capture rows (#leads). Every WordPress form
 // submission is saved to website_leads FIRST (source of truth), then synced to
@@ -100,14 +101,7 @@ function quoteNewHref(lead: Lead): string {
   return qs ? `/quote/new?${qs}` : '/quote/new';
 }
 
-// HighLevel contact URL pattern — reused verbatim from the "View in HighLevel"
-// button on the customer detail page (src/app/customers/[contactId]/page.tsx
-// highLevelContactUrl). Not imported directly: that helper is private to a
-// server component that also needs the raw env var; this client component only
-// ever has the already-resolved locationId (passed down from page.tsx).
-function highLevelContactUrl(locationId: string, contactId: string): string {
-  return `https://app.gohighlevel.com/v2/location/${locationId}/contacts/detail/${encodeURIComponent(contactId)}`;
-}
+
 
 export default function LeadsAdminClient({ hlLocationId }: { hlLocationId: string | null }) {
   const [leads, setLeads] = useState<Lead[]>([]);

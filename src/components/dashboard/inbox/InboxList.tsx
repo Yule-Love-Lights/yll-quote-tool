@@ -10,6 +10,7 @@ import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { claimState } from '@/lib/dashboard/inbox/assignment';
 import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
 import { groupInboxItems, type InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
+import { highLevelContactUrl } from '@/lib/highLevelLinks';
 import { InboxSummaryStrip } from './InboxSummaryStrip';
 import { ReplyComposer, type ReplySentOutcome } from './ReplyComposer';
 
@@ -30,12 +31,64 @@ function contactName(item: OpenInboxItem): string {
   return item.contact?.displayName || item.contact?.email || item.contact?.phone || 'Unknown contact';
 }
 
+/**
+ * The two ways into a customer's history from an inbox row: the quote tool's
+ * own profile page (quotes, jobs, invoices, activity, call notes) and the
+ * HighLevel record itself.
+ *
+ * Rendered as its own line rather than by turning the name into a link,
+ * because the grouped-contact header is a <button> (the expand toggle) and an
+ * anchor cannot legally nest inside one.
+ *
+ * Renders nothing at all when the contact was never linked to HighLevel:
+ * /customers/[contactId] is addressed BY the HighLevel id, so without one
+ * there is no profile to point at and a link would be a dead end. The
+ * HighLevel link additionally needs a configured location id, and is simply
+ * left out when this environment has none.
+ */
+function CustomerLinks({
+  ghlContactId,
+  hlLocationId,
+}: {
+  ghlContactId: string | null | undefined;
+  hlLocationId: string | null;
+}) {
+  if (!ghlContactId) return null;
+  return (
+    <span className="flex items-center gap-2">
+      <Link
+        href={`/customers/${encodeURIComponent(ghlContactId)}`}
+        className="text-xs font-medium hover:underline"
+        style={{ color: 'var(--op-primary)' }}
+      >
+        Customer
+      </Link>
+      {hlLocationId ? (
+        <a
+          href={highLevelContactUrl(hlLocationId, ghlContactId)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs hover:underline"
+          style={{ color: 'var(--op-text-2)' }}
+        >
+          HighLevel
+        </a>
+      ) : null}
+    </span>
+  );
+}
+
 // Props threaded down to every per-conversation row, whether it's rendered
 // bare (single-conversation contact) or nested inside an expanded ContactRow
 // (#252 slice D). Bundled into one object so InboxList/ContactRow don't have
 // to repeat the same nine-prop list at every call site.
 type RowActions = {
   now: number;
+  /** The configured HighLevel location id, handed down from the server
+   *  (src/app/inbox/page.tsx) because building a CRM URL needs it and this
+   *  is a client component. null when unconfigured, and the HighLevel link
+   *  is then left out while the quote tool profile link still works. */
+  hlLocationId: string | null;
   // Row 291 fix: busyId/errorId were single global slots (`string | null`) —
   // acting on row B stole row A's busy pin and, worse, silently cleared row
   // A's error note (act() unconditionally called setErrorId(null)) even
@@ -92,7 +145,7 @@ type RowActions = {
 // "call/text directly" affordance instead, see the source==='gmail' branch
 // below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent, hlLocationId } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -130,6 +183,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             <span className="font-medium truncate" style={{ color: 'var(--op-text)' }}>
               {contactName(item)}
             </span>
+            <CustomerLinks ghlContactId={item.ghlContactId} hlLocationId={hlLocationId} />
             <span className="text-xs uppercase tracking-wide" style={{ color: 'var(--op-text-2)' }}>
               {SOURCE_LABEL[item.source] ?? item.source}
             </span>
@@ -739,6 +793,13 @@ function ContactRow({
         />
       </button>,
     );
+    // Outside the button on purpose: an anchor cannot nest inside one, and
+    // the whole group header IS the expand toggle.
+    rowChildren.push(
+      <div key="customer-links" className="mt-1">
+        <CustomerLinks ghlContactId={group.primary.ghlContactId} hlLocationId={actions.hlLocationId} />
+      </div>,
+    );
   }
   if (showMembers) {
     rowChildren.push(
@@ -768,10 +829,15 @@ export function InboxList({
   initialItems,
   nowMs,
   currentOperatorId = null,
+  hlLocationId = null,
 }: {
   initialItems: OpenInboxItem[];
   nowMs: number;
   currentOperatorId?: string | null;
+  /** The configured HighLevel location id, read on the server and handed
+   *  down. Defaults to null so existing render sites and fixtures that do
+   *  not pass it simply render no HighLevel link. */
+  hlLocationId?: string | null;
 }) {
   const router = useRouter();
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
@@ -1082,7 +1148,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent, hlLocationId,
   };
 
   if (items.length === 0) {
