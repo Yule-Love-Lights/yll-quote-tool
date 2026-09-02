@@ -488,9 +488,19 @@ export function pickInitialPackageId(
   const subtotalOf = (p: PortalPackage) =>
     p.includedItemIds.reduce((s, id) => s + (priceById.get(id) ?? 0), 0);
 
+  // A LOCKED tile is never a valid opening selection. Permanent now KEEPS a
+  // below-minimum tile (marked belowMinimum) where it used to be filtered out
+  // of this array entirely, so without this the "nothing clears the gate, take
+  // the biggest of A/B/C" branch below could hand back a tile that renders
+  // dimmed, disabled and captioned "Add $X" — selected on arrival, with
+  // Approve refused and no cue pointing at the tier that would work. Dropping
+  // locked tiles here restores the old contract (this function only ever sees
+  // approvable candidates) and falls through to 'D', which on permanent is the
+  // Whole Home bundle and on holiday is the recommendation/custom slot.
+  // Inert for every other service type: only permanent ever sets belowMinimum.
   const candidates = (['A', 'B', 'C'] as PackageId[])
     .map((id) => packages.find((p) => p.id === id))
-    .filter((p): p is PortalPackage => !!p && p.total > 0);
+    .filter((p): p is PortalPackage => !!p && p.total > 0 && p.belowMinimum !== true);
   if (candidates.length === 0) return 'D';
 
   // No active gate → first available in preference order (Tier-1-preferred).

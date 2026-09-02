@@ -655,3 +655,72 @@ describe('priceSelection — exact half-cent percentage rounding', () => {
     expect(p.deposit).toBe(543.8);
   });
 });
+
+// ---------------------------------------------------------------------------
+// pickInitialPackageId must never open the portal on a LOCKED tile.
+//
+// Found by the pre-merge customer lens on this change and reproduced against
+// the real function. This helper was written when a below-minimum permanent
+// tile was REMOVED from the packages array, so its "nothing clears the gate,
+// take the biggest of A/B/C" branch could only ever be reached with tiles that
+// were already approvable. Permanent now keeps those tiles and marks them
+// belowMinimum, so the same branch could hand back a tile that renders dimmed,
+// disabled and captioned "Add $X" — selected on arrival, with Approve refused
+// and nothing pointing the customer at the tier that would work.
+// ---------------------------------------------------------------------------
+describe('pickInitialPackageId — locked tiles', () => {
+  const item = (id: string, price: number): PortalLineItem => ({
+    id,
+    kind: 'permanent',
+    label: id,
+    detail: '',
+    price,
+  });
+  const pkg = (
+    id: PortalPackage['id'],
+    includedItemIds: string[],
+    belowMinimum = false,
+  ): PortalPackage => ({
+    id,
+    name: id,
+    tagline: '',
+    total: 1,
+    deposit: 1,
+    includedItemIds,
+    ...(belowMinimum ? { belowMinimum: true, amountToMinimum: 1 } : {}),
+  });
+
+  const lineItems = [item('f', 500), item('l', 500), item('r', 500), item('b', 900)];
+
+  it('skips a locked tile and opens on the Whole Home bundle that clears the gate', () => {
+    const packages = [
+      pkg('A', ['f'], true),
+      pkg('B', ['f', 'l', 'r'], true),
+      pkg('C', ['b'], true),
+      pkg('D', ['f', 'l', 'r', 'b']),
+    ];
+    const picked = pickInitialPackageId(packages, lineItems, 2500);
+    expect(packages.find((p) => p.id === picked)?.belowMinimum).not.toBe(true);
+    expect(picked).toBe('D');
+  });
+
+  it('still prefers the first clearing tier when one is unlocked', () => {
+    const packages = [
+      pkg('A', ['f'], true),
+      pkg('B', ['f', 'l', 'r', 'b']),
+      pkg('D', ['f', 'l', 'r', 'b']),
+    ];
+    expect(pickInitialPackageId(packages, lineItems, 2000)).toBe('B');
+  });
+
+  it('holiday is untouched: with no locked tiles the pick is unchanged', () => {
+    // No package carries belowMinimum (only permanent ever sets it), so the
+    // Tier-1-preferred order still applies exactly as before.
+    const packages = [
+      pkg('A', ['f', 'l', 'r', 'b']),
+      pkg('B', ['f', 'l', 'r', 'b']),
+      pkg('C', ['f', 'l', 'r', 'b']),
+    ];
+    expect(pickInitialPackageId(packages, lineItems, 2000)).toBe('A');
+  });
+});

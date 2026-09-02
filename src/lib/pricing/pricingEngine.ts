@@ -229,6 +229,14 @@ export type CustomLineItem = {
   // on the customer portal + shows a "Recommended" label. Default false.
   // Pricing ignores it; it only rides along to the portal via the adapter.
   recommended?: boolean;
+  // PERMANENT quotes only. Staff chose to bundle this line into every surface
+  // package (Front of Home, Front & Sides, Back of Home) instead of the
+  // default, which puts a custom line in the Whole Home bundle alone. A
+  // customer who picks a single surface then still gets, and is still billed
+  // for, this work. Pricing ignores it exactly as it ignores `recommended`; it
+  // rides to the portal via the adapter. Default false, so every existing
+  // quote's packages and prices are untouched.
+  allTiers?: boolean;
 };
 
 // Santa's (front roofline) and Gingerbread (front + ridge + sides) are
