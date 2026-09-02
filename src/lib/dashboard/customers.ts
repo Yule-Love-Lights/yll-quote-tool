@@ -146,6 +146,18 @@ export function aggregateCustomers(quotes: DashboardQuote[]): CustomerSummary[] 
  * page keeps saying "not linked to HighLevel" for a genuine non-CRM customer
  * rather than attempting a fetch with a customer_id and reporting the more
  * alarming "could not be loaded".
+ *
+ * KNOWN LIMITATION, dormant today and worth knowing before it is not.
+ * `quotes` reaches this function already filtered out of a CAPPED read
+ * (the profile page calls listQuotesForDashboard(500)), so an empty list
+ * means "none in the newest 500 quotes system-wide", not provably "none
+ * ever". Once the tool holds more than 500 quotes, a returning customer
+ * whose whole history has aged out of that window would take the route-id
+ * fallback and render a profile stating "0 quotes" for someone who has
+ * several. That is a quiet wrong answer where the old behaviour was a loud
+ * 404. Measured 2026-09-02: 225 quotes exist in total, so no customer can
+ * hit this yet. The fix when it matters is to count that customer's quotes
+ * directly rather than infer it from a capped list.
  */
 export function resolveHlContactId(quotes: DashboardQuote[], routeId: string): string | null {
   const fromQuotes = quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id;

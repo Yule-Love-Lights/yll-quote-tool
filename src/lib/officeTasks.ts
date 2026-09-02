@@ -137,6 +137,13 @@ export type TaskCustomer = {
  * customer line carrying a name with no phone, or a phone with no name, is
  * NOT recognised and is left alone: showing a name twice is a cosmetic
  * problem, and deleting a line of a staffer's real detail is not.
+ *
+ * The one assumption worth naming: protecting only block 0 rests on the
+ * commitment's own text being a single block. If that text ever grew an
+ * internal blank line, a later paragraph of real content that happened to
+ * end in " - " plus a phone-shaped run could be removed. Measured
+ * 2026-09-02 over all 37 commitments in production: 0 contain a blank line
+ * and 0 end in a phone-shaped run, so nothing can hit this today.
  */
 export function stripCustomerLine(detail: string | null): string | null {
   if (!detail) return detail;
