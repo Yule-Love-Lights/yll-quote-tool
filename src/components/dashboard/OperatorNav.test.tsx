@@ -43,6 +43,34 @@ describe('OperatorNav — Sign-out slot on initial render (before the session ch
     expect(html).not.toMatch(/visibility:\s*hidden[^>]*>\s*<div[^>]*>\s*<button[^>]*aria-haspopup/);
   });
 
+  it('forgets the recently-opened list when signing out', () => {
+    // The list lives in sessionStorage, which survives a sign-out on a tab
+    // nobody closed, so on a shared office computer the next person would find
+    // the last person's customers in the search box (premerge staff lens).
+    // Asserted on the SOURCE because this pass runs no effects and clicks
+    // nothing; the clearing itself is tested in recentHits.test.ts.
+    const source = readFileSync(new URL('./OperatorNav.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('clearRecent()');
+    // BEFORE the network call, so an aborted sign-out still leaves nothing.
+    const signOutBody = source.slice(source.indexOf('const signOut = async'));
+    expect(signOutBody.indexOf('clearRecent()')).toBeLessThan(
+      signOutBody.indexOf("fetch('/api/auth/logout'"),
+    );
+  });
+
+  it('carries the time clock in the mobile menu, so "every page" holds below 1024px too', () => {
+    // SOURCE, not markup: the hamburger dropdown only renders once opened, so
+    // a static pass sees exactly one clock however many are wired up. The
+    // first version of this test asserted two in the markup and failed for
+    // that reason, not because the mobile one was missing.
+    const source = readFileSync(new URL('./OperatorNav.tsx', import.meta.url), 'utf8');
+    expect((source.match(/<ClockCard variant="header" \/>/g) ?? []).length).toBe(2);
+    // One of them inside the mobile dropdown, which is what makes the claim
+    // true below 1024px.
+    const mobileBlock = source.slice(source.indexOf('{open && ('));
+    expect(mobileBlock).toContain('<ClockCard variant="header" />');
+  });
+
   it('keeps Sign out reachable by moving it inside the account menu, not by deleting it', () => {
     // The dropdown is closed in a static render, so its contents are out of
     // the tree — which is exactly why this asserts against the SOURCE that

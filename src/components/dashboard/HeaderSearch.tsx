@@ -25,6 +25,13 @@ import {
   type SearchKind,
   type SearchResults,
 } from '@/lib/search/globalSearch';
+import {
+  pushRecent,
+  readRecent,
+  toRecent,
+  writeRecent,
+  type RecentHit,
+} from '@/lib/search/recentHits';
 
 /** Long enough that a fast typist issues one request, short enough to feel live. */
 const DEBOUNCE_MS = 200;
@@ -37,6 +44,18 @@ const GROUP_LABELS: Record<SearchKind, string> = {
 };
 
 type Variant = 'desktop' | 'mobile';
+
+/**
+ * The key combination to print in the box. Mac keyboards use Command, so
+ * showing "Ctrl K" there would name a key that does nothing. Reads the
+ * platform once at render; falls back to Ctrl anywhere it cannot tell, which
+ * is the right guess for the office's Windows machines.
+ */
+function shortcutHint(): string {
+  if (typeof navigator === 'undefined') return 'Ctrl K';
+  const mac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
+  return mac ? '⌘ K' : 'Ctrl K';
+}
 
 export function HeaderSearch({ variant }: { variant: Variant }) {
   const router = useRouter();
@@ -57,6 +76,13 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
   // is a different question from "is this still the newest answer". A slow
   // answer for "Kri" must never overwrite a fast one for "Kristie".
   const sequenceRef = useRef(0);
+  // What this browser opened from the box already, newest first. Loaded when
+  // the box is FOCUSED rather than on mount: storage cannot be read during a
+  // server render, this list is only ever looked at once the box is open, and
+  // reading it on mount would touch storage on every page load for a list
+  // nobody may open. It also keeps the read out of an effect body, which this
+  // repo lints against.
+  const [recent, setRecent] = useState<RecentHit[]>([]);
 
   const hits = useMemo(() => flattenResults(results), [results]);
   const count = totalCount(results);
@@ -149,6 +175,13 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
   }, [variant]);
 
   const go = (hit: SearchHit) => {
+    // Built from STORAGE, not from this component's state. The state may be
+    // empty (the box was never focused, or the other instance did the last
+    // write), and pushing onto an empty list would silently discard the
+    // history rather than adding to it.
+    const next = pushRecent(readRecent(), toRecent(hit));
+    setRecent(next);
+    writeRecent(next);
     setOpen(false);
     setQuery('');
     setResults(emptyResults());
@@ -189,6 +222,10 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
 
   const listId = `header-search-results-${variant}`;
   const showPanel = open && trimmed.length > 0;
+  // Nothing typed yet: offer what this person already opened rather than an
+  // empty box. Only when there is something to offer, so a first-time box
+  // opens as it always did instead of flashing an empty heading.
+  const showRecent = open && trimmed.length === 0 && recent.length > 0;
 
   let flatIndex = -1;
 
@@ -209,15 +246,90 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
         placeholder="Search"
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setOpen(true);
+          setRecent(readRecent());
+        }}
         onKeyDown={onKeyDown}
-        className="w-full rounded-md border px-2 py-1 text-sm outline-none focus:ring-1"
+        className="w-full rounded-md border px-2 py-1 pr-11 text-sm outline-none focus:ring-1"
         style={{
           borderColor: 'var(--op-border)',
           background: 'var(--op-bg)',
           color: 'var(--op-text)',
         }}
       />
+      {/* The shortcut only works on the desktop instance, so only that one
+          advertises it. Hidden once anything is typed, because by then the
+          person is already in the box and the hint is just clutter over their
+          text. aria-hidden: it is decoration, and the input's own label
+          already names the control. Nobody discovers a shortcut that is not
+          shown (Naldo, 2026-09-01). */}
+      {variant === 'desktop' && query === '' && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 select-none rounded border px-1 text-[10px] leading-[1.4]"
+          style={{
+            borderColor: 'var(--op-border)',
+            color: 'var(--op-text-2)',
+            opacity: 0.75,
+          }}
+        >
+          {shortcutHint()}
+        </span>
+      )}
+
+      {showRecent && (
+        <div
+          role="listbox"
+          aria-label="Recently opened"
+          className="absolute right-0 top-full z-50 mt-1 w-[80vw] max-w-sm max-h-[70vh] overflow-y-auto rounded-lg border shadow-lg py-1 lg:w-80 lg:left-0 lg:right-auto"
+          style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
+        >
+          <p
+            className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest"
+            style={{ color: 'var(--op-text-2)' }}
+          >
+            Recently opened
+          </p>
+          {recent.map((hit) => (
+            <button
+              key={hit.key}
+              type="button"
+              role="option"
+              aria-selected={false}
+              onClick={() => {
+                // Reuse the same jump path, so a recent row behaves exactly
+                // like a search row: the box clears, the panel closes, and the
+                // record moves back to the top of this list.
+                go({
+                  ...hit,
+                  subtitle: null,
+                  status: null,
+                  active: true,
+                  sortedAt: null,
+                });
+              }}
+              // Same reasoning as the result rows: a customer name is the
+              // visible text of this control.
+              className="ph-no-capture block w-full px-3 py-1.5 text-left hover:bg-black/5"
+            >
+              <span className="flex items-baseline gap-1.5">
+                <span className="truncate text-sm font-medium" style={{ color: 'var(--op-text)' }}>
+                  {hit.title}
+                </span>
+                {hit.label && (
+                  <span className="text-xs" style={{ color: 'var(--op-text-2)' }}>
+                    {hit.label}
+                  </span>
+                )}
+                <span className="ml-auto shrink-0 text-[10px]" style={{ color: 'var(--op-text-2)' }}>
+                  {GROUP_LABELS[hit.kind].replace(/s$/, '')}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {showPanel && (
         <div
@@ -303,7 +415,12 @@ export function HeaderSearch({ variant }: { variant: Variant }) {
                       aria-selected={highlighted}
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => go(hit)}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
+                      // ph-no-capture: these rows carry customer names as their
+                      // visible text, and analytics autocapture records the text
+                      // of what gets clicked, which sits OUTSIDE the session
+                      // replay masking (premerge customer lens, 2026-09-01).
+                      // Nothing here needs click analytics.
+                      className="ph-no-capture block w-full px-3 py-1.5 text-left hover:bg-black/5"
                       style={highlighted ? { background: 'rgba(0,0,0,0.05)' } : undefined}
                     >
                       <span className="flex items-baseline gap-1.5">

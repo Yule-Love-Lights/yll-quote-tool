@@ -68,6 +68,7 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import { isStaffPreview } from '@/lib/auth/staffDevice';
 import { isPermanentEffect } from '@/lib/design/permanentScenes';
 import { isPortalActionable, isTerminalBrowseStatus } from '@/lib/quoteStatus';
+import { PACKAGE_IDS, isPackageId, type PackageId } from '@/components/portal/types';
 
 export const runtime = 'nodejs';
 
@@ -111,7 +112,7 @@ type QuoteRow = {
 };
 
 type SelectionBody = {
-  packageId: 'A' | 'B' | 'C' | 'D';
+  packageId: PackageId;
   selectedItemIds: string[];
   rushSelected: boolean;
   takedownSelected: boolean;
@@ -132,7 +133,7 @@ export function parseSelectionBody(body: unknown): SelectionBody | null {
   if (!body || typeof body !== 'object') return null;
   const b = body as Record<string, unknown>;
   const packageId = b.packageId;
-  if (packageId !== 'A' && packageId !== 'B' && packageId !== 'C' && packageId !== 'D') return null;
+  if (!isPackageId(packageId)) return null;
   if (!Array.isArray(b.selectedItemIds)) return null;
   const selectedItemIds = b.selectedItemIds
     .filter((x): x is string => typeof x === 'string' && x.length <= MAX_STRING_LEN)

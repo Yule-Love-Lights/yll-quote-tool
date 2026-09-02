@@ -54,6 +54,10 @@ export const ACCOUNT_LINKS: ReadonlyArray<AccountLink> = [
   // is not offered to them. Opening the page up is a permissions decision, not
   // a menu one.
   { label: 'Website leads', href: '/admin/leads', adminOnly: true },
+  // Who can see what (Naldo, 2026-09-01, for Jason). Admin only, and the page
+  // redirects a non-admin server-side too: hiding the row is cosmetic, the
+  // redirect is the refusal.
+  { label: 'Who can see what', href: '/admin/permissions', adminOnly: true },
 ];
 
 /**
@@ -61,12 +65,12 @@ export const ACCOUNT_LINKS: ReadonlyArray<AccountLink> = [
  *
  * `roleConfirmed` is required rather than defaulted, because defaulting it
  * true would make the permissive answer the silent one. It is false until
- * GET /api/auth/session has actually answered: OperatorNav seeds `role` from a
- * localStorage hint one tick after hydration so an admin's controls appear at
- * first paint, and on a shared office computer that hint can still say 'admin'
- * for the NEXT person (premerge admin lens). An admin-only row must therefore
- * wait for the confirmed answer, not the hint. Hiding it is cosmetic either
- * way: requireAdmin on the route is what actually refuses the data.
+ * GET /api/auth/session has actually answered. An admin-only row waits for
+ * that answer rather than appearing on anything less; the localStorage role
+ * hint that used to make admin controls appear at first paint was deleted for
+ * exactly this reason, because on a shared office computer it could still say
+ * 'admin' for the next person. Hiding a row is cosmetic either way:
+ * requireAdmin on the route is what actually refuses the data.
  */
 export function accountLinksFor(
   role: 'admin' | 'operator' | null,

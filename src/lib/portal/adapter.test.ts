@@ -18,6 +18,7 @@ import type { ServiceType } from '@/lib/serviceType';
 import type { PortalPhotos } from './photos';
 import type { PortalQuote } from '@/components/portal/types';
 import { resolveAgreedLineItems } from '@/lib/pdf/docModels';
+import { priceSelection, effectiveCharges } from './derivePackages';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
 
@@ -1141,17 +1142,11 @@ describe('quoteRowToPortalQuote — hides packages below the approval minimum (#
     })!;
   }
 
-  it('hides tiles whose pre-tax selection is under the gate; keeps the approvable ones', () => {
-    const portal = permPortal();
-    expect(portal.minimumOrderSubtotal).toBe(2500);
-    const ids = portal.packages.map((p) => p.id);
-    // A (front $1,520) and C (back $1,365) can't clear $2,500 → hidden.
-    expect(ids).not.toContain('A');
-    expect(ids).not.toContain('C');
-    // B (Front & Sides $3,690) and D (Whole Home $5,055) clear it → shown.
-    expect(ids).toContain('B');
-    expect(ids).toContain('D');
-  });
+  // NOTE: permanent no longer HIDES a below-gate tile — it locks it and says
+  // what is still needed. That behaviour and its own regressions live in
+  // "permanent locks below-minimum tiles instead of hiding them" at the bottom
+  // of this file. Holiday, event, bistro and legacy rebook still hide, which is
+  // what the rest of this block covers.
 
   it('staff-waived minimum (gate 0) hides nothing', () => {
     const portal = permPortal({ ...permInputs, waiveMinimum: true });
@@ -1772,9 +1767,11 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
     const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
 
     // No back, so no 'C'. Front+sides equals the whole-home id set, so 'D' is
-    // suppressed as redundant (derivePackagesPermanent), leaving only 'B'
-    // (front + sides). The OLD hardcoded 'C' fallback matched NEITHER 'B' nor 'D'.
-    expect(portal.packages.map((p) => p.id)).toEqual(['B']);
+    // suppressed as redundant (derivePackagesPermanent), leaving 'A' (front,
+    // $1,520, locked under the $2,500 gate) and 'B' (front + sides). The OLD
+    // hardcoded 'C' fallback matched NEITHER.
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B']);
+    expect(portal.packages.find((p) => p.id === 'A')!.belowMinimum).toBe(true);
     const tierB = portal.packages.find((p) => p.id === 'B')!;
     expect(tierB.total).toBeGreaterThan(0);
     expect(portal.approval!.packageId).toBe('B'); // the bigger real package (front + sides)
@@ -2535,5 +2532,243 @@ describe('showStaffPreselectNotice', () => {
   // NEXT page load once they've edited anything — no extra machinery here.
   it('withholds the notice once the customer has made their own edit (staffSet cleared)', () => {
     expect(showStaffPreselectNotice({ staffSet: undefined }, '2026-08-02T00:00:00Z')).toBe(false);
+  });
+});
+
+// ── Permanent: below-minimum tiles are LOCKED, not hidden ──────────────────
+//
+// Quote #1303 is why. A permanent quote carrying front $1,400, left $900,
+// right $900, back $1,050 and a $550 garage line showed the customer only two
+// cards, because "Front of Home" and "Back of Home" both sat under that
+// quote's $1,600 approval minimum and the #134 filter removed them. The staff
+// member who built it had no way to tell the cards had ever existed.
+//
+// The gate itself is unchanged: a customer still cannot approve a selection
+// under the minimum. What changes is that permanent now SHOWS the card and
+// says what it would take, instead of silently dropping it. Every other
+// service type keeps the hide.
+describe('quoteRowToPortalQuote — permanent locks below-minimum tiles instead of hiding them', () => {
+  // Same shape as the #134 block above: front $1,520 · left $1,085 ·
+  // right $1,085 · back $1,365, at the default $2,500 gate.
+  const permInputs = emptyInputs({
+    permanent: {
+      frontFootage: 38, leftFootage: 31, rightFootage: 31, backFootage: 39,
+      gaps: [], controllerToFirstLightFt: 0,
+      frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+      trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+    },
+  });
+  const permResult = calculatePermanentQuote(permInputs);
+  function permPortal(inputs: QuoteInputs = permInputs) {
+    return quoteRowToPortalQuote({
+      row: { ...rowWith(permResult, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+  }
+
+  it('every measured surface still gets a card', () => {
+    const portal = permPortal();
+    expect(portal.minimumOrderSubtotal).toBe(2500);
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+  });
+
+  it('the under-gate cards are flagged with exactly how much more is needed', () => {
+    const portal = permPortal();
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    expect(a.belowMinimum).toBe(true);
+    expect(a.amountToMinimum).toBe(2500 - 1520);
+    expect(c.belowMinimum).toBe(true);
+    expect(c.amountToMinimum).toBe(2500 - 1365);
+  });
+
+  it('the approvable cards are not flagged', () => {
+    const portal = permPortal();
+    for (const id of ['B', 'D']) {
+      const pkg = portal.packages.find((p) => p.id === id)!;
+      expect(pkg.belowMinimum).toBeUndefined();
+      expect(pkg.amountToMinimum).toBeUndefined();
+    }
+  });
+
+  it('locking never changes a price', () => {
+    const portal = permPortal();
+    // Front alone is $1,520 pre-tax; permanent carries no rush or takedown.
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    expect(a.total).toBe(priceSelection(1520, effectiveCharges(portal.charges, false, false)).total);
+  });
+
+  it('a waived minimum flags nothing', () => {
+    const portal = permPortal({ ...permInputs, waiveMinimum: true });
+    expect(portal.minimumOrderSubtotal).toBe(0);
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']);
+    expect(portal.packages.every((p) => p.belowMinimum === undefined)).toBe(true);
+  });
+
+  it('when NO card clears the gate, none is locked — a portal of dead cards helps nobody', () => {
+    // Front-only $2,000 plus a $600 maintenance add-on: the whole quote is
+    // $2,600 so the gate does NOT auto-waive, but maintenance rides no package,
+    // leaving the lone "Front of Home" card at $2,000 against a $2,500 gate.
+    const inputs = emptyInputs({
+      permanent: {
+        frontFootage: 50, leftFootage: 0, rightFootage: 0, backFootage: 0,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: true,
+      },
+    });
+    const result = calculatePermanentQuote(inputs, { ...DEFAULT_PERMANENT_RATES, maintenancePrice: 600 });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.minimumOrderSubtotal).toBe(2500);
+    expect(portal.packages.map((p) => p.id)).toEqual(['A']);
+    expect(portal.packages[0].belowMinimum).toBeUndefined();
+  });
+
+  it('a locked tile never also wears the recommended badge', () => {
+    // Staff can tick a set that lands under the minimum: derivePackagesPermanent
+    // badges it (it cannot see the gate, which is resolved here), and the gate
+    // then locks it. "recommended" next to "Add $X to book this" would advise a
+    // customer to buy something we refuse to sell.
+    const inputs = emptyInputs({
+      permanent: {
+        frontFootage: 38, leftFootage: 31, rightFootage: 31, backFootage: 39,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+        // Back only ($1,365) — under the $2,500 gate.
+        backRecommended: true,
+      },
+    });
+    const result = calculatePermanentQuote(inputs);
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    expect(c.belowMinimum).toBe(true);
+    expect(c.recommended).not.toBe(true);
+    expect(portal.packages.some((p) => p.belowMinimum === true && p.recommended === true)).toBe(false);
+  });
+
+  it('the card the customer already approved is never locked', () => {
+    // A rate change after approval could drop the approved tile under a newer
+    // gate. Locking it would tell a booked customer their own order is not
+    // allowed.
+    const portal = quoteRowToPortalQuote({
+      row: {
+        ...rowWith(permResult, permInputs),
+        service_type: 'permanent',
+        customer_approved_at: '2026-07-04T00:00:00Z',
+        approval_snapshot: {
+          approvedAt: '2026-07-04T00:00:00Z',
+          customerSelection: { packageId: 'A' },
+        } as QuoteRowForPortal['approval_snapshot'],
+      },
+      photos: PHOTOS,
+    })!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    expect(a.belowMinimum).toBeUndefined();
+    // The other under-gate card is still locked — only the approved one is spared.
+    expect(portal.packages.find((p) => p.id === 'C')!.belowMinimum).toBe(true);
+  });
+
+  it('HOLIDAY IS UNCHANGED: a below-gate tier is still hidden, never locked', () => {
+    // The positive service-type gate in the adapter. Holiday's A/B/C is a
+    // cumulative ladder where a below-minimum entry tier is a dead end, and
+    // that behaviour (#134, Jason S24) is deliberately left alone.
+    const result = calculateQuote(
+      emptyInputs({
+        santasFootage: 70,
+        gingerbreadFootage: 40,
+        rooflineChoice: 'gingerbread',
+        customLineItems: [{ label: 'Extra decor', amount: 400, quantity: 1 }],
+      }),
+    );
+    const portal = portalFrom(result)!;
+    expect(portal.minimumOrderSubtotal).toBe(1000);
+    expect(portal.packages.every((p) => p.belowMinimum === undefined)).toBe(true);
+    for (const pkg of portal.packages) {
+      if (pkg.includedItemIds.length === 0) continue;
+      const subtotal = pkg.includedItemIds.reduce(
+        (sum, id) => sum + (portal.lineItems.find((li) => li.id === id)?.price ?? 0),
+        0,
+      );
+      expect(subtotal).toBeGreaterThanOrEqual(1000);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A booked portal that approved the recommendation card must keep the items
+// the customer actually signed.
+//
+// Found by the pre-merge technical lens. resolveApprovalSelectionSeed honours a
+// frozen selectedItemIds list only for package 'D'; every other id discards the
+// list and reseeds from that package's own current bundle. That is safe for
+// A/B/C, whose contents are fixed by the quote's own surfaces, and unsafe for
+// 'E', whose contents are whatever staff have ticked RIGHT NOW. Untick a side
+// after a customer approves and their booked portal silently shows a different
+// set — or, if the recommendation set stops matching anything at all, no items,
+// which is the empty-booked-portal failure this repo has hit before.
+// ---------------------------------------------------------------------------
+describe('resolveApprovalSelectionSeed — the recommendation card is volatile', () => {
+  const fallback = { initialPackageId: 'A' as const, initialSelectedItemIds: undefined };
+
+  it("keeps the frozen items for an 'E' approval, exactly as it does for 'D'", () => {
+    const frozen = ['permanent-front', 'permanent-back'];
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'E', selectedItemIds: frozen },
+      fallback,
+    );
+    expect(seed.initialSelectedItemIds).toEqual(frozen);
+  });
+
+  it("a customer who approved 'E' still sees their own items after staff retick", () => {
+    // The staff set has since changed to front-only; the booked portal must
+    // still open on what was signed, not on the new recommendation.
+    const signed = ['permanent-front', 'permanent-back'];
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'E', selectedItemIds: signed },
+      fallback,
+    );
+    const selection = computeInitialSelection(
+      [
+        {
+          id: 'E',
+          name: 'Our Recommendation',
+          tagline: '',
+          total: 1,
+          deposit: 1,
+          includedItemIds: ['permanent-front'], // staff reticked since approval
+        },
+      ],
+      seed.initialPackageId,
+      seed.initialSelectedItemIds,
+    );
+    expect(selection.selectedItemIds).toEqual(signed);
+  });
+
+  it("a customer who approved 'E' is not emptied when the card stops existing", () => {
+    const signed = ['permanent-front', 'permanent-back'];
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'E', selectedItemIds: signed },
+      fallback,
+    );
+    // Staff cleared every recommendation, so no 'E' card is derived at all.
+    const selection = computeInitialSelection([], seed.initialPackageId, seed.initialSelectedItemIds);
+    expect(selection.selectedItemIds).toEqual(signed);
+    expect(selection.selectedItemIds.length).toBeGreaterThan(0);
+  });
+
+  it('A/B/C still reseed from their own tier bundle (unchanged)', () => {
+    const seed = resolveApprovalSelectionSeed(
+      { packageId: 'B', selectedItemIds: ['stale-1'] },
+      fallback,
+    );
+    expect(seed.initialPackageId).toBe('B');
+    expect(seed.initialSelectedItemIds).toBeUndefined();
   });
 });
