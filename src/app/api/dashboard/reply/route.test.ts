@@ -169,7 +169,13 @@ describe('POST /api/dashboard/reply — success', () => {
     });
     // Row 311 fix-round FIX 1: a real send must pass allowRestamp:true, or the
     // caller-differentiation fix is inert — see markItemFollowed's doc comment.
-    expect(markItemFollowedMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), { allowRestamp: true });
+    // Row 502: a sent reply is corroborated by construction, and now says
+    // so. Asserting the exact opts object is deliberate: dropping `via`
+    // would silently record a real reply as an unbacked manual stamp.
+    expect(markItemFollowedMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), {
+      allowRestamp: true,
+      via: 'reply',
+    });
     // The pre-send claim wrote a claim timestamp before any send happened.
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
     expect(updateCalls[0]).toHaveProperty('reply_claimed_at');

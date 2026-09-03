@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { isStale } from '@/lib/dashboard/inbox/lifecycle';
+import { followBackingLabel } from '@/lib/dashboard/inbox/followBacking';
 import { ReplyComposer, type ReplySentOutcome } from './ReplyComposer';
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -240,6 +241,46 @@ export function combinedCompleteConfirmMessage(item: Pick<InWorksItem, 'needsLoo
   );
 }
 
+/**
+ * Whether an awaiting row is asking for something TODAY (Naldo, 2026-09-03).
+ *
+ * "In the works" rendered all 71 awaiting rows flat, and Naldo's complaint was
+ * that the page looks full of work when most of it needs nothing yet. A row
+ * earns its place by carrying one of the two tags a staffer already reads: the
+ * amber quiet tag, or the blue reason tag.
+ *
+ * MEASURED BEFORE BUILDING, and the number is worth keeping here because it
+ * sets the expectation: with followUpDays at 3, fifty of those seventy-one rows
+ * are ALREADY stale, so this hides about twenty-one. Naldo was shown that and
+ * chose to keep the 3 day threshold rather than raise it, so the list gets
+ * shorter without the tag changing meaning. If the page still reads as full,
+ * the threshold is the lever, not this function.
+ *
+ * The handled bucket needs no equivalent: its settled half has sat behind a
+ * "Show Handled" toggle since #307, which is exactly this pattern already.
+ */
+export function awaitingNeedsAttention(
+  item: Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason'>,
+  followUpDays: number,
+  nowMs: number,
+): boolean {
+  if (item.needsLookReason != null) return true;
+  return isStale(item.lastActivityAt, followUpDays, new Date(nowMs));
+}
+
+/** Split awaiting rows into what to show and what to park. PURE, order kept. */
+export function splitAwaitingByAttention<
+  T extends Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason'>,
+>(items: T[], followUpDays: number, nowMs: number): { attention: T[]; parked: T[] } {
+  const attention: T[] = [];
+  const parked: T[] = [];
+  for (const item of items) {
+    (awaitingNeedsAttention(item, followUpDays, nowMs) ? attention : parked).push(item);
+  }
+  // Nothing is ever dropped: every row lands in exactly one of the two.
+  return { attention, parked };
+}
+
 export function InWorksSection({
   awaiting,
   handled,
@@ -300,6 +341,9 @@ export function InWorksSection({
   // so act()/moveGroup/removeFromGroup keep working unchanged regardless of
   // which subsection a row currently renders in.
   const [handledExpanded, setHandledExpanded] = useState(false);
+  // Row 502 sibling: the same expander idiom as handled, for awaiting rows
+  // that carry neither tag. Collapsed by default, which is the whole ask.
+  const [parkedExpanded, setParkedExpanded] = useState(false);
 
   if (awaitingItems.length === 0 && handledItems.length === 0) return null;
 
@@ -504,6 +548,21 @@ export function InWorksSection({
                   {item.needsLookReason}
                 </span>
               )}
+              {/* Row 502: says what is true of the RECORD, never what the
+                  staffer did. A call from a personal phone looks identical from
+                  here, so this must never read as an accusation. Shown only for
+                  a stamp explicitly recorded as manual: a row stamped before the
+                  column existed carries null and stays silent, because claiming
+                  it was unbacked would invent a fact. */}
+              {followBackingLabel(item.followedVia) && (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded"
+                  style={{ background: 'var(--op-bg)', color: 'var(--op-text-2)' }}
+                  title="The follow-up was marked by hand. Nothing in the system records a call or a message, which is also what a call from a personal phone looks like."
+                >
+                  {followBackingLabel(item.followedVia)}
+                </span>
+              )}
               {/* Row 321: so the row is visually distinct before Mark
                   completed can silently bury a still-pending colour request. */}
               {item.isColorRequest && (
@@ -697,6 +756,14 @@ export function InWorksSection({
 
   // #307: a rendering-only split of the SAME handledItems state array (see
   // that state's own comment above) — no third bucket/state slice exists.
+  // Row 502 sibling: the awaiting list gets the same treatment the handled
+  // list has had since #307 — only rows asking for something render, the
+  // rest sit behind a count. A rendering-only split of the SAME state array.
+  const { attention: awaitingAttention, parked: awaitingParked } = splitAwaitingByAttention(
+    awaitingItems,
+    followUpDays,
+    nowMs,
+  );
   const needsLookItems = handledItems.filter((item) => item.needsLookReason != null);
   const settledHandledItems = handledItems.filter((item) => item.needsLookReason == null);
 
@@ -733,13 +800,41 @@ export function InWorksSection({
               "Follow-ups due today" strip's signal lives on these rows as a
               "Follow-up due" pill — a flat "nothing to do" would contradict a
               pill sitting two lines below it. */}
+          {/* Row 502 sibling: this sentence described a list that showed
+              EVERY followed row. It now shows only the rows carrying a tag, so
+              the old wording ("nothing to do until they write back") would be
+              exactly backwards about what is on screen. A guard and the copy
+              that narrates it are one change. */}
           <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            You’ve followed up on these — nothing to do until they write back, unless a row is
-            flagged “Follow-up due”.
+            These have gone quiet or are flagged, so they want a chase. The rest are parked
+            below and come back on their own when they need you.
           </p>
           <ul className="space-y-2">
-            {awaitingItems.map((item) => renderRow(item, 'awaiting'))}
+            {awaitingAttention.map((item) => renderRow(item, 'awaiting'))}
           </ul>
+          {awaitingParked.length > 0 && (
+            <div className="mt-3">
+              {/* Same expander idiom as "Show Handled" below, deliberately: one
+                  learned control, not two. Nothing is hidden permanently and
+                  the count is always visible, so the page can be quiet without
+                  the parked rows becoming unreachable. */}
+              <button
+                type="button"
+                onClick={() => setParkedExpanded((v) => !v)}
+                className="text-xs font-medium underline"
+                style={{ color: 'var(--op-text-2)' }}
+              >
+                {parkedExpanded
+                  ? `Hide ${awaitingParked.length} not needing anything yet`
+                  : `Show ${awaitingParked.length} not needing anything yet`}
+              </button>
+              {parkedExpanded && (
+                <ul className="space-y-2 mt-2">
+                  {awaitingParked.map((item) => renderRow(item, 'awaiting'))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       )}
 

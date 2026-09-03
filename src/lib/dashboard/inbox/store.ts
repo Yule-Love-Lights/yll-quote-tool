@@ -1233,7 +1233,8 @@ async function recordActionFailed(
  *  ActivityLog actually renders — see AUTO_REASON_LABEL there. A bespoke key
  *  would have been written and read by nobody, which the pre-merge staff lens
  *  caught it being in the first cut of this change. */
-export type FollowedVia = 'call';
+export type { FollowedVia } from './followBacking';
+import { DEFAULT_FOLLOWED_VIA, type FollowedVia } from './followBacking';
 
 /** The `detail.reason` value a call-driven follow-up carries. Must stay in step
  *  with AUTO_REASON_LABEL in ActivityLog.tsx, which turns it into words. */
@@ -1528,7 +1529,15 @@ export async function markItemFollowed(
   const from = await priorStateOf(sb, itemId);
   let query = sb
     .from('inbox_items')
-    .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
+    .update({
+      followed_up_at: now.toISOString(),
+      // Row 502: record WHAT backed this stamp, so the row itself can say
+      // whether anything corroborates it. A caller passing nothing records
+      // 'manual', the honest reading and the one that fails closed: a future
+      // path that forgets to say cannot arrive looking backed.
+      followed_via: (opts?.via ?? DEFAULT_FOLLOWED_VIA) satisfies FollowedVia,
+      updated_at: now.toISOString(),
+    })
     .eq('id', itemId)
     .in('status', ['unresponded', 'handled']);
   if (!allowRestamp) {
@@ -3353,6 +3362,9 @@ export type InWorksItem = {
   // fire. Non-null is the single displayed reason — see needsLookReason's own
   // doc comment for why only one shows when a row trips more than one rule.
   needsLookReason: string | null;
+  /** What backed the follow-up stamp: call, reply, manual, or null for a
+   *  stamp written before the column existed. See followBacking.ts. */
+  followedVia?: string | null;
   /** Row 321: true when this item both LOOKS like a colour request (a
    *  `quotetool` item whose external_id carries the `:color-request` suffix)
    *  AND its backing quote still carries a LIVE
@@ -3394,7 +3406,7 @@ export type InWorksResult =
 // not do. #268's fix round found that and deliberately left it, documented, as
 // a follow-up needing this change. This is that follow-up.
 const IN_WORKS_SELECT =
-  'id, source, external_id, channel, subject, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+  'id, source, external_id, channel, subject, preview, followed_up_at, followed_via, handled_at, status, dashboard_contacts ( display_name )';
 
 // #307: the 'handled' bucket alone also needs direction (rule b) to compute
 // "Needs a look" — the 'awaiting' bucket's query stays on the narrower
@@ -3421,6 +3433,7 @@ function mapInWorksRow(
       subject: (row.subject as string | null) ?? null,
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
+      followedVia: (row.followed_via as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
       // Row 321 fix-round FIX 1: shape AND liveness, for BOTH buckets now
       // that external_id is selected on both — see isLiveColorRequestItem's

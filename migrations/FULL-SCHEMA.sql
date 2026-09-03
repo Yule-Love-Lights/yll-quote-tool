@@ -1283,6 +1283,9 @@ create table if not exists public.inbox_items (
   -- 2026-06-30 snooze/"Followed": followed items hide from the open list and
   -- reappear only on a genuinely-newer message. Orthogonal to status.
   followed_up_at       timestamptz,
+  -- What backed that stamp: call, reply, or manual. Null for a stamp written
+  -- before 2026-09-03, deliberately not backfilled. See followBacking.ts.
+  followed_via         text,
   -- 2026-06-30 triage v1: 'lead' | 'automated' (NULL = unclassified, treated
   -- as 'lead') + the quote $ total for quotetool items (NULL elsewhere).
   lead_kind            text,

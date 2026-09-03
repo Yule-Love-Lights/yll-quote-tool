@@ -23,6 +23,8 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }))
 
 import {
   InWorksSection,
+  awaitingNeedsAttention,
+  splitAwaitingByAttention,
   withRowFlagSet,
   withRowFlagCleared,
   requiresCompleteConfirmation,
@@ -43,6 +45,12 @@ import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
 const now = 1_000_000_000_000;
 const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+// Row 502 sibling (2026-09-03): the awaiting bucket now renders only rows
+// that want a chase, so a fixture built to test something ELSE about an
+// awaiting row (a badge, a count, the copy) has to be quiet enough to show
+// up. Naming it here beats scattering magic offsets, and makes the
+// dependency obvious to whoever edits these next.
+const QUIET = at(10 * 86_400_000);
 
 const baseItem: InWorksItem = {
   id: 'x',
@@ -62,7 +70,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
   // bucket, independently" on the very first render.
   it('renders one row per item in each of the awaiting/handled buckets, independently', () => {
     const awaiting: InWorksItem[] = [
-      { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: at(3_600_000) },
+      { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: QUIET },
     ];
     const handled: InWorksItem[] = [
       { ...baseItem, id: 'h1', customerName: 'Handled Customer', lastActivityAt: at(7_200_000), needsLookReason: 'Quote unanswered' },
@@ -86,7 +94,9 @@ describe('InWorksSection (row 291 — initial render)', () => {
   // which stamps followed_up_at with no reply ever sent. The caption must be
   // true for BOTH — "followed up", never "replied".
   it('clarifies "Awaiting their reply" as ball-in-their-court sub-copy, true for both the reply path and the no-reply "Followed" path, only when that bucket has items', () => {
-    const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: QUIET },
+    ];
     const withAwaiting = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
     );
@@ -95,16 +105,21 @@ describe('InWorksSection (row 291 — initial render)', () => {
     // “nothing to do” would contradict a pill rendered directly below it. The
     // two-path claim this test exists to pin (“followed up”, never “replied”) is
     // unchanged.
-    expect(withAwaiting).toContain(
-      'You’ve followed up on these — nothing to do until they write back, unless a row is flagged “Follow-up due”.',
-    );
+    // Row 502 sibling (2026-09-03): the old sentence ("nothing to do until
+    // they write back") described a list that showed EVERY followed row. The
+    // list now shows only rows that want a chase, so that wording would be
+    // backwards about what is on screen. The claim this test exists to pin is
+    // unchanged and still checked below: this bucket is never described as
+    // "replied", because the standalone Followed button reaches it too.
+    expect(withAwaiting).toContain('want a chase');
     expect(withAwaiting).not.toContain('already replied');
+    expect(withAwaiting).not.toContain('replied to these');
 
     const handled: InWorksItem[] = [{ ...baseItem, id: 'h1', customerName: 'Handled Customer' }];
     const noAwaiting = renderToStaticMarkup(
       <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
     );
-    expect(noAwaiting).not.toContain('nothing to do until they write back');
+    expect(noAwaiting).not.toContain('want a chase');
   });
 
   it('renders nothing when both buckets are empty', () => {
@@ -145,7 +160,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
   // collapsed and would make a false negative read as a pass.
   it('badges a row flagged isColorRequest with "Colour request pending"', () => {
     const awaiting: InWorksItem[] = [
-      { ...baseItem, id: 'a1', customerName: 'Colour Customer', isColorRequest: true },
+      { ...baseItem, id: 'a1', customerName: 'Colour Customer', isColorRequest: true, lastActivityAt: QUIET },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
@@ -156,7 +171,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
 
   it('does not badge an ordinary row', () => {
     const awaiting: InWorksItem[] = [
-      { ...baseItem, id: 'a1', customerName: 'Ordinary Customer' },
+      { ...baseItem, id: 'a1', customerName: 'Ordinary Customer', lastActivityAt: QUIET },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
@@ -708,5 +723,162 @@ describe('withRowFollowedNow', () => {
 
   it('returns the SAME array when the id is not present, so no needless re-render', () => {
     expect(withRowFollowedNow(rows, 'missing', NOW)).toBe(rows);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Row 502 sibling: only the rows asking for something render (Naldo,
+// 2026-09-03). Measured first: with followUpDays at 3, fifty of seventy-one
+// live awaiting rows are already stale, so this parks about twenty-one. Naldo
+// was shown that and kept the 3 day threshold.
+
+describe('awaitingNeedsAttention', () => {
+  const NOW = Date.parse('2026-09-03T12:00:00.000Z');
+  const quiet = { lastActivityAt: '2026-08-20T00:00:00.000Z', needsLookReason: null };
+  const fresh = { lastActivityAt: '2026-09-03T09:00:00.000Z', needsLookReason: null };
+
+  it('keeps a row that has gone quiet past the threshold', () => {
+    expect(awaitingNeedsAttention(quiet, 3, NOW)).toBe(true);
+  });
+
+  it('parks a row that is neither quiet nor flagged', () => {
+    expect(awaitingNeedsAttention(fresh, 3, NOW)).toBe(false);
+  });
+
+  it('keeps a flagged row even when it is fresh, because the flag IS the ask', () => {
+    expect(awaitingNeedsAttention({ ...fresh, needsLookReason: 'Follow-up due' }, 3, NOW)).toBe(true);
+  });
+
+  it('parks a row with no activity date rather than guessing it is overdue', () => {
+    // isStale returns false on null, and inheriting that is deliberate: a row
+    // with no clock should not be presented as demanding attention today.
+    expect(awaitingNeedsAttention({ lastActivityAt: null, needsLookReason: null }, 3, NOW)).toBe(false);
+  });
+
+  it('follows the configured threshold rather than a hardcoded one', () => {
+    const eightDaysAgo = { lastActivityAt: '2026-08-26T12:00:00.000Z', needsLookReason: null };
+    expect(awaitingNeedsAttention(eightDaysAgo, 3, NOW)).toBe(true);
+    expect(awaitingNeedsAttention(eightDaysAgo, 30, NOW)).toBe(false);
+  });
+});
+
+describe('splitAwaitingByAttention', () => {
+  const NOW = Date.parse('2026-09-03T12:00:00.000Z');
+  const rows = [
+    { id: 'quiet', lastActivityAt: '2026-08-20T00:00:00.000Z', needsLookReason: null },
+    { id: 'fresh', lastActivityAt: '2026-09-03T09:00:00.000Z', needsLookReason: null },
+    { id: 'flagged', lastActivityAt: '2026-09-03T09:00:00.000Z', needsLookReason: 'Follow-up due' },
+  ];
+
+  it('shows the quiet and the flagged, parks the fresh', () => {
+    const { attention, parked } = splitAwaitingByAttention(rows, 3, NOW);
+    expect(attention.map((r) => r.id)).toEqual(['quiet', 'flagged']);
+    expect(parked.map((r) => r.id)).toEqual(['fresh']);
+  });
+
+  it('never drops a row: the two halves always account for every input', () => {
+    // The property that matters for a filter over someone's work queue.
+    const { attention, parked } = splitAwaitingByAttention(rows, 3, NOW);
+    expect(attention.length + parked.length).toBe(rows.length);
+    expect([...attention, ...parked].map((r) => r.id).sort()).toEqual(
+      rows.map((r) => r.id).sort(),
+    );
+  });
+
+  it('keeps the order it was given inside each half', () => {
+    const many = [rows[0], rows[2], { ...rows[0], id: 'quiet2' }];
+    expect(splitAwaitingByAttention(many, 3, NOW).attention.map((r) => r.id)).toEqual([
+      'quiet',
+      'flagged',
+      'quiet2',
+    ]);
+  });
+});
+
+describe('InWorksSection — the parked rows are collapsed, not gone', () => {
+  const NOW = Date.parse('2026-09-03T12:00:00.000Z');
+  const quiet: InWorksItem = {
+    ...baseItem,
+    id: 'q1',
+    customerName: 'Quiet Customer',
+    lastActivityAt: '2026-08-20T00:00:00.000Z',
+    needsLookReason: null,
+  };
+  const fresh: InWorksItem = {
+    ...baseItem,
+    id: 'f1',
+    customerName: 'Fresh Customer',
+    lastActivityAt: '2026-09-03T09:00:00.000Z',
+    needsLookReason: null,
+  };
+
+  it('renders the row that wants a chase and not the one that does not', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[quiet, fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Quiet Customer');
+    expect(html).not.toContain('Fresh Customer');
+  });
+
+  it('says how many are parked, so nothing silently disappears', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[quiet, fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Show 1 not needing anything yet');
+  });
+
+  it('offers no expander at all when nothing is parked', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[quiet]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).not.toContain('not needing anything yet');
+  });
+
+  it('stops claiming there is nothing to do, which is now backwards', () => {
+    // The old blurb read "nothing to do until they write back". The list now
+    // shows ONLY rows that want a chase, so that sentence would describe the
+    // opposite of what is on screen.
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[quiet]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).not.toContain('nothing to do until they write back');
+    expect(html).toContain('want a chase');
+  });
+});
+
+describe('InWorksSection — a follow-up nothing corroborates says so', () => {
+  const NOW = Date.parse('2026-09-03T12:00:00.000Z');
+  const quiet = {
+    ...baseItem,
+    id: 'q1',
+    customerName: 'Quiet Customer',
+    lastActivityAt: '2026-08-20T00:00:00.000Z',
+    needsLookReason: null,
+  };
+
+  it('marks a stamp recorded as manual', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection
+        awaiting={[{ ...quiet, followedVia: 'manual' } as InWorksItem]}
+        handled={[]}
+        followUpDays={3}
+        nowMs={NOW}
+      />,
+    );
+    expect(html).toContain('No call or text on record');
+  });
+
+  it('stays silent for a call or a sent reply, and for a stamp older than the column', () => {
+    for (const via of ['call', 'reply', null]) {
+      const html = renderToStaticMarkup(
+        <InWorksSection
+          awaiting={[{ ...quiet, followedVia: via } as InWorksItem]}
+          handled={[]}
+          followUpDays={3}
+          nowMs={NOW}
+        />,
+      );
+      expect(html).not.toContain('No call or text on record');
+    }
   });
 });
