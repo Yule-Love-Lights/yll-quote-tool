@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BackIcon, DotsIcon, CameraIcon, EditIcon, MapFoldIcon, PersonIcon, PinIcon } from './icons';
 import PlacementMap from './PlacementMap';
 import { dollars, PrimaryButton, SC, Sheet, SHELL_MAX_PX } from './ui';
+import { dollarsToCents } from '@/lib/hourlyRate';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { splitDuplicateSignals } from '@/components/admin/advertising/duplicateSignals';
 
@@ -45,8 +46,11 @@ type Campaign = {
   /** admin only: EVERY row pointing at this campaign, counted by the same
    * function the server's delete guard uses, so the button and the guard can
    * never disagree (staff lens HIGH: they did, and the button became a
-   * permanent dead end on any campaign with a voided photo). */
-  placementTotal?: number;
+   * permanent dead end on any campaign with a voided photo).
+   *
+   * null means the count could not be read. Deleting is not offered then:
+   * the destructive control fails CLOSED when we do not know. */
+  placementTotal?: number | null;
 };
 
 const STATUS_CHIP: Record<DetailPlacement['status'], { text: string; bg: string; fg: string }> = {
@@ -138,11 +142,18 @@ export default function CampaignDetailScreen({
     (p) => (p.status === 'pending' || p.status === 'resubmitted') && !p.voidedAt,
   ).length;
 
+  // The rate is compared as a NUMBER, the same way saveEdit decides what to
+  // send. Comparing the typed string instead made "0.3" look like a change
+  // from "0.30", which blocked Close and Delete while Save said there was
+  // nothing to save: a dead end you could only leave by reopening the sheet
+  // (delta-verify on the previous fix round). A rate that does not parse
+  // counts as a change, because it is something the admin has to resolve
+  // before anything else here makes sense.
+  const draftRateCents = dollarsToCents(draftRate);
+  const rateDiffers =
+    draftRateCents === null ? draftRate.trim() !== (rateCents / 100).toFixed(2) : draftRateCents !== rateCents;
   const draftsDiffer =
-    draftName.trim() !== name ||
-    draftNotes.trim() !== notes.trim() ||
-    draftKind !== kind ||
-    draftRate.trim() !== (rateCents / 100).toFixed(2);
+    draftName.trim() !== name || draftNotes.trim() !== notes.trim() || draftKind !== kind || rateDiffers;
 
   const openEdit = () => {
     setDraftName(name);
@@ -195,8 +206,7 @@ export default function CampaignDetailScreen({
   const saveEdit = async () => {
     setEditError(null);
     setEditNote(null);
-    const { dollarsToCents } = await import('@/lib/hourlyRate');
-    const nextRate = dollarsToCents(draftRate);
+    const nextRate = draftRateCents;
     if (nextRate === null) {
       setEditError('Enter the pay per accepted photo in dollars, like 0.30 or 2.50.');
       return;
@@ -774,7 +784,12 @@ export default function CampaignDetailScreen({
                 : 'This campaign is closed. The crew cannot see it or add photos. Reopening takes effect straight away, without Save.'}
             </p>
 
-            {(campaign.placementTotal ?? 0) === 0 ? (
+            {campaign.placementTotal === null || campaign.placementTotal === undefined ? (
+              <p className="mt-4 text-sm" style={{ color: SC.muted }}>
+                Could not check whether anything points at this campaign, so deleting is not offered. Reload the
+                page to try again.
+              </p>
+            ) : campaign.placementTotal === 0 ? (
               <div className="mt-4">
                 <PrimaryButton tone="danger" disabled={saving} onClick={() => void removeCampaign()}>
                   Delete this campaign

@@ -19,6 +19,8 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       // When true, the audit insert fails the way a refused write really
       // does: supabase-js returns { error } rather than throwing.
       activityInsertFails: false,
+      // When set, the campaign delete returns this error message.
+      deleteFails: null as string | null,
       // When set, the NEXT single-row select returns this snapshot instead
       // of the live row, then clears — models a stale read racing a
       // concurrent writer.
@@ -107,7 +109,10 @@ function makeDb() {
               filters.push((r) => r[col] === val);
               return db;
             },
-            then(onOk: (v: { error: null }) => unknown) {
+            then(onOk: (v: { error: { message: string } | null }) => unknown) {
+              if (stateRef.current.deleteFails) {
+                return Promise.resolve({ error: { message: stateRef.current.deleteFails } }).then(onOk);
+              }
               stateRef.current.rows = stateRef.current.rows.filter((r) => !filters.every((f) => f(r)));
               return Promise.resolve({ error: null }).then(onOk);
             },
@@ -146,6 +151,7 @@ beforeEach(() => {
   stateRef.current.staleReadOnce = null;
   stateRef.current.placementCounts = new Map();
   stateRef.current.activityInsertFails = false;
+  stateRef.current.deleteFails = null;
   dbRef.current = makeDb();
 });
 
@@ -501,5 +507,24 @@ describe('countCampaignPlacements — the one number the delete gate and the gua
   it('a campaign nothing points at counts zero', async () => {
     const { countCampaignPlacements } = await import('./campaigns');
     expect(await countCampaignPlacements('campaign-x')).toBe(0);
+  });
+});
+
+describe('deleteAdvertisingCampaign — when the deletion itself fails', () => {
+  it('records that the deletion did not happen, so the trail is not left lying', async () => {
+    // The record of the deletion is written first, on purpose. If the delete
+    // then fails, that record describes something that did not happen, and
+    // the trail has to say so (delta-verify on the fix round).
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Typo' });
+    stateRef.current.activity = [];
+    stateRef.current.deleteFails = 'the row is still referenced';
+
+    await expect(deleteAdvertisingCampaign(campaign.id, 'admin-user-1')).rejects.toThrow(/still referenced/);
+
+    expect(stateRef.current.rows).toHaveLength(1);
+    const actions = stateRef.current.activity.map((a) => a.action);
+    expect(actions).toContain('campaign_deleted');
+    expect(actions).toContain('campaign_delete_failed');
   });
 });

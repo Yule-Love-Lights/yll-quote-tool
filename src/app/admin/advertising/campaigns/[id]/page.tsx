@@ -21,8 +21,18 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
   // guard uses, so the button and the guard cannot disagree. The count that
   // the display uses excludes test and voided rows, and gating on that made
   // Delete appear for campaigns the server would always refuse.
+  // countCampaignPlacements throws rather than guessing, which is right for
+  // the delete guard and wrong for a page render: the function it replaced
+  // never threw, so a transient count failure would now take the whole
+  // campaign screen down instead of just hiding one button (delta-verify).
+  // null means unknown, and the sheet then refuses to offer deleting.
   const { countCampaignPlacements } = await import('@/lib/advertising/campaigns');
-  const placementTotal = await countCampaignPlacements(campaign.id);
+  let placementTotal: number | null = null;
+  try {
+    placementTotal = await countCampaignPlacements(campaign.id);
+  } catch (error) {
+    console.error('campaign detail: counting placements for the delete gate:', error);
+  }
 
   return (
     <CampaignDetailScreen
