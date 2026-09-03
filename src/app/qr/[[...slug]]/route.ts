@@ -24,8 +24,6 @@ import { NextResponse } from 'next/server';
 import { buildQrDestination } from '@/lib/qrRedirect';
 
 export const runtime = 'nodejs';
-// Never let a scan be answered from a cache: the destination is meant to be
-// repointable at any time, and a cached response would outlive the change.
 export const dynamic = 'force-dynamic';
 
 export async function GET(_req: Request, { params }: { params: Promise<{ slug?: string[] }> }) {
@@ -36,5 +34,16 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug?: 
   const code = slug?.length === 1 ? slug[0] : undefined;
   // 302, deliberately. See qrRedirect.ts: a 301 would be cached by scanner apps
   // for the lifetime of the device and freeze the destination permanently.
-  return NextResponse.redirect(buildQrDestination(code), 302);
+  const res = NextResponse.redirect(buildQrDestination(code), 302);
+  // `dynamic = 'force-dynamic'` governs how Next RENDERS this route; on its own
+  // it emits NO cache header at all (measured on a running server). A comment
+  // here previously claimed it meant "never answered from a cache", which was
+  // not true - this header is what makes that claim true, and it is what keeps
+  // the destination genuinely repointable, the whole reason the status is 302.
+  res.headers.set('Cache-Control', 'no-store, max-age=0');
+  // The slug space is unbounded and sits on a brand subdomain, so without this
+  // every scanned code is a crawlable URL that can be indexed. Raised by the
+  // admin lens on this PR.
+  res.headers.set('X-Robots-Tag', 'noindex, nofollow');
+  return res;
 }
