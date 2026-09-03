@@ -1280,6 +1280,9 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // drives the Light Color band's rebook copy + the read-only What's
     // Included list. Positive gate; every other quote reads false.
     legacyRebook: row.legacy_rebook === true,
+    // Staff switch for the free-spritzer thank you. Positive gate; a quote that
+    // has never been touched by that control reads false.
+    suppressFreeSpritzerNotice: row.inputs?.suppressFreeSpritzerNotice === true,
     // View-only portal (#176): drives the sticky bar's browsing-only strip.
     // Positive gate; every other quote reads false.
     viewOnly: row.view_only === true,

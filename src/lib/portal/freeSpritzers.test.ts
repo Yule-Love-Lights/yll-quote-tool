@@ -66,15 +66,31 @@ describe('summarizeFreeSpritzers — the shape prod actually uses', () => {
 });
 
 describe('summarizeFreeSpritzers — refusing to invent a number', () => {
-  it('reports the promise with no count when the number sits before the word free (quote 1123)', () => {
-    // "6 Free For Staying With Us!" states a number the patterns cannot safely
-    // attach to the spritzers, so the portal says free spritzers are included
-    // and states no figure.
+  it('reads the count when the number sits after the item and before the word free (quote 1123)', () => {
+    // "32” LED Spritzers - 6 Free For Staying With Us!" — the only live label
+    // whose number the first two patterns could not reach. Note the SAME label
+    // also charges for 5 spritzers ("×5"), which must not be added to the gift.
     expect(
       summarizeFreeSpritzers([
         '32” LED Spritzers ×5 · 32” LED Spritzers - 6 Free For Staying With Us! · Santa\'s Roofline Display Package · Front Trees · Tree',
       ]),
-    ).toEqual({ present: true, count: null });
+    ).toEqual({ present: true, count: 6 });
+  });
+
+  it('still refuses to guess when a promise carries no number at all', () => {
+    expect(summarizeFreeSpritzers(['Free Spritzers, our gift to you'])).toEqual({
+      present: true,
+      count: null,
+    });
+  });
+
+  it('does not read a PAID spritzer quantity as the gift when both appear', () => {
+    // The ×2 belongs to the charged spritzers; only the "2 FREE Spritzers" counts.
+    expect(
+      summarizeFreeSpritzers([
+        'Santa\'s Roofline Display Package · Bushes · 16" LED Spritzers ×2 · 2 FREE Spritzers!',
+      ]),
+    ).toEqual({ present: true, count: 2 });
   });
 
   it('treats a stated zero as unreadable rather than announcing zero free spritzers', () => {
@@ -202,6 +218,21 @@ describe('summarizeSelectedFreeSpritzers — the promise follows the selection',
 
   it('handles an empty item list', () => {
     expect(summarizeSelectedFreeSpritzers([], new Set(['a']))).toEqual({ present: false, count: null });
+  });
+
+  it('says nothing at all when staff have switched the notice off', () => {
+    expect(summarizeSelectedFreeSpritzers(items, new Set(['a', 'b']), { suppressed: true })).toEqual({
+      present: false,
+      count: null,
+    });
+  });
+
+  it('still reads normally when the switch is off or absent', () => {
+    expect(summarizeSelectedFreeSpritzers(items, new Set(['a']), { suppressed: false })).toEqual({
+      present: true,
+      count: 6,
+    });
+    expect(summarizeSelectedFreeSpritzers(items, new Set(['a']), {})).toEqual({ present: true, count: 6 });
   });
 });
 

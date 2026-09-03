@@ -13,6 +13,9 @@ import { NceToggle } from '@/components/admin/NceToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
+import { SpritzerNoticePanel } from '@/components/admin/SpritzerNoticePanel';
+import { summarizeFreeSpritzers, labelPromisesFreeSpritzers } from '@/lib/portal/freeSpritzers';
+import { getCustomerTenure } from '@/lib/customerTenure';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
@@ -199,6 +202,27 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           .map((li) => ({ id: li.id, label: li.label }));
       })()
     : [];
+
+  // The free-spritzer thank you the portal will show, computed with the SAME
+  // function the portal uses so this panel can never describe something else.
+  // Read over every line item rather than a selection: on the portal the notice
+  // follows what the customer currently has selected, and the panel names the
+  // labels it came from so staff can see which item carries it.
+  const spritzerLabels: string[] = quote.result
+    ? buildPortalLineItems(quote.result, quote.inputs as QuoteInputs | null)
+        .lineItems.map((li) => li.label)
+        .filter((l) => labelPromisesFreeSpritzers(l))
+    : [];
+  const spritzerNotice = summarizeFreeSpritzers(spritzerLabels);
+  const spritzerNoticeSuppressed =
+    (quote.inputs as { suppressFreeSpritzerNotice?: boolean } | null)?.suppressFreeSpritzerNotice === true;
+  // Only ask about tenure when a thank you could actually render — it is the one
+  // part of the wording that can be WRONG rather than merely absent.
+  const spritzerReturningCustomer = spritzerNotice.present
+    ? (await getCustomerTenure(quote.customer_id ?? null, quote.highlevel_contact_id ?? null, new Date())).years.some(
+        (y) => y < new Date().getUTCFullYear(),
+      )
+    : false;
 
   // #155 — for a legacy rebook, show what light color/pattern the customer
   // approved with (once approved). null while awaiting approval, or for a
@@ -586,6 +610,20 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
 
         {/* Free items (#162) — add/remove $0 items on an approved order. */}
         {canEditFreeItems && <FreeItemsPanel quoteId={id} items={freeItems} />}
+
+        {/* What the portal tells this customer about free spritzers, and the
+            switch to stop it. Renders whenever a label promises them OR the
+            notice has been turned off, so staff can always turn it back on. */}
+        {(spritzerNotice.present || spritzerNoticeSuppressed) && (
+          <SpritzerNoticePanel
+            quoteId={id}
+            count={spritzerNotice.count}
+            present={spritzerNotice.present}
+            suppressed={spritzerNoticeSuppressed}
+            sourceLabels={spritzerLabels}
+            isReturningCustomer={spritzerReturningCustomer}
+          />
+        )}
 
         {/* Permanent BOM (#88 P7) — operator ordering material list + wholesale cost. */}
         {bom && (
