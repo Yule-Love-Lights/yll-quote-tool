@@ -32,7 +32,8 @@ export type OperatorArea =
   | 'settings'
   // 'time' matches no nav item on purpose (the leads precedent in
   // OperatorNav.tsx: /admin/time-tracking is admin-only, reached from the
-  // Fleet page link, and the 1024px nav row has no room for another slot).
+  // account menu (accountLinks.ts) and the Fleet page link, and the 1024px
+  // nav row has no room for another slot).
   | 'time'
   // The advertising-view areas (#1061 surfaces + the View-as nav wiring).
   // They match items only in the ADVERTISING view's nav list, so they light

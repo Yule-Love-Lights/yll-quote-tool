@@ -14,6 +14,7 @@ describe('ACCOUNT_LINKS', () => {
       'Call recordings',
       'Website leads',
       'Who can see what',
+      'Time tracking',
     ]);
   });
 
@@ -76,6 +77,7 @@ describe('accountLinksFor', () => {
       'Call recordings',
       'Website leads',
       'Who can see what',
+      'Time tracking',
     ]);
   });
 
@@ -84,6 +86,13 @@ describe('accountLinksFor', () => {
     expect(labels).toEqual(['Settings', 'Insights', 'Call recordings']);
     expect(labels).not.toContain('Website leads');
     expect(labels).not.toContain('Who can see what');
+    expect(labels).not.toContain('Time tracking');
+  });
+
+  it('marks the time-tracking row admin-only, because the page redirects a non-admin', () => {
+    // /admin/time-tracking calls getSessionRole() and redirect('/')s anyone
+    // who is not an admin, so offering the row to an operator is a dead end.
+    expect(ACCOUNT_LINKS.find((l) => l.href === '/admin/time-tracking')?.adminOnly).toBe(true);
   });
 
   it('treats an unresolved role as not-admin, the same safe default as View-as', () => {

@@ -56,15 +56,20 @@ export function TimeExceptionsSection({
         live, so look at those first.
       </p>
       {/* The fix path (admin lens on the digest PR: a queue with no repair
-          door nags forever): the manual shift editor on the two-clocks page
-          is where a human corrects the times; closing the shift there closes
-          its stuck children. */}
+          door nags forever). It names the person's own hours page, which
+          serves office and field alike; the two clocks page is offered as
+          the second door because it puts the GPS timeline beside the shift,
+          and it lists FIELD shifts only (fleetDay.ts). An earlier version of
+          this comment said office shifts had no editor at all — true until
+          the person page shipped, false the moment it did. */}
       <p className="text-sm text-gray-500 -mt-2 mb-4">
-        To fix one, correct the shift&apos;s times on{' '}
+        To fix one, open the person&apos;s name in the hours table above and correct the
+        shift&apos;s times; closing the shift there closes its stuck children. Field crew shifts
+        can also be corrected beside the GPS timeline on{' '}
         <a href="/admin/fleet/clocks" className="underline">
           the day&apos;s two clocks page
         </a>
-        .
+        , which lists field shifts only.
       </p>
 
       {errors.length > 0 && (

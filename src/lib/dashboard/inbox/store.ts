@@ -39,6 +39,7 @@ import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
+import { shouldSuppressOnDismiss } from './dismissSuppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
@@ -986,7 +987,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // bidirectional generic inference on the inline argument).
   const baseQuery = sb.from('inbox_items').select(
     'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
-      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
+      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to, ghl_contact_id )',
     { count: 'exact' },
   );
   const { data, error, count } = await applyBucketFilter(baseQuery, 'needs_reply')
@@ -1108,6 +1109,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       quoteValue: (row.quote_value as number | null) ?? null,
       isReturning: row.contact_id ? returning.has(row.contact_id as string) : false,
       contactId: (row.contact_id as string | null) ?? null,
+      // The HighLevel contact id, distinct from contactId above: that one is
+      // the dashboard_contacts row id used for claim/assign, this one is what
+      // /customers/[contactId] and the HighLevel app both address a customer
+      // by. Null on a contact that has never been linked to the CRM.
+      ghlContactId: (c?.ghl_contact_id as string | null) ?? null,
       assignedTo: (c?.assigned_to as string | null) ?? null,
       contact: c
         ? {
@@ -1362,6 +1368,37 @@ export async function markItemHandledLocal(
  * unchanged: a benign `{ ok: true }` no-op, since under `.neq` a zero-row match
  * can only mean "already dismissed".
  */
+/**
+ * Do these identifiers belong to somebody we have quoted? (S75)
+ *
+ * The last line of defence before a dismiss silences a sender. Best-effort and
+ * fails CLOSED on any error: if we cannot prove they are NOT a customer, we do
+ * not suppress. Losing a suppression is a bit more inbox noise; a wrong
+ * suppression loses a customer's mail silently for months, which is what
+ * actually happened.
+ */
+async function identifiersBelongToACustomer(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  identifiers: (string | null)[],
+): Promise<boolean> {
+  if (!sb) return true;
+  const emails = identifiers
+    .filter((v): v is string => !!v && v.includes('@'))
+    .map((v) => v.trim().toLowerCase());
+  if (!emails.length) return false;
+  try {
+    const { data, error } = await sb
+      .from('quotes')
+      .select('id')
+      .in('customer_email', emails)
+      .limit(1);
+    if (error) return true; // cannot tell -> do not suppress
+    return (data?.length ?? 0) > 0;
+  } catch {
+    return true; // cannot tell -> do not suppress
+  }
+}
+
 export async function dismissItem(
   itemId: string,
   operatorId: string | null,
@@ -1381,7 +1418,7 @@ export async function dismissItem(
     : Array.isArray(expectedStatus)
       ? update.in('status', expectedStatus)
       : update.eq('status', expectedStatus))
-    .select('dashboard_contacts ( primary_email, primary_phone )')
+    .select('source, lead_kind, dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
@@ -1402,8 +1439,36 @@ export async function dismissItem(
     return { ok: true };
   }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
-  const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
-  if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
+  const row = data as {
+    source?: string | null;
+    dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null };
+  } | null;
+  const c = row?.dashboard_contacts;
+  // S75 — the dismiss ALWAYS lands; this only decides whether the sender is
+  // silenced from here on. It used to be unconditional, which is how five
+  // paying customers ended up silenced by staff correctly dismissing our own
+  // "we sent a quote" rows and a lead forward. See dismissSuppression.ts for
+  // the traced cases. The check fails CLOSED: anything that looks like one of
+  // our customers keeps notifying us.
+  if (c) {
+    const identifiers = [c.primary_email ?? null, c.primary_phone ?? null];
+    const decision = shouldSuppressOnDismiss({
+      source: row?.source ?? null,
+      isKnownCustomer: await identifiersBelongToACustomer(sb, identifiers),
+    });
+    if (decision.suppress) {
+      await addSuppressedSenders(identifiers, { actor: operatorId, inboxItemId: itemId });
+    } else {
+      // Say so in the activity trail rather than silently doing nothing, so a
+      // staffer wondering why a sender still notifies them can find the answer.
+      await sb.from('dashboard_activity').insert({
+        actor: operatorId ?? 'system',
+        action: 'dismiss_suppression_skipped',
+        inbox_item_id: itemId,
+        detail: { reason: decision.reason },
+      });
+    }
+  }
   // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
   // a real lead, so any pending nag anchored to it should die with it. Only on
   // the matched (real transition) path above, never the already-dismissed no-op.
@@ -4009,7 +4074,12 @@ export async function reverseItemState(
     const dc = (
       c as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null
     )?.dashboard_contacts;
-    if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
+    if (dc)
+      await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null], {
+        actor: operatorId ?? null,
+        inboxItemId: a.inbox_item_id,
+        note: 'reversed a dismiss',
+      });
   }
 
   // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id
