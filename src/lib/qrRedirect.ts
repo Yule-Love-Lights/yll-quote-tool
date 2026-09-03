@@ -76,7 +76,16 @@ const TRACKABLE_SLUG = /^[A-Za-z0-9_-]{1,64}$/;
  * failure this whole route exists to remove.
  */
 export function buildQrDestination(slug: string | undefined | null): string {
-  const campaign = typeof slug === 'string' ? KNOWN_CAMPAIGNS[slug] : undefined;
+  // Object.hasOwn, not a bare lookup: KNOWN_CAMPAIGNS is a plain object, so
+  // KNOWN_CAMPAIGNS['constructor'] returns a function off Object.prototype and
+  // KNOWN_CAMPAIGNS['__proto__'] returns an object. This route is public, so a
+  // bare lookup let anyone stamp Object.prototype's own members into our
+  // analytics: /qr/constructor produced utm_campaign=function Object() { [native
+  // code] }. Found by the technical lens on this PR, empirically, not by reading.
+  const campaign =
+    typeof slug === 'string' && Object.hasOwn(KNOWN_CAMPAIGNS, slug)
+      ? KNOWN_CAMPAIGNS[slug]
+      : undefined;
   const url = new URL(QR_DESTINATION);
   url.searchParams.set('utm_source', 'qr');
   url.searchParams.set('utm_medium', 'print');

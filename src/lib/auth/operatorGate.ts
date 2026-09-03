@@ -208,7 +208,7 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   if (path === '/estimate') return true;
 
   // Printed-QR redirector (broken-link regression, 2026-09-03). Every QR code
-  // on the truck, the business cards and the flyers points at
+  // on the van decal and the business cards points at
   // link.yulelovelights.com/qr/<slug>; that subdomain is being repointed at this
   // app because the GoHighLevel account that used to serve it belongs to a
   // former agency and no longer has the domain attached. The scanner is a
@@ -218,7 +218,10 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // never seen and cannot enumerate. Safe to open as a prefix because the
   // namespace holds exactly one thing, a route that reads no database and no
   // customer record and only ever 302s to our own marketing site
-  // (src/app/qr/[slug]/route.ts, logic + tests in src/lib/qrRedirect.ts).
+  // (src/app/qr/[[...slug]]/route.ts, logic + tests in src/lib/qrRedirect.ts).
+  // That "exactly one thing" is not a promise, it is asserted: see
+  // src/lib/auth/qrNamespace.test.ts, which fails the moment a second route
+  // appears under src/app/qr and inherits this public prefix by accident.
   if (path === '/qr' || path.startsWith('/qr/')) return true;
 
   // The home-screen install page (naldo/mobile-app-branding). It lists the two

@@ -433,3 +433,32 @@ describe('the crew door (row 466)', () => {
     expect(isPublicPath('/api/admin/crew/abc/link', 'POST')).toBe(false);
   });
 });
+
+describe('the printed-QR door', () => {
+  // Every QR code the company has ever printed lands here, on a subdomain
+  // being repointed at this app. The scanner is a homeowner with no session,
+  // so a regression in this one line does not throw an error - it serves the
+  // operator LOGIN SHELL to someone holding a business card, which looks
+  // exactly like the outage the route exists to fix. Three of the four
+  // pre-merge lenses on PR #1186 independently flagged that this entry
+  // shipped with no test at all, which is why it has one now.
+  it.each([
+    '/qr',
+    '/qr/',
+    '/qr/hbJhlsQLHpFv', // the van decal
+    '/qr/DjzJS9mzhTOm', // the business card
+    '/qr/aCodeWeHaveNeverSeen',
+  ])('lets %s through to the redirector', (p) => {
+    expect(isPublicPath(p)).toBe(true);
+  });
+
+  // The entry is a PREFIX, unlike /estimate next to it, because the whole
+  // point is answering slugs nobody can enumerate. That makes the negative
+  // space worth pinning: a prefix is one typo away from opening a neighbour.
+  it('does not open anything that merely starts with the same letters', () => {
+    expect(isPublicPath('/qrcode')).toBe(false);
+    expect(isPublicPath('/qr-code')).toBe(false);
+    expect(isPublicPath('/qrx/abc')).toBe(false);
+    expect(isPublicPath('/api/qr/abc')).toBe(false);
+  });
+});

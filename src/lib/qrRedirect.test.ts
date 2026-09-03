@@ -88,6 +88,20 @@ describe('buildQrDestination', () => {
     expect(url.searchParams.get('utm_source')).toBe('qr');
   });
 
+  // KNOWN_CAMPAIGNS is a plain object, so a bare bracket lookup walks
+  // Object.prototype: 'constructor' returned a function and '__proto__' an
+  // object, both of which then got stamped into utm_campaign on a PUBLIC route.
+  // The technical lens reproduced it live before the Object.hasOwn guard landed
+  // (/qr/constructor emitted utm_campaign=function Object() { [native code] }).
+  it.each(['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'does not read %s off the prototype chain as a campaign',
+    (slug) => {
+      const url = new URL(buildQrDestination(slug));
+      expect(url.origin + url.pathname).toBe(HOMEPAGE);
+      expect(url.searchParams.has('utm_campaign')).toBe(false);
+    },
+  );
+
   it('never leaves the yulelovelights.com host, whatever the slug', () => {
     const host = new URL(QR_DESTINATION).host;
     const slugs = [VAN, BUSINESS_CARD, '', 'x', '../..', 'a'.repeat(200), 'https://evil.test/'];
