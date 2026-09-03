@@ -244,3 +244,28 @@ describe('deleting a campaign', () => {
     expect(deleteAdvertisingCampaign).not.toHaveBeenCalled();
   });
 });
+
+describe('a rate change has to say what it replaces', () => {
+  it('400s a rate change with no expected rate, rather than obeying a stale screen', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', rateCents: 300 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/reload/i);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+
+  it('passes both figures through when the expected rate is given', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', rateCents: 300, expectedRateCents: 250 }));
+    expect(res.status).toBe(200);
+    expect(updateAdvertisingCampaign).toHaveBeenCalledWith(
+      'campaign-1',
+      expect.objectContaining({ rateCents: 300, expectedRateCents: 250 }),
+      'admin-1',
+    );
+  });
+
+  it('400s a malformed expected rate the same way as a malformed rate', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', rateCents: 300, expectedRateCents: '250' }));
+    expect(res.status).toBe(400);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+});

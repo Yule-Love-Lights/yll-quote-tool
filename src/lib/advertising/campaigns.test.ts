@@ -169,11 +169,15 @@ describe('updateAdvertisingCampaign', () => {
     const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
 
-    const updated = await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+    const updated = await updateAdvertisingCampaign(
+      campaign.id,
+      { rateCents: 300, expectedRateCents: 250 },
+      'admin-user-1',
+    );
     expect(updated?.rateCents).toBe(300);
 
     await expect(
-      updateAdvertisingCampaign(campaign.id, { rateCents: 1.5 }, 'admin-user-1'),
+      updateAdvertisingCampaign(campaign.id, { rateCents: 1.5, expectedRateCents: 250 }, 'admin-user-1'),
     ).rejects.toThrow(/rate/i);
   });
 
@@ -189,7 +193,7 @@ describe('updateAdvertisingCampaign', () => {
     stateRef.current.activity = [];
 
     await expect(
-      updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1'),
+      updateAdvertisingCampaign(campaign.id, { rateCents: 300, expectedRateCents: 250 }, 'admin-user-1'),
     ).rejects.toThrow(CampaignRateConflictError);
 
     expect(stateRef.current.rows[0].rate_cents).toBe(260); // the other admin's rate survives
@@ -201,7 +205,7 @@ describe('updateAdvertisingCampaign', () => {
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
     stateRef.current.activity = [];
 
-    await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 300, expectedRateCents: 250 }, 'admin-user-1');
 
     const audit = stateRef.current.activity.filter((a) => a.action === 'rate_changed');
     expect(audit).toHaveLength(1);
@@ -218,7 +222,7 @@ describe('updateAdvertisingCampaign', () => {
 
     await updateAdvertisingCampaign(campaign.id, { notes: 'east side routes' }, 'admin-user-1');
     // Same-value rate patch is also not a change.
-    await updateAdvertisingCampaign(campaign.id, { rateCents: 250 }, 'admin-user-1');
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 250, expectedRateCents: 250 }, 'admin-user-1');
 
     expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
   });
@@ -274,7 +278,7 @@ describe('updateAdvertisingCampaign — the name and description trail', () => {
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
     stateRef.current.activity = [];
 
-    await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 300, expectedRateCents: 250 }, 'admin-user-1');
 
     expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(1);
     expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
@@ -397,5 +401,105 @@ describe('updateAdvertisingCampaign — the campaign type', () => {
     await updateAdvertisingCampaign(campaign.id, { kind: 'yard_sign' }, 'admin-user-1');
 
     expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
+  });
+});
+
+// A rate change must say what rate it believes it is replacing. The old
+// compare-and-swap read the prior rate from the SERVER moments earlier and
+// swapped against that, so it always matched itself: a browser showing a
+// stale rate could overwrite a newer one with no error at all. The
+// pre-merge technical lens proved it by reverting 300 back to 250 through a
+// pure rename.
+describe('updateAdvertisingCampaign — a rate change names what it replaces', () => {
+  it('goes through when the stored rate is the one the caller was looking at', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+
+    const updated = await updateAdvertisingCampaign(
+      campaign.id,
+      { rateCents: 300, expectedRateCents: 250 },
+      'admin-user-1',
+    );
+
+    expect(updated?.rateCents).toBe(300);
+  });
+
+  it('refuses when the stored rate has moved since the caller read it', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign, CampaignRateConflictError } =
+      await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+    // Another admin moved it to 300 while this caller's screen still showed 250.
+    stateRef.current.rows[0].rate_cents = 300;
+    stateRef.current.activity = [];
+
+    await expect(
+      updateAdvertisingCampaign(campaign.id, { rateCents: 250, expectedRateCents: 250 }, 'admin-user-1'),
+    ).rejects.toThrow(CampaignRateConflictError);
+
+    expect(stateRef.current.rows[0].rate_cents).toBe(300);
+    expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
+  });
+
+  it('refuses a rate change that does not say what it is replacing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+
+    await expect(
+      updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1'),
+    ).rejects.toThrow(/expectedRateCents/);
+  });
+
+  it('a name-only patch neither needs nor touches the rate', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+    stateRef.current.rows[0].rate_cents = 300;
+
+    const updated = await updateAdvertisingCampaign(campaign.id, { name: 'Renamed' }, 'admin-user-1');
+
+    expect(updated?.name).toBe('Renamed');
+    expect(stateRef.current.rows[0].rate_cents).toBe(300);
+  });
+});
+
+// Closing a campaign decides whether the crew can see it and add photos at
+// all. Every other write in this module leaves a trail; this one left none
+// (admin lens HIGH).
+describe('updateAdvertisingCampaign — closing and reopening leave a trail', () => {
+  it('closing records who closed it and what it moved from', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { active: false }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('admin-user-1');
+    const detail = audit[0].detail as { priorActive?: boolean; newActive?: boolean };
+    expect(detail.priorActive).toBe(true);
+    expect(detail.newActive).toBe(false);
+  });
+
+  it('re-saving the same open/closed state records nothing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { active: true }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
+  });
+});
+
+describe('countCampaignPlacements — the one number the delete gate and the guard both read', () => {
+  it('counts every row, including the ones the display count hides', async () => {
+    const { countCampaignPlacements } = await import('./campaigns');
+    stateRef.current.placementCounts.set('campaign-x', 4);
+    expect(await countCampaignPlacements('campaign-x')).toBe(4);
+  });
+
+  it('a campaign nothing points at counts zero', async () => {
+    const { countCampaignPlacements } = await import('./campaigns');
+    expect(await countCampaignPlacements('campaign-x')).toBe(0);
   });
 });

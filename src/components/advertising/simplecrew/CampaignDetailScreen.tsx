@@ -42,13 +42,11 @@ type Campaign = {
   notes?: string | null;
   rateCents?: number;
   active?: boolean;
-  /** admin only: how many photos point at this campaign. Deleting is only
-   * offered at zero, because photos are somebody's paid work. */
-  photoCount?: number;
-  /** admin only: photos awaiting review. These take whatever the rate is at
-   * the MOMENT they are accepted, which is what makes a rate change
-   * re-price work that is already done. */
-  pendingCount?: number;
+  /** admin only: EVERY row pointing at this campaign, counted by the same
+   * function the server's delete guard uses, so the button and the guard can
+   * never disagree (staff lens HIGH: they did, and the button became a
+   * permanent dead end on any campaign with a voided photo). */
+  placementTotal?: number;
 };
 
 const STATUS_CHIP: Record<DetailPlacement['status'], { text: string; bg: string; fg: string }> = {
@@ -95,6 +93,7 @@ export default function CampaignDetailScreen({
   const [active, setActive] = useState(campaign.active ?? true);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [editNote, setEditNote] = useState<string | null>(null);
 
   const [tab, setTab] = useState<'description' | 'photos'>('photos');
   const [view, setView] = useState<'map' | 'photos'>('map');
@@ -130,12 +129,28 @@ export default function CampaignDetailScreen({
     };
   }, [placementsUrl, tick]);
 
+  // The photos still waiting to be reviewed, read from the feed this screen
+  // already refreshes after every accept and reject. It was a number seeded
+  // once at page load, which could silently suppress the re-pricing warning
+  // this sheet exists for while the crew were submitting live (staff lens
+  // HIGH).
+  const pendingNow = placements.filter(
+    (p) => (p.status === 'pending' || p.status === 'resubmitted') && !p.voidedAt,
+  ).length;
+
+  const draftsDiffer =
+    draftName.trim() !== name ||
+    draftNotes.trim() !== notes.trim() ||
+    draftKind !== kind ||
+    draftRate.trim() !== (rateCents / 100).toFixed(2);
+
   const openEdit = () => {
     setDraftName(name);
     setDraftNotes(notes);
     setDraftKind(kind);
     setDraftRate((rateCents / 100).toFixed(2));
     setEditError(null);
+    setEditNote(null);
     setEditOpen(true);
   };
 
@@ -179,57 +194,83 @@ export default function CampaignDetailScreen({
 
   const saveEdit = async () => {
     setEditError(null);
+    setEditNote(null);
     const { dollarsToCents } = await import('@/lib/hourlyRate');
     const nextRate = dollarsToCents(draftRate);
     if (nextRate === null) {
-      setEditError('Enter the pay per accepted photo in dollars, like 0.30.');
+      setEditError('Enter the pay per accepted photo in dollars, like 0.30 or 2.50.');
       return;
     }
 
-    // A rate change re-prices every photo still waiting to be reviewed,
-    // because a rate is stamped at the MOMENT of acceptance, not when the
-    // photo was taken. Naldo walked into exactly this: 39 photos moving
-    // from $97.50 to $11.70 without anything saying so.
+    // Only what actually CHANGED is sent. Sending everything every time made
+    // a pure rename carry whatever rate this screen loaded with, which could
+    // silently overwrite somebody else's newer rate, and made an unrelated
+    // rename fail with a confusing message about the rate (technical and
+    // admin lenses, PR #1185).
+    const body: Record<string, unknown> = {};
+    if (draftName.trim() !== name) body.name = draftName;
+    if (draftNotes.trim() !== notes.trim()) body.notes = draftNotes;
+    if (draftKind !== kind) body.kind = draftKind;
+
     if (nextRate !== rateCents) {
-      const waiting = campaign.pendingCount ?? 0;
-      const lines = [
-        `Change the pay from ${dollars(rateCents)} to ${dollars(nextRate)} per accepted photo?`,
-      ];
-      if (waiting > 0) {
+      // A rate is stamped at the MOMENT a photo is accepted, so this
+      // re-prices everything still waiting. Naldo walked into exactly this:
+      // 39 photos moving from $97.50 to $11.70 with nothing saying so.
+      const lines = [`Change the pay from ${dollars(rateCents)} to ${dollars(nextRate)} per accepted photo?`];
+      if (pendingNow > 0) {
         lines.push(
           '',
-          `${waiting} photo${waiting === 1 ? ' is' : 's are'} still waiting to be reviewed on this campaign.`,
-          `Accepting them after this pays ${dollars(nextRate * waiting)} in total instead of ${dollars(rateCents * waiting)}.`,
+          `${pendingNow} photo${pendingNow === 1 ? ' is' : 's are'} still waiting to be reviewed on this campaign.`,
+          `Accepting them after this pays ${dollars(nextRate * pendingNow)} in total instead of ${dollars(rateCents * pendingNow)}.`,
           '',
           'Photos already accepted keep what they were paid. This cannot be undone once they are accepted.',
         );
       }
       if (!window.confirm(lines.join('\n'))) return;
+      body.rateCents = nextRate;
+      // The rate this screen was showing. The server refuses if the stored
+      // rate is not that one, instead of obeying a screen that has been open
+      // while somebody else moved it.
+      body.expectedRateCents = rateCents;
     }
 
-    const ok = await patchCampaign({
-      name: draftName,
-      notes: draftNotes,
-      kind: draftKind,
-      rateCents: nextRate,
-    });
+    if (Object.keys(body).length === 0) {
+      setEditNote('Nothing to save.');
+      return;
+    }
+
+    const ok = await patchCampaign(body);
     if (ok) setEditOpen(false);
   };
 
   const toggleActive = async () => {
+    // Close and Delete act immediately while the fields above are saved by
+    // Save. Acting on one while the other holds typed edits threw those
+    // edits away with no warning (staff lens HIGH).
+    if (draftsDiffer) {
+      setEditError('Save or undo your changes above first, then close the campaign.');
+      return;
+    }
     const closing = active;
-    const waiting = campaign.pendingCount ?? 0;
+    const waiting = pendingNow;
     const message = closing
       ? `Close "${name}"? The crew stop seeing it and cannot add photos.${
-          waiting > 0 ? ` Its ${waiting} photo${waiting === 1 ? '' : 's'} waiting for review stay, and can still be accepted and paid.` : ''
+          waiting > 0
+            ? ` Its ${waiting} photo${waiting === 1 ? ' waiting for review stays' : 's waiting for review stay'}, and can still be accepted and paid.`
+            : ''
         } You can reopen it any time.`
       : `Reopen "${name}"? The crew will see it again and can add photos.`;
     if (!window.confirm(message)) return;
-    await patchCampaign({ active: !active });
+    const ok = await patchCampaign({ active: !active });
+    if (ok) setEditNote(closing ? 'Campaign closed.' : 'Campaign reopened.');
   };
 
   const removeCampaign = async () => {
     if (!editUrl) return;
+    if (draftsDiffer) {
+      setEditError('Save or undo your changes above first, then delete the campaign.');
+      return;
+    }
     if (
       !window.confirm(
         `Delete "${name}" for good? This is only possible because no photos point at it. It cannot be undone.`,
@@ -696,20 +737,25 @@ export default function CampaignDetailScreen({
               value={draftRate}
               onChange={(e) => setDraftRate(e.target.value)}
               inputMode="decimal"
+              placeholder="0.30"
               className="mt-1 w-32 rounded-xl border px-4 py-3 text-lg"
               style={{ borderColor: '#DCD4BE' }}
             />
           </label>
-          {(campaign.pendingCount ?? 0) > 0 && (
+          {pendingNow > 0 && (
             <p className="mt-1 text-sm" style={{ color: '#8a6d1f' }}>
-              {campaign.pendingCount} photo{(campaign.pendingCount ?? 0) === 1 ? ' is' : 's are'} still waiting to be
-              reviewed. A photo is paid at whatever the rate is when you accept it, so changing this changes what
-              they are worth.
+              {pendingNow} photo{pendingNow === 1 ? ' is' : 's are'} still waiting to be reviewed. A photo is paid at
+              whatever the rate is when you accept it, so changing this changes what they are worth.
             </p>
           )}
           {editError && (
             <p className="mt-3 text-sm" style={{ color: SC.danger }}>
               {editError}
+            </p>
+          )}
+          {editNote && !editError && (
+            <p className="mt-3 text-sm" style={{ color: SC.ok }}>
+              {editNote}
             </p>
           )}
           <div className="mt-5">
@@ -724,24 +770,24 @@ export default function CampaignDetailScreen({
             </PrimaryButton>
             <p className="mt-1 text-sm" style={{ color: SC.muted }}>
               {active
-                ? 'Closing hides it from the crew and stops new photos. Every photo and every payment stays, and you can reopen it.'
-                : 'This campaign is closed. The crew cannot see it or add photos.'}
+                ? 'Takes effect straight away, without Save. Closing hides it from the crew and stops new photos. Every photo and every payment stays, and you can reopen it.'
+                : 'This campaign is closed. The crew cannot see it or add photos. Reopening takes effect straight away, without Save.'}
             </p>
 
-            {(campaign.photoCount ?? 0) === 0 ? (
+            {(campaign.placementTotal ?? 0) === 0 ? (
               <div className="mt-4">
                 <PrimaryButton tone="danger" disabled={saving} onClick={() => void removeCampaign()}>
                   Delete this campaign
                 </PrimaryButton>
                 <p className="mt-1 text-sm" style={{ color: SC.muted }}>
-                  No photos point at it, so nothing is lost. This cannot be undone.
+                  Nothing points at this campaign, so nothing is lost. This cannot be undone.
                 </p>
               </div>
             ) : (
               <p className="mt-4 text-sm" style={{ color: SC.muted }}>
-                This campaign cannot be deleted: {campaign.photoCount} photo
-                {(campaign.photoCount ?? 0) === 1 ? '' : 's'} point at it, and that is somebody&apos;s work. Close it
-                instead.
+                This campaign cannot be deleted: {campaign.placementTotal} photo
+                {(campaign.placementTotal ?? 0) === 1 ? '' : 's'} point at it, and that is somebody&apos;s work.
+                Close it instead.
               </p>
             )}
           </div>

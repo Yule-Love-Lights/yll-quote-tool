@@ -17,11 +17,12 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
   const campaign = await getAdvertisingCampaign(id);
   if (!campaign) notFound();
 
-  // The settings sheet needs both counts: photos decide whether deleting is
-  // even offered, and photos still awaiting review decide what a rate change
-  // is about to re-price.
-  const { campaignActivitySummary } = await import('@/lib/advertising/placements');
-  const activity = (await campaignActivitySummary([campaign.id])).get(campaign.id);
+  // The delete gate reads the SAME unfiltered count the server's delete
+  // guard uses, so the button and the guard cannot disagree. The count that
+  // the display uses excludes test and voided rows, and gating on that made
+  // Delete appear for campaigns the server would always refuse.
+  const { countCampaignPlacements } = await import('@/lib/advertising/campaigns');
+  const placementTotal = await countCampaignPlacements(campaign.id);
 
   return (
     <CampaignDetailScreen
@@ -33,8 +34,7 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
         notes: campaign.notes,
         rateCents: campaign.rateCents,
         active: campaign.active,
-        photoCount: activity?.photoCount ?? 0,
-        pendingCount: activity?.pendingCount ?? 0,
+        placementTotal,
       }}
       placementsUrl={`/api/admin/advertising/campaigns/${campaign.id}/placements`}
       backHref="/admin/advertising"

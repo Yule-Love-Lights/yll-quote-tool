@@ -121,6 +121,29 @@ export class CampaignRateConflictError extends Error {
 }
 
 /**
+ * How many placements point at a campaign, counting EVERYTHING: test rows,
+ * voided rows, every status. The delete guard and the screen that decides
+ * whether to offer deleting both read this one function, because when they
+ * counted different things the button appeared for campaigns the server
+ * would always refuse (staff lens HIGH, PR #1185).
+ */
+export async function countCampaignPlacements(campaignId: string): Promise<number> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const { count, error } = await db
+    .from('advertising_placements')
+    .select('id', { count: 'exact', head: true })
+    .eq('campaign_id', campaignId.trim());
+  if (error) throw new Error(`countCampaignPlacements: ${error.message}`);
+  // A null count means the question was not answered, which is not the same
+  // as the answer being zero.
+  if (count === null || count === undefined) {
+    throw new Error('countCampaignPlacements: could not count the photos on this campaign');
+  }
+  return count;
+}
+
+/**
  * Patch a campaign. `actor` is REQUIRED — the auth user id of whoever is
  * editing (or 'system' for an automated write): a rate change decides what
  * every FUTURE acceptance pays, and it must never happen without a trace
@@ -133,7 +156,15 @@ export class CampaignRateConflictError extends Error {
  */
 export async function updateAdvertisingCampaign(
   id: string,
-  patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean; kind?: 'yard_sign' | 'door_hanger' },
+  patch: {
+    name?: string;
+    notes?: string | null;
+    rateCents?: number;
+    /** REQUIRED alongside rateCents: the rate the caller was looking at. */
+    expectedRateCents?: number;
+    active?: boolean;
+    kind?: 'yard_sign' | 'door_hanger';
+  },
   actor: string,
 ): Promise<AdvertisingCampaign | null> {
   const db = getSupabaseServiceClient();
@@ -148,6 +179,16 @@ export async function updateAdvertisingCampaign(
   if (patch.notes !== undefined) payload.notes = patch.notes?.trim() || null;
   if (patch.rateCents !== undefined) {
     assertValidRateCents(patch.rateCents);
+    // A rate change has to say what rate it believes it is replacing. Without
+    // it the compare-and-swap below reads the prior rate from the server
+    // moments earlier and swaps against that, which always matches itself, so
+    // a browser showing a stale rate silently overwrites a newer one. The
+    // pre-merge technical lens reverted 300 back to 250 through a pure rename
+    // that way (PR #1185).
+    if (patch.expectedRateCents === undefined) {
+      throw new Error('updateAdvertisingCampaign: a rate change must pass expectedRateCents');
+    }
+    assertValidRateCents(patch.expectedRateCents);
     payload.rate_cents = patch.rateCents;
   }
   if (patch.active !== undefined) payload.active = patch.active;
@@ -165,13 +206,22 @@ export async function updateAdvertisingCampaign(
   const changingName = payload.name !== undefined;
   const changingNotes = payload.notes !== undefined;
   const changingKind = payload.kind !== undefined;
-  const changingText = changingName || changingNotes || changingKind;
+  const changingActive = payload.active !== undefined;
+  const changingText = changingName || changingNotes || changingKind || changingActive;
   let prior: AdvertisingCampaign | null = null;
   if (changingRate || changingText) prior = await getAdvertisingCampaign(id);
   if (changingRate && !prior) {
     throw new Error(`updateAdvertisingCampaign: no campaign found for id ${id.trim()}`);
   }
   const priorRateCents: number | null = changingRate ? (prior as AdvertisingCampaign).rateCents : null;
+
+  // Refuse BEFORE the write when the stored rate is not the one the caller
+  // was looking at. The swap below still guards the gap between this read and
+  // the write; this guards the far bigger gap between the caller loading the
+  // screen and pressing save.
+  if (changingRate && priorRateCents !== patch.expectedRateCents) {
+    throw new CampaignRateConflictError();
+  }
 
   let query = db.from('advertising_campaigns').update(payload).eq('id', id.trim());
   if (changingRate) query = query.eq('rate_cents', priorRateCents);
@@ -205,6 +255,12 @@ export async function updateAdvertisingCampaign(
     if (changingKind && prior.kind !== updated.kind) {
       detail.priorKind = prior.kind;
       detail.newKind = updated.kind;
+    }
+    // Closing a campaign decides whether the crew can see it or add photos at
+    // all, and it left no trace until the admin lens said so (PR #1185).
+    if (changingActive && prior.active !== updated.active) {
+      detail.priorActive = prior.active;
+      detail.newActive = updated.active;
     }
     if (Object.keys(detail).length > 1) {
       await logAdvertisingActivity({ actor, action: 'campaign_edited', detail });
@@ -256,16 +312,7 @@ export async function deleteAdvertisingCampaign(id: string, actor: string): Prom
   const prior = await getAdvertisingCampaign(campaignId);
   if (!prior) throw new Error(`deleteAdvertisingCampaign: no campaign found for id ${campaignId}`);
 
-  const { count, error: countError } = await db
-    .from('advertising_placements')
-    .select('id', { count: 'exact', head: true })
-    .eq('campaign_id', campaignId);
-  if (countError) throw new Error(`deleteAdvertisingCampaign: ${countError.message}`);
-  // A null count means the question was not answered, which is not the same
-  // as the answer being zero.
-  if (count === null || count === undefined) {
-    throw new Error('deleteAdvertisingCampaign: could not count the photos on this campaign');
-  }
+  const count = await countCampaignPlacements(campaignId);
   if (count > 0) throw new CampaignHasPhotosError(count);
 
   // Throws if the trail cannot be written, and the campaign then stays.
@@ -283,5 +330,15 @@ export async function deleteAdvertisingCampaign(id: string, actor: string): Prom
   });
 
   const { error } = await db.from('advertising_campaigns').delete().eq('id', campaignId);
-  if (error) throw new Error(`deleteAdvertisingCampaign: ${error.message}`);
+  if (error) {
+    // The record of the deletion is already written and the campaign is still
+    // here, so the trail currently says something that is not true. Say so in
+    // the trail rather than leaving it to be read as a real deletion.
+    await logAdvertisingActivity({
+      actor,
+      action: 'campaign_delete_failed',
+      detail: { campaignId: prior.id, name: prior.name, reason: error.message },
+    });
+    throw new Error(`deleteAdvertisingCampaign: ${error.message}`);
+  }
 }
