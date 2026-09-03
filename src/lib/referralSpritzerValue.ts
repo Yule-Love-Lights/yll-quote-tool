@@ -22,14 +22,18 @@ import { BUSINESS_RULES } from './pricing/pricingEngine';
  *  the other, never both (Naldo, 2026-08-28).
  *
  *  Deliberately NOT the spritzers' retail value. Two 16" spritzers price at
- *  $170 through spritzerRetailValueUsd below; this is $150. The two numbers
+ *  $170 through spritzerRetailValueUsd below; this is $125. The two numbers
  *  are independent on purpose, so do not "fix" one to match the other.
+ *
+ *  It equals REFERRAL_CREDIT_USD (the referrer's credit) as of 2026-09-03,
+ *  Naldo: "125 per person". They are still two separate decisions that
+ *  happen to agree, not one number, so leave them as two constants.
  *
  *  It lives HERE rather than in referrals.ts because three of the four
  *  components that state the friend's reward are client components, and
  *  referrals.ts pulls in Supabase, node:crypto and next/server. Same reason
  *  this module exists at all (see the header above). */
-export const REFERRAL_FRIEND_ALT_CREDIT_USD = 150;
+export const REFERRAL_FRIEND_ALT_CREDIT_USD = 125;
 
 /** `count` free spritzers at `sizeInches`, priced at the quote builder's own
  *  rate for that size. Returns 0 for a size with no rate on file (fail-open:
