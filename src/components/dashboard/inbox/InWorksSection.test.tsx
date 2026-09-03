@@ -578,6 +578,62 @@ describe('replyOutcomeMessage (fix round 2 — worded differently per outcome)',
   });
 });
 
+// ---------------------------------------------------------------------------
+// The forwarded-lead affordance in "Needs a look" (2026-09-02).
+//
+// #268's fix round left this documented as a follow-up: this section could only
+// say "Reply in Gmail" because IN_WORKS_SELECT never selected `subject`, which
+// parseLeadForwardDisplay needs alongside `preview`. It does now.
+//
+// It matters more than a label. An outbound touch can auto-clear a forwarded
+// lead INTO this section, so this is where staff meet the row after the system
+// moved it, and replying in Gmail reaches the platform's no-reply relay rather
+// than the customer.
+
+const LEAD_SUBJECT = 'New Lead from GML Media! - Jamie Test';
+const LEAD_PREVIEW =
+  'Here ya go Naldoven: Jamie Test +15551234567 Email: jamie.test@example.com Street Address: 42 Fake Lane City: Faketown Areas to light up: Roof Line - (Standard Package)';
+
+describe('InWorksSection — a forwarded lead tells staff how to actually reach them', () => {
+  const leadRow: InWorksItem = {
+    ...baseItem,
+    id: 'lead-1',
+    source: 'gmail',
+    channel: 'email',
+    subject: LEAD_SUBJECT,
+    preview: LEAD_PREVIEW,
+    needsLookReason: 'They wrote last',
+  };
+
+  it('shows the number to call instead of "Reply in Gmail"', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[leadRow]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('call or text the customer directly');
+    expect(html).toContain('+15551234567');
+    expect(html).not.toContain('Reply in Gmail');
+  });
+
+  it('still says "Reply in Gmail" for an ordinary Gmail row', () => {
+    // The affordance is message-level: an ordinary customer email IS answerable
+    // in its own channel, and telling staff to phone instead would be wrong.
+    const ordinary: InWorksItem = {
+      ...baseItem,
+      id: 'ordinary-1',
+      source: 'gmail',
+      channel: 'email',
+      subject: 'Question about my quote',
+      preview: 'Hi, can you call me on +15551234567?',
+      needsLookReason: 'They wrote last',
+    };
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[ordinary]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Reply in Gmail');
+    expect(html).not.toContain('call or text the customer directly');
+  });
+});
+
 // ── followedButtonFor — the "I followed up" button, per bucket ─────────────
 //
 // Naldo 2026-09-02: the awaiting bucket (every row carrying an amber "Nd
