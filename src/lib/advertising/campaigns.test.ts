@@ -13,6 +13,12 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       rows: [] as AnyRow[],
       inserted: [] as AnyRow[],
       activity: [] as AnyRow[],
+      // How many photos point at a campaign, keyed by campaign id. The
+      // delete guard reads this.
+      placementCounts: new Map<string, number>(),
+      // When true, the audit insert fails the way a refused write really
+      // does: supabase-js returns { error } rather than throwing.
+      activityInsertFails: false,
       // When set, the NEXT single-row select returns this snapshot instead
       // of the live row, then clears — models a stale read racing a
       // concurrent writer.
@@ -31,8 +37,24 @@ function makeDb() {
       if (table === 'advertising_activity') {
         return {
           insert(payload: AnyRow) {
+            if (stateRef.current.activityInsertFails) {
+              return Promise.resolve({ data: null, error: { message: 'row-level security refused this insert' } });
+            }
             stateRef.current.activity.push(payload);
             return Promise.resolve({ data: null, error: null });
+          },
+        };
+      }
+      if (table === 'advertising_placements') {
+        return {
+          select(_cols?: string, _opts?: { count?: string; head?: boolean }) {
+            const b = {
+              eq(_col: string, val: unknown) {
+                const count = stateRef.current.placementCounts.get(String(val)) ?? 0;
+                return Promise.resolve({ data: null, error: null, count });
+              },
+            };
+            return b;
           },
         };
       }
@@ -78,6 +100,20 @@ function makeDb() {
             select: () => ({ maybeSingle: () => Promise.resolve({ data: row, error: null }) }),
           };
         },
+        delete() {
+          const filters: Array<(r: AnyRow) => boolean> = [];
+          const db = {
+            eq(col: string, val: unknown) {
+              filters.push((r) => r[col] === val);
+              return db;
+            },
+            then(onOk: (v: { error: null }) => unknown) {
+              stateRef.current.rows = stateRef.current.rows.filter((r) => !filters.every((f) => f(r)));
+              return Promise.resolve({ error: null }).then(onOk);
+            },
+          };
+          return db;
+        },
         update(payload: AnyRow) {
           const filters: Array<(r: AnyRow) => boolean> = [];
           const ub = {
@@ -108,6 +144,8 @@ beforeEach(() => {
   stateRef.current.inserted = [];
   stateRef.current.activity = [];
   stateRef.current.staleReadOnce = null;
+  stateRef.current.placementCounts = new Map();
+  stateRef.current.activityInsertFails = false;
   dbRef.current = makeDb();
 });
 
@@ -281,5 +319,83 @@ describe('updateAdvertisingCampaign — an edit row only claims the fields it wa
     expect(detail.newNotes).toBe('east side routes');
     expect('priorName' in detail).toBe(false);
     expect('newName' in detail).toBe(false);
+  });
+});
+
+// Deleting a campaign, and the two things that make it safe: it is refused
+// while any photo points at it, and the record of the deletion is written
+// BEFORE the row goes, never after (the void-then-record ordering that cost
+// a payroll row in an earlier session).
+describe('deleteAdvertisingCampaign', () => {
+  it('refuses while any photo points at the campaign, and deletes nothing', async () => {
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign, CampaignHasPhotosError } =
+      await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.placementCounts.set(campaign.id, 3);
+
+    await expect(deleteAdvertisingCampaign(campaign.id, 'admin-user-1')).rejects.toThrow(
+      CampaignHasPhotosError,
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('deletes a campaign with no photos and records who did it', async () => {
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Typo', rateCents: 300 });
+    stateRef.current.activity = [];
+
+    await deleteAdvertisingCampaign(campaign.id, 'admin-user-1');
+
+    expect(stateRef.current.rows).toHaveLength(0);
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_deleted');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('admin-user-1');
+    const detail = audit[0].detail as { name: string; rateCents: number };
+    expect(detail.name).toBe('Typo');
+    expect(detail.rateCents).toBe(300);
+  });
+
+  it('refuses to delete when the record of the deletion cannot be written', async () => {
+    // The audit row is the only thing that will survive the campaign. If it
+    // cannot be written the campaign stays, because a row that still exists
+    // is the recoverable half of that pair.
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Typo' });
+    stateRef.current.activityInsertFails = true;
+
+    await expect(deleteAdvertisingCampaign(campaign.id, 'admin-user-1')).rejects.toThrow();
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('refuses a campaign that does not exist rather than reporting success', async () => {
+    const { deleteAdvertisingCampaign } = await import('./campaigns');
+    await expect(deleteAdvertisingCampaign('nope', 'admin-user-1')).rejects.toThrow(/no campaign/i);
+  });
+});
+
+describe('updateAdvertisingCampaign — the campaign type', () => {
+  it('changes the type and records the move', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', kind: 'yard_sign' });
+    stateRef.current.activity = [];
+
+    const updated = await updateAdvertisingCampaign(campaign.id, { kind: 'door_hanger' }, 'admin-user-1');
+
+    expect(updated?.kind).toBe('door_hanger');
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    const detail = audit[0].detail as { priorKind?: string; newKind?: string };
+    expect(detail.priorKind).toBe('yard_sign');
+    expect(detail.newKind).toBe('door_hanger');
+  });
+
+  it('re-saving the same type records nothing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', kind: 'yard_sign' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { kind: 'yard_sign' }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
   });
 });

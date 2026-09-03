@@ -1,5 +1,5 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
-import { logAdvertisingActivity } from '@/lib/advertising/activity';
+import { logAdvertisingActivity, logAdvertisingActivityOrThrow } from '@/lib/advertising/activity';
 
 // Campaign rate config is MONEY: rate_cents is the CURRENT
 // per-accepted-PHOTO rate (default 250 = $2.50; per-photo basis is Naldo's
@@ -133,7 +133,7 @@ export class CampaignRateConflictError extends Error {
  */
 export async function updateAdvertisingCampaign(
   id: string,
-  patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean },
+  patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean; kind?: 'yard_sign' | 'door_hanger' },
   actor: string,
 ): Promise<AdvertisingCampaign | null> {
   const db = getSupabaseServiceClient();
@@ -151,6 +151,10 @@ export async function updateAdvertisingCampaign(
     payload.rate_cents = patch.rateCents;
   }
   if (patch.active !== undefined) payload.active = patch.active;
+  // The type decides what every FUTURE placement is stamped as. Rows already
+  // taken keep the type they were taken under, the same way they keep their
+  // rate.
+  if (patch.kind !== undefined) payload.kind = patch.kind;
 
   // Read the prior row BEFORE the write, so the audit rows can say what each
   // field moved FROM — and CAS on the rate below, so what that one says is
@@ -160,7 +164,8 @@ export async function updateAdvertisingCampaign(
   const changingRate = payload.rate_cents !== undefined;
   const changingName = payload.name !== undefined;
   const changingNotes = payload.notes !== undefined;
-  const changingText = changingName || changingNotes;
+  const changingKind = payload.kind !== undefined;
+  const changingText = changingName || changingNotes || changingKind;
   let prior: AdvertisingCampaign | null = null;
   if (changingRate || changingText) prior = await getAdvertisingCampaign(id);
   if (changingRate && !prior) {
@@ -197,6 +202,10 @@ export async function updateAdvertisingCampaign(
       detail.priorNotes = prior.notes;
       detail.newNotes = updated.notes;
     }
+    if (changingKind && prior.kind !== updated.kind) {
+      detail.priorKind = prior.kind;
+      detail.newKind = updated.kind;
+    }
     if (Object.keys(detail).length > 1) {
       await logAdvertisingActivity({ actor, action: 'campaign_edited', detail });
     }
@@ -216,4 +225,63 @@ export async function updateAdvertisingCampaign(
   }
 
   return updated;
+}
+
+/** Thrown when a delete is refused because photos point at the campaign.
+ * Those photos are somebody's paid work; the campaign is closed, not
+ * deleted. */
+export class CampaignHasPhotosError extends Error {
+  constructor(public readonly photoCount: number) {
+    super(
+      `This campaign has ${photoCount} photo${photoCount === 1 ? '' : 's'} on it. Close it instead: closing keeps every photo and every payment, and can be undone.`,
+    );
+    this.name = 'CampaignHasPhotosError';
+  }
+}
+
+/**
+ * Delete a campaign that nothing points at.
+ *
+ * Two guards, in this order, and the order is the point. The photo check
+ * comes first because a campaign holding paid work must never be deletable
+ * at all. Then the record of the deletion is written BEFORE the row goes: it
+ * is the only thing that will survive, and a best-effort append after the
+ * fact is how a destroyed row ends up with no trace of who destroyed it.
+ */
+export async function deleteAdvertisingCampaign(id: string, actor: string): Promise<void> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const campaignId = id.trim();
+
+  const prior = await getAdvertisingCampaign(campaignId);
+  if (!prior) throw new Error(`deleteAdvertisingCampaign: no campaign found for id ${campaignId}`);
+
+  const { count, error: countError } = await db
+    .from('advertising_placements')
+    .select('id', { count: 'exact', head: true })
+    .eq('campaign_id', campaignId);
+  if (countError) throw new Error(`deleteAdvertisingCampaign: ${countError.message}`);
+  // A null count means the question was not answered, which is not the same
+  // as the answer being zero.
+  if (count === null || count === undefined) {
+    throw new Error('deleteAdvertisingCampaign: could not count the photos on this campaign');
+  }
+  if (count > 0) throw new CampaignHasPhotosError(count);
+
+  // Throws if the trail cannot be written, and the campaign then stays.
+  await logAdvertisingActivityOrThrow({
+    actor,
+    action: 'campaign_deleted',
+    detail: {
+      campaignId: prior.id,
+      name: prior.name,
+      kind: prior.kind,
+      rateCents: prior.rateCents,
+      notes: prior.notes,
+      createdAt: prior.createdAt,
+    },
+  });
+
+  const { error } = await db.from('advertising_campaigns').delete().eq('id', campaignId);
+  if (error) throw new Error(`deleteAdvertisingCampaign: ${error.message}`);
 }

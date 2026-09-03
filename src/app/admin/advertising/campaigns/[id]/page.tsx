@@ -17,6 +17,12 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
   const campaign = await getAdvertisingCampaign(id);
   if (!campaign) notFound();
 
+  // The settings sheet needs both counts: photos decide whether deleting is
+  // even offered, and photos still awaiting review decide what a rate change
+  // is about to re-price.
+  const { campaignActivitySummary } = await import('@/lib/advertising/placements');
+  const activity = (await campaignActivitySummary([campaign.id])).get(campaign.id);
+
   return (
     <CampaignDetailScreen
       mode="admin"
@@ -26,6 +32,9 @@ export default async function AdminCampaignDetailPage({ params }: { params: Prom
         kind: campaign.kind,
         notes: campaign.notes,
         rateCents: campaign.rateCents,
+        active: campaign.active,
+        photoCount: activity?.photoCount ?? 0,
+        pendingCount: activity?.pendingCount ?? 0,
       }}
       placementsUrl={`/api/admin/advertising/campaigns/${campaign.id}/placements`}
       backHref="/admin/advertising"
