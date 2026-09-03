@@ -222,7 +222,18 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // That "exactly one thing" is not a promise, it is asserted: see
   // src/lib/auth/qrNamespace.test.ts, which fails the moment a second route
   // appears under src/app/qr and inherits this public prefix by accident.
-  if (path === '/qr' || path.startsWith('/qr/')) return true;
+  // CASE-INSENSITIVE, and that is not a nicety. Next's router matches routes
+  // case-insensitively by default, and the link-host redirect in next.config.ts
+  // is compiled by Next with `sensitive: false`, so BOTH of those treat
+  // /QR/<slug> as this route and decline to touch it. A case-sensitive compare
+  // here made this gate the only layer that disagreed, and the gap landed on the
+  // worst possible page: /QR/hbJhlsQLHpFv served a homeowner the operator LOGIN
+  // form, measured live, which is exactly the failure PR #1191 shipped to remove
+  // for every other path on that host. Found by the close review's customer lens
+  // after four lenses on #1191 had passed it. Our two printed codes are lowercase
+  // and were never affected; a retyped URL or a phone keyboard's auto-capital is.
+  const qrPath = path.toLowerCase();
+  if (qrPath === '/qr' || qrPath.startsWith('/qr/')) return true;
 
   // The home-screen install page (naldo/mobile-app-branding). It lists the two
   // installable apps — the quote tool and the advertising capture — with a QR
