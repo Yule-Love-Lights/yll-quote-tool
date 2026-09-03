@@ -33,13 +33,18 @@ function day(over: Partial<PersonShift> = {}): PersonDay[] {
   return [{ day: '2026-09-01', paidSeconds: 8 * 3600, shifts: [shift(over)] }];
 }
 
-function render(controls: 'admin' | 'none', over: Partial<PersonShift> = {}) {
+function render(
+  controls: 'admin' | 'none',
+  over: Partial<PersonShift> = {},
+  showPaidMarks = false,
+) {
   return renderToStaticMarkup(
     <HoursDayList
       days={day(over)}
       crewName="Khaye"
       controls={controls}
       evidenceFor={() => null}
+      showPaidMarks={showPaidMarks}
     />,
   );
 }
@@ -128,5 +133,28 @@ describe('HoursDayList — what each reader sees', () => {
     // there — but if one ever arrived, it must still draw nothing.
     const staff = render('none', { settlementId: 'settlement-1' });
     expect(staff).not.toContain('undo the payment below');
+  });
+});
+
+describe('HoursDayList — the Paid mark', () => {
+  it('marks a settled shift for a staff reader who asked for the marks', () => {
+    expect(render('none', { settlementId: 'settlement-1' }, true)).toContain('>Paid<');
+  });
+
+  it('marks nothing when the caller did NOT ask — the default', () => {
+    // The default is off so a caller that has not thought about whether its
+    // settlement data is trustworthy cannot render a payment claim by
+    // accident. This is the failed-read path on the staff page.
+    expect(render('none', { settlementId: 'settlement-1' })).not.toContain('>Paid<');
+  });
+
+  it('never marks an unsettled shift, however loudly the caller asks', () => {
+    expect(render('none', { settlementId: null }, true)).not.toContain('>Paid<');
+  });
+
+  it('leaves the admin row to its own lock copy rather than adding a mark', () => {
+    const admin = render('admin', { settlementId: 'settlement-1' }, true);
+    expect(admin).not.toContain('>Paid<');
+    expect(admin).toContain('undo the payment below');
   });
 });

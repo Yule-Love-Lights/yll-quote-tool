@@ -1,20 +1,18 @@
 // Direct tests for `loadPersonTime` — the loader itself, not the pure helpers
 // that `personHours.test.ts` already covers.
 //
-// WHY THIS FILE EXISTS. Phase 4 gave `loadPersonTime` a `withSettlements`
-// option so the staff self-view can skip the settlement read entirely. The
-// pre-merge technical lens pointed out that the whole branch had ZERO direct
-// coverage: `personHours.test.ts` never calls the loader, and the page test
-// mocks it out. Today's blast radius is nil (the only consumer of a wrong
-// `settlementId` is the admin-only controls block), but a future edit to this
-// branch would have shipped silently, which is exactly the class this repo
-// keeps getting bitten by. The three properties pinned here are:
+// WHY THIS FILE EXISTS. The pre-merge technical lens pointed out that the
+// loader itself had ZERO direct coverage: `personHours.test.ts` never calls
+// it, and the page tests mock it out, so the settlement read and its failure
+// path shipped untested. Both pages now depend on that read to say who has
+// been paid, so a wrong answer here is a staff member told they are owed for
+// hours they were already paid for. The properties pinned here are:
 //
-//   1. by default the settlement read HAPPENS and its answer reaches the rows;
-//   2. with `withSettlements: false` it does not happen AT ALL, and no row
-//      claims to be paid or unpaid;
-//   3. a FAILED settlement read is reported as unreadable, which is what makes
-//      the admin pay panel hide rather than offer to pay a shift twice.
+//   1. the settlement read happens, and its answer reaches the rows;
+//   2. a FAILED read is reported as unreadable and leaves EVERY row unstamped
+//      — which is what makes the admin pay panel hide and the staff self-view
+//      drop its markers, rather than either page claiming "unpaid";
+//   3. the hours themselves survive a settlement failure untouched.
 //
 // The fake database is a thenable query builder rather than a full fake DB:
 // every read here is one `select ... range()` page, and modelling more would
@@ -101,20 +99,13 @@ describe('loadPersonTime — the settlement read', () => {
     expect(time.days[0].shifts[0].settlementId).toBe('settlement-1');
   });
 
-  it('does not read settlements at all when the caller opts out', async () => {
-    const time = await loadPersonTime('crew-1', 'all', NOW, { withSettlements: false });
+  it('leaves a shift no settlement covers unstamped', async () => {
+    settledShiftIdsMock.mockResolvedValue(new Map());
 
-    // Not "read and ignored" — never called. This is what keeps the staff
-    // self-view from touching the payment tables at all.
-    expect(settledShiftIdsMock).not.toHaveBeenCalled();
-    // False means "do not draw a paid/unpaid claim from this", which is the
-    // safe direction: not-looked-up and looked-up-and-broke are the same
-    // answer to "is this shift paid".
-    expect(time.settlementsReadable).toBe(false);
+    const time = await loadPersonTime('crew-1', 'all', NOW);
+
+    expect(time.settlementsReadable).toBe(true);
     expect(time.days[0].shifts[0].settlementId).toBeNull();
-    // And the hours themselves are untouched by the opt-out.
-    expect(time.totalSeconds).toBe(8 * 3600);
-    expect(time.shiftCount).toBe(1);
     expect(time.errors).toEqual([]);
   });
 
@@ -126,17 +117,22 @@ describe('loadPersonTime — the settlement read', () => {
     expect(time.settlementsReadable).toBe(false);
     expect(time.days[0].shifts[0].settlementId).toBeNull();
     expect(time.errors.join(' ')).toContain('shift_settlement_lines: boom');
-    expect(time.errors.join(' ')).toContain('payments could not be read');
+    // The message has to be true on BOTH pages that render it: the admin
+    // record, where a payment could otherwise be recorded, and the staff
+    // self-view, where nothing ever could.
+    expect(time.errors.join(' ')).toContain('nothing here says paid or unpaid');
     // The hours survive a settlement failure: only the pay panel hides.
     expect(time.totalSeconds).toBe(8 * 3600);
   });
 
-  it('opts out cleanly for a person with no shifts at all', async () => {
+  it('reads a person with no shifts at all without asking about settlements', async () => {
     serviceClientMock.mockReturnValue(fakeDb([]));
 
-    const time = await loadPersonTime('crew-1', 'all', NOW, { withSettlements: false });
+    const time = await loadPersonTime('crew-1', 'all', NOW);
 
-    expect(settledShiftIdsMock).not.toHaveBeenCalled();
+    // settledShiftIds short-circuits on an empty id list, so this is the one
+    // case where no read happens and the answer is still trustworthy.
+    expect(settledShiftIdsMock).toHaveBeenCalledWith([]);
     expect(time.person?.displayName).toBe('Khaye');
     expect(time.days).toEqual([]);
     expect(time.totalSeconds).toBe(0);

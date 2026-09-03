@@ -82,13 +82,11 @@ beforeEach(() => {
 });
 
 describe('/my-hours — whose hours', () => {
-  it('reads the hours of the SESSION caller, and never reads pay', async () => {
+  it('reads the hours of the SESSION caller', async () => {
     const html = renderToStaticMarkup(await MyHoursPage({ searchParams: Promise.resolve({}) }));
     expect(html).toContain('My hours');
     expect(html).toContain('Khaye');
-    expect(loadPersonTimeMock).toHaveBeenCalledWith('crew-me', '30', undefined, {
-      withSettlements: false,
-    });
+    expect(loadPersonTimeMock).toHaveBeenCalledWith('crew-me', '30');
   });
 
   it('ignores an id in the query string — there is no way to ask for anyone else', async () => {
@@ -164,7 +162,8 @@ describe('/my-hours — no controls and no money', () => {
     // or not the button was there.
     expect(html).not.toContain('>Edit</button>');
     expect(html).not.toContain('>Remove</button>');
-    expect(html).not.toContain('Pay');
+    // Hours only: the page reads the settlement STATE but never an amount,
+    // so no currency may appear anywhere on it.
     expect(html).not.toContain('$');
     // And it says where a wrong time actually gets fixed, so a screen with no
     // controls does not just read as broken.
@@ -193,5 +192,92 @@ describe('/my-hours — no controls and no money', () => {
     // The admin page's wording, which is about a third person, must not reach
     // the page the person themselves reads.
     expect(html).not.toContain('ask them what time they stopped');
+  });
+
+  it('stops the SUMMARY nagging once every swept shift has been corrected', async () => {
+    // The row badge and the summary line say the same thing in two places, so
+    // fixing one and not the other leaves the page contradicting itself: a
+    // corrected shift reading "since corrected" under a banner still telling
+    // the person to report it. The probe that caught this gap: forcing the
+    // call to action back on failed NOTHING until this test existed.
+    loadPersonTimeMock.mockResolvedValue(
+      personTime({
+        days: [
+          {
+            day: '2026-09-01',
+            paidSeconds: 8 * 3600,
+            shifts: [{ ...A_SHIFT, closeSource: 'system', manualBy: 'Naldo (naldo@x.com)' }],
+          },
+        ],
+        totalSeconds: 8 * 3600,
+        shiftCount: 1,
+        autoClosed: { count: 1, seconds: 8 * 3600 },
+      }),
+    );
+    const html = renderToStaticMarkup(await MyHoursPage({ searchParams: Promise.resolve({}) }));
+
+    // The FACT stays — those hours were entered, not clocked.
+    expect(html).toContain('closed by the midnight sweep');
+    // The instruction goes.
+    expect(html).not.toContain('tell the office what time you really stopped');
+  });
+});
+
+describe('/my-hours — what has been paid for', () => {
+  const paid = { ...A_SHIFT, id: 'shift-paid', settlementId: 'settlement-1' };
+  const unpaid = { ...A_SHIFT, id: 'shift-unpaid', paidSeconds: 5 * 3600 };
+
+  function withBoth(over: Record<string, unknown> = {}) {
+    return personTime({
+      settlementsReadable: true,
+      days: [{ day: '2026-09-01', paidSeconds: 13 * 3600, shifts: [paid, unpaid] }],
+      totalSeconds: 13 * 3600,
+      shiftCount: 2,
+      ...over,
+    });
+  }
+
+  it('splits the hours into paid and not yet paid, in HOURS and never a figure', async () => {
+    loadPersonTimeMock.mockResolvedValue(withBoth());
+    const html = renderToStaticMarkup(await MyHoursPage({ searchParams: Promise.resolve({}) }));
+
+    expect(html).toContain('5h 00m');
+    expect(html).toContain('not paid yet');
+    expect(html).toContain('8h 00m');
+    expect(html).toContain('already paid');
+    expect(html).toContain('Paid');
+    // The whole point of the constraint: overtime has no agreed formula, so
+    // an amount here would be a number nobody has agreed is owed.
+    expect(html).not.toContain('$');
+  });
+
+  it('says NOTHING about payment when the settlement read failed', async () => {
+    loadPersonTimeMock.mockResolvedValue(
+      withBoth({ settlementsReadable: false, errors: ['settlements: boom'] }),
+    );
+    const html = renderToStaticMarkup(await MyHoursPage({ searchParams: Promise.resolve({}) }));
+
+    // The dangerous fallback: treating an unreadable answer as "unpaid" tells
+    // someone they are owed for hours they have already been paid for.
+    expect(html).not.toContain('not paid yet');
+    expect(html).not.toContain('already paid');
+    expect(html).not.toContain('>Paid<');
+    expect(html).toContain('could not be read just now');
+  });
+
+  it('counts a shift still running in neither total', async () => {
+    const open = { ...A_SHIFT, id: 'shift-open', clockOutAt: null, paidSeconds: 2 * 3600 };
+    loadPersonTimeMock.mockResolvedValue(
+      withBoth({
+        days: [{ day: '2026-09-01', paidSeconds: 15 * 3600, shifts: [paid, unpaid, open] }],
+        openShift: { clockInAt: '2026-09-01T13:00:00.000Z', source: 'office' },
+      }),
+    );
+    const html = renderToStaticMarkup(await MyHoursPage({ searchParams: Promise.resolve({}) }));
+
+    expect(html).toContain('counted in neither');
+    // 5h unpaid, not 7h: the open shift is not waiting to be paid, it is
+    // still being worked.
+    expect(html).toContain('5h 00m');
   });
 });

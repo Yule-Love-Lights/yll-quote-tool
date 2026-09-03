@@ -18,11 +18,19 @@
 // null until an admin links it) must never fall through to "no shifts", which
 // is what a person who worked all week would read as their hours being lost.
 //
-// NO CONTROLS AND NO MONEY (plan phase 4, and section 4.4). The edit, remove
-// and pay controls are ABSENT from the markup, not hidden — `controls="none"`
-// renders none of it — and the page never reads settlements at all, so no pay
-// figure exists on it to leak. Correcting a shift stays an admin action on
-// /admin/time-tracking/[crewMemberId], and the copy says so.
+// NO CONTROLS AND NO FIGURES. The edit, remove and pay controls are ABSENT
+// from the markup, not hidden — `controls="none"` renders none of it — and
+// correcting a shift stays an admin action on
+// /admin/time-tracking/[crewMemberId], which the copy says.
+//
+// It DOES show which hours have been paid for and which have not (Jason,
+// 2026-09-03: "let the staff see which hours are already approved and
+// unapproved so they have an idea of what they're owed"). That is the
+// settlement STATE, in HOURS, and never a sum of money: the tool records
+// payments rather than computing them, overtime has no agreed formula
+// (ledger row 285), and one real week in this data is 50h 55m — so an
+// amount on this screen would be a number nobody has agreed is owed. No rate
+// and no cents value is loaded by this page at all.
 //
 // NO CLOCK IN/OUT BUTTONS HERE, deliberately: the plan asked for them, and
 // they already exist on every operator page. Naldo moved ClockCard into the
@@ -118,13 +126,10 @@ export default async function MyHoursPage({
   const rawRange = Array.isArray(query.range) ? query.range[0] : query.range;
   const range: RangeKey = isRangeKey(rawRange) ? rawRange : DEFAULT_RANGE;
 
-  // withSettlements: false — this page shows no money and offers no edit, so
-  // reading which shifts are paid would buy nothing and its failure message
-  // ("nothing can be paid or corrected from this page") would be false copy
-  // on a page where nothing ever could be.
-  const time = await loadPersonTime(auth.caller.crewMemberId, range, undefined, {
-    withSettlements: false,
-  });
+  // This DOES read which shifts are already paid (Jason, 2026-09-03), so a
+  // person can see what is still outstanding. It reads the settlement STATE
+  // only — no amount is loaded and none is shown; see MyHoursSection.
+  const time = await loadPersonTime(auth.caller.crewMemberId, range);
 
   // The identity resolved but the record read failed: say that, rather than
   // rendering an empty week under the person's own name.
@@ -166,6 +171,7 @@ export default async function MyHoursPage({
           openShift={time.openShift}
           errors={time.errors}
           basePath="/my-hours"
+          settlementsReadable={time.settlementsReadable}
         />
       </main>
     </OperatorShell>

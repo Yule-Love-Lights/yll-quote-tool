@@ -105,10 +105,11 @@ export type PersonTime = {
    * totals, flagged, same rule as the summary table. */
   autoClosed: { count: number; seconds: number };
   audit: ShiftAuditEntry[];
-  /** False when the settlement read FAILED — or was never asked for
-   * (`withSettlements: false`). Either way the pay panel must hide rather
-   * than show shifts as payable that may already be paid; "not looked up"
-   * and "looked up and broke" are the same answer to that question. */
+  /** False when the settlement read FAILED. BOTH pages that read this must
+   * then say nothing about payment at all rather than fall back to "unpaid":
+   * the admin pay panel hides, and the staff self-view drops its paid
+   * markers and its unpaid total. Telling someone they are owed for hours
+   * they have already been paid for is the wrong way to be wrong. */
   settlementsReadable: boolean;
   /** True when the audit list could be scoped only by this person's KNOWN
    * shift ids — see readAudit. Nothing is hidden that we could have found;
@@ -227,6 +228,50 @@ export function groupPersonDays(
 }
 
 /** The oldest ET day a range includes, or null for all time. PURE. */
+/**
+ * PURE. Splits the hours on screen into the ones a payment has been recorded
+ * against and the ones that are still waiting — Jason's ask 2026-09-03, so a
+ * staff member reading their own hours can see what is still outstanding.
+ *
+ * HOURS, NEVER A FIGURE. This deliberately returns seconds and counts and no
+ * money at all. The tool RECORDS payments and does not calculate them (S59:
+ * overtime has no agreed formula, ledger row 285, and one real week in this
+ * data is 50h 55m), so multiplying unpaid hours by a rate would put a number
+ * on screen that nobody has agreed is owed. "You have 12h nobody has paid you
+ * for yet" is true; "you are owed $X" is not something this data supports.
+ *
+ * An OPEN shift is in neither bucket. It cannot have been paid, and calling
+ * time that is still running "unpaid" would invite someone to expect it in
+ * this week's payment. It is reported separately so the page can say so.
+ *
+ * The caller must not call this at all when `settlementsReadable` is false —
+ * every shift would land in `unpaid` and the page would tell someone they are
+ * owed for hours they have already been paid for.
+ */
+export function splitPaidHours(days: ReadonlyArray<PersonDay>): {
+  paidSeconds: number;
+  paidCount: number;
+  unpaidSeconds: number;
+  unpaidCount: number;
+  openSeconds: number;
+} {
+  const out = { paidSeconds: 0, paidCount: 0, unpaidSeconds: 0, unpaidCount: 0, openSeconds: 0 };
+  for (const day of days) {
+    for (const shift of day.shifts) {
+      if (shift.clockOutAt === null) {
+        out.openSeconds += shift.paidSeconds;
+      } else if (shift.settlementId) {
+        out.paidSeconds += shift.paidSeconds;
+        out.paidCount += 1;
+      } else {
+        out.unpaidSeconds += shift.paidSeconds;
+        out.unpaidCount += 1;
+      }
+    }
+  }
+  return out;
+}
+
 export function rangeFromDay(range: RangeKey, nowIso?: string): string | null {
   if (range === 'all') return null;
   const today = etDayKey(new Date(resolveNowMs(nowIso)));
@@ -435,22 +480,7 @@ export async function loadPersonTime(
   crewMemberId: string,
   range: RangeKey,
   nowIso?: string,
-  options?: {
-    /**
-     * Whether to read which shifts are already paid. TRUE for the admin
-     * record, which shows the pay panel and locks a paid row.
-     *
-     * The staff self-view (phase 4) passes FALSE: it shows no money and no
-     * edit control, so reading settlements would buy nothing and its failure
-     * message — "nothing can be paid or corrected from this page" — would be
-     * false copy on a page where nothing ever could be. With it false every
-     * shift comes back `settlementId: null`, which means "not looked up",
-     * NOT "not paid": never render a paid/unpaid claim from this data.
-     */
-    withSettlements?: boolean;
-  },
 ): Promise<PersonTime> {
-  const withSettlements = options?.withSettlements ?? true;
   const asOf = new Date(resolveNowMs(nowIso)).toISOString();
   const errors: string[] = [];
   const empty: PersonTime = {
@@ -519,17 +549,12 @@ export async function loadPersonTime(
     // paid": that would offer Edit and Remove on rows the server refuses, and
     // list an already-paid shift as payable a second time. Null means unknown,
     // and the page hides the pay panel on it.
-    // An empty map, not null, when the caller opted out: null means "the read
-    // FAILED", which hides the admin pay panel. A caller that never asked
-    // must not look like a caller whose read broke.
-    withSettlements
-      ? settledShiftIds(shiftIds).catch((e: unknown) => {
-          errors.push(
-            `${e instanceof Error ? e.message : 'settlement read failed'} — payments could not be read, so nothing can be paid or corrected from this page until that works`,
-          );
-          return null;
-        })
-      : Promise.resolve(new Map<string, string>()),
+    settledShiftIds(shiftIds).catch((e: unknown) => {
+      errors.push(
+        `${e instanceof Error ? e.message : 'settlement read failed'} — which hours have already been paid could not be read, so nothing here says paid or unpaid`,
+      );
+      return null;
+    }),
   ]);
 
   const grouped = groupPersonDays(
@@ -557,7 +582,7 @@ export async function loadPersonTime(
     autoClosed: grouped.autoClosed,
     audit: audit.entries,
     auditPartial: audit.partial,
-    settlementsReadable: withSettlements && settled !== null,
+    settlementsReadable: settled !== null,
     asOf,
     errors,
   };

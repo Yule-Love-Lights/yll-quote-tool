@@ -81,6 +81,7 @@ function ShiftRow({
   crewName,
   evidenceHref,
   controls,
+  showPaidMarks,
 }: {
   shift: PersonShift;
   crewName: string;
@@ -99,6 +100,11 @@ function ShiftRow({
       to correct it from invites a confident guess typed into payroll (admin
       lens on PR #1178). */
   evidenceHref: string | null;
+  /** Draw the "Paid" mark on a settled shift. Only meaningful for
+   * `controls: 'none'` (the admin row says it inside its own controls block),
+   * and FALSE when the settlement read failed, so an unreadable answer never
+   * renders as "not paid". */
+  showPaidMarks: boolean;
 }) {
   const open = shift.clockOutAt === null;
   const autoClosed = shift.closeSource === 'system';
@@ -167,6 +173,14 @@ function ShiftRow({
               {sweepNote}
             </span>
           ))}
+        {/* A record, not a control: the staff page cannot undo a payment, and
+            the amount is never shown here (hours only — the office records
+            what was paid, which is not always hours times a rate). */}
+        {showPaidMarks && controls === 'none' && shift.settlementId && (
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+            Paid
+          </span>
+        )}
         {shift.manualBy && (
           <span className="text-xs text-gray-400">typed by {actorLabel(shift.manualBy, controls)}</span>
         )}
@@ -222,10 +236,16 @@ export function HoursDayList({
   crewName,
   controls,
   evidenceFor,
+  showPaidMarks = false,
 }: {
   days: PersonDay[];
   crewName: string;
   controls: 'admin' | 'none';
+  /** Draw a "Paid" mark on settled shifts. Defaults to FALSE: the admin row
+   * already states the lock inside its controls, and a caller that has not
+   * thought about whether its settlement data is trustworthy must not get a
+   * payment claim by accident. */
+  showPaidMarks?: boolean;
   /** Where to see what really happened that day, or null when nothing in the
    * app knows — or when the reader could not open it anyway. */
   evidenceFor: (day: string) => string | null;
@@ -248,6 +268,7 @@ export function HoursDayList({
                 crewName={crewName}
                 evidenceHref={evidenceFor(d.day)}
                 controls={controls}
+                showPaidMarks={showPaidMarks}
               />
             ))}
           </ul>

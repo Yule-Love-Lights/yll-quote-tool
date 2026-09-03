@@ -241,6 +241,22 @@ state; an unlinked login never falls through to an empty table. Controls and mon
 rather than hidden: `controls="none"` renders no edit/remove/pay markup at all, and the page
 passes `withSettlements: false` so no pay figure is read.
 
+**Scope grew once, deliberately (Jason, 2026-09-03):** *"yes let the staff see which hours are
+already approved and unapproved so they have an idea of what they're owed"*. The page now reads
+the settlement STATE and splits the range into hours already paid and hours not paid yet, with a
+`Paid` mark on the settled rows. It stays HOURS on both sides and shows no figure: the tool
+records payments rather than computing them, overtime is unruled (row 285), and one real week in
+this data is 50h 55m, so a dollar amount here would be a number nobody has agreed is owed. The
+word on screen is **paid**, not *approved* — a settlement records a payment that was made, and
+calling it an approval would describe something the record does not say.
+
+That reversed the earlier `withSettlements: false` decision and the option was DELETED rather
+than left with no caller: both pages want the read now, and the loader's failure message was
+reworded so it is true on both (an admin-voiced sentence about what "can be paid from this page"
+is false on the staff page). When that read fails, the self-view says nothing about payment at
+all rather than falling back to "unpaid" — telling someone they are owed for hours already paid
+is the wrong way to be wrong.
+
 **The clock buttons this phase asked for already existed** and were deliberately NOT added
 again: Naldo moved `ClockCard` into the header on every operator page on 2026-09-01, desktop and
 mobile, so this page carries the clock in its own nav bar. A second clock would be two controls
