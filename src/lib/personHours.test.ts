@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   attributeAuditRows,
+  splitPaidHours,
   groupPersonDays,
   isRangeKey,
   rangeFromDay,
@@ -458,5 +459,66 @@ describe('attributeAuditRows', () => {
       [],
     );
     expect(out.entries).toHaveLength(0);
+  });
+});
+
+describe('splitPaidHours', () => {
+  const row = (over: Partial<{ id: string; clockOutAt: string | null; settlementId: string | null; paidSeconds: number }>) => ({
+    id: 'x',
+    clockInAt: '2026-09-01T13:00:00.000Z',
+    clockOutAt: '2026-09-01T21:00:00.000Z' as string | null,
+    source: 'office',
+    closeSource: 'office',
+    manualBy: null,
+    paidSeconds: 8 * H,
+    breakSeconds: 0,
+    removable: false,
+    settlementId: null as string | null,
+    ...over,
+  });
+
+  it('separates settled hours from hours nobody has paid for yet', () => {
+    const split = splitPaidHours([
+      {
+        day: '2026-09-01',
+        paidSeconds: 13 * H,
+        shifts: [row({ id: 'a', settlementId: 's1' }), row({ id: 'b', paidSeconds: 5 * H })],
+      },
+    ]);
+    expect(split.paidSeconds).toBe(8 * H);
+    expect(split.paidCount).toBe(1);
+    expect(split.unpaidSeconds).toBe(5 * H);
+    expect(split.unpaidCount).toBe(1);
+    expect(split.openSeconds).toBe(0);
+  });
+
+  it('puts a shift that is still running in NEITHER bucket', () => {
+    // Calling time you are still working "unpaid" invites it to be expected
+    // in this week's payment; it cannot have been paid either.
+    const split = splitPaidHours([
+      { day: '2026-09-01', paidSeconds: 2 * H, shifts: [row({ clockOutAt: null, paidSeconds: 2 * H })] },
+    ]);
+    expect(split.openSeconds).toBe(2 * H);
+    expect(split.unpaidSeconds).toBe(0);
+    expect(split.paidSeconds).toBe(0);
+    expect(split.unpaidCount).toBe(0);
+  });
+
+  it('adds up across days, and returns zeroes for an empty range', () => {
+    const day = (id: string, settlementId: string | null) => ({
+      day: '2026-09-0' + id,
+      paidSeconds: 8 * H,
+      shifts: [row({ id, settlementId })],
+    });
+    const split = splitPaidHours([day('1', 's1'), day('2', null), day('3', null)]);
+    expect(split.paidSeconds).toBe(8 * H);
+    expect(split.unpaidSeconds).toBe(16 * H);
+    expect(splitPaidHours([])).toEqual({
+      paidSeconds: 0,
+      paidCount: 0,
+      unpaidSeconds: 0,
+      unpaidCount: 0,
+      openSeconds: 0,
+    });
   });
 });
