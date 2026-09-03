@@ -34,10 +34,8 @@ const REFUSAL_STATUS: Record<SettlementRefusedError['code'], number> = {
   'no-shifts': 400,
   'invalid-amount': 400,
   'invalid-method': 400,
-  // The amount is well formed and the world is fine; it is simply bigger
-  // than the unpaid hours it would have to land on, or there is no rate to
-  // convert it with. Both are the admin's to correct, so 400 not 409.
-  'over-payment': 400,
+  // The amount is well formed and the world is fine; there is simply no rate
+  // to convert it with. The admin's to correct, so 400 not 409.
   'no-rate': 400,
   'not-found': 404,
   // All conflicts with the state of the record: the request was well formed,

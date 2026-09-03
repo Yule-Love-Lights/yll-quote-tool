@@ -486,15 +486,32 @@ describe('recordShiftSettlement — the money buys hours, oldest first', () => {
     expect(out.lines.some((l) => l.shiftId === 'shift-theirs')).toBe(false);
   });
 
-  it('REFUSES an amount worth more than every unpaid hour, and names the maximum', async () => {
+  it('RECORDS an amount worth more than the hours, without marking off hours that do not exist', async () => {
+    // Overtime, a bonus, back-pay. A ceiling at straight-rate value made all
+    // three impossible to record, because once the hours were paid there was
+    // nothing left to attach money to (admin lens on PR #1190). Jason
+    // reversed his earlier "refuse it" call once that was clear.
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    // $63.01 against $63.00 of unpaid work.
-    await expect(recordShiftSettlement({ ...base, totalCents: 6301 })).rejects.toMatchObject({
-      code: 'over-payment',
+    // $100.00 against $63.00 of unpaid work at $9.00/h.
+    const out = await recordShiftSettlement({ ...base, totalCents: 10000 });
+
+    expect(out.totalCents).toBe(10000);
+    // Every unpaid hour is marked off, and NOT a second more.
+    expect(out.coveredSeconds).toBe(7 * H);
+    expect(out.lines).toHaveLength(2);
+    // The money and the hours are allowed to disagree, and here they do —
+    // which is the phase 3 property this design had accidentally removed.
+    expect(out.referenceCents).toBeLessThan(out.totalCents);
+  });
+
+  it('leaves nothing payable afterwards, so the extra cannot silently eat future hours', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await recordShiftSettlement({ ...base, totalCents: 10000 });
+    // The excess bought no future claim: the next payment starts from zero
+    // unpaid, not from a credit.
+    await expect(recordShiftSettlement({ ...base, totalCents: 100 })).rejects.toMatchObject({
+      code: 'no-shifts',
     });
-    await expect(recordShiftSettlement({ ...base, totalCents: 6301 })).rejects.toThrow(/\$63\.00/);
-    // Nothing recorded: the refusal happens before any write.
-    expect(stateRef.current.settlements).toHaveLength(0);
   });
 
   it('allows the exact maximum, so the last remainder of a week is payable', async () => {
@@ -590,12 +607,12 @@ describe('recordShiftSettlement — the money buys hours, oldest first', () => {
     const out = await recordShiftSettlement({ ...base, totalCents: 1 });
     expect(out.totalCents).toBe(1);
     expect(out.lines[0]!.paidSeconds).toBe(1);
-    // Two cents is still more than one second is worth.
+    // Two cents is worth more than one second, and that is allowed now — it
+    // just cannot mark off time that does not exist.
     stateRef.current.settlements = [];
     stateRef.current.lines = [];
-    await expect(recordShiftSettlement({ ...base, totalCents: 2 })).rejects.toMatchObject({
-      code: 'over-payment',
-    });
+    const over = await recordShiftSettlement({ ...base, totalCents: 2 });
+    expect(over.coveredSeconds).toBe(1);
   });
 
   it('says plainly when the unwind ITSELF fails, because an empty payment is then on the books', async () => {

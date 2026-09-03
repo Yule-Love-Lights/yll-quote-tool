@@ -121,10 +121,6 @@ export function ShiftPayPanel({
       setError(`${crewName} has no hourly rate set, so there is no way to work out which hours this covers.`);
       return;
     }
-    if (tooMuch) {
-      setError(`That is more than ${crewName} is owed. The most this can cover right now is ${dollars(maxCents)}.`);
-      return;
-    }
     if (!preview || preview.lines.length === 0) {
       setError('That amount covers no time at all.');
       return;
@@ -144,6 +140,16 @@ export function ShiftPayPanel({
         ? `${formatHours(rollover)} stays unpaid and carries over to the next payment.`
         : 'Nothing is left unpaid after this.',
     );
+    // Paying MORE than the hours come to at base rate is legitimate —
+    // overtime, a bonus, back-pay — and the tool has no standing to refuse
+    // it. It does have standing to make sure the admin meant it, because a
+    // mistyped amount looks exactly the same (Jason, 2026-09-03).
+    if (tooMuch) {
+      lines.push(
+        '',
+        `That is ${dollars(typedCents - maxCents)} MORE than those hours come to at ${dollars(rateCentsPerHour)}/hr. Fine if it is overtime, a bonus or an advance — but check the amount if it is not.`,
+      );
+    }
     // Named BEFORE the lock, not discovered after it (admin lens on PR #1179).
     if (touchedUnverified.length > 0) {
       lines.push(
@@ -174,7 +180,7 @@ export function ShiftPayPanel({
         // The refusals that mean THE WORLD MOVED refresh the list right here,
         // so the message can say "brought up to date" truthfully and the
         // admin keeps their typed amount (staff lens on PR #1179).
-        if (data?.code === 'already-settled' || data?.code === 'lost-race' || data?.code === 'over-payment') {
+        if (data?.code === 'already-settled' || data?.code === 'lost-race') {
           router.refresh();
         }
         return;
@@ -254,7 +260,7 @@ export function ShiftPayPanel({
           <button
             type="button"
             onClick={submit}
-            disabled={busy || tooMuch || !preview || preview.lines.length === 0}
+            disabled={busy || !preview || preview.lines.length === 0}
             className="rounded px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             style={{ background: 'var(--brand-evergreen-3)' }}
           >
@@ -262,10 +268,14 @@ export function ShiftPayPanel({
           </button>
         </div>
 
+        {/* A statement, not a refusal. The amount is allowed to exceed what
+            the hours come to — that is what an overtime premium or a bonus
+            is — but the admin should see the figure before confirming. */}
         {tooMuch && (
-          <p className="mt-2 text-xs text-red-700">
-            That is more than {crewName} is owed. The most this can cover right now is{' '}
-            {dollars(maxCents)}, for {formatHours(owedSeconds)} of unpaid time.
+          <p className="mt-2 text-xs text-amber-800">
+            {dollars(typedCents - maxCents)} more than those {formatHours(owedSeconds)} come to at{' '}
+            {dollars(rateCentsPerHour)}/hr. That is fine for overtime, a bonus or an advance — the
+            extra is recorded as paid, and no hours beyond the ones listed are marked off.
           </p>
         )}
 

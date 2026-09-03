@@ -75,7 +75,6 @@ export class SettlementRefusedError extends Error {
       | 'invalid-amount'
       | 'invalid-method'
       | 'no-rate'
-      | 'over-payment'
       | 'shift-edited'
       | 'lost-race',
     message: string,
@@ -169,8 +168,10 @@ export type PaymentAllocation = {
   /** Seconds this payment actually covers — equal to what it bought, unless
    * it bought more than exists, which the caller refuses. */
   secondsCovered: number;
-  /** Seconds the money bought that no unpaid shift could absorb. Non-zero
-   * means the amount is too big; see `over-payment`. */
+  /** Seconds the money bought that no unpaid shift could absorb. Non-zero is
+   * NOT an error: it is a payment worth more than the hours it covers, which
+   * is what an overtime premium or a bonus looks like. The panel names the
+   * difference in its confirmation; nothing refuses it. */
   unusedSeconds: number;
 };
 
@@ -705,20 +706,26 @@ export async function recordShiftSettlement(input: {
     );
   }
 
-  // FLOORED AT A CENT. `referenceCentsFor` rounds to nearest, so a remainder
-  // of a second or two is worth less than half a cent and rounds to ZERO —
-  // and with a zero ceiling no positive amount is ever allowed, leaving those
-  // seconds permanently unpayable and the shift permanently part paid
-  // (technical lens on PR #1190). A cent is the smallest thing that can be
-  // handed over, so a cent is the right floor for anything still owed.
-  const maxCents = Math.max(1, referenceCentsFor(owedSeconds, crew.base_rate_cents));
-  if (input.totalCents > maxCents) {
-    throw new SettlementRefusedError(
-      'over-payment',
-      `That is more than ${crew.display_name} is owed. The most this can cover right now is ${dollars(maxCents)}. Record that or less, and pay the rest once more hours are worked.`,
-    );
-  }
-
+  // NO CEILING ON THE AMOUNT (Jason, 2026-09-03, reversing his earlier call
+  // once the consequence was clear). A cap at straight-rate value made an
+  // overtime premium, a bonus or back-pay IMPOSSIBLE to record: once someone's
+  // hours were paid at base rate there was no unpaid shift left to attach
+  // anything to, and void-and-re-record recomputed the same ceiling every
+  // time. Overtime has no agreed formula here (ledger row 285) and a 50h 55m
+  // week is already in the data, so the tool must be able to record a payment
+  // worth more than the hours (admin lens on PR #1190).
+  //
+  // What the money cannot do is mark off hours that do not exist: the
+  // allocation stops at the last unpaid second, and anything beyond that is
+  // simply money recorded above what those hours come to. That restores the
+  // phase 3 property this design had accidentally removed — total_cents is
+  // the money record, the per-line reference is what the hours were worth,
+  // and the two are ALLOWED to differ. The difference is now meaningful
+  // again rather than rounding noise, which is exactly when it should be.
+  //
+  // The confirmation lives in the panel, where a person can see the figure
+  // before agreeing to it. This function does not second-guess a number an
+  // admin has confirmed.
   const allocation = allocatePayment(remainders, input.totalCents, crew.base_rate_cents);
   if (allocation.lines.length === 0) {
     throw new SettlementRefusedError(
