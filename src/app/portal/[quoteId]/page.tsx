@@ -24,6 +24,7 @@ import { InteractiveHero } from '@/components/portal/snowglobe/InteractiveHero';
 import { WalkthroughVideo } from '@/components/portal/snowglobe/WalkthroughVideo';
 import { StickyBottomBar } from '@/components/portal/snowglobe/StickyBottomBar';
 import { BookedBanner } from '@/components/portal/snowglobe/BookedBanner';
+import { EarlyInstallBanner } from '@/components/portal/snowglobe/EarlyInstallBanner';
 import { AmendmentConsentCard } from '@/components/portal/snowglobe/AmendmentConsentCard';
 // Below-the-fold sections reuse the dark-theme components:
 import { WhatsIncluded } from '@/components/portal/dark/WhatsIncluded';
@@ -50,6 +51,8 @@ import { StaffPreselectBar } from '@/components/portal/StaffPreselectBar';
 import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
 import { SectionViewTracker } from '@/components/portal/SectionViewTracker';
 import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
+import { summarizeFreeSpritzers } from '@/lib/portal/freeSpritzers';
+import { getCustomerTenure } from '@/lib/customerTenure';
 import {
   MOCK_QUOTE,
   galleryItemsFor,
@@ -385,6 +388,31 @@ export default async function PortalPage({
         }
       : quote.charges;
 
+  // Free spritzers this quote promises. Read out of the LINE-ITEM LABELS, not
+  // from $0 lines: measured across all 225 live quotes on 2026-09-03, 91 quotes
+  // promise free spritzers and only 3 record them as a $0 item — the other 94
+  // of 96 lines write the promise into the label of a PAID package line
+  // ("Santa's Roofline Display Package · 6 FREE Spritzers!"). See
+  // src/lib/portal/freeSpritzers.ts for the parsing and its known blind spot.
+  // NOTE: this server-side pass is ONLY a gate for the tenure lookup below. The
+  // number the customer is shown is derived from the SELECTED line items inside
+  // SelectionContext, because the promise lives in the label of a specific line
+  // and has to disappear with it. Computing it here would tell a customer who
+  // toggled that package off that the spritzers were still coming.
+  const anyLabelPromisesSpritzers = summarizeFreeSpritzers(quote.lineItems.map((li) => li.label)).present;
+
+  // Only ask the database about tenure when a thank-you is actually going to
+  // render — this is the one wording that can be WRONG rather than merely
+  // absent. A referral friend gets free spritzers on their FIRST install, so
+  // "thank you for coming back" has to be earned by a season that predates this
+  // one, not by the presence of a gift. A quote with no customer link (walk-in
+  // or mock data) gets the neutral wording, which is true for everyone.
+  const currentYear = new Date().getUTCFullYear();
+  const isReturningCustomer =
+    anyLabelPromisesSpritzers && quote.customerId
+      ? (await getCustomerTenure(quote.customerId, null, new Date())).years.some((y) => y < currentYear)
+      : false;
+
   return (
     <main className="relative w-full">
       {/* #68 — records the customer's open (client-side, fire-and-forget). */}
@@ -448,6 +476,18 @@ export default async function PortalPage({
         schemes={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.schemes : appSettings.swatches.schemes}
         buildableColorIds={quote.serviceType === 'permanent' ? appSettings.permanentSwatches.buildableColorIds : appSettings.swatches.buildableColorIds}
       >
+        {/* Early-install savings banner. Inside the provider because it reads
+            the LIVE selection (chosen month, applied discount, whether a staff
+            manual discount is in force), and it renders nothing at all unless
+            the picker it points at is genuinely usable — see the component's
+            own eligibility comment. On a booked quote BookedBanner above owns
+            this slot and this one stands down. */}
+        <EarlyInstallBanner
+          serviceType={quote.serviceType}
+          isReturningCustomer={isReturningCustomer}
+          staffPreview={!!operator}
+        />
+
         {/* Ledger row 324 — staff-only "Save as customer's starting selection".
             Gated on a REAL operator session (never a customer) and on the
             quote not already being approved/booked — an approved quote's
@@ -507,6 +547,7 @@ export default async function PortalPage({
           // choices were staff-preselected sees one plain line explaining it
           // — see showStaffPreselectNotice's own comment for the self-clear.
           showStaffPreselectNotice={showStaffPreselectNotice(quote.browsingSelection, quote.viewedAt)}
+          isReturningCustomer={isReturningCustomer}
         />
 
         {/* 3.4 Your Event Schedule (#96) — the 3 staff-entered dates as a timeline;

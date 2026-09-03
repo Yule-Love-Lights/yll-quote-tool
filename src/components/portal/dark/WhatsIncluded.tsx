@@ -17,6 +17,7 @@ import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
 import { resolvePortalImageVisibility } from '@/lib/portal/imageVisibility';
+import { EARLY_INSTALL_ANCHOR_ID } from '../snowglobe/EarlyInstallBanner';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -186,6 +187,10 @@ export type WhatsIncludedProps = {
   // showStaffPreselectNotice for the gating + self-clear reasoning. Absent/
   // false ⇒ no line, unchanged from before this fix.
   showStaffPreselectNotice?: boolean;
+  // True when this customer has a season with YLL BEFORE this one. Gates the
+  // "thank you for coming back" wording only: a referral friend gets free
+  // spritzers on their FIRST install, so the neutral wording is what they get.
+  isReturningCustomer?: boolean;
 };
 
 export function WhatsIncluded({
@@ -195,6 +200,7 @@ export function WhatsIncluded({
   renderSettings,
   serviceType,
   showStaffPreselectNotice,
+  isReturningCustomer = false,
 }: WhatsIncludedProps) {
   // Holiday (or a legacy/null service_type, which reads as holiday) is the only
   // vertical carrying the seasonal rush/takedown + early-install fee toggles.
@@ -252,6 +258,7 @@ export function WhatsIncluded({
     hasManualDiscount,
     manualDiscount,
     earlyInstallHidden,
+    freeSpritzers,
     locked,
     legacyRebook,
     depositRate,
@@ -388,6 +395,33 @@ export function WhatsIncluded({
           })}
         </ul>
 
+        {/* Returning-customer thank you, sitting with the line items so the
+            message is next to the proof. The count is read out of the labels
+            above (src/lib/portal/freeSpritzers.ts): prod records free spritzers
+            inside the text of a PAID package line, not as a $0 item, so there
+            is nothing here to point at except the words staff typed. When a
+            label promises spritzers without a readable number the copy states
+            no figure rather than guessing one.
+
+            This renders on a booked quote too (unlike the banner, which stands
+            down for BookedBanner) — a customer re-reading their booked order
+            should still see what they were given. */}
+        {freeSpritzers.present && (
+          <div className="mt-8 md:mt-10 flex items-start gap-3.5 rounded-2xl border border-[#86C9A0]/40 bg-[#111C16] p-4 md:p-5">
+            <Gift className="w-5 h-5 text-[#86C9A0] shrink-0 mt-0.5" aria-hidden />
+            <p className="text-[14px] text-[#E0D7C1] leading-[1.6] max-w-[60ch]">
+              <span className="block font-semibold text-[#F4ECD8] mb-0.5">
+                {freeSpritzers.count === null
+                  ? 'Free spritzers, on us this year'
+                  : `${freeSpritzers.count} spritzer${freeSpritzers.count === 1 ? '' : 's'}, on us this year`}
+              </span>
+              {isReturningCustomer
+                ? 'Thank you for coming back to Yule Love Lights. They are already in your design, at no charge.'
+                : 'They are already in your design, at no charge.'}
+            </p>
+          </div>
+        )}
+
         {/* Front (lit) design render (#50) + the satellite roof view (#51).
             When the quote HAS satellite roofline data, show the two side by side
             on DESKTOP (lg+) — the lit "front view" next to the top-down "where
@@ -466,7 +500,17 @@ export function WhatsIncluded({
          * season has passed — Settings → Customer Portal). */}
         {isHoliday && !hasManualDiscount && !earlyInstallHidden && (
         <div className={`mt-10 md:mt-12 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>
-          <p className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3">
+          {/* The sticky EarlyInstallBanner at the top of the page jumps here.
+              tabIndex={-1} lets that jump move keyboard and screen-reader focus
+              onto this heading without adding it to the normal tab order, the
+              same pattern the "Build your own" jump uses on the included
+              heading above. scroll-mt clears the sticky banner itself, which
+              would otherwise cover the heading it just scrolled to. */}
+          <p
+            id={EARLY_INSTALL_ANCHOR_ID}
+            tabIndex={-1}
+            className="text-[11px] md:text-[12px] font-semibold tracking-[0.18em] uppercase text-[#E8B862] mb-3 scroll-mt-20 focus:outline-none"
+          >
             Install early &amp; save
           </p>
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
