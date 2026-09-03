@@ -19,9 +19,9 @@ const [sweep] = QR_LINK_HOST_REDIRECTS;
 // one this test originally got wrong by using the defaults: compiled
 // case-SENSITIVELY, the pattern looks like it sweeps /QR/<slug>, and in
 // production it does not. That mismatch hid a real defect - the auth gate was
-// the only layer still comparing case-sensitively, so /QR/hbJhlsQLHpFv served
-// a homeowner the operator login page. Model the real matcher, not a
-// convenient one.
+// the only layer still comparing case-sensitively, so /QR/<slug> fell through
+// to the login route and lost its QR attribution. Model the real matcher, not
+// a convenient one.
 const NEXT_OPTIONS = { sensitive: false, strict: true, delimiter: '/' };
 const matches = (source: string, path: string) =>
   pathToRegexp(source, [], NEXT_OPTIONS).test(path);
@@ -83,8 +83,10 @@ describe('the link-host sweep', () => {
   // correct because src/lib/auth/operatorGate.ts now agrees case-insensitively
   // and lets them reach it. If that gate ever goes back to a case-sensitive
   // compare, these paths fall between the two layers and land on the staff
-  // login page again. The pairing is the invariant, so it is pinned on both
-  // sides (see the case-variant block in operatorGate.test.ts).
+  // login route again and lose their attribution. Only the gate's half of this
+  // is repo-editable - the other two legs are Next's own defaults - so that is
+  // the half a test can pin, and it is pinned in operatorGate.test.ts. These
+  // assertions record the framework side so the pairing is legible from here.
   it.each(['/QR', '/QR/hbJhlsQLHpFv', '/Qr/DjzJS9mzhTOm', '/qR/anything'])(
     'leaves the case variant %s for the QR route, not the sweep',
     (path) => {

@@ -458,11 +458,12 @@ describe('the printed-QR door', () => {
   // Next's router matches routes case-insensitively and next.config.ts's
   // link-host sweep is compiled with `sensitive: false`, so both treat these as
   // the QR route and leave them alone. This gate used a case-sensitive compare
-  // and was the only layer that disagreed, so /QR/hbJhlsQLHpFv served a
-  // homeowner the operator LOGIN form on a brand subdomain - measured live,
-  // found by the close review's customer lens after four lenses had passed the
-  // PR. The printed codes are lowercase; a retyped URL or a phone keyboard's
-  // auto-capital is what reaches this.
+  // and was the only layer that disagreed, so /QR/<slug> fell through to the
+  // login route: before PR #1191 that ended on the operator login form, and
+  // today it is two hops to the marketing site with the scan's attribution lost
+  // (reported as legacy_link rather than a van or card scan). The printed codes
+  // are lowercase; a retyped URL or a phone keyboard's auto-capital is what
+  // reaches this.
   it.each(['/QR', '/QR/hbJhlsQLHpFv', '/Qr/DjzJS9mzhTOm', '/qR/anything'])(
     'lets the case variant %s through, because every other layer already does',
     (p) => {

@@ -227,11 +227,17 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // is compiled by Next with `sensitive: false`, so BOTH of those treat
   // /QR/<slug> as this route and decline to touch it. A case-sensitive compare
   // here made this gate the only layer that disagreed, and the gap landed on the
-  // worst possible page: /QR/hbJhlsQLHpFv served a homeowner the operator LOGIN
-  // form, measured live, which is exactly the failure PR #1191 shipped to remove
-  // for every other path on that host. Found by the close review's customer lens
-  // after four lenses on #1191 had passed it. Our two printed codes are lowercase
-  // and were never affected; a retyped URL or a phone keyboard's auto-capital is.
+  // gap sends the scan through the login route. Before PR #1191 that ENDED on the
+  // operator login form. It no longer does - #1191's sweep catches /login on that
+  // host too - so the measured result today is two hops to the marketing site
+  // (/QR/<slug> -> /login?from=... -> yulelovelights.com), which costs the scan
+  // its attribution: it reports as utm_source=legacy_link instead of a van or
+  // card scan, and drags a ?from=%2FQR%2F... parameter onto the destination.
+  // Worth fixing, and smaller than it first looked: the initial report said the
+  // login form still rendered, which was true only before #1191 and was corrected
+  // by following the whole redirect chain instead of reading the first hop.
+  // Our two printed codes are lowercase and were never affected; a retyped URL or
+  // a phone keyboard's auto-capital is what reaches this.
   const qrPath = path.toLowerCase();
   if (qrPath === '/qr' || qrPath.startsWith('/qr/')) return true;
 
