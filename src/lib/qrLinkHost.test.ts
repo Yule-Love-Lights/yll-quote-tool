@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { pathToRegexp } from 'next/dist/compiled/path-to-regexp';
 import { QR_LINK_HOST_REDIRECTS } from '../../next.config';
+import { QR_DESTINATION } from './qrRedirect';
 
 // The redirect that sweeps every non-/qr path on link.yulelovelights.com to the
 // marketing site carries a negative lookahead, and getting it wrong is not a
@@ -22,8 +23,32 @@ describe('the link-host sweep', () => {
       // Temporary, deliberately: a permanent redirect is cached effectively
       // forever and would freeze a decision we may want to revisit.
       expect(rule.permanent).toBe(false);
-      expect(rule.destination).toBe('https://yulelovelights.com/');
     }
+  });
+
+  // The marketing site is written as a literal in BOTH next.config.ts and
+  // src/lib/qrRedirect.ts, because importing app code into the build config to
+  // share a value that changes about never is the worse trade. This is what
+  // stops that being two sources of truth: the origin and path have to agree,
+  // and a drift fails here loudly rather than quietly splitting the destination
+  // in two. Raised by the pre-merge admin lens on PR #1191.
+  it('sends legacy links to the same place the QR codes go', () => {
+    const swept = new URL(sweep!.destination);
+    const qr = new URL(QR_DESTINATION);
+    expect(swept.origin + swept.pathname).toBe(qr.origin + qr.pathname);
+  });
+
+  // Untagged, this traffic is indistinguishable from ordinary homepage visits,
+  // and the question the sweep raises - is anyone still following the old
+  // GoHighLevel links - becomes unanswerable. The /qr route tags every scan; so
+  // does this.
+  it('tags the swept traffic so it can be counted', () => {
+    const swept = new URL(sweep!.destination);
+    expect(swept.searchParams.get('utm_source')).toBe('legacy_link');
+    expect(swept.searchParams.get('utm_medium')).toBe('redirect');
+    // Not a QR scan: these are old links, and labelling them 'qr' would put a
+    // fiction into the same report the printed codes are measured in.
+    expect(swept.searchParams.get('utm_source')).not.toBe('qr');
   });
 
   it('is exactly one rule, so a second one cannot drift from it', () => {

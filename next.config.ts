@@ -28,12 +28,27 @@ const SECURITY_HEADERS = [
 // close review's customer lens, measured, 2026-09-03.
 //
 // So everything on that host except /qr goes to the marketing site. Temporary, not
-// permanent: the same reasoning as the 302 in the /qr route itself - a permanent
-// redirect is cached by browsers effectively forever and would freeze a decision
-// we may want to revisit if any of those legacy paths turns out to be worth
-// serving properly.
+// permanent: the same reasoning as the /qr route's own 302 - a permanent redirect
+// is cached by browsers effectively forever and would freeze a decision we may
+// want to revisit if any of those legacy paths turns out to be worth serving
+// properly. Note `permanent: false` emits a 307 here, not a 302; Next's
+// getRedirectStatus maps it that way. Both are uncacheable by default, which is
+// the property that matters, but the numbers are not the same and this comment
+// said 302 until the pre-merge technical lens read the mapping.
 const QR_LINK_HOST = 'link.yulelovelights.com';
-const MARKETING_SITE = 'https://yulelovelights.com/';
+
+// Tagged, so the legacy traffic is countable instead of blending into ordinary
+// homepage visits. Without this nobody could ever answer "is anyone still
+// following the old GoHighLevel links, and can we let that subdomain go?" - the
+// question the sweep itself raises. Raised by the pre-merge admin lens.
+//
+// The ORIGIN AND PATH here must stay identical to QR_DESTINATION in
+// src/lib/qrRedirect.ts. They are deliberately two literals rather than one
+// import, because pulling app code into the build config coupled the two for a
+// value that changes about never - but a test asserts they agree, so a drift
+// fails the suite loudly instead of silently splitting the marketing site into
+// two destinations. See src/lib/qrLinkHost.test.ts.
+const MARKETING_SITE = 'https://yulelovelights.com/?utm_source=legacy_link&utm_medium=redirect';
 
 // Exported so a test can compile these patterns with the SAME path-to-regexp Next
 // uses, rather than asserting the config's shape and hoping the regex is right.
