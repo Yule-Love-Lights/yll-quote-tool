@@ -11,13 +11,13 @@ const PROPS = { creditUsd: 125, spritzerCount: 2, spritzerSizeInches: 16 };
 
 describe('ReferralSection', () => {
   it("states the referrer's credit as $125, never the old $150 figure", () => {
-    // Narrowed 2026-08-28: $150 now legitimately appears on this page as the
-    // FRIEND's cash alternative to the spritzers, so a bare not-to-contain
-    // '$150' would fail on correct copy. What this test actually guards is
-    // that the REFERRER's credit is $125 and is never quoted as $150 again.
+    // $150 was a wrong referrer-credit figure, corrected to $125. It briefly
+    // returned as the friend's cash alternative, then went away again on
+    // 2026-09-03 when Naldo set both sides to $125. So the page should carry
+    // no $150 anywhere at all.
     const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
     expect(html).toContain('$125 credit');
-    expect(html).not.toContain('$150 credit');
+    expect(html).not.toContain('$150');
   });
 
   it('states both sides of the offer: referrer credit (dollarized, good toward any service) + friend spritzers (dollarized)', () => {
@@ -25,7 +25,7 @@ describe('ReferralSection', () => {
     expect(html).toContain('$125 credit');
     expect(html).toContain('any Yule Love Lights service');
     expect(html).toContain('$170');
-    expect(html).toContain('$150 off instead');
+    expect(html).toContain('$125 off instead');
     expect(html).toContain('2 free 16&quot; spritzers');
     expect(html).toContain('16&quot; spritzers');
     expect(html).toContain('first booked');
