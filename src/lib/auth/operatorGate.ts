@@ -198,6 +198,21 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // code in the URL (a bad/unknown code just 404s inside the page itself).
   if (path === '/refer' || path.startsWith('/refer/')) return true;
 
+  // Branded booking pages (/book/<slug>, src/app/book/[slug]). Public: these
+  // wrap a GoHighLevel calendar widget on a Yule Love Lights page so a customer
+  // booking a call does not land on GoHighLevel's unbranded one. The page reads
+  // no customer record and no database at all. Everything on it is a constant in
+  // its own folder plus completed-install photos that already ship in
+  // public/references, which is why it is safe to serve signed out.
+  //
+  // ONE URL segment only, never a bare prefix. Every /book/<slug> is public by
+  // design and the slug is checked against a registry inside the page, so an
+  // unknown one 404s rather than reaching anything. But a bare startsWith would
+  // hand public access to any FUTURE route added under /book, with nothing
+  // forcing a re-review, which is the same defense-in-depth reasoning that made
+  // /estimate and /install exact matches above. Bare /book has no page and 404s.
+  if (path === '/book' || /^\/book\/[^/]+$/.test(path)) return true;
+
   // Customer self-serve estimate (ledger self-serve, Phase A) — the public
   // "type your address, get an instant range" front door. The page + its two
   // APIs self-gate on the SELF_SERVE_ESTIMATE_ENABLED flag (404 when off) and

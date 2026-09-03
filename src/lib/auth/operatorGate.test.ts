@@ -150,6 +150,31 @@ describe('isPublicPath — customer-facing allowlist', () => {
     }
   });
 
+  // Branded booking pages (src/app/book/[slug]). Without this entry the
+  // perimeter serves the operator LOGIN SHELL to a customer who clicked a
+  // booking link, which looks like a working page and is not.
+  it('treats the branded booking pages as public', () => {
+    for (const p of [
+      '/book',
+      '/book/virtual-hot-chocolate',
+      '/book/virtual-hot-chocolate/',
+      '/book/not-a-real-calendar',
+    ]) {
+      expect(isPublicPath(p), p).toBe(true);
+    }
+  });
+
+  // One segment only. A bare startsWith('/book/') would hand public access to
+  // any future nested route with nothing forcing a re-review, which is the
+  // defense-in-depth reasoning /estimate and /install already encode.
+  it('keeps the booking allowlist to one URL segment and nothing adjacent', () => {
+    expect(isPublicPath('/booking')).toBe(false);
+    expect(isPublicPath('/bookkeeping')).toBe(false);
+    expect(isPublicPath('/api/book')).toBe(false);
+    expect(isPublicPath('/book/virtual-hot-chocolate/admin')).toBe(false);
+    expect(isPublicPath('/book/anything/deeper/still')).toBe(false);
+  });
+
   it('allows POST /api/referrals/submit (referral landing page lead form) but keeps other methods operator-only (#41)', () => {
     const p = '/api/referrals/submit';
     expect(isPublicPath(p, 'POST')).toBe(true);
