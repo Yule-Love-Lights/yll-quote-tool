@@ -256,6 +256,85 @@ export async function getContactInternal(contactId: string): Promise<CrmContactI
   return toCrmContact(json.contact, { includeRaw: true });
 }
 
+// ─── Contact DND state (2026-09-02 incident) ──────────────────────────────
+// Every staff-facing alert email goes to ONE contact (HIGHLEVEL_INTERNAL_
+// CONTACT_ID). On 2026-08-31 that contact's Email DND got switched on in GHL
+// (a customer unsubscribe click, not a staff action) and every send to it was
+// silently refused for two days before anyone noticed — see internalEmail()
+// in src/app/api/integrations/valor/webhook/route.ts. This lets Settings →
+// HighLevel show a live health check.
+//
+// GHL's raw /contacts/{id} response carries a `dndSettings` object keyed by
+// channel (Email, SMS, ...) that HighLevelContact (above) never modeled —
+// only the fields the rest of the app actively consumes are typed there.
+// Read it narrowly here rather than widen that shared type for one settings
+// check; the untyped shape is confined to this one function + its pure
+// parser below.
+//
+// FAILS CLOSED (fix round, 2026-09-02): two more blocked shapes exist beyond
+// Email.status==='active', both confirmed against real GHL payloads elsewhere
+// in this repo, not guessed. (1) scripts/winback-recon.ts (line ~266-268,
+// live off a real contact 2026-07-27): GHL's own AUTO opt-out (a STOP-keyword
+// reply, or here an unsubscribe click) sets status:'permanent', not 'active'
+// — the original predicate would have read that contact as healthy. (2)
+// scripts/winback-send.ts (line ~152-156): a BLANKET contact-level `dnd:true`
+// exists independent of dndSettings entirely. Treating only 'active' as
+// blocked and everything else (undefined, 'permanent', a future GHL status
+// the parser has never seen) as healthy is exactly the silent-green failure
+// mode this whole feature exists to catch — so the predicate is inverted:
+// blocked unless the status is explicitly the known-healthy 'inactive' (or
+// absent), or contact-level dnd is true, which blocks regardless of Email.
+// Fix round: GHL is inconsistent about the dndSettings CHANNEL KEY's casing —
+// scripts/winback-recon.ts:208 already needed `SMS ?? sms` for the exact same
+// reason (learned live off a real contact). A lowercase `email` key would
+// read as MISSING under an Email-only lookup and render green while blocked,
+// the exact class this feature exists to catch. Deliberately NOT the same
+// fix for the STATUS value: case-folding `'inactive'`/`'active'` is the
+// UNSAFE direction here (it would treat some as-yet-unobserved status like
+// 'Active'/'ACTIVE' as the exact-match healthy case by accident), so the
+// status comparison below stays exact.
+type RawDndChannel = { status?: string; message?: string; code?: string };
+type RawContactWithDnd = { dnd?: boolean; dndSettings?: { Email?: RawDndChannel; email?: RawDndChannel } };
+
+export type ContactDndState = {
+  emailDnd: boolean;
+  // Which shape tripped it — 'active' | 'permanent' (both confirmed live GHL
+  // states) | 'contact-dnd' (the blanket contact.dnd flag) | 'unknown:<status>'
+  // (a future/unrecognized Email.status — fails closed rather than reading as
+  // healthy). Absent when emailDnd is false.
+  reason?: 'active' | 'permanent' | 'contact-dnd' | string;
+  message?: string;
+  code?: string;
+};
+
+// Pure — no network — so it's unit-testable without mocking fetch. `contact`
+// is `unknown` because it comes straight off the wire: null/absent (a
+// malformed response, or a caller passing through a failed lookup) → null,
+// "can't tell"; anything else → a definite emailDnd reading. Blocked when
+// EITHER the blanket contact.dnd flag is true OR Email.status is any
+// non-empty string other than 'inactive' — an unknown future status reads as
+// blocked, never as healthy (fail closed).
+export function parseContactDndState(contact: unknown): ContactDndState | null {
+  if (!contact || typeof contact !== 'object') return null;
+  const c = contact as RawContactWithDnd;
+  const email = c.dndSettings?.Email ?? c.dndSettings?.email;
+  if (c.dnd === true) {
+    return { emailDnd: true, reason: 'contact-dnd', message: email?.message, code: email?.code };
+  }
+  const status = email?.status;
+  if (!status || status === 'inactive') {
+    return { emailDnd: false };
+  }
+  const reason: ContactDndState['reason'] =
+    status === 'active' || status === 'permanent' ? status : `unknown:${status}`;
+  return { emailDnd: true, reason, message: email?.message, code: email?.code };
+}
+
+export async function getContactDndState(contactId: string): Promise<ContactDndState | null> {
+  const json = await ghlFetch<{ contact?: unknown }>(`/contacts/${encodeURIComponent(contactId)}`);
+  return parseContactDndState(json.contact);
+}
+
 // ─── Contact create ───────────────────────────────────────────────────────
 // Creates a brand-new GHL contact — used by the referral landing page (#41
 // /refer/<code> submit) to get a referred lead into HighLevel immediately, so
@@ -855,12 +934,43 @@ export async function upsertContact(
 // POST /contacts/{contactId}/notes — attaches a free-text note to the
 // contact's timeline (e.g. the website lead's raw notes / UTM / landing-page
 // context, which don't fit any existing custom field).
-type ContactNoteResult = { id?: string; body?: string; [k: string]: unknown };
+// HighLevel WRAPS the created note rather than returning it bare: six real
+// notes were written with a null id before the database showed it (see
+// noteIdFrom in src/lib/calls/postNotes.ts). The type says so now, so the
+// next caller that wants the id does not inherit the same wrong assumption.
+type ContactNoteResult = {
+  id?: string;
+  note?: { id?: string; body?: string } | null;
+  notes?: { id?: string; body?: string }[] | null;
+  body?: string;
+  [k: string]: unknown;
+};
 
 export async function createContactNote(contactId: string, body: string): Promise<ContactNoteResult> {
   return ghlFetch<ContactNoteResult>(`/contacts/${encodeURIComponent(contactId)}/notes`, {
     method: 'POST',
     body: JSON.stringify({ body }),
+  });
+}
+
+// ─── Internal comment ───────────────────────────────────────────────────
+// POST /conversations/messages with type InternalComment — a DIFFERENT
+// surface from a contact Note. A Note lives on the contact's own Notes tab;
+// an InternalComment is posted INTO that contact's message/conversation
+// timeline, staff-only, interleaved with their calls/texts/emails. Naldo
+// asked for both (2026-08-30): the note is the durable record, the comment
+// is what a rep sees while they are already looking at the conversation.
+//
+// `mentions` is documented by HighLevel as required for this message type;
+// an empty array is what this repo sends when nobody is tagged, and the
+// live probe run before this shipped confirmed HighLevel accepts it rather
+// than rejecting an empty array outright.
+type InternalCommentResult = { conversationId?: string; messageId?: string; msg?: string; [k: string]: unknown };
+
+export async function createInternalComment(contactId: string, message: string): Promise<InternalCommentResult> {
+  return ghlFetch<InternalCommentResult>('/conversations/messages', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'InternalComment', contactId, message, mentions: [] }),
   });
 }
 

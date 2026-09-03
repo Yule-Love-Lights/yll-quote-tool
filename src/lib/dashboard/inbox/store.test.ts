@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ingestTouch, planIngest } from './store';
 import type { ExistingItem } from './store';
@@ -7241,5 +7242,69 @@ describe('markItemHandledLocal — expectedStatus positive CAS (row 366)', () =>
     // The guard itself is the positive .in(...), which a 'completed' row does
     // not satisfy — the mock's { data: null } models exactly that 0-row match.
     expect(updateCalls).toContainEqual({ method: 'in', args: ['status', ['unresponded', 'handled']] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The forwarded-lead auto-clear's wiring (premerge round, 2026-09-02).
+//
+// SOURCE-LEVEL on purpose, and labelled so nobody mistakes these for
+// behavioural tests. The rule itself is pure and lives in leadForward.ts with
+// its own probes; what these pin is the three things the premerge technical
+// lens found wrong in the plumbing here, each of which is invisible to a unit
+// test of the pure rule and would otherwise regress silently.
+describe('lead-forward auto-clear wiring', () => {
+  const SOURCE = readFileSync(new URL('./store.ts', import.meta.url), 'utf8');
+  const fn = SOURCE.slice(
+    SOURCE.indexOf('async function clearLeadForwardsAnsweredBy'),
+    SOURCE.indexOf('export async function ingestTouch'),
+  );
+
+  it('reports the rows the write ACTUALLY changed, not the ones it hoped to', () => {
+    // Two outbound touches (a webhook and the reconcile cron) can hit the same
+    // row at once. Returning the pre-write candidates would log a successful
+    // clear for the one that lost the race: a false line in the audit trail.
+    expect(fn).toContain(".select('id')");
+    expect(fn).toContain('const changedIds');
+    expect(fn).not.toContain('return ids.map(');
+  });
+
+  it('keeps the compare-and-swap on the UPDATE, not just the read', () => {
+    // Someone may dismiss or complete the row between the read and the write,
+    // and their decision must win. Scoped to the update on purpose: the first
+    // version of this assertion searched the whole function, where the SELECT's
+    // own identical filter satisfied it, so removing the one that matters
+    // still passed.
+    const update = fn.slice(fn.indexOf(".update({ status: 'handled'"));
+    expect(update).toContain(".eq('status', 'unresponded')");
+  });
+
+  it('says something when it fails instead of going quietly inert', () => {
+    // A swallowed schema, RLS or transient error would disable the whole
+    // feature with no signal, which is indistinguishable from never shipping it.
+    expect((fn.match(/console\.error\('\[inbox\] lead-forward auto-clear/g) ?? []).length).toBe(2);
+  });
+
+  it('logs the activity shape the rest of this file uses for a system decision', () => {
+    // `auto` is what listActivity reads to surface a reason at all, and `from`
+    // is what Reverse reads to restore the state the row came out of. The first
+    // cut used `autoResolved` and no `from`, so the explanation was write-only
+    // and a Reverse would have guessed.
+    const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
+    expect(caller).toContain('auto: true');
+    expect(caller).toContain("reason: 'lead_forward_answered_by_outbound'");
+    expect(caller).toContain('from,');
+  });
+
+  it('only ever runs for an OUTBOUND touch', () => {
+    // Asserted as the guard IMMEDIATELY wrapping the call. The first version
+    // just checked that isAnsweredByDirection appeared somewhere before it,
+    // which an unrelated earlier use in the same function already satisfied,
+    // so deleting the real guard still passed.
+    const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
+    const call = caller.indexOf('clearLeadForwardsAnsweredBy(sb, touch, now)');
+    expect(call).toBeGreaterThan(-1);
+    const justBefore = caller.slice(Math.max(0, call - 220), call);
+    expect(justBefore).toContain('if (isAnsweredByDirection(touch.direction))');
   });
 });

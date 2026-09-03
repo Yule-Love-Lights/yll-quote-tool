@@ -1,5 +1,6 @@
 import type { AdvertisingPlacement } from '@/lib/advertising/placements';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { isSimilarPhotoHash } from '@/lib/advertising/photoHash';
 
 // Review-time duplicate detection (Naldo's ruling, audit doc 8B): FLAG
 // candidates for the human, never auto-block — several signs can
@@ -42,6 +43,7 @@ export function findDuplicateCandidates(
   const out: DuplicateCandidate[] = [];
   for (const p of all) {
     if (p.id === target.id) continue;
+    if (p.voidedAt) continue; // a voided row is dead evidence
     // Same population only: test fixtures flag against each other (so a
     // device check sees the feature) but never against real placements.
     if (p.isTest !== target.isTest) continue;
@@ -69,6 +71,13 @@ export function findDuplicateCandidates(
       etDayKey(new Date(p.capturedAt)) === targetDay
     ) {
       reasons.push('same worker, same day');
+    }
+
+    // Rows carry their own perceptual hash (photoHash.ts, stamped at
+    // capture). When both sides have one and they nearly match, that is its
+    // own flag reason — assistance only, the human still decides.
+    if (isSimilarPhotoHash(target.photoHash, p.photoHash)) {
+      reasons.push('very similar photo');
     }
 
     if (reasons.length > 0) out.push({ placement: p, reasons });

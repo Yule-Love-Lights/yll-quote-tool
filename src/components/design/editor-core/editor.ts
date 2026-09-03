@@ -5,7 +5,9 @@ import Konva from "konva";
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
-import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
+import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, twinMiniGroupAt, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
+import { backfillStampOrdinals, baseStampLabel, describePrunedItems, numberStampLabels } from "@/lib/design/stampLabels";
+import { itemThumbnailBBox } from "@/lib/design/stampThumbnails";
 import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -35,6 +37,13 @@ import {
   offPresetSizeSuffix,
 } from "./sizePresets";
 import { isLineDrawContext } from "./drawContext";
+import {
+  finalizeScattershotPolygon,
+  SCATTERSHOT_MIN_POINTS,
+  SCATTERSHOT_FINISH_CLICK_COUNT,
+  trackScattershotClick,
+  type ScattershotClickStreak,
+} from "./scattershotPolygon";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
 import { brightnessForPhoto, setBrightnessForPhoto, removeBrightnessForPhoto } from "@/lib/design/photoBrightness";
@@ -138,10 +147,19 @@ const STYLE_HELP: Record<DrawingStyle, string> = {
 
 // "Scattershot" is a lights-only 4th drawing style tracked by a LOCAL tool flag
 // (tool.scattershot) — deliberately NOT added to the shared DrawingStyle type,
-// which garland drawing also uses. It drag-draws a box that fills with
-// scattered mini-lights (a MiniAreaItem; the internal kind stays "miniArea").
+// which garland drawing also uses. It draws a MiniAreaItem (internal kind
+// stays "miniArea") two ways: drag a box (shape:"box"), or click a series of
+// outline points around the real shape and close it (shape:"polygon", points
+// mirroring the "trace" style's click-to-place-points convention).
 const SCATTERSHOT_HELP =
-  "Click and drag a box — it fills with scattered mini-lights in the selected color pattern. Drag its corners after to refit; set fill density in the edit panel.";
+  "Drag a box, or click points around the outline and press Enter, triple-click, or click the first point again to close it. Either way it fills with scattered mini-lights in the selected color pattern. Drag a box's corners after to refit it; set fill density in the edit panel.";
+
+// "Click near the first point closes the outline" tolerance, in SCREEN px
+// (divided by stageScale below before comparing against image-space click
+// coordinates) so the target stays the same physical size on screen at any
+// zoom level, rather than shrinking to an unhittable few image-px when
+// zoomed in.
+const SCATTERSHOT_CLOSE_PX = 14;
 
 type ItemCategory = "lights" | "decor" | "text" | "custom" | "poles";
 type DecorType = "wreath" | "bow" | "garland" | "spritzer";
@@ -256,8 +274,7 @@ export async function renderEditor(
   // ── #13 linked twins — "Place on this photo" ─────────────────────────────
   // Staff re-draw the whole display on every photo; a TWIN is a render-only
   // depiction of a canonical item from another photo (bills once, toggles/
-  // recolors everywhere). Billable per-unit kinds only; mini GROUPS are
-  // excluded (stamp members individually).
+  // recolors everywhere). Billable per-unit kinds only.
   const MINI_WRAP_SURFACES = new Set<string>(["bush", "tree", "column", "railing", "curtain"]);
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
@@ -270,7 +287,13 @@ export async function renderEditor(
       // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
       // roofline, which staff re-draw per photo) so a portal package toggle
       // hides/shows a side's lights on every angle it appears on.
-      (isStrand(i) && i.bulbType === "permanent"));
+      (isStrand(i) && i.bulbType === "permanent") ||
+      // A mini GROUP (a railing/curtain/etc, #240) IS stampable as a whole
+      // unit — twinMiniGroupAt re-places the group AND every live member
+      // together, geometry preserved relative to each other. (A grouped
+      // strand/scattershot MEMBER stays excluded above; the group is the
+      // billable unit, not its members individually.)
+      isMiniGroup(i));
   const stampCandidates = (): SceneItem[] =>
     scene.items.filter((i) => isStampableCanonical(i) && !onActivePhoto(i));
   const photoLabelOf = (i: { photoId?: string | null }): string => {
@@ -280,15 +303,110 @@ export async function renderEditor(
     const idx = extras.findIndex((p) => p.id === pid);
     return extras[idx]?.title || `Photo ${idx + 2}`;
   };
-  const stampLabel = (i: SceneItem): string =>
-    isWreath(i) ? `${i.sizeIn}" wreath`
-      : isBow(i) ? `${i.sizeIn}" bow`
-        : isGarland(i) ? "garland run"
-          : isSpritzer(i) ? `${i.sizeIn}" spritzer`
-            : isMiniArea(i) ? `${i.surface ?? "bush"} minis`
-              : isStrand(i) && i.bulbType === "permanent" ? `${i.sideOfHouse ?? "front"} roofline`
-                : isStrand(i) ? `${i.surface ?? "mini"} wrap`
-                  : "item";
+  // The human-facing name for a canonical item — numbered against every OTHER
+  // canonical item sharing the same base label on the same source photo (a
+  // house with 7 wrapped columns reads "column minis 1" … "column minis 7"
+  // instead of 7 identical rows), so staff can tell which twin picker/
+  // billing-link row maps to which drawn item.
+  //
+  // Fix-round item 2a (Jason's ruling): the number is STABLE — a persisted
+  // per-item `stampOrdinal`, assigned once and never reassigned, so deleting
+  // a sibling can never make an existing item's number point at a different
+  // physical thing. backfillStampOrdinals lazily assigns one to any item
+  // that doesn't have one yet (a freshly drawn item, or one from a scene
+  // saved before this field existed) and reports whether the result should
+  // be PERSISTED — this is the one place that happens, since both UI
+  // consumers (the picker + the billing-link dropdown) call stampLabel().
+  // Idempotent — a scene where every displayable item already has an
+  // ordinal is a no-op (same `scene` reference back), so this costs nothing
+  // on the common case.
+  //
+  // Second fix round, HIGH: `stampOrdinal`/`stampOrdinalCounters` are BRAND
+  // NEW fields no existing scene has, so every pre-existing design backfills
+  // on its very first sidebar render — merely OPENING an already-APPROVED
+  // design (locked=true, set synchronously at mount) hit the OLD unconditional
+  // scheduleSave() here with zero staff action taken. scheduleSave() itself
+  // correctly refuses to PERSIST a locked scene, but merely being CALLED
+  // also pops the permanent "your changes are NOT saved" banner as a side
+  // effect — so opening the whole existing approved-design population
+  // showed a false alarm the instant the sidebar first rendered.
+  // backfillStampOrdinals now carries the locked-vs-save POLICY itself
+  // (stampLabels.ts, tested + mutation-probed there) rather than leaving it
+  // to an `if (!locked)` a caller here could forget: it always backfills IN
+  // MEMORY (so the picker still renders correctly — staff still need to
+  // read numbers on an approved quote) but reports `shouldSave: false`
+  // whenever the scene is locked.
+  const stampLabel = (i: SceneItem): string => {
+    const { scene: withOrdinals, shouldSave } = backfillStampOrdinals(scene, locked);
+    scene = withOrdinals;
+    if (shouldSave) scheduleSave();
+    return numberStampLabels(scene.items).get(i.id) ?? baseStampLabel(i);
+  };
+  // Fix-round item 2b (Jason's ruling — the real answer to "which 'column
+  // minis' is the first column in photo 1?"): a small cropped thumbnail of
+  // the item itself, taken from the photo it actually lives on. The source
+  // photo is often NOT the one currently mounted, so its image may not be
+  // loaded at all — cache each distinct photo's Image by URL so re-placing
+  // several items from the same source photo only downloads it once.
+  const stampPhotoImageCache = new Map<string, Promise<HTMLImageElement | null>>();
+  function loadStampPhotoImage(url: string): Promise<HTMLImageElement | null> {
+    let cached = stampPhotoImageCache.get(url);
+    if (!cached) {
+      cached = loadHTMLImage(url).catch(() => null);
+      stampPhotoImageCache.set(url, cached);
+    }
+    return cached;
+  }
+  const STAMP_THUMB_PX = 56;
+  function stampPhotoUrlFor(photoId: string | null | undefined): string | null {
+    if (!photoId) return design.photoUrl;
+    return design.extraPhotos?.find((p) => p.id === photoId)?.url ?? null;
+  }
+  // Crop one item's thumbnail as a data URL, or null if it can't be
+  // produced (no computable bounding box, the source photo has no known
+  // URL, the image failed to load, or the crop itself throws) — every
+  // failure degrades to null so the caller falls back to the plain
+  // numbered text label instead of a broken image. Never throws.
+  async function stampThumbnailDataUrl(item: SceneItem): Promise<string | null> {
+    const box = itemThumbnailBBox(item, scene.items);
+    if (!box || !(box.w > 0) || !(box.h > 0)) return null;
+    const url = stampPhotoUrlFor(item.photoId ?? null);
+    if (!url) return null;
+    const img = await loadStampPhotoImage(url);
+    if (!img) return null;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = STAMP_THUMB_PX;
+      canvas.height = STAMP_THUMB_PX;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      // Letterbox the (usually non-square) crop box into a square thumb,
+      // preserving aspect ratio and centering it — never stretched.
+      const scale = Math.min(STAMP_THUMB_PX / box.w, STAMP_THUMB_PX / box.h);
+      const dw = box.w * scale, dh = box.h * scale;
+      const dx = (STAMP_THUMB_PX - dw) / 2, dy = (STAMP_THUMB_PX - dh) / 2;
+      ctx.drawImage(img, box.x, box.y, box.w, box.h, dx, dy, dw, dh);
+      return canvas.toDataURL("image/png");
+    } catch {
+      return null;
+    }
+  }
+  // Kick off (fire-and-forget) an async thumbnail load for every stamp-row
+  // button just rendered, swapping in the cropped image once it resolves.
+  // The sidebar's innerHTML gets fully replaced on the NEXT render (a very
+  // common event — any scene edit, tool change, etc.), so a resolved
+  // thumbnail whose row is no longer in the DOM is silently discarded
+  // rather than applied to a stale/wrong element.
+  function loadStampThumbnails(sb: HTMLElement, items: SceneItem[]) {
+    for (const item of items) {
+      void stampThumbnailDataUrl(item).then((dataUrl) => {
+        if (!dataUrl) return; // stays as the 📌 placeholder — never a broken image
+        const el = sb.querySelector(`.stamp-thumb[data-thumb-id="${item.id}"]`) as HTMLElement | null;
+        if (!el) return; // sidebar re-rendered before this resolved
+        el.innerHTML = `<img src="${dataUrl}" width="${STAMP_THUMB_PX / 2}" height="${STAMP_THUMB_PX / 2}" style="border-radius:3px;vertical-align:middle;object-fit:cover" alt="" />`;
+      });
+    }
+  }
   // Deep-copy the source, re-anchor its geometry at p, and mark it a twin of
   // the TRUE canonical (chains through if the source was somehow a twin).
   function makeTwinAt(src: SceneItem, p: { x: number; y: number }): SceneItem {
@@ -467,6 +585,16 @@ export async function renderEditor(
   let drawPreview: Konva.Line | null = null;
   // Scattershot box-drag state (lights-only local style → commits a MiniAreaItem).
   let scattershotStart: { x: number; y: number } | null = null;
+  // Scattershot polygon-draw state: click to place successive outline points
+  // (a MiniAreaItem with shape:"polygon" on finish). Mirrors tracePts exactly
+  // — accumulates committed points; the last pair tracks the cursor. Set only
+  // once a scattershot mousedown resolves to a click (not a real box drag) —
+  // see the mouseup handler below.
+  let scatterPolyPts: number[] | null = null;
+  // Triple-click-to-finish tracking for the outline above — the run of
+  // rapid, same-spot clicks accumulated so far (or null between streaks).
+  // See scattershotPolygon.ts's trackScattershotClick for the rules.
+  let scatterClickStreak: ScattershotClickStreak | null = null;
   // Mini-group / scattershot / spritzer edit panels: when armed (via "+ Add to pattern"),
   // the next color tap APPENDS to the pattern instead of replacing it.
   let mgAddArmed = false;
@@ -876,8 +1004,9 @@ export async function renderEditor(
       if (isStrandDrawContext()) g.draggable(false);
       g.on("click tap", (e) => {
         e.cancelBubble = true;
-        // While tracing, clicks must continue the polyline — never select.
-        if (tracePts) return;
+        // While tracing (or mid-way through a scattershot polygon outline),
+        // clicks must continue the line/outline — never select.
+        if (tracePts || scatterPolyPts) return;
         // #63: in strand-draw mode, selection is decided by the deferred
         // mousedown/mouseup draw logic (drag = draw-through, click = select) —
         // don't also select here.
@@ -1860,13 +1989,22 @@ export async function renderEditor(
   // dropped and surfaces one notice per group. Every call site below should
   // call THIS, not pruneOrphanedMiniGroups directly.
   function pruneOrphanedMiniGroupsNotify(items: SceneItem[]): SceneItem[] {
-    const before = items.filter(isMiniGroup);
     const after = pruneOrphanedMiniGroups(items);
     if (after.length === items.length) return after; // nothing pruned — the common case
-    const afterIds = new Set(after.filter(isMiniGroup).map((g) => g.id));
-    before.filter((g) => !afterIds.has(g.id)).forEach((g) => {
-      const label = MINI_SURFACE_LABELS[g.surface ?? ""] ?? "group";
-      const n = g.stringCount ?? 1;
+    // #13 x #240 (second fix round, MEDIUM): the WHICH-items-and-why decision
+    // is pure (stampLabels.ts, tested) — pruneOrphanedMiniGroups can drop a
+    // miniGroup with zero surviving members (#227) OR any item (group or
+    // single) whose linkedToId no longer resolves (a dangling twin, item 1's
+    // fix). The old version here only ever diffed isMiniGroup items, so a
+    // dangling SINGLE-ITEM twin was removed with ZERO staff notification —
+    // exactly what this wrapper exists to prevent.
+    describePrunedItems(items, after).forEach((notice) => {
+      if (notice.reason === "linked-copy-gone") {
+        showTransientNotice(`Also removed a linked copy: ${baseStampLabel(notice.item)} — its original is gone`);
+        return;
+      }
+      const label = MINI_SURFACE_LABELS[notice.item.surface ?? ""] ?? "group";
+      const n = notice.item.stringCount ?? 1;
       showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
     });
     return after;
@@ -2006,7 +2144,7 @@ export async function renderEditor(
       <section>
         <h3>Re-place from other photos</h3>
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Click one, then click the photo — a linked copy shows here but bills once (via its original).</div>
-        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:block;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}">📌 ${stampLabel(i)} — ${photoLabelOf(i)}</button>`).join("")}
+        ${cands.map((i) => `<button class="stamp-row" data-id="${i.id}" style="display:flex;align-items:center;gap:6px;width:100%;text-align:left;margin-bottom:2px${stampSourceId === i.id ? ";outline:2px solid var(--accent, #4f8cff)" : ""}"><span class="stamp-thumb" data-thumb-id="${i.id}" style="display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:28px;height:28px;font-size:16px">📌</span><span>${stampLabel(i)} — ${photoLabelOf(i)}</span></button>`).join("")}
       </section>`;
       })()}
       ${tool.category === "poles" ? `
@@ -2381,6 +2519,10 @@ export async function renderEditor(
         renderSidebar();
       }),
     );
+    // Fix-round item 2b: fire off thumbnail crops for whatever stamp
+    // candidates just rendered (a no-op call if the section didn't render
+    // at all — stampCandidates() is cheap and pure).
+    loadStampThumbnails(sb, stampCandidates());
 
     sb.querySelectorAll("#categories button").forEach((b) =>
       b.addEventListener("click", () => {
@@ -4428,11 +4570,16 @@ export async function renderEditor(
       const memberIds = group.memberIds;
       scene = {
         ...scene,
-        items: scene.items
+        // #13 x #240 (fix round): if this group was ever twinned onto
+        // another photo, removing it by id here leaves the twin's
+        // `linkedToId` pointing at nothing — pruneOrphanedMiniGroupsNotify
+        // now also catches THAT (not just an empty-member orphan), so route
+        // through it instead of the bare filter this used to end with.
+        items: pruneOrphanedMiniGroupsNotify(scene.items
           .filter((i) => i.id !== group.id)
           // #240: a member can be a strand OR a scattershot — clear groupId on
           // either kind (mirrors groupSelectedMini's own kind check).
-          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
+          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i))),
       };
       selectedIds = new Set(memberIds); // keep members selected → the right panel returns
       scheduleSave();
@@ -5253,6 +5400,36 @@ export async function renderEditor(
     commit();
   }
 
+  // Commit a scattershot polygon drawn via click-to-place-points (the
+  // alternative to the box drag above). `rawPoints` is the committed click
+  // stream (cursor-tracking pair already stripped — see finishScattershotDraw).
+  // finalizeScattershotPolygon (Konva-free, unit-tested) dedupes and validates;
+  // a null result means the draw is cancelled, matching commitStrand's "need
+  // at least 2 distinct points" guard one point higher (a polygon needs 3).
+  // Same quote-binding fields as commitMiniArea's box path — shape/points is
+  // the only difference.
+  function commitScattershotPolygon(rawPoints: number[]) {
+    const points = finalizeScattershotPolygon(rawPoints);
+    if (!points) return; // fewer than 3 distinct points — cancelled, not committed
+    const area: MiniAreaItem = {
+      id: cryptoId(),
+      kind: "miniArea",
+      shape: "polygon",
+      points,
+      density: 0.5,
+      colorPattern: [...tool.colorPattern],
+      yardstickId: activeYs()?.id ?? null,
+      surface: tool.surface || "bush",
+      wrapStyle: "canopy",
+      stringCount: 1,
+      included: true,
+    };
+    scene = { ...scene, items: [...scene.items, stampPhoto(area)] };
+    selectedIds = new Set([area.id]);
+    scheduleSave();
+    commit();
+  }
+
   function commitText(p: { x: number; y: number }) {
     const item: TextItem = {
       id: cryptoId(),
@@ -5551,6 +5728,8 @@ export async function renderEditor(
   function cancelInProgress() {
     dragPts = null;
     tracePts = null;
+    scatterPolyPts = null;
+    scatterClickStreak = null;
     drawOverItemId = null;
     drawPreview?.destroy();
     drawPreview = null;
@@ -5592,6 +5771,22 @@ export async function renderEditor(
       commitTraceSegments(committed);
     }
     tracePts = null;
+    drawPreview?.destroy();
+    drawPreview = null;
+    redrawScene();
+  }
+
+  // Finish a scattershot polygon draw (Enter / triple-click / mouseleave /
+  // "click near the first point" all route here — mirrors finishTrace()).
+  // Drops the trailing cursor-tracking pair, same as finishTrace, then hands
+  // the committed clicks to commitScattershotPolygon, which cancels instead
+  // of committing when fewer than 3 distinct points survive dedup.
+  function finishScattershotDraw() {
+    if (!scatterPolyPts) return;
+    const committed = scatterPolyPts.slice(0, -2);
+    commitScattershotPolygon(committed);
+    scatterPolyPts = null;
+    scatterClickStreak = null;
     drawPreview?.destroy();
     drawPreview = null;
     redrawScene();
@@ -5660,8 +5855,11 @@ export async function renderEditor(
       // don't fall through to the place/draw pipeline (which would drop a
       // duplicate box and destroy the pressed group mid-gesture). Same trace
       // exception as strands/garlands (continuing OR about to start — #203):
-      // mid-trace clicks continue the polyline.
-      if (e.target.findAncestor(".miniArea", true) && !tracePts && !isTraceDrawContext()) return;
+      // mid-trace clicks continue the polyline. Same exception for a
+      // scattershot polygon outline already in progress (scatterPolyPts) —
+      // a vertex click landing over an existing area must place a point,
+      // not select that area out from under the in-progress draw.
+      if (e.target.findAncestor(".miniArea", true) && !tracePts && !scatterPolyPts && !isTraceDrawContext()) return;
 
       // Click on an existing text item — same.
       if (e.target.findAncestor(".text", true)) return;
@@ -5683,14 +5881,26 @@ export async function renderEditor(
     if (e.target.findAncestor("Transformer", true)) return;
 
     // #13: an armed "Place on this photo" stamp consumes this click — place a
-    // linked twin of the source at the click point, select it, disarm.
+    // linked twin of the source at the click point, select it, disarm. A mini
+    // GROUP source (#240) twins as a WHOLE unit (the group + every live
+    // member, one undo step) via twinMiniGroupAt instead of the single-item
+    // makeTwinAt below.
     if (stampSourceId) {
       const p = imagePoint();
       if (!p || !inPhoto(p)) return;
       const src = scene.items.find((i) => i.id === stampSourceId);
       stampSourceId = null;
       stage.container().style.cursor = toolMode === "select" ? "crosshair" : "";
-      if (src) {
+      if (src && isMiniGroup(src)) {
+        const result = twinMiniGroupAt(scene, src, p, { activePhotoId, idGen: cryptoId });
+        if (result) {
+          scene = result.scene;
+          selectedIds = new Set(result.memberIds);
+          scheduleSave();
+          commit();
+          redrawScene();
+        }
+      } else if (src) {
         const twin = makeTwinAt(src, p);
         scene = { ...scene, items: [...scene.items, twin] };
         selectedIds = new Set([twin.id]);
@@ -5764,9 +5974,52 @@ export async function renderEditor(
       return;
     }
 
-    // Scattershot (lights-only local style): drag a box that fills with
-    // scattered mini-lights on release. Preview drawn on mousemove.
+    // Scattershot (lights-only local style): two gestures share the one tool
+    // flag. A drag (resolved at mouseup, once the release point is known)
+    // draws a box that fills with scattered mini-lights — unchanged. A click
+    // without a real drag instead starts (or, once started, continues) a
+    // click-to-place-points polygon outline, mirroring the "trace" style's
+    // click-click-click convention exactly (see tracePts above).
     if (tool.scattershot) {
+      if (scatterPolyPts) {
+        // Mid-outline: does this click land close enough to the first vertex
+        // to close the shape? Gated on at least SCATTERSHOT_MIN_POINTS other
+        // vertices already committed so an early click can't accidentally
+        // self-close a 1-2-point outline at zero area.
+        const committedSoFar = (scatterPolyPts.length - 2) / 2;
+        const closeDistImg = SCATTERSHOT_CLOSE_PX / stageScale;
+        const dx = p.x - scatterPolyPts[0];
+        const dy = p.y - scatterPolyPts[1];
+        if (committedSoFar >= SCATTERSHOT_MIN_POINTS && Math.hypot(dx, dy) <= closeDistImg) {
+          finishScattershotDraw();
+          return;
+        }
+        // Lock the cursor-tracked pair as a newly committed vertex, then
+        // start tracking a fresh cursor pair — same bookkeeping as trace's
+        // "subsequent click" branch below.
+        scatterPolyPts[scatterPolyPts.length - 2] = p.x;
+        scatterPolyPts[scatterPolyPts.length - 1] = p.y;
+        scatterPolyPts.push(p.x, p.y);
+        drawPreview?.points([...scatterPolyPts]);
+        drawLayer.batchDraw();
+        // Triple-click-to-finish: three rapid, same-spot clicks in a row
+        // close the outline instead of double-click (double-click already
+        // means delete elsewhere in this editor). Each of the 3 clicks
+        // still commits its own near-duplicate vertex above, same as
+        // double-click used to commit 2 — finishScattershotDraw's
+        // slice(0,-2) below plus finalizeScattershotPolygon's consecutive-
+        // near-duplicate dedup collapse them back to the single point the
+        // user actually clicked, so the committed polygon isn't left with
+        // 2 extra degenerate vertices.
+        scatterClickStreak = trackScattershotClick(scatterClickStreak, Date.now(), p.x, p.y);
+        if (scatterClickStreak.count >= SCATTERSHOT_FINISH_CLICK_COUNT) {
+          finishScattershotDraw();
+        }
+        return;
+      }
+      // Not yet known whether this is a box drag or the first outline click
+      // — resolved at mouseup by the drag distance, same threshold the box
+      // path already used.
       scattershotStart = p;
       return;
     }
@@ -5865,6 +6118,14 @@ export async function renderEditor(
       return;
     }
 
+    if (tool.scattershot && scatterPolyPts) {
+      scatterPolyPts[scatterPolyPts.length - 2] = p.x;
+      scatterPolyPts[scatterPolyPts.length - 1] = p.y;
+      drawPreview?.points([...scatterPolyPts]);
+      drawLayer.batchDraw();
+      return;
+    }
+
     if (tool.drawingStyle === "strand" && dragPts) {
       dragPts[dragPts.length - 2] = p.x;
       dragPts[dragPts.length - 1] = p.y;
@@ -5930,16 +6191,33 @@ export async function renderEditor(
 
     if (scattershotStart) {
       const p = imagePoint();
-      if (p) {
-        const x = Math.min(p.x, scattershotStart.x);
-        const y = Math.min(p.y, scattershotStart.y);
-        const w = Math.abs(p.x - scattershotStart.x);
-        const h = Math.abs(p.y - scattershotStart.y);
-        // Reject tiny boxes as accidental clicks (same spirit as strand's 6px).
-        if (w > 8 && h > 8) commitMiniArea({ x, y, width: w, height: h });
-      }
-      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+      const start = scattershotStart;
       scattershotStart = null;
+      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+      if (p) {
+        const x = Math.min(p.x, start.x);
+        const y = Math.min(p.y, start.y);
+        const w = Math.abs(p.x - start.x);
+        const h = Math.abs(p.y - start.y);
+        if (w > 8 && h > 8) {
+          // Reject tiny boxes as accidental clicks (same spirit as strand's 6px).
+          commitMiniArea({ x, y, width: w, height: h });
+          redrawScene();
+          return;
+        }
+        // Not a real drag — this click starts a polygon outline instead:
+        // commit the mousedown point as vertex 1 and start tracking the
+        // cursor (mirrors trace's very first click exactly). Deliberately
+        // skips redrawScene() here — same as trace's first click — because
+        // redrawCanvas() destroys and rebuilds drawLayer's children from
+        // scene.items, which would immediately destroy the fresh preview
+        // line below (nothing is committed to scene.items yet).
+        scatterPolyPts = [start.x, start.y, start.x, start.y];
+        scatterClickStreak = null;
+        newPreview(scatterPolyPts);
+        drawLayer.batchDraw();
+        return;
+      }
       redrawScene();
       return;
     }
@@ -5973,11 +6251,18 @@ export async function renderEditor(
     }
   });
 
-  // Trace mode: leaving the photo finishes the polyline.
+  // Trace mode: leaving the photo finishes the polyline. Same for an
+  // in-progress scattershot polygon outline (finishScattershotDraw no-ops
+  // when nothing is in progress, same as finishTrace).
   stage.on("mouseleave", () => {
     if (tool.drawingStyle === "trace") finishTrace();
+    if (tool.scattershot) finishScattershotDraw();
   });
-  // Double-click also finishes (extra safety / convention).
+  // Double-click also finishes a trace (extra safety / convention). NOT
+  // wired for scattershot: that outline finishes on a TRIPLE click instead
+  // (see the mid-outline mousedown handler above) because double-click
+  // already means DELETE on an existing item elsewhere in this editor —
+  // double-click-to-finish collided with that muscle memory.
   stage.on("dblclick", () => {
     if (tool.drawingStyle === "trace") finishTrace();
   });
@@ -5996,7 +6281,21 @@ export async function renderEditor(
     // (#98): pass no override and DEFAULT_KEYMAP reproduces the original
     // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Ctrl+C / Ctrl+V / Delete / Esc set.
     if (e.key === "Enter" && tool.drawingStyle === "trace" && tracePts) {
+      // preventDefault: this listener is on window, so it runs regardless of
+      // where focus is — including a side-panel button. Without this, the
+      // SAME Enter keypress also triggers the browser's native "Enter
+      // activates the focused button" behavior right after, firing that
+      // button's own click handler and stepping on the finish we just did.
+      e.preventDefault();
       finishTrace();
+      return;
+    }
+    // Enter while placing a scattershot polygon outline closes it — same
+    // fixed, non-remappable behavior as trace's Enter-to-finish above
+    // (including the preventDefault, for the same reason).
+    if (e.key === "Enter" && tool.scattershot && scatterPolyPts) {
+      e.preventDefault();
+      finishScattershotDraw();
       return;
     }
     const action = resolveAction(e, opts.keymap ?? DEFAULT_KEYMAP, "core");
@@ -6036,10 +6335,21 @@ export async function renderEditor(
         e.preventDefault();
         break;
       case "cancel":
-        // Esc: finish an in-progress trace, else clear selection, else cancel.
+        // Esc: finish an in-progress trace, else cancel an in-progress
+        // scattershot outline, else clear selection, else cancel.
         // (No preventDefault — matches the original Esc behavior.)
+        //
+        // Scattershot's Esc deliberately CANCELS (discards the in-progress
+        // outline, no commit) rather than finishing it like trace's Esc
+        // does above. Trace's partial segments are each independently a
+        // valid, useful strand on their own, so "finish what's drawn so
+        // far" makes sense; a 1-2 point polygon has no such value, and the
+        // brief calls out Escape/cancel as distinct from the close-the-
+        // shape gestures (triple-click / click-near-first-point / Enter).
         if (tool.drawingStyle === "trace" && tracePts) {
           finishTrace();
+        } else if (tool.scattershot && scatterPolyPts) {
+          cancelInProgress();
         } else if (stampSourceId) {
           cancelInProgress();
         } else if (selectedIds.size > 0) {

@@ -88,6 +88,13 @@ const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
       segmentUpdates: [] as Record<string, unknown>[],
       crewMembers: [] as { id: string; active: boolean; is_office: boolean; telegram_user_id: string | null }[],
       activityInserts: [] as Record<string, unknown>[],
+      deleted: [] as ShiftRow[],
+      deleteError: null as DbError | null,
+      activityError: null as DbError | null,
+      childReadError: null as DbError | null,
+      // Row 459's paid-shift guard reads this table on every edit and void.
+      settlementLines: [] as { id: string; settlement_id: string; shift_id: string; voided_at: string | null }[],
+      settlementReadError: null as DbError | null,
     },
   },
 }));
@@ -151,9 +158,14 @@ function makeChildBuilder(
         maybeSingle: () =>
           Promise.resolve({ data: filtered[0] ? { ...filtered[0] } : null, error: null }),
         then: (
-          res: (v: { data: Array<Record<string, unknown>>; error: null }) => unknown,
+          res: (v: { data: Array<Record<string, unknown>> | null; error: DbError | null }) => unknown,
           rej?: (e: unknown) => unknown,
-        ) => Promise.resolve({ data: filtered.map((r) => ({ ...r })), error: null }).then(res, rej),
+        ) =>
+          Promise.resolve(
+            stateRef.current.childReadError
+              ? { data: null, error: stateRef.current.childReadError }
+              : { data: filtered.map((r) => ({ ...r })), error: null },
+          ).then(res, rej),
       };
       return readBuilder;
     },
@@ -215,11 +227,38 @@ function makeDb() {
         };
         return crewBuilder as never;
       }
+      if (table === 'shift_settlement_lines') {
+        // assertNotSettled: select(...).eq('shift_id', x).is('voided_at', null).limit(1)
+        let list = [...stateRef.current.settlementLines];
+        const settlementBuilder = {
+          select: () => settlementBuilder,
+          eq: (col: string, val: unknown) => {
+            list = list.filter((row) => (row as unknown as Record<string, unknown>)[col] === val);
+            return settlementBuilder;
+          },
+          is: (col: string, val: unknown) => {
+            if (val === null) {
+              list = list.filter((row) => (row as unknown as Record<string, unknown>)[col] === null);
+            }
+            return settlementBuilder;
+          },
+          limit: (n: number) =>
+            Promise.resolve(
+              stateRef.current.settlementReadError
+                ? { data: null, error: stateRef.current.settlementReadError }
+                : { data: list.slice(0, n), error: null },
+            ),
+        };
+        return settlementBuilder as never;
+      }
       if (table === 'dashboard_activity') {
         return {
           insert: (payload: Record<string, unknown>) => {
             stateRef.current.activityInserts.push(payload);
-            return Promise.resolve({ error: null });
+            // Supabase returns { error } rather than throwing, so a test that
+            // only models a thrown insert proves nothing about a real DB
+            // failure (the void audit's whole guard rides on this).
+            return Promise.resolve({ error: stateRef.current.activityError });
           },
         } as never;
       }
@@ -347,6 +386,30 @@ function makeDb() {
           };
           return updateBuilder;
         },
+        // Void path: a guarded DELETE with a CAS on updated_at, mirroring the
+        // update builder above so a race can be injected the same way.
+        delete: () => {
+          let deleteFilters: Partial<Record<keyof ShiftRow, unknown>> = {};
+          const deleteBuilder = {
+            eq: (col: keyof ShiftRow, val: unknown) => {
+              deleteFilters = { ...deleteFilters, [col]: val };
+              return deleteBuilder;
+            },
+            select: () => ({
+              maybeSingle: () => {
+                if (stateRef.current.deleteError) {
+                  return Promise.resolve({ data: null, error: stateRef.current.deleteError });
+                }
+                const idx = stateRef.current.rows.findIndex((row) => matches(row, deleteFilters));
+                if (idx === -1) return Promise.resolve({ data: null, error: null });
+                const [removed] = stateRef.current.rows.splice(idx, 1);
+                stateRef.current.deleted.push(removed);
+                return Promise.resolve({ data: removed, error: null });
+              },
+            }),
+          };
+          return deleteBuilder;
+        },
       };
 
       return builder;
@@ -376,6 +439,12 @@ beforeEach(() => {
       { id: 'crew-3', active: true, is_office: false, telegram_user_id: null },
     ],
     activityInserts: [],
+    deleted: [],
+    deleteError: null,
+    activityError: null,
+    childReadError: null,
+    settlementLines: [],
+    settlementReadError: null,
   };
   dbRef.current = makeDb();
 });
@@ -387,6 +456,7 @@ afterEach(() => {
 import {
   adminCreateShift,
   adminUpdateShiftTimes,
+  adminVoidShift,
   clockIn,
   clockOut,
   getOpenShift,
@@ -563,6 +633,33 @@ describe('adminUpdateShiftTimes', () => {
     );
   });
 
+  it('refuses a FUTURE-dated entry (an admin typo would silently block that person from ever clocking in)', async () => {
+    // Fake clock is 2026-08-10T15:30Z; this entry is tomorrow.
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-2',
+        clockInAt: '2026-08-11T07:00:00.000Z',
+        clockOutAt: '2026-08-11T15:00:00.000Z',
+        actor: 'Naldo',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('refuses a future clock-in on a keep-open edit too', async () => {
+    await expectRefused(
+      adminUpdateShiftTimes({
+        shiftId: 'shift-open-1',
+        clockInAt: '2026-08-11T07:00:00.000Z',
+        clockOutAt: null,
+        actor: 'Jason',
+      }),
+      'invalid-times',
+    );
+    expect(stateRef.current.updated).toEqual([]);
+  });
+
   it("maps the DB exclusion constraint (23P01) to the same 'overlap' refusal", async () => {
     stateRef.current.insertError = {
       code: '23P01',
@@ -735,6 +832,285 @@ describe('adminUpdateShiftTimes', () => {
     );
     const row = stateRef.current.rows.find((r) => r.id === 'shift-closed-1');
     expect(row?.clock_in_at).toBe('2026-08-10T08:00:00.000Z');
+  });
+});
+
+// A manual entry that should never have existed cannot be corrected by
+// shrinking it: a one-minute shift is still payroll. Voiding DELETES the row,
+// which is only safe because the guards below keep it to rows the office
+// typed itself, with no break or job time hanging off them (row 458).
+describe('adminVoidShift', () => {
+  const MANUAL_SHIFT: ShiftRow = {
+    id: 'shift-manual-1',
+    crew_member_id: 'crew-2',
+    clock_in_at: '2026-08-09T12:00:00.000Z',
+    clock_out_at: '2026-08-09T20:00:00.000Z',
+    source: 'office',
+    close_source: 'office',
+    device_time: null,
+    manual_by: 'Naldo (naldo@example.com)',
+    created_at: '2026-08-09T21:00:00.000Z',
+    updated_at: '2026-08-09T21:00:00.000Z',
+  };
+
+  it('deletes a manual office entry and records the whole row it destroyed', async () => {
+    stateRef.current.rows = [MANUAL_SHIFT];
+
+    await adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly (kelly@example.com)' });
+
+    expect(stateRef.current.rows).toHaveLength(0);
+    expect(stateRef.current.deleted.map((r) => r.id)).toEqual(['shift-manual-1']);
+    // The audit row is the ONLY copy of a deleted shift, so it carries the
+    // whole row, not a summary of it.
+    expect(stateRef.current.activityInserts).toHaveLength(1);
+    const entry = stateRef.current.activityInserts[0] as {
+      actor: string;
+      action: string;
+      detail: { shiftId: string; crewMemberId: string; before: Record<string, unknown> };
+    };
+    expect(entry.actor).toBe('Kelly (kelly@example.com)');
+    expect(entry.action).toBe('shift-manual-void');
+    expect(entry.detail.shiftId).toBe('shift-manual-1');
+    expect(entry.detail.before).toMatchObject({
+      clock_in_at: '2026-08-09T12:00:00.000Z',
+      clock_out_at: '2026-08-09T20:00:00.000Z',
+      source: 'office',
+      manual_by: 'Naldo (naldo@example.com)',
+    });
+  });
+
+  it('refuses a shift the crew member clocked themselves', async () => {
+    // OPEN_SHIFT is source 'pwa': the crew member's own record. Deleting it
+    // would erase time they logged, which is not what this action is for.
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-open-1', actor: 'Kelly' }),
+      'not-manual',
+    );
+    expect(stateRef.current.rows.some((r) => r.id === 'shift-open-1')).toBe(true);
+  });
+
+  it('refuses an office-source row that carries no manual stamp', async () => {
+    // CLOSED_SHIFT is source 'office' with manual_by null: closed from the
+    // office, not typed as a manual entry. Both halves have to hold.
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-closed-1', actor: 'Kelly' }),
+      'not-manual',
+    );
+    expect(stateRef.current.rows.some((r) => r.id === 'shift-closed-1')).toBe(true);
+  });
+
+  it('refuses a shift that has a break on it', async () => {
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.breaks = [
+      { ...OPEN_BREAK, id: 'break-1', shift_id: 'shift-manual-1', ended_at: '2026-08-09T13:00:00.000Z' },
+    ];
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'has-children',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('refuses a shift that has job time on it', async () => {
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.segments = [
+      { id: 'seg-1', shift_id: 'shift-manual-1', arrived_at: '2026-08-09T13:00:00.000Z', departed_at: null },
+    ];
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'has-children',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('refuses an id that matches no shift', async () => {
+    await expectRefused(adminVoidShift({ shiftId: 'nobody', actor: 'Kelly' }), 'not-found');
+  });
+
+  it('refuses when the row changed between the read and the delete', async () => {
+    stateRef.current.rows = [MANUAL_SHIFT];
+    // The crew member reopens or an admin edits it in the gap: the CAS on
+    // updated_at must match zero rows rather than delete a row the admin
+    // never saw.
+    stateRef.current.afterSelect = () => {
+      stateRef.current.rows[0] = { ...MANUAL_SHIFT, updated_at: '2026-08-09T22:00:00.000Z' };
+    };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'edit-race',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('writes the audit row BEFORE the delete, and refuses the void if it cannot be written', async () => {
+    // The audit entry is the only copy of a deleted payroll row, so it cannot
+    // be best-effort: if it fails, the row must survive. Supabase reports a
+    // failed insert as { error }, it does not throw, so the guard has to read
+    // that field rather than rely on a try/catch.
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.activityError = { message: 'activity insert failed' };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'audit-failed',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+    expect(stateRef.current.deleted).toHaveLength(0);
+  });
+
+  it('corrects the trail when the audit lands but the delete loses its race', async () => {
+    // The audit row is written first on purpose, so the mirror case is real:
+    // the entry says a shift was removed and then the delete is refused. An
+    // uncorrected entry is an audit trail that lies about payroll, which is
+    // the same class the audit-first ordering exists to prevent (S78 wrap
+    // delta-verify, which proved this empirically).
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.afterSelect = () => {
+      stateRef.current.rows[0] = { ...MANUAL_SHIFT, updated_at: '2026-08-09T22:00:00.000Z' };
+    };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'edit-race',
+    );
+
+    expect(stateRef.current.rows).toHaveLength(1);
+    const actions = stateRef.current.activityInserts.map((e) => e.action);
+    expect(actions).toEqual(['shift-manual-void', 'shift-manual-void-aborted']);
+    const correction = stateRef.current.activityInserts[1] as {
+      detail: { shiftId: string; reason: string };
+    };
+    expect(correction.detail.shiftId).toBe('shift-manual-1');
+    expect(correction.detail.reason).toBe('edit-race');
+  });
+
+  it('refuses when the child lookup fails, rather than deleting blind', async () => {
+    stateRef.current.rows = [MANUAL_SHIFT];
+    stateRef.current.childReadError = { message: 'db down' };
+
+    await expectRefused(
+      adminVoidShift({ shiftId: 'shift-manual-1', actor: 'Kelly' }),
+      'has-children',
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+});
+
+describe('the paid-shift guard (ledger row 459)', () => {
+  const paidLine = (shiftId: string, voidedAt: string | null = null) => ({
+    id: `line-${shiftId}`,
+    settlement_id: 'settlement-1',
+    shift_id: shiftId,
+    voided_at: voidedAt,
+  });
+
+  it('refuses to rewrite the times of a shift somebody has been paid for', async () => {
+    stateRef.current.settlementLines = [paidLine(CLOSED_SHIFT.id)];
+    const { adminUpdateShiftTimes, ManualShiftRefusedError } = await import('./shifts');
+    await expect(
+      adminUpdateShiftTimes({
+        shiftId: CLOSED_SHIFT.id,
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor: 'Jason (jason@x)',
+      }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    await expect(
+      adminUpdateShiftTimes({
+        shiftId: CLOSED_SHIFT.id,
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor: 'Jason (jason@x)',
+      }),
+    ).rejects.toBeInstanceOf(ManualShiftRefusedError);
+    // Nothing was written: not the row, not the trail.
+    expect(stateRef.current.updated).toHaveLength(0);
+    expect(stateRef.current.activityInserts).toHaveLength(0);
+  });
+
+  it('refuses to remove a shift somebody has been paid for, BEFORE writing any trail entry', async () => {
+    // A manual office entry, which is the only kind a void would otherwise
+    // accept — so the refusal here is the settlement, not the row's shape.
+    const manual = { ...CLOSED_SHIFT, id: 'shift-manual-paid', manual_by: 'Ann (ann@x)' };
+    stateRef.current.rows = [manual];
+    stateRef.current.settlementLines = [paidLine(manual.id)];
+    const { adminVoidShift } = await import('./shifts');
+    await expect(
+      adminVoidShift({ shiftId: manual.id, actor: 'Jason (jason@x)' }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    expect(stateRef.current.deleted).toHaveLength(0);
+    // The trail must not record a removal that was refused.
+    expect(stateRef.current.activityInserts).toHaveLength(0);
+  });
+
+  it('lets an edit through once the payment has been VOIDED, which releases the shift', async () => {
+    stateRef.current.settlementLines = [paidLine(CLOSED_SHIFT.id, '2026-08-10T14:00:00.000Z')];
+    const { adminUpdateShiftTimes } = await import('./shifts');
+    const updated = await adminUpdateShiftTimes({
+      shiftId: CLOSED_SHIFT.id,
+      clockInAt: '2026-08-10T08:00:00.000Z',
+      clockOutAt: '2026-08-10T11:00:00.000Z',
+      actor: 'Jason (jason@x)',
+    });
+    expect(updated.clockOutAt).toBe('2026-08-10T11:00:00.000Z');
+    expect(stateRef.current.updated).toHaveLength(1);
+  });
+
+  it('lets an edit through for a shift on nobody else’s settlement', async () => {
+    stateRef.current.settlementLines = [paidLine('some-other-shift')];
+    const { adminUpdateShiftTimes } = await import('./shifts');
+    const updated = await adminUpdateShiftTimes({
+      shiftId: CLOSED_SHIFT.id,
+      clockInAt: '2026-08-10T08:00:00.000Z',
+      clockOutAt: '2026-08-10T11:00:00.000Z',
+      actor: 'Jason (jason@x)',
+    });
+    expect(updated.clockOutAt).toBe('2026-08-10T11:00:00.000Z');
+  });
+
+  it('FAILS CLOSED: an unreadable settlement lookup refuses the edit rather than allowing it', async () => {
+    // On payroll a refusal costs a retry; rewriting hours somebody was
+    // already paid for costs a correction nobody can see.
+    stateRef.current.settlementReadError = { message: 'connection reset' };
+    const { adminUpdateShiftTimes } = await import('./shifts');
+    await expect(
+      adminUpdateShiftTimes({
+        shiftId: CLOSED_SHIFT.id,
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor: 'Jason (jason@x)',
+      }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    expect(stateRef.current.updated).toHaveLength(0);
+  });
+
+  it('FAILS CLOSED on the void path too', async () => {
+    const manual = { ...CLOSED_SHIFT, id: 'shift-manual-2', manual_by: 'Ann (ann@x)' };
+    stateRef.current.rows = [manual];
+    stateRef.current.settlementReadError = { message: 'connection reset' };
+    const { adminVoidShift } = await import('./shifts');
+    await expect(
+      adminVoidShift({ shiftId: manual.id, actor: 'Jason (jason@x)' }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    expect(stateRef.current.deleted).toHaveLength(0);
+  });
+
+  it('still allows ADDING a shift to a day that already holds a paid one', async () => {
+    // Settlement is per shift, not per day. A new shift is hours nobody has
+    // been paid for yet, and refusing it would strand real work behind a
+    // payment for different hours.
+    stateRef.current.settlementLines = [paidLine(CLOSED_SHIFT.id)];
+    const { adminCreateShift } = await import('./shifts');
+    const created = await adminCreateShift({
+      crewMemberId: 'crew-3',
+      clockInAt: '2026-08-10T12:00:00.000Z',
+      clockOutAt: '2026-08-10T13:00:00.000Z',
+      actor: 'Jason (jason@x)',
+    });
+    expect(created.clockOutAt).toBe('2026-08-10T13:00:00.000Z');
   });
 });
 

@@ -14,12 +14,15 @@ import {
   upsertContact,
   upsertContactCustomField,
   createContactNote,
+  createInternalComment,
   createContact,
   listLocationCustomFields,
   createLocationCustomField,
   sendSms,
   updateOpportunity,
   getContactInternal,
+  getContactDndState,
+  parseContactDndState,
   getGhlUser,
   HighLevelError,
 } from './highlevel';
@@ -489,6 +492,94 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
     });
   });
 
+  // 2026-09-02 incident: Settings → HighLevel's DND health check. The pure
+  // parser is tested directly (no network); getContactDndState's own test
+  // proves it wires ghlFetch's `{ contact }` envelope into that parser.
+  describe('parseContactDndState (2026-09-02 incident — internal-alert DND health check, fails closed)', () => {
+    it('active Email DND → emailDnd:true, reason "active", carrying the message + code', () => {
+      const result = parseContactDndState({
+        id: 'c1',
+        dndSettings: { Email: { status: 'active', message: 'User clicked on the unsubscribe link', code: '105' } },
+      });
+      expect(result).toEqual({
+        emailDnd: true,
+        reason: 'active',
+        message: 'User clicked on the unsubscribe link',
+        code: '105',
+      });
+    });
+
+    // scripts/winback-recon.ts ~266-268: GHL's own auto opt-out (STOP keyword
+    // / unsubscribe) sets status:'permanent', observed live 2026-07-27 — the
+    // pre-fix predicate (status==='active') would have read this as healthy.
+    it('permanent Email DND (GHL auto opt-out) → emailDnd:true, reason "permanent"', () => {
+      const result = parseContactDndState({
+        id: 'c1',
+        dndSettings: { Email: { status: 'permanent', message: 'STOP keyword', code: '106' } },
+      });
+      expect(result).toEqual({ emailDnd: true, reason: 'permanent', message: 'STOP keyword', code: '106' });
+    });
+
+    // scripts/winback-send.ts ~152-156: a blanket contact-level dnd flag,
+    // independent of dndSettings entirely.
+    it('contact-level dnd:true (no dndSettings) → emailDnd:true, reason "contact-dnd"', () => {
+      const result = parseContactDndState({ id: 'c1', dnd: true });
+      expect(result).toEqual({ emailDnd: true, reason: 'contact-dnd', message: undefined, code: undefined });
+    });
+
+    it('an unrecognized future Email.status → emailDnd:true, reason "unknown:<status>" (fails closed)', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { Email: { status: 'snoozed' } } });
+      expect(result).toEqual({ emailDnd: true, reason: 'unknown:snoozed', message: undefined, code: undefined });
+    });
+
+    it('missing dndSettings entirely → emailDnd:false', () => {
+      const result = parseContactDndState({ id: 'c1' });
+      expect(result).toEqual({ emailDnd: false });
+    });
+
+    it('Email DND present but inactive, no contact-level dnd → emailDnd:false — the real prod contact\'s current shape', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { Email: { status: 'inactive' } } });
+      expect(result).toEqual({ emailDnd: false });
+    });
+
+    it('status undefined (Email object present but empty) → emailDnd:false', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { Email: {} } });
+      expect(result?.emailDnd).toBe(false);
+    });
+
+    // Fix round: GHL's channel-key casing is inconsistent (already observed
+    // for SMS in scripts/winback-recon.ts:208) — a lowercase `email` key must
+    // still be read, or an active DND under that key renders green.
+    it('lowercase "email" channel key (GHL casing inconsistency) → still reads status:active as blocked', () => {
+      const result = parseContactDndState({ id: 'c1', dndSettings: { email: { status: 'active', code: '105' } } });
+      expect(result).toEqual({ emailDnd: true, reason: 'active', message: undefined, code: '105' });
+    });
+
+    it('malformed/absent contact → null', () => {
+      expect(parseContactDndState(null)).toBeNull();
+      expect(parseContactDndState(undefined)).toBeNull();
+      expect(parseContactDndState('not-an-object')).toBeNull();
+    });
+  });
+
+  describe('getContactDndState', () => {
+    it('fetches /contacts/{id} and parses the envelope\'s contact.dndSettings.Email', async () => {
+      const fetchMock = mockFetchCapture({
+        contact: { id: 'c1', dndSettings: { Email: { status: 'active', message: 'unsubscribed', code: '105' } } },
+      });
+      const result = await getContactDndState('c1');
+      expect(result).toEqual({ emailDnd: true, reason: 'active', message: 'unsubscribed', code: '105' });
+      const [url] = fetchMock.mock.calls[0];
+      expect(url).toContain('/contacts/c1');
+    });
+
+    it('no contact in the response → null', async () => {
+      mockFetchOnce({});
+      const result = await getContactDndState('c1');
+      expect(result).toBeNull();
+    });
+  });
+
   // ─── #leads website lead capture — the two new client functions ─────────
   describe('upsertContact', () => {
     it('POSTs /contacts/upsert with locationId + the given fields, and never sends tags', async () => {
@@ -636,6 +727,44 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect(String(url)).toContain('/contacts/c1/notes');
       expect((init as RequestInit).method).toBe('POST');
       expect(JSON.parse((init as RequestInit).body as string)).toEqual({ body: 'hello world' });
+    });
+  });
+
+  describe('createInternalComment', () => {
+    // Local non-ok fetch helper -- mockFetchStatus above is scoped to a
+    // different describe block, so this mirrors it rather than reaching
+    // across scopes.
+    function mockCommentFetchStatus(status: number, json: unknown) {
+      const fn = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => json,
+        text: async () => JSON.stringify(json),
+      }));
+      vi.stubGlobal('fetch', fn);
+      return fn;
+    }
+
+    it('POSTs /conversations/messages with type InternalComment, contactId, message, and no mentions', async () => {
+      const fetchMock = mockFetchCapture({ conversationId: 'conv-1', messageId: 'msg-1' });
+
+      await createInternalComment('c1', 'hello world');
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/conversations/messages');
+      expect((init as RequestInit).method).toBe('POST');
+      expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+        type: 'InternalComment',
+        contactId: 'c1',
+        message: 'hello world',
+        mentions: [],
+      });
+    });
+
+    it('a 400 (e.g. a rejected empty mentions array) surfaces as a HighLevelError with .status set', async () => {
+      mockCommentFetchStatus(400, { message: 'mentions is required' });
+      await expect(createInternalComment('c1', 'hello world')).rejects.toMatchObject({ status: 400 });
     });
   });
 

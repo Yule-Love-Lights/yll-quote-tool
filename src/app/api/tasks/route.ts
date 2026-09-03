@@ -28,6 +28,7 @@ import {
   type OfficeTask,
   type OfficeTaskListView,
 } from '@/lib/officeTasks';
+import { highLevelContactUrlFromEnv } from '@/lib/highLevelLinks';
 import { readIdempotencyKey, taskError } from './taskRequest';
 
 export const runtime = 'nodejs';
@@ -46,6 +47,22 @@ function taskResponse(task: OfficeTask) {
     completedAt: task.completedAt,
     dismissedAt: task.dismissedAt,
     createdByLabel: task.createdByLabel,
+    // Who it is assigned to, as a label only. Assignment never gates who may
+    // see or act on a task (the everything-is-shared ruling) — the /tasks
+    // page uses it to show and filter by owner.
+    assignedToLabel: task.assignedToLabel,
+    // The customer this task is about. contactId is a HighLevel contact id,
+    // which is also what /customers/[contactId] takes as its route id, so the
+    // client links straight to it with no further lookup.
+    //
+    // highLevelUrl is built HERE rather than in the client, because building
+    // it needs HIGHLEVEL_LOCATION_ID and OfficeTasksCard is a client
+    // component: reading process.env from a module a client component imports
+    // is its own bug. null when this environment has no location id
+    // configured, and the client then simply renders no HighLevel link.
+    customerContactId: task.customerContactId,
+    customerName: task.customerName,
+    highLevelUrl: highLevelContactUrlFromEnv(task.customerContactId),
   };
 }
 

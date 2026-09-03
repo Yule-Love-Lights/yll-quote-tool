@@ -223,3 +223,83 @@ export function EditShiftTimes({
     </span>
   );
 }
+
+/** A shift time as an admin reads it: Eastern, because payroll is Eastern. */
+function etStamp(iso: string | null): string {
+  if (!iso) return 'still open';
+  return new Date(iso).toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+/**
+ * Remove a manual entry that should never have existed (row 458). Only shown
+ * on rows the office typed itself, mirroring the server guard; the server
+ * refuses everything else, including any shift carrying a break or job time.
+ *
+ * The confirm says what actually happens: the row leaves payroll, and the
+ * activity log keeps the record of what was removed and who removed it.
+ */
+export function VoidShiftButton({
+  shiftId,
+  crewName,
+  clockInAt,
+  clockOutAt,
+}: {
+  shiftId: string;
+  crewName: string;
+  clockInAt: string;
+  clockOutAt: string | null;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (busy) return;
+    // The confirm NAMES the shift. A day with several manual entries gives an
+    // admin several identical Remove links, and a generic prompt is no check
+    // at all when the risk is removing the wrong person's pay (S78 wrap,
+    // staff lens).
+    const ok = window.confirm(
+      `Remove this shift from payroll?
+
+${crewName}: ${etStamp(clockInAt)} to ${etStamp(clockOutAt)}
+
+The activity log keeps a record of what was removed, but the shift itself is gone. Use this only for an entry that should never have existed.`,
+    );
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/shifts/manual', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shiftId }),
+      });
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      setBusy(false);
+      if (!res.ok) {
+        setError(data?.error ?? `Could not remove the shift (${res.status}).`);
+        return;
+      }
+      router.refresh();
+    } catch {
+      setBusy(false);
+      setError('Could not reach the server.');
+    }
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 text-xs">
+      <button type="button" onClick={submit} disabled={busy} className="underline text-red-700 disabled:opacity-50">
+        {busy ? 'Removing…' : 'Remove'}
+      </button>
+      {error && <span className="text-red-700">{error}</span>}
+    </span>
+  );
+}

@@ -434,6 +434,27 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
     expect(json.code).toBe('below-minimum');
   });
 
+  it("accepts permanent's 'E' recommendation card as a packageId", async () => {
+    // The guard used to be a hardcoded A/B/C/D check that 400'd anything else.
+    // A permanent customer tapping the new "Our Recommendation" card would have
+    // been refused at the very last step, after picking and signing.
+    const { client } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ ...validBody, packageId: 'E' }), { params });
+    expect(res.status).toBe(200);
+  });
+
+  it('still rejects a packageId outside the known set', async () => {
+    const { client } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ ...validBody, packageId: 'Z' }), { params });
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.error).toContain('packageId must be one of');
+  });
+
   it('rejects an empty selection', async () => {
     const { client } = makeSb(baseQuote());
     sbRef.current = client;

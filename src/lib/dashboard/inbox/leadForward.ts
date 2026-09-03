@@ -300,10 +300,29 @@ export type ParsedLeadForwardDisplay = {
  * Deliberately lower-confidence than parseLeadForward (a subject substring,
  * not sender domain+display-name equality — see
  * LeadForwardPlatform.displaySubjectContains's doc) because the sender isn't
- * available here. That trade is fine: this function only controls what TEXT
- * renders in the UI. No write/mutation ever reads its result — worst case a
- * crafted subject shows a phone/email hint that isn't really a lead-forward;
- * there's no path from here to identity resolution or a database write.
+ * available here.
+ *
+ * ⚠️ A WRITE READS THIS NOW (2026-09-02), which was not true when the sentence
+ * above was written and is worth understanding before adding another caller.
+ * outboundAnswersLeadForward uses it to decide whether an outbound touch may
+ * auto-clear an open row, so a false parse no longer costs a wrong hint on
+ * screen, it costs a lead marked handled that nobody called. The premerge
+ * technical lens caught the old "no write/mutation ever reads its result"
+ * claim still standing here after that changed.
+ *
+ * Why the weaker check is still acceptable at that call site, stated so the
+ * next person inherits the reasoning rather than the conclusion: a false clear
+ * needs the row to carry BOTH the platform subject substring AND the template
+ * block ("Here ya go <name>: ... Areas to light up:") with a contact in it,
+ * AND an outbound touch to that exact number or address, AND for that touch to
+ * land after the row arrived. An ordinary customer email does not accidentally
+ * contain the template block, and a forger who constructs one gains only the
+ * auto-closing of a row that was already fake. The three other refusals in
+ * outboundAnswersLeadForward are what carry the safety; this parse is the
+ * cheapest of the four, not the load-bearing one.
+ *
+ * If a caller ever needs write-grade certainty on its own, use parseLeadForward
+ * (sender domain + display name + template) rather than widening this one.
  */
 export function parseLeadForwardDisplay(
   subject: string | null | undefined,
@@ -316,4 +335,98 @@ export function parseLeadForwardDisplay(
   const { phone, email } = extractPhoneEmail(scope);
   if (!phone && !email) return null;
   return { platformId: platform.id, phone, email };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound auto-clear for forwarded leads (Naldo, 2026-09-01).
+//
+// The gap this closes, from a real row: a GML Media lead for Fabiola Reid
+// arrived 13:56, the office called her GHL contact at 14:22 and texted at
+// 14:43, and the Gmail row still sat in the inbox as "waiting" until someone
+// marked it by hand at 15:22. An hour of a row nobody needed to see.
+//
+// Why the existing auto-resolve could not do it: that one is PER CONVERSATION
+// (reducer.ts / isAnsweredByDirection) -- a row clears when its OWN last
+// message is outbound. A forwarded lead's own channel is the platform's
+// no-reply relay, so it can NEVER receive an outbound in-channel. The row the
+// UI itself tells you to answer by phone is the one row the resolver cannot
+// see being answered.
+//
+// Naldo's rule, 2026-09-01: ANY outbound touch clears it -- a call placed
+// counts, even one that went to voicemail. Reaching them is what the
+// follow-up state is for; this is only about whether the office has acted.
+//
+// Matching is MESSAGE-LEVEL on BOTH sides, deliberately. The row's phone and
+// email come from parsing its own subject and preview, never from the linked
+// contact, because #268's fix round found a returning customer's merged
+// contact phone false-triggering the forwarded-lead treatment. The same
+// reasoning applies here with more at stake: a contact-level match would clear
+// a real lead because some unrelated number on the same merged contact was
+// dialled.
+
+// normalizeEmail / normalizePhone are already imported at the top of this file.
+
+/** An open row this sweep may clear, as read from the database. */
+export type LeadForwardCandidateRow = {
+  id: string;
+  subject: string | null;
+  preview: string | null;
+  status: string;
+  lastMessageAt: Date | null;
+};
+
+/** The outbound touch doing the clearing. */
+export type OutboundTouchIdentity = {
+  phones: string[];
+  emails: string[];
+  at: Date;
+};
+
+/**
+ * Whether one outbound touch answers one forwarded-lead row. PURE.
+ *
+ * Every condition is a refusal the row has to get past:
+ *   1. It parses as a lead forward from its OWN subject and preview.
+ *   2. It is still open. A dismissed row stays dismissed (spam is sticky),
+ *      and a handled or completed one keeps its existing attribution.
+ *   3. The outbound happened strictly AFTER the lead arrived. An earlier call
+ *      answered something else; it cannot answer a lead that did not exist.
+ *   4. The outbound reached a phone or email the ROW itself names.
+ */
+export function outboundAnswersLeadForward(
+  row: LeadForwardCandidateRow,
+  outbound: OutboundTouchIdentity,
+): boolean {
+  if (row.status !== 'unresponded') return false;
+
+  const parsed = parseLeadForwardDisplay(row.subject, row.preview);
+  if (!parsed) return false;
+
+  // No arrival time means we cannot show the outbound came after it. Refuse
+  // rather than guess: a wrongly cleared lead is a customer nobody calls.
+  if (!row.lastMessageAt) return false;
+  if (outbound.at.getTime() <= row.lastMessageAt.getTime()) return false;
+
+  const rowPhone = parsed.phone ? normalizePhone(parsed.phone) : null;
+  const rowEmail = parsed.email ? normalizeEmail(parsed.email) : null;
+  if (!rowPhone && !rowEmail) return false;
+
+  const touchPhones = outbound.phones
+    .map((p) => normalizePhone(p))
+    .filter((p): p is string => !!p);
+  const touchEmails = outbound.emails
+    .map((e) => normalizeEmail(e))
+    .filter((e): e is string => !!e);
+
+  if (rowPhone && touchPhones.includes(rowPhone)) return true;
+  if (rowEmail && touchEmails.includes(rowEmail)) return true;
+  return false;
+}
+
+/** Every candidate row this outbound touch answers. PURE. */
+export function leadForwardsAnsweredBy(
+  rows: LeadForwardCandidateRow[],
+  outbound: OutboundTouchIdentity,
+): string[] {
+  return rows.filter((r) => outboundAnswersLeadForward(r, outbound)).map((r) => r.id);
 }

@@ -5,7 +5,7 @@
 // backslash and control-char variants) and falls back to '/'.
 
 import { describe, it, expect } from 'vitest';
-import { safeRedirectTarget } from './page';
+import { safeRedirectTarget } from './redirectTarget';
 
 describe('safeRedirectTarget', () => {
   it('allows a same-origin path', () => {

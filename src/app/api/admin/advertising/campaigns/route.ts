@@ -26,7 +26,20 @@ export async function GET() {
   const auth = await requireAdmin();
   if ('response' in auth) return auth.response;
   const campaigns = await listAdvertisingCampaigns({ includeInactive: true });
-  return NextResponse.json({ campaigns });
+  const { campaignActivitySummary } = await import('@/lib/advertising/placements');
+  const activity = await campaignActivitySummary(campaigns.map((c) => c.id));
+  return NextResponse.json({
+    campaigns: campaigns.map((c) => {
+      const a = activity.get(c.id);
+      return {
+        ...c,
+        photoCount: a?.photoCount ?? 0,
+        workerCount: a?.workerCount ?? 0,
+        lastPhotoAt: a?.lastPhotoAt ?? null,
+        pendingCount: a?.pendingCount ?? 0,
+      };
+    }),
+  });
 }
 
 /**
@@ -52,7 +65,7 @@ export async function POST(req: NextRequest) {
   if ('response' in auth) return auth.response;
 
   const body = (await req.json().catch(() => null)) as
-    | { name?: unknown; notes?: unknown; rateCents?: unknown; isTest?: unknown }
+    | { name?: unknown; kind?: unknown; notes?: unknown; rateCents?: unknown; isTest?: unknown }
     | null;
   const name = String(body?.name ?? '').trim();
   if (!name) return NextResponse.json({ error: 'Give the campaign a name.' }, { status: 400 });
@@ -61,8 +74,10 @@ export async function POST(req: NextRequest) {
   if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
 
   try {
+    const kind = body?.kind === 'door_hanger' ? 'door_hanger' as const : 'yard_sign' as const;
     const campaign = await createAdvertisingCampaign({
       name,
+      kind,
       notes: typeof body?.notes === 'string' ? body.notes : null,
       rateCents: rate.value,
       isTest: body?.isTest === true,
@@ -96,6 +111,27 @@ export async function PATCH(req: NextRequest) {
 
   const rate = readRateCents(body as Record<string, unknown> | null);
   if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
+
+  // A name that is present but blank (or not a string at all) is a user
+  // error, and it reads as one. Without this the data layer's throw lands in
+  // the catch below as a generic 500, which tells the admin nothing about
+  // what to fix; and a non-string name was silently DROPPED, the same shape
+  // as the rate bug this file's tests pin.
+  if (body?.name !== undefined) {
+    if (typeof body.name !== 'string' || !body.name.trim()) {
+      return NextResponse.json({ error: 'Give the campaign a name.' }, { status: 400 });
+    }
+  }
+  // Every other patch field is refused when malformed rather than dropped,
+  // for the same reason the rate is: sent alongside a valid field the patch
+  // is not empty, so a dropped one returns a cheerful 200 having ignored
+  // half of what the admin asked for.
+  if (body?.notes !== undefined && body.notes !== null && typeof body.notes !== 'string') {
+    return NextResponse.json({ error: 'The description must be text.' }, { status: 400 });
+  }
+  if (body?.active !== undefined && typeof body.active !== 'boolean') {
+    return NextResponse.json({ error: 'Send the campaign as open or closed, true or false.' }, { status: 400 });
+  }
 
   const patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean } = {};
   if (typeof body?.name === 'string') patch.name = body.name;

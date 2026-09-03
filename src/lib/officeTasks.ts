@@ -55,6 +55,33 @@ export type OfficeTask = {
    * no meaningful "personal" framing — see sourceLabel in OfficeTasksCard).
    */
   createdByLabel: string | null;
+  /**
+   * Who the task is assigned to, as a display label: 'You' for the viewer,
+   * a resolved name or email for anyone else, 'a teammate' when that lookup
+   * fails, and null when nothing is assigned. Assignment is a LABEL, never
+   * an access control: the everything-is-shared ruling stands, so every
+   * operator still sees and can act on every task regardless of this field.
+   * Populated for any source_system (the S75 call backfill assigned 9 of 19
+   * call_commitment tasks to reps by email match).
+   */
+  assignedToLabel: string | null;
+  /**
+   * The customer this task is about, resolved through the call it came from:
+   * office_tasks.source_event_id -> call_commitments.ghl_contact_id ->
+   * dashboard_contacts. Null for a task with no resolvable contact (a manual
+   * task always, a call task whose commitment or contact row is missing).
+   *
+   * customerContactId is a HighLevel contact id, which is exactly what
+   * /customers/[contactId] takes as its route id (matchesCustomerRoute in
+   * src/lib/dashboard/customers.ts), so the profile link is a direct use of
+   * this value rather than a second lookup.
+   */
+  customerContactId: string | null;
+  /** The customer's display name, or null when the contact row has none. */
+  customerName: string | null;
+  /** The customer's phone, used only to recognise and remove the duplicated
+   *  name line the producer appends to `detail`. Not rendered on its own. */
+  customerPhone: string | null;
 };
 
 type Row = {
@@ -71,22 +98,181 @@ type Row = {
   completed_at: string | null;
   dismissed_at: string | null;
   created_by: string | null;
+  assigned_to: string | null;
+  source_event_id: string | null;
 };
 
 const TASK_SELECT =
-  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by';
+  'id,source_system,title,detail,status,due_at,created_at,updated_at,blocked_reason,dismissal_reason,completed_at,dismissed_at,created_by,assigned_to,source_event_id';
 
-function toOfficeTask(row: Row, actorId: string, creatorLabels: ReadonlyMap<string, string>): OfficeTask {
-  let createdByLabel: string | null = null;
-  if (row.source_system === 'manual') {
-    if (row.created_by === actorId) createdByLabel = 'You';
-    else if (row.created_by) createdByLabel = creatorLabels.get(row.created_by) ?? 'a teammate';
+/**
+ * A display label for one operator id: 'You' for the viewer, a resolved name
+ * or email for anyone else, and 'a teammate' when the lookup did not resolve.
+ * null for a null id.
+ */
+function labelFor(id: string | null, actorId: string, labels: ReadonlyMap<string, string>): string | null {
+  if (!id) return null;
+  if (id === actorId) return 'You';
+  return labels.get(id) ?? 'a teammate';
+}
+
+/** What one task's customer resolves to, or null when nothing resolved. */
+export type TaskCustomer = {
+  contactId: string;
+  name: string | null;
+  phone: string | null;
+};
+
+/**
+ * The producer (office_tasks_create_from_commitment in
+ * migrations/2026-08-29-call-commitments.sql) builds `detail` by appending
+ * blank-line separated blocks to the commitment's own text: first a customer
+ * line shaped "Name - +phone", then a "Call taken by ..." line. Now that the
+ * customer is rendered as a real link above the detail, that first appended
+ * block would say the same name a second time, so it is removed here.
+ *
+ * Deliberately conservative. A block is removed ONLY when it matches that
+ * exact producer shape: some text, then " - ", then a phone number, and only
+ * when it is not the first block (the commitment's own text always is). A
+ * customer line carrying a name with no phone, or a phone with no name, is
+ * NOT recognised and is left alone: showing a name twice is a cosmetic
+ * problem, and deleting a line of a staffer's real detail is not.
+ *
+ * The one assumption worth naming: protecting only block 0 rests on the
+ * commitment's own text being a single block. If that text ever grew an
+ * internal blank line, a later paragraph of real content that happened to
+ * end in " - " plus a phone-shaped run could be removed. Measured
+ * 2026-09-02 over all 37 commitments in production: 0 contain a blank line
+ * and 0 end in a phone-shaped run, so nothing can hit this today.
+ */
+export function stripCustomerLine(detail: string | null): string | null {
+  if (!detail) return detail;
+  const blocks = detail.split('\n\n');
+  if (blocks.length < 2) return detail;
+  // Skip index 0: the commitment's own detail text is always the first block.
+  const kept = blocks.filter((block, index) => index === 0 || !isCustomerLine(block));
+  if (kept.length === blocks.length) return detail;
+  const rebuilt = kept.join('\n\n').trim();
+  return rebuilt === '' ? null : rebuilt;
+}
+
+/** True for the producer's "Name - +phone" customer line, and nothing else. */
+function isCustomerLine(block: string): boolean {
+  const trimmed = block.trim();
+  if (trimmed.includes('\n')) return false;
+  // "<name> - <phone>": the phone is everything after the last " - ", and is
+  // digits plus the punctuation a phone number carries, nothing else.
+  return /^.+ - \+?\d[\d\s().-]{5,}$/.test(trimmed);
+}
+
+/**
+ * Resolves the customer behind every call-derived task in `rows`, keyed by
+ * task id. Two reads, both bounded by the task list (a small working list,
+ * the same assumption resolveUserLabels already rests on):
+ *
+ *   office_tasks.source_event_id -> call_commitments.ghl_contact_id
+ *   ghl_contact_id -> dashboard_contacts (display name, phone)
+ *
+ * Best-effort throughout, exactly like resolveUserLabels: any failure leaves
+ * the affected tasks with no customer rather than failing the whole list
+ * read. A task list that renders without links is a degraded screen; a task
+ * list that refuses to render is a broken one.
+ *
+ * A contact id that resolves but has no dashboard_contacts row still returns
+ * a TaskCustomer with a null name, because the id alone is enough to link:
+ * /customers/[contactId] loads the contact live from HighLevel.
+ */
+async function resolveTaskCustomers(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  rows: Row[],
+): Promise<Map<string, TaskCustomer>> {
+  const byTask = new Map<string, TaskCustomer>();
+  const commitmentIds = Array.from(
+    new Set(
+      rows
+        .filter((r) => r.source_system === 'call_commitment' && r.source_event_id)
+        .map((r) => r.source_event_id as string),
+    ),
+  );
+  if (!commitmentIds.length) return byTask;
+
+  try {
+    const { data: commitments, error: commitmentError } = await db
+      .from('call_commitments')
+      .select('id,ghl_contact_id')
+      .in('id', commitmentIds);
+    if (commitmentError || !commitments) return byTask;
+
+    const contactIdByCommitment = new Map<string, string>();
+    for (const c of commitments as Array<{ id: string; ghl_contact_id: string | null }>) {
+      if (c.ghl_contact_id) contactIdByCommitment.set(String(c.id), c.ghl_contact_id);
+    }
+    if (!contactIdByCommitment.size) return byTask;
+
+    // Names are a nice-to-have: a failure here still leaves every link
+    // working, so it degrades to an id-only customer rather than to nothing.
+    const details = new Map<string, { name: string | null; phone: string | null }>();
+    const contactIds = Array.from(new Set(contactIdByCommitment.values()));
+    const { data: contacts, error: contactError } = await db
+      .from('dashboard_contacts')
+      .select('ghl_contact_id,display_name,primary_phone')
+      .in('ghl_contact_id', contactIds);
+    if (!contactError && contacts) {
+      for (const c of contacts as Array<{
+        ghl_contact_id: string | null;
+        display_name: string | null;
+        primary_phone: string | null;
+      }>) {
+        if (!c.ghl_contact_id) continue;
+        const name = c.display_name != null && c.display_name.trim() !== '' ? c.display_name.trim() : null;
+        details.set(c.ghl_contact_id, { name, phone: c.primary_phone ?? null });
+      }
+    }
+
+    for (const row of rows) {
+      if (!row.source_event_id) continue;
+      const contactId = contactIdByCommitment.get(row.source_event_id);
+      if (!contactId) continue;
+      const detail = details.get(contactId);
+      byTask.set(row.id, {
+        contactId,
+        name: detail?.name ?? null,
+        phone: detail?.phone ?? null,
+      });
+    }
+  } catch {
+    // best-effort: leave every task without a customer.
   }
+  return byTask;
+}
+
+function toOfficeTask(
+  row: Row,
+  actorId: string,
+  userLabels: ReadonlyMap<string, string>,
+  customers: ReadonlyMap<string, TaskCustomer>,
+): OfficeTask {
+  // createdByLabel stays manual-only on purpose: it drives the "Personal"
+  // badge, which has no meaning for a call-derived task. assignedToLabel is
+  // computed for EVERY source_system, because a call_commitment task is
+  // exactly the kind that carries an assignee.
+  const createdByLabel =
+    row.source_system === 'manual' ? labelFor(row.created_by, actorId, userLabels) : null;
+  const customer = customers.get(row.id) ?? null;
   return {
     id: row.id,
     sourceSystem: row.source_system,
     title: row.title,
-    detail: row.detail,
+    // The name is rendered as a link above the detail now, so the
+    // producer's duplicated "Name - phone" block comes out.
+    //
+    // Gated on the NAME, not merely on a resolved customer. A contact with
+    // no display name renders as "View customer", so stripping the block
+    // there would take away the only name and phone number on the row and
+    // give back a link that names nobody. Measured 2026-09-02: 1 of 20 task
+    // contacts has no display name, so this is a real row, not a hypothetical.
+    // With no name on screen the line stays exactly as staff see it today.
+    detail: customer?.name ? stripCustomerLine(row.detail) : row.detail,
     status: row.status,
     dueAt: row.due_at,
     createdAt: row.created_at,
@@ -96,35 +282,42 @@ function toOfficeTask(row: Row, actorId: string, creatorLabels: ReadonlyMap<stri
     completedAt: row.completed_at,
     dismissedAt: row.dismissed_at,
     createdByLabel,
+    assignedToLabel: labelFor(row.assigned_to, actorId, userLabels),
+    customerContactId: customer?.contactId ?? null,
+    customerName: customer?.name ?? null,
+    customerPhone: customer?.phone ?? null,
   };
 }
 
 /**
- * Resolves a display label for every distinct manual-task creator in `rows`
- * OTHER than `actorId` (the viewer's own tasks get the free 'You' label in
- * toOfficeTask, no lookup needed). Bounded by the task list itself (this
- * repo's Office Tasks is a small working list, not a paginated table), so a
- * per-id admin.getUserById lookup is cheap here — no need to page through
- * the WHOLE auth population the way adminUsers.ts's listAllRawUsers does
- * for the Settings → Accounts screen. Best-effort per id: a lookup failure
- * just leaves that creator unresolved (toOfficeTask's 'a teammate'
- * fallback), never fails the whole list read.
+ * Resolves a display label for every distinct operator id referenced by
+ * `rows` OTHER than `actorId` (the viewer's own ids get the free 'You' label
+ * in labelFor, no lookup needed). Two kinds of id are collected: the
+ * created_by of a MANUAL task (drives the "Personal" badge, meaningless on a
+ * call-derived task) and the assigned_to of ANY task (a call_commitment task
+ * is exactly the kind that carries an assignee). Deduplicated across both, so
+ * one person who both created and is assigned costs one lookup, not two.
+ *
+ * Bounded by the task list itself (this repo's Office Tasks is a small
+ * working list, not a paginated table), so a per-id admin.getUserById lookup
+ * is cheap here — no need to page through the WHOLE auth population the way
+ * adminUsers.ts's listAllRawUsers does for the Settings → Accounts screen.
+ * Best-effort per id: a lookup failure just leaves that id unresolved
+ * (labelFor's 'a teammate' fallback), never fails the whole list read.
  */
-async function resolveCreatorLabels(
+async function resolveUserLabels(
   db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   rows: Row[],
   actorId: string,
 ): Promise<Map<string, string>> {
-  const distinctCreators = Array.from(
-    new Set(
-      rows
-        .filter((r) => r.source_system === 'manual' && r.created_by && r.created_by !== actorId)
-        .map((r) => r.created_by as string),
-    ),
-  );
+  const wanted = new Set<string>();
+  for (const r of rows) {
+    if (r.source_system === 'manual' && r.created_by && r.created_by !== actorId) wanted.add(r.created_by);
+    if (r.assigned_to && r.assigned_to !== actorId) wanted.add(r.assigned_to);
+  }
   const labels = new Map<string, string>();
   await Promise.all(
-    distinctCreators.map(async (id) => {
+    Array.from(wanted).map(async (id) => {
       try {
         const { data, error } = await db.auth.admin.getUserById(id);
         if (error || !data?.user) return;
@@ -198,8 +391,60 @@ export async function listOfficeTasks(
     };
   }
   const rows = (data ?? []) as Row[];
-  const creatorLabels = await resolveCreatorLabels(db, rows, actorId);
-  return { ok: true, tasks: rows.map((row) => toOfficeTask(row, actorId, creatorLabels)) };
+  const [userLabels, customers] = await Promise.all([
+    resolveUserLabels(db, rows, actorId),
+    resolveTaskCustomers(db, rows),
+  ]);
+  return {
+    ok: true,
+    tasks: rows.map((row) => toOfficeTask(row, actorId, userLabels, customers)),
+  };
+}
+
+export type OfficeTaskCounts = { open: number; overdue: number };
+
+export type CountActiveOfficeTasksResult =
+  | { ok: true; counts: OfficeTaskCounts }
+  | { ok: false; reason: 'not_ready' | 'unavailable' };
+
+/**
+ * The two numbers the nav badge needs: how many tasks are active (open +
+ * blocked, the same set listOfficeTasks' 'active' view returns) and how many
+ * of those are past their due time.
+ *
+ * ONE round trip, selecting only due_at. Two head-only counts would also
+ * work, but this is a single query and the active list is inherently small
+ * (a working list, not a paginated table — the same assumption
+ * resolveUserLabels above already rests on). It reads no titles, no details
+ * and no operator ids, so it does no auth lookups and exposes nothing a
+ * viewer could not already read from GET /api/tasks.
+ *
+ * Overdue is computed against the server clock at read time, not the
+ * client's, so a stale or skewed browser clock cannot turn the badge red.
+ */
+export async function countActiveOfficeTasks(): Promise<CountActiveOfficeTasksResult> {
+  const db = getSupabaseServiceClient();
+  if (!db) return { ok: false, reason: 'unavailable' };
+
+  const { data, error } = await db
+    .from('office_tasks')
+    .select('due_at')
+    .in('status', ['open', 'blocked']);
+
+  if (error) {
+    return { ok: false, reason: isOfficeTasksSchemaUnavailable(error) ? 'not_ready' : 'unavailable' };
+  }
+
+  const rows = (data ?? []) as { due_at: string }[];
+  const now = Date.now();
+  let overdue = 0;
+  for (const row of rows) {
+    const due = new Date(row.due_at).getTime();
+    // An unparseable due_at is not evidence of lateness — leave it out
+    // rather than turning the badge red on bad data.
+    if (!Number.isNaN(due) && due < now) overdue += 1;
+  }
+  return { ok: true, counts: { open: rows.length, overdue } };
 }
 
 export type CreateOfficeTaskInput = {

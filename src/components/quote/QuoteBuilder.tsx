@@ -53,6 +53,8 @@ import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAut
 // builder-specific title text, not those components' migration-specific
 // copy — see the chip strip's own comment.
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
+import { ReferralPrefillNotice } from '@/components/quote/ReferralPrefillNotice';
+import { QuoteBuilderCallNotesDrawer } from '@/components/quote/QuoteBuilderCallNotesDrawer';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
 import dynamic from 'next/dynamic';
@@ -6305,6 +6307,19 @@ Send anyway?`,
 
             {/* Referral program (#41 "mention" attribution) — an existing
                 customer staff picks as "Referred by" while building THIS quote. */}
+            {/* ...and the prompt that stops that pick being missed. A referral
+                only pays if the referrer is set BEFORE the deposit; adding it
+                later does not accrue the credit. This reads back the 'link'
+                row the friend created at /refer/<code>, which nothing else in
+                the app has ever looked at. */}
+            <ReferralPrefillNotice
+              phone={form.customer.phone}
+              email={form.customer.email}
+              excludeCustomerId={linkedCustomerId}
+              alreadySet={!!referredBy}
+              quoteAlreadyBooked={bookedAmendEligible}
+              onUse={setReferredBy}
+            />
             <ReferredByPicker value={referredBy} onChange={setReferredBy} />
 
             {/* Referral program redemption (#41 PR 2) — referee side: this
@@ -7896,17 +7911,32 @@ Send anyway?`,
                   <span />
                 </div>
                 {form.customLineItems.map((item, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_96px_64px_28px] gap-2 mb-2 items-start">
-                    <input className={inp} type="text" placeholder="e.g. Custom monogram display"
-                      value={item.label}
-                      onChange={e => updateCustomLineItem(i, { label: e.target.value })} />
-                    <input className={inp} type="number" min="0" step="0.01"
-                      value={item.amount || ''}
-                      onChange={e => updateCustomLineItem(i, { amount: Number(e.target.value) })} />
-                    <input className={inp} type="number" min="1" step="1"
-                      value={item.quantity ?? 1}
-                      onChange={e => updateCustomLineItem(i, { quantity: Number(e.target.value) })} />
-                    <button type="button" onClick={() => removeCustomLineItem(i)} className={rmBtn}>×</button>
+                  <div key={i} className="mb-2">
+                    <div className="grid grid-cols-[1fr_96px_64px_28px] gap-2 items-start">
+                      <input className={inp} type="text" placeholder="e.g. Custom monogram display"
+                        value={item.label}
+                        onChange={e => updateCustomLineItem(i, { label: e.target.value })} />
+                      <input className={inp} type="number" min="0" step="0.01"
+                        value={item.amount || ''}
+                        onChange={e => updateCustomLineItem(i, { amount: Number(e.target.value) })} />
+                      <input className={inp} type="number" min="1" step="1"
+                        value={item.quantity ?? 1}
+                        onChange={e => updateCustomLineItem(i, { quantity: Number(e.target.value) })} />
+                      <button type="button" onClick={() => removeCustomLineItem(i)} className={rmBtn}>×</button>
+                    </div>
+                    {/* Permanent only. A custom line normally rides the Whole
+                        Home package alone, so a customer who picks a single
+                        surface is never billed for it and never gets it. Tick
+                        this when the work belongs with every option (quote
+                        #1303's garage). Off by default — no existing quote's
+                        packages or prices move. */}
+                    {form.serviceType === 'permanent' && (
+                      <label className="flex items-center gap-2 text-xs text-neutral-600 mt-1 cursor-pointer">
+                        <input type="checkbox" checked={!!item.allTiers}
+                          onChange={e => updateCustomLineItem(i, { allTiers: e.target.checked })} />
+                        Include in every package (not just Whole Home)
+                      </label>
+                    )}
                   </div>
                 ))}
               </div>
@@ -8993,6 +9023,11 @@ Send anyway?`,
         )}
 
       </div>
+
+      {/* Call-notes drawer (2026-08-31): a sibling of the centered column
+          above, not nested inside it — fixed positioning, so it can never
+          affect that column's width or reflow. */}
+      <QuoteBuilderCallNotesDrawer ghlContactId={form.highlevelContactId} />
     </OperatorShell>
   );
 }

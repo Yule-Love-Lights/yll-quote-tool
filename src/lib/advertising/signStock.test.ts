@@ -13,7 +13,12 @@ const { dbRef, stateRef, upsertOnHand, logAdvertisingActivity } = vi.hoisted(() 
   stateRef: {
     current: {
       onHand: { sku: 'YLL-YARD-SIGN', on_hand_qty: 40, reorder_point: 10, storage_location: null } as AnyRow | null,
-      counts: { accepted: 12, pending: 3 },
+      // REAL ROWS, not canned totals (ledger row 482): the counts here are
+      // derived by applying the query's own filters, so a filter that is
+      // removed changes the answer. Canned numbers keyed on status made the
+      // voided_at filter structurally invisible, which is what let it ship
+      // with nothing asserting it.
+      placements: [] as AnyRow[],
     },
   },
   upsertOnHand: vi.fn(),
@@ -66,6 +71,10 @@ function makeDb() {
               filters[col] = val;
               return b;
             },
+            is(col: string, val: unknown) {
+              filters[`is:${col}`] = val;
+              return b;
+            },
             in(col: string, vals: unknown[]) {
               filters[col] = vals;
               return b;
@@ -84,10 +93,16 @@ function makeDb() {
               if (table !== 'advertising_placements' || !opts?.head) {
                 return Promise.resolve({ count: null, error: null }).then(resolve, reject);
               }
-              const status = filters.status;
-              const count = status === 'accepted'
-                ? stateRef.current.counts.accepted
-                : stateRef.current.counts.pending;
+              const count = stateRef.current.placements.filter((row) =>
+                Object.entries(filters).every(([key, want]) => {
+                  if (key.startsWith('is:')) {
+                    const col = key.slice(3);
+                    return want === null ? row[col] == null : row[col] === want;
+                  }
+                  const have = row[key];
+                  return Array.isArray(want) ? want.includes(have) : have === want;
+                }),
+              ).length;
               return Promise.resolve({ count, error: null }).then(resolve, reject);
             },
           };
@@ -98,10 +113,20 @@ function makeDb() {
   };
 }
 
+/** A real yard-sign placement row, live and non-test unless told otherwise. */
+function row(over: AnyRow = {}): AnyRow {
+  return { id: 'x', kind: 'yard_sign', is_test: false, status: 'accepted', voided_at: null, ...over };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   stateRef.current.onHand = { sku: 'YLL-YARD-SIGN', on_hand_qty: 40, reorder_point: 10, storage_location: null };
-  stateRef.current.counts = { accepted: 12, pending: 3 };
+  // 12 accepted and 3 pending, the same totals the canned counts used to
+  // hand back, but now as rows the query has to filter for itself.
+  stateRef.current.placements = [
+    ...Array.from({ length: 12 }, (_, i) => row({ id: `a${i}`, status: 'accepted' })),
+    ...Array.from({ length: 3 }, (_, i) => row({ id: `p${i}`, status: 'pending' })),
+  ];
   dbRef.current = makeDb();
   upsertOnHand.mockResolvedValue(undefined);
 });
@@ -116,6 +141,36 @@ describe('getSignStock', () => {
       acceptedAllTime: 12,
       pendingReview: 3,
     });
+  });
+
+  // Ledger row 482: this filter shipped in S80 with nothing able to assert it,
+  // because the old fixture handed back canned totals keyed on status and
+  // stubbed is() as a pass-through. Remove the filter from signStock.ts and
+  // this test fails; that is the whole point of it.
+  it('leaves voided placements out of both counts', async () => {
+    const { getSignStock } = await import('./signStock');
+    stateRef.current.placements.push(
+      row({ id: 'v1', status: 'accepted', voided_at: '2026-08-31T10:00:00.000Z' }),
+      row({ id: 'v2', status: 'accepted', voided_at: '2026-08-31T11:00:00.000Z' }),
+      row({ id: 'v3', status: 'pending', voided_at: '2026-08-31T12:00:00.000Z' }),
+    );
+
+    const stock = await getSignStock();
+
+    // A voided sign is not stock that went out and not work awaiting review.
+    expect(stock.acceptedAllTime).toBe(12);
+    expect(stock.pendingReview).toBe(3);
+  });
+
+  it('still leaves out test rows and other kinds', async () => {
+    const { getSignStock } = await import('./signStock');
+    stateRef.current.placements.push(
+      row({ id: 't1', is_test: true }),
+      row({ id: 'd1', kind: 'door_hanger' }),
+    );
+
+    const stock = await getSignStock();
+    expect(stock.acceptedAllTime).toBe(12);
   });
 
   it('a missing stock row reads as zero, not an error', async () => {

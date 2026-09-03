@@ -14,6 +14,7 @@ const {
   listPlacements,
   acceptPlacement,
   rejectPlacement,
+  voidPlacement,
   listAdvertisingWorkers,
   listAdvertisingCampaigns,
   createSignedUrlMock,
@@ -22,6 +23,7 @@ const {
   listPlacements: vi.fn(),
   acceptPlacement: vi.fn(),
   rejectPlacement: vi.fn(),
+  voidPlacement: vi.fn(),
   listAdvertisingWorkers: vi.fn(),
   listAdvertisingCampaigns: vi.fn(),
   createSignedUrlMock: vi.fn(),
@@ -33,7 +35,7 @@ vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
 });
 vi.mock('@/lib/advertising/placements', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/advertising/placements')>();
-  return { ...actual, listPlacements, acceptPlacement, rejectPlacement };
+  return { ...actual, listPlacements, acceptPlacement, rejectPlacement, voidPlacement };
 });
 vi.mock('@/lib/advertising/workers', () => ({ listAdvertisingWorkers }));
 vi.mock('@/lib/advertising/campaigns', () => ({ listAdvertisingCampaigns }));
@@ -94,6 +96,9 @@ beforeEach(() => {
   );
   rejectPlacement.mockImplementation(async (id: string, _by: string, reason: string) =>
     pendingPlacement(id, { status: 'rejected', rejectionReason: reason, reviewedBy: 'admin-1' }),
+  );
+  voidPlacement.mockImplementation(async (id: string, by: string, reason: string) =>
+    pendingPlacement(id, { voidedAt: '2026-08-29T18:00:00.000Z', voidedBy: by, voidReason: reason }),
   );
 });
 
@@ -159,6 +164,38 @@ describe('POST accept / reject', () => {
   it('400s an unknown action and a missing placementId', async () => {
     expect((await POST(makeReq({ action: 'destroy', placementId: 'p1' }))).status).toBe(400);
     expect((await POST(makeReq({ action: 'accept' }))).status).toBe(400);
+  });
+});
+
+describe('POST void', () => {
+  it('voids with the ADMIN session as actor and requires a reason', async () => {
+    const res = await POST(makeReq({ action: 'void', placementId: 'p1', reason: 'duplicate submission' }));
+    expect(res.status).toBe(200);
+    expect(voidPlacement).toHaveBeenCalledWith('p1', 'admin-1', 'duplicate submission');
+
+    const bad = await POST(makeReq({ action: 'void', placementId: 'p1', reason: '  ' }));
+    expect(bad.status).toBe(400);
+    expect(voidPlacement).toHaveBeenCalledTimes(1);
+  });
+
+  // A PAID photo can never be voided (payouts, ledger row 481). That refusal
+  // is permanent, so the generic "already reviewed, reload the queue" message
+  // would be both false and useless here: reloading changes nothing. The
+  // isStateRefusal regex matches this message too (on "cannot be"), so
+  // without an explicit branch ahead of it the real guidance is swallowed.
+  it('passes the paid-photo refusal through instead of saying "already reviewed"', async () => {
+    voidPlacement.mockRejectedValueOnce(
+      new Error(
+        'voidPlacement: this photo has already been paid and cannot be voided — settle the difference with the worker instead',
+      ),
+    );
+
+    const res = await POST(makeReq({ action: 'void', placementId: 'p1', reason: 'duplicate' }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/already been paid/i);
+    expect(body.error).not.toMatch(/already reviewed/i);
+    expect(body.error).not.toMatch(/voidPlacement:/); // no function name at the staffer
   });
 });
 

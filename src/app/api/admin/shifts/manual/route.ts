@@ -7,6 +7,8 @@
 // POST /api/admin/shifts/manual
 // Body: { crewMemberId, clockInAt, clockOutAt }            → create
 //       { shiftId, clockInAt, clockOutAt }                 → edit times
+// DELETE /api/admin/shifts/manual
+// Body: { shiftId }                                        → void the entry
 // Times are ISO timestamps. Response: { ok: true, shift } | { error, code }.
 //
 // Refusals map straight from the lib's typed error: invalid-times 400,
@@ -17,7 +19,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { adminCreateShift, adminUpdateShiftTimes, ManualShiftRefusedError } from '@/lib/shifts';
+import {
+  adminCreateShift,
+  adminUpdateShiftTimes,
+  adminVoidShift,
+  ManualShiftRefusedError,
+} from '@/lib/shifts';
 
 export const runtime = 'nodejs';
 
@@ -27,6 +34,17 @@ const REFUSAL_STATUS: Record<ManualShiftRefusedError['code'], number> = {
   overlap: 409,
   'edit-race': 409,
   'not-field-crew': 409,
+  // Both mean "this row is not yours to delete", which is a conflict with the
+  // state of the record rather than a bad request.
+  'not-manual': 409,
+  'has-children': 409,
+  // Not the admin's fault and worth retrying: the activity log refused the
+  // record, so the void was called off with the shift still intact.
+  'audit-failed': 503,
+  // Row 459: the shift sits on a live settlement. A conflict with the state
+  // of the record, like not-manual and has-children — undo the payment and
+  // the same request succeeds.
+  'already-paid': 409,
 };
 
 export async function POST(req: NextRequest) {
@@ -103,4 +121,48 @@ function gateActor(operator: { name: string | null; email: string | null }): str
   const email = operator.email?.trim();
   if (name && email) return `${name} (${email})`;
   return name || email || 'admin';
+}
+
+/**
+ * Void a manual entry. A shift typed by mistake cannot be corrected by
+ * shrinking it, because a one-minute shift is still payroll, so the row goes
+ * (row 458). The lib refuses anything that is not an office-typed entry, and
+ * anything carrying a break or job time; this handler only maps those typed
+ * refusals to statuses so the admin reads a real reason rather than
+ * "something went wrong".
+ */
+export async function DELETE(req: NextRequest) {
+  const gate = await requireAdmin();
+  if ('response' in gate) return gate.response;
+  const { operator } = gate;
+
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { shiftId } = (body as { shiftId?: unknown } | null) ?? {};
+  if (typeof shiftId !== 'string' || !shiftId.trim()) {
+    return NextResponse.json(
+      { error: 'shiftId is required', code: 'invalid-body' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await adminVoidShift({ shiftId, actor: gateActor(operator) });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    if (err instanceof ManualShiftRefusedError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: REFUSAL_STATUS[err.code] });
+    }
+    console.error('[api/admin/shifts/manual] void failed:', err);
+    return NextResponse.json({ error: 'Failed to remove the shift' }, { status: 500 });
+  }
 }

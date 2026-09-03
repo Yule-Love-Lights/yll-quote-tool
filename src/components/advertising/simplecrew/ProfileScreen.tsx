@@ -1,0 +1,327 @@
+'use client';
+
+// The worker profile tab (Simple Crew replica): avatar, name, email, the
+// Photos Feed / Map View pill toggle, photos grouped by campaign with the
+// GPS Location chip — plus OUR money strip (earned at the stamped rates,
+// pending as an estimate), which Simple Crew never had.
+
+import { useEffect, useMemo, useState } from 'react';
+
+import PlacementMap from './PlacementMap';
+import { dollars, PillToggle, SC, timeAgo, EmptyState } from './ui';
+
+type Placement = {
+  id: string;
+  campaignId: string;
+  kind: 'yard_sign' | 'door_hanger';
+  status: 'pending' | 'accepted' | 'rejected' | 'resubmitted';
+  voidedAt?: string | null;
+  voidReason?: string | null;
+  lat: number | null;
+  lng: number | null;
+  capturedAt: string | null;
+  createdAt: string;
+  suggestedAddress: string | null;
+  rejectionReason: string | null;
+  acceptedRateCents: number | null;
+  photoUrl: string | null;
+};
+
+type Campaign = { id: string; name: string };
+
+type Earnings = { total: { pendingEstimatedCents: number; acceptedEarnedCents: number } };
+type EarningsPayload = { summary: Earnings; rateChangedSincePending?: boolean };
+
+type Settlement = {
+  id: string;
+  totalCents: number;
+  method: 'cash' | 'venmo' | 'check' | 'other';
+  note: string | null;
+  paidAt: string;
+  lineCount: number;
+  /** A payment the office undid (ledger row 492). Shown, struck through and
+   * labelled, rather than vanishing from the worker's history with no
+   * explanation, and it counts for nothing in the total above. */
+  voidedAt: string | null;
+};
+type PayoutSummary = { earnedCents: number; settledCents: number; unpaidCents: number };
+type PayoutsPayload = { summary: PayoutSummary; settlements: Settlement[] };
+
+const METHOD_LABEL: Record<Settlement['method'], string> = {
+  cash: 'Cash',
+  venmo: 'Venmo',
+  check: 'Check',
+  other: 'Paid',
+};
+
+function paidOn(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '';
+  return at.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'America/New_York',
+  });
+}
+
+export default function ProfileScreen({ displayName, email }: { displayName: string; email: string | null }) {
+  const [view, setView] = useState<'feed' | 'map'>('feed');
+  const [placements, setPlacements] = useState<Placement[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [earnings, setEarnings] = useState<Earnings | null>(null);
+  const [rateChanged, setRateChanged] = useState(false);
+  const [payouts, setPayouts] = useState<PayoutsPayload | null>(null);
+  const [payoutsFailed, setPayoutsFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [pRes, cRes, eRes, sRes] = await Promise.all([
+          fetch('/api/advertising/placements'),
+          fetch('/api/advertising/campaigns'),
+          fetch('/api/advertising/earnings'),
+          fetch('/api/advertising/settlements'),
+        ]);
+        if (cancelled) return;
+        if (pRes.ok) setPlacements(((await pRes.json()) as { placements: Placement[] }).placements);
+        if (cRes.ok) setCampaigns(((await cRes.json()) as { campaigns: Campaign[] }).campaigns);
+        if (eRes.ok) {
+          const payload = (await eRes.json()) as EarningsPayload;
+          setEarnings(payload.summary);
+          setRateChanged(payload.rateChangedSincePending === true);
+        }
+        // A failed payments read must SAY so: rendering an empty history
+        // would tell a worker they have never been paid.
+        if (sRes.ok) setPayouts((await sRes.json()) as PayoutsPayload);
+        else setPayoutsFailed(true);
+      } catch {
+        /* cards render what loaded */
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const campaignName = useMemo(() => new Map(campaigns.map((c) => [c.id, c.name])), [campaigns]);
+
+  const groups = useMemo(() => {
+    const byCampaign = new Map<string, Placement[]>();
+    for (const p of placements) byCampaign.set(p.campaignId, [...(byCampaign.get(p.campaignId) ?? []), p]);
+    return [...byCampaign.entries()];
+  }, [placements]);
+
+  const markers = placements
+    .filter((p) => p.lat !== null && p.lng !== null)
+    .map((p) => ({ id: p.id, lat: p.lat!, lng: p.lng!, status: p.voidedAt ? 'voided' : p.status, label: p.suggestedAddress ?? undefined }));
+
+  return (
+    <div className="min-h-[100svh] pb-28" style={{ background: SC.bg }}>
+      <div className="flex flex-col items-center px-5 pt-[max(env(safe-area-inset-top),40px)]">
+        <span
+          className="flex h-28 w-28 items-center justify-center rounded-full text-4xl font-semibold"
+          style={{ background: '#EDE6D3', color: '#A89F87' }}
+        >
+          {displayName.slice(0, 1)}
+        </span>
+        <h1 className="mt-4 text-3xl font-bold" style={{ color: SC.text }}>
+          {displayName}
+        </h1>
+        {email && (
+          <p className="mt-1 text-lg" style={{ color: SC.muted }}>
+            {email}
+          </p>
+        )}
+      </div>
+
+      {earnings && (
+        <div className="mx-5 mt-5 flex gap-3">
+          <div className="flex-1 rounded-2xl bg-white p-3 text-center shadow-sm">
+            <p className="text-xs uppercase tracking-wide" style={{ color: SC.muted }}>
+              Earned
+            </p>
+            <p className="text-xl font-bold" style={{ color: SC.text }}>
+              {dollars(earnings.total.acceptedEarnedCents)}
+            </p>
+          </div>
+          <div className="flex-1 rounded-2xl bg-white p-3 text-center shadow-sm">
+            <p className="text-xs uppercase tracking-wide" style={{ color: SC.muted }}>
+              Pending (est.)
+            </p>
+            <p className="text-xl font-bold" style={{ color: SC.text }}>
+              {dollars(earnings.total.pendingEstimatedCents)}
+            </p>
+          </div>
+        </div>
+      )}
+      {earnings && rateChanged && (
+        <p className="mx-5 mt-2 text-center text-xs" style={{ color: SC.muted }}>
+          A campaign&apos;s rate changed after some of these were placed, so the pending estimate
+          moved. Accepted photos always pay the rate from the moment they were approved.
+        </p>
+      )}
+
+      {/* What has actually been handed over (ledger row 481, Naldo
+          2026-08-30: the worker sees every payment, not just a total — it is
+          what settles a "you never paid me for that week" conversation). */}
+      {payouts && (
+        <div className="mx-5 mt-3 rounded-2xl bg-white p-4 shadow-sm">
+          <div className="flex items-baseline justify-between">
+            <span className="text-base font-semibold" style={{ color: SC.text }}>
+              Paid to you
+            </span>
+            <span className="text-xl font-bold" style={{ color: SC.text }}>
+              {dollars(payouts.summary.settledCents)}
+            </span>
+          </div>
+          <p className="mt-1 text-sm" style={{ color: SC.muted }}>
+            {payouts.summary.unpaidCents > 0
+              ? `${dollars(payouts.summary.unpaidCents)} of your accepted photos have not been paid yet.`
+              : 'Everything accepted so far has been paid.'}
+          </p>
+          {payouts.settlements.length > 0 && (
+            <div className="mt-3 border-t pt-2" style={{ borderColor: '#F1EBDB' }}>
+              {payouts.settlements.map((s) => (
+                <div key={s.id} className="flex justify-between gap-3 py-1 text-sm">
+                  <span style={{ color: SC.muted }}>
+                    {paidOn(s.paidAt)} · {METHOD_LABEL[s.method]}
+                    {s.note ? ` · ${s.note}` : ''}
+                    {s.voidedAt && <span style={{ color: SC.danger }}> · undone</span>}
+                  </span>
+                  <span className="whitespace-nowrap" style={{ color: s.voidedAt ? SC.muted : SC.text }}>
+                    <span style={{ textDecoration: s.voidedAt ? 'line-through' : undefined }}>
+                      {dollars(s.totalCents)}
+                    </span>
+                    <span style={{ color: SC.muted }}>
+                      {' '}
+                      ({s.lineCount} {s.lineCount === 1 ? 'photo' : 'photos'})
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {payoutsFailed && (
+        <p className="mx-5 mt-3 rounded-xl bg-red-50 px-4 py-3 text-sm" style={{ color: SC.danger }}>
+          Could not load your payments right now. This is a display problem, not a change to what you are owed.
+        </p>
+      )}
+
+      <div className="mx-5 mt-5">
+        <PillToggle
+          options={[
+            { value: 'feed', label: 'Photos Feed' },
+            { value: 'map', label: 'Map View' },
+          ]}
+          value={view}
+          onChange={setView}
+        />
+      </div>
+
+      {view === 'map' ? (
+        <div className="mt-4 overflow-hidden">
+          <PlacementMap markers={markers} height="52svh" />
+        </div>
+      ) : (
+        <div className="mt-3 px-5">
+          {loaded && placements.length === 0 && (
+            <EmptyState
+              kind="photos"
+              title="No Photos Yet"
+              hint="There are no photos yet. You can capture first photos from the camera tab below."
+            />
+          )}
+          {placements.length > 0 && (
+            <p className="py-2 text-lg font-semibold" style={{ color: SC.text }}>
+              {placements.length} {placements.length === 1 ? 'photo' : 'photos'}
+            </p>
+          )}
+          {groups.map(([campaignId, items]) => (
+            <div key={campaignId} className="mb-4">
+              <div className="flex items-baseline justify-between py-1">
+                <span>
+                  <span className="block text-xs uppercase tracking-wide" style={{ color: SC.muted }}>
+                    Campaign
+                  </span>
+                  <span className="text-xl font-semibold" style={{ color: SC.text }}>
+                    {campaignName.get(campaignId) ?? 'Campaign'}
+                  </span>
+                </span>
+                <span className="text-base" style={{ color: SC.muted }}>
+                  {timeAgo(items[0]?.capturedAt ?? items[0]?.createdAt ?? null)}
+                </span>
+              </div>
+              {items.map((p) => (
+                <div key={p.id} className="relative mb-3 overflow-hidden rounded-2xl bg-white shadow-sm">
+                  {p.photoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL
+                    <img src={p.photoUrl} alt="Placement" className="max-h-[420px] w-full object-cover" />
+                  ) : (
+                    <div className="flex h-40 items-center justify-center" style={{ background: '#F1EBDB', color: SC.muted }}>
+                      photo unavailable
+                    </div>
+                  )}
+                  {p.lat !== null && (
+                    <span className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/55 px-3 py-1.5 text-sm text-white">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+                      </svg>
+                      GPS Location
+                    </span>
+                  )}
+                  <div className="flex items-center justify-between px-4 py-2.5">
+                    <span className="truncate text-sm" style={{ color: SC.muted }}>
+                      {p.suggestedAddress ?? (p.lat !== null ? 'Location recorded' : 'No location in this photo')}
+                    </span>
+                    <StatusChip p={p} />
+                  </div>
+                  {p.status === 'rejected' && p.rejectionReason && (
+                    <p className="px-4 pb-3 text-sm" style={{ color: SC.danger }}>
+                      {p.rejectionReason}
+                    </p>
+                  )}
+                  {p.voidedAt && p.voidReason && (
+                    <p className="px-4 pb-3 text-sm" style={{ color: SC.muted }}>
+                      Voided: {p.voidReason}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusChip({ p }: { p: Placement }) {
+  // A voided row counts for nothing (Naldo 2026-08-29) — its chip must never
+  // look like live pay, whatever status history it carries.
+  if (p.voidedAt) {
+    return (
+      <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: '#ECEAE4', color: SC.muted }}>
+        Voided
+      </span>
+    );
+  }
+  const map = {
+    pending: { text: 'Pending', bg: '#F1EAD8', fg: '#3A423C' },
+    resubmitted: { text: 'Resubmitted', bg: '#FDF3DF', fg: '#8a6d1f' },
+    accepted: { text: p.acceptedRateCents !== null ? `Accepted · ${dollars(p.acceptedRateCents)}` : 'Accepted', bg: '#E4F2E8', fg: '#2E7D4F' },
+    rejected: { text: 'Rejected', bg: '#FBE7E7', fg: '#B3383F' },
+  }[p.status];
+  return (
+    <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: map.bg, color: map.fg }}>
+      {map.text}
+    </span>
+  );
+}

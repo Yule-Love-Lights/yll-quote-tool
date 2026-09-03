@@ -3,7 +3,7 @@ import { readSceneLock } from '@/lib/design/sceneFreeze';
 import { recordDesignChange } from '@/lib/design/designAudit';
 import { satelliteLinesEqual } from '@/lib/design/satelliteLinesEqual';
 import { getSupabaseServiceClient } from './supabase';
-import type { Scene } from './design/sceneTypes';
+import type { MiniGroupItem, Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
 import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
 // Row 371: the ONE definition of "prune this photo's brightness override",
@@ -1468,7 +1468,13 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       // #741 defect 3: that drop was previously silent server-side — diff the
       // miniGroups before/after (same technique the #255 seed-analysis route
       // uses) so the caller can tell staff what just got removed.
-      const beforeGroups = freshScene.items.filter(isMiniGroup);
+      // #13 x #240 (item-4a fix round): exclude TWIN groups (linkedToId set)
+      // from the "before" pool. A twinned group never bills twice — the
+      // canonical is the one billable unit — so if BOTH the canonical and
+      // its twin get removed by this same photo delete, only the canonical
+      // half is a real loss; counting the twin too would tell staff they
+      // lost 2 groups (double the strings) when it's really 1.
+      const beforeGroups = freshScene.items.filter((it): it is MiniGroupItem => isMiniGroup(it) && !it.linkedToId);
       const keptItems = pruneOrphanedMiniGroups(freshScene.items.filter(
         it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
       ));

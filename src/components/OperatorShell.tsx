@@ -9,17 +9,31 @@ export type OperatorArea =
   | 'insights'
   | 'quotes'
   | 'jobs'
+  // Schedule owns its own area as of 2026-08-31 (Naldo). It used to render
+  // active="jobs", which lit BOTH tabs at once; that is the same defect ruled
+  // a bug for Jobs/Fleet on 2026-08-28.
+  | 'schedule'
+  // 'calls' matches no nav item, like 'leads' below: /admin/calls is reached
+  // from the account menu, not a tab. It used to declare itself as 'settings',
+  // which was simply untrue -- it is not the settings page -- and became
+  // visible when Settings lost its tab and the claim stopped being harmless.
+  | 'calls'
+  // 'fleet' matches no nav item any more: the fleet view is the right column
+  // of the Schedule page and /admin/fleet redirects there. The area stays so
+  // /admin/fleet/clocks keeps a valid one, the leads precedent below.
   | 'fleet'
   | 'invoices'
   | 'leads'
   | 'customers'
   | 'inventory'
+  | 'tasks'
   | 'new'
   | 'training'
   | 'settings'
   // 'time' matches no nav item on purpose (the leads precedent in
   // OperatorNav.tsx: /admin/time-tracking is admin-only, reached from the
-  // Fleet page link, and the 1024px nav row has no room for another slot).
+  // account menu (accountLinks.ts) and the Fleet page link, and the 1024px
+  // nav row has no room for another slot).
   | 'time'
   // The advertising-view areas (#1061 surfaces + the View-as nav wiring).
   // They match items only in the ADVERTISING view's nav list, so they light

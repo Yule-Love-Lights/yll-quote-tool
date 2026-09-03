@@ -13,7 +13,7 @@ import { getSessionRole } from '@/lib/auth/sessionRole';
 import { listActiveFieldCrew } from '@/lib/crewMembers';
 import { MinutesSince } from '@/components/admin/MinutesSince';
 import { AutoRefresh } from '@/components/admin/AutoRefresh';
-import { AddShiftForm, EditShiftTimes } from '@/components/admin/ManualShiftEditor';
+import { AddShiftForm, EditShiftTimes, VoidShiftButton } from '@/components/admin/ManualShiftEditor';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +23,10 @@ export default async function FleetClocksPage({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const role = await getSessionRole();
-  if (role !== 'admin') redirect('/admin/fleet');
+  // Straight to the schedule, not to /admin/fleet: that route is itself a
+  // redirect as of 2026-08-31, and a non-admin arriving here should land in
+  // one hop rather than two.
+  if (role !== 'admin') redirect('/admin/schedule');
 
   const params = (await searchParams) ?? {};
   const raw = Array.isArray(params.date) ? params.date[0] : params.date;
@@ -35,7 +38,9 @@ export default async function FleetClocksPage({
     listActiveFieldCrew(),
   ]);
   const isToday = date === today;
-  const crewOptions = fieldCrew.map((c) => ({ id: c.id, displayName: c.displayName }));
+  // null from either loader means the read FAILED, which must never render as
+  // "nobody is on the roster" or "no other days have data" (row 455 / row 457d).
+  const crewOptions = (fieldCrew ?? []).map((c) => ({ id: c.id, displayName: c.displayName }));
 
   return (
     <OperatorShell active="fleet">
@@ -89,7 +94,13 @@ export default async function FleetClocksPage({
               </>
             )}
           </form>
-          {daysWithData.length > 0 && (
+          {daysWithData === null && (
+            <p className="text-sm text-red-700 mt-2">
+              The list of days with data could not be loaded. Other days may still have data;
+              type a date above to look at one.
+            </p>
+          )}
+          {daysWithData !== null && daysWithData.length > 0 && (
             <p className="text-sm text-gray-500 mt-2">
               Days with data:{' '}
               {daysWithData.map((d, i) => (
@@ -147,12 +158,29 @@ export default async function FleetClocksPage({
                       clockInAt={s.clockInAt}
                       clockOutAt={s.clockOutAt}
                     />
+                    {s.officeEntry && (
+                      <>
+                        {' · '}
+                        <VoidShiftButton
+                          shiftId={s.id}
+                          crewName={s.crewName}
+                          clockInAt={s.clockInAt}
+                          clockOutAt={s.clockOutAt}
+                        />
+                      </>
+                    )}
                     {s.manualBy && (
                       <p className="text-xs text-amber-700 mt-1">Manual entry by {s.manualBy}</p>
                     )}
                   </li>
                 ))}
               </ul>
+            )}
+            {fieldCrew === null && (
+              <p className="text-xs text-red-700 mt-3">
+                The crew list could not be loaded, so the Add a shift form is not showing at
+                all. Reload the page before typing a shift.
+              </p>
             )}
             <AddShiftForm crew={crewOptions} defaultDate={date} />
           </section>

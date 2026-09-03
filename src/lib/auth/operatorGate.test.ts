@@ -238,6 +238,26 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/estimate/anything')).toBe(false);
   });
 
+  // naldo/mobile-app-branding. The install page and the two manifests behind it
+  // are the whole public surface this change adds.
+  it('treats the home-screen install page as public — EXACT match only', () => {
+    expect(isPublicPath('/install')).toBe(true);
+    expect(isPublicPath('/install/')).toBe(true); // single trailing slash is normalized
+    // Same defense-in-depth as /estimate above: a sub-path is not public by prefix.
+    expect(isPublicPath('/install/anything')).toBe(false);
+  });
+
+  // These MUST be public even though both apps behind them are operator-only: a
+  // <link rel="manifest"> is fetched with credentials omitted, so a gated
+  // manifest 401s for a signed-in operator too and the install silently falls
+  // back to an iOS screenshot instead of the YLL icon.
+  it('treats both web manifests as public', () => {
+    expect(isPublicPath('/manifest-quote.webmanifest')).toBe(true);
+    expect(isPublicPath('/manifest-advertising.webmanifest')).toBe(true);
+    // Only these two by name — no .webmanifest wildcard.
+    expect(isPublicPath('/manifest-anything-else.webmanifest')).toBe(false);
+  });
+
   it('allows POST /api/estimate + /api/estimate/contact + /api/estimate/upload but keeps other methods operator-only (self-serve Phase A)', () => {
     for (const p of ['/api/estimate', '/api/estimate/contact', '/api/estimate/upload']) {
       expect(isPublicPath(p, 'POST'), p).toBe(true);
@@ -382,5 +402,34 @@ describe('the advertising surface is NOT public — it needs a session, just an 
       expect(isPublicPath(p, 'GET')).toBe(false);
       expect(isPublicPath(p, 'POST')).toBe(false);
     }
+  });
+});
+
+// A cron path missing from this list 401s at the perimeter before it ever
+// reaches its own CRON_SECRET check, which is how the #666 prep digest shipped
+// silently dead. Same guard, same PR, for the crew day digest.
+describe('the daily crew schedule cron', () => {
+  it('is allowlisted so the cron can reach its own secret check', () => {
+    expect(isPublicPath('/api/ops/crew-day-digest')).toBe(true);
+  });
+
+  it('does not open the rest of the ops namespace by accident', () => {
+    expect(isPublicPath('/api/ops/schedule', 'POST')).toBe(false);
+    expect(isPublicPath('/api/ops/crew-day-digest/extra')).toBe(false);
+  });
+});
+
+describe('the crew door (row 466)', () => {
+  // The crew session is an httpOnly cookie, not a Supabase session, so the
+  // perimeter cannot see it: these paths pass the gate and the surface itself
+  // refuses without the cookie.
+  it.each(['/crew', '/crew/', '/crew/enter', '/api/crew/today'])('lets %s through to its own crew guard', (p) => {
+    expect(isPublicPath(p)).toBe(true);
+  });
+
+  it('does not open anything outside the crew namespace', () => {
+    expect(isPublicPath('/crewmembers')).toBe(false);
+    expect(isPublicPath('/api/crew')).toBe(false);
+    expect(isPublicPath('/api/admin/crew/abc/link', 'POST')).toBe(false);
   });
 });

@@ -149,3 +149,29 @@ export async function setAdvertisingWorkerActive(id: string, active: boolean): P
   if (error) throw new Error(`setAdvertisingWorkerActive: ${error.message}`);
   return data ? toWorker(data as Row) : null;
 }
+
+/**
+ * Resolve (or create) the advertising_workers row backing an AUTH USER —
+ * the admin-capture path of the Simple Crew replica: Naldo or Jason shooting
+ * from the admin camera submits under their own worker row, auto-provisioned
+ * on first use and linked by auth_user_id. A display-name collision (the
+ * admin's name already taken by an unlinked row) falls back to a suffixed
+ * name rather than failing the capture.
+ */
+export async function ensureWorkerForAuthUser(
+  authUserId: string,
+  displayName: string,
+): Promise<AdvertisingWorker> {
+  const existing = await getAdvertisingWorkerByAuthUserId(authUserId);
+  if (existing) return existing;
+
+  // ALWAYS suffixed " (admin)" (admin lens, PR #1078): an owner's
+  // self-captured signs enter REAL pay totals, and their row must be
+  // tellable apart from a hired payee on the Pay screen and in Manage Crew.
+  const base = `${displayName.trim() || 'Admin'} (admin)`;
+  const suffixed = await createAdvertisingWorker({ displayName: base, authUserId });
+  if (suffixed.authUserId !== authUserId) {
+    throw new Error('ensureWorkerForAuthUser: could not provision a worker row for this login');
+  }
+  return suffixed;
+}

@@ -109,3 +109,68 @@ describe('audit', () => {
     );
   });
 });
+
+// Renaming a campaign (Naldo, 2026-09-01: "I'm unable to edit the campaign,
+// and I wanted to edit the campaign name"). The PATCH already accepted a
+// name; nothing in the product ever sent one.
+describe('renaming a campaign', () => {
+  it('passes a new name through to the data layer', async () => {
+    updateAdvertisingCampaign.mockResolvedValue({ ...CAMPAIGN, name: 'Fall yard signs' });
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', name: 'Fall yard signs' }));
+    expect(res.status).toBe(200);
+    expect(updateAdvertisingCampaign).toHaveBeenCalledWith(
+      'campaign-1',
+      expect.objectContaining({ name: 'Fall yard signs' }),
+      'admin-1',
+    );
+  });
+
+  it('refuses a blank name as a 400 the admin can read, not a 500', async () => {
+    // The data layer throws on an empty name, and that throw lands in the
+    // catch below as a generic 500 "Failed to update the campaign" — which
+    // tells the admin nothing about what to fix. A name that is only
+    // whitespace is a user error and reads as one.
+    for (const blank of ['', '   ', '\t']) {
+      const res = await PATCH(makeReq({ campaignId: 'campaign-1', name: blank }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/name/i);
+    }
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+
+  it('a name-only patch does not touch the rate', async () => {
+    await PATCH(makeReq({ campaignId: 'campaign-1', name: 'Renamed' }));
+    const patch = updateAdvertisingCampaign.mock.calls[0][1] as Record<string, unknown>;
+    expect('rateCents' in patch).toBe(false);
+  });
+});
+
+// The rate guard above refuses a malformed rate instead of dropping it. The
+// same had to be true of every other patch field, or the class the rate bug
+// belongs to just moves next door (admin lens, PR #1153).
+describe('no patch field is silently dropped', () => {
+  // Each malformed field rides ALONGSIDE a valid name, deliberately. Sent on
+  // its own it produces an empty patch, which the "Nothing to update" guard
+  // already refuses for an unrelated reason, so such a test would pass
+  // against the bug it names. Paired with a good field, the patch is not
+  // empty and the bad field is silently DROPPED under a 200.
+  it('400s a description that is not text, instead of dropping it', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', name: 'Fall', notes: 42 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/description/i);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+
+  it('400s an active flag that is not true or false, instead of dropping it', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', name: 'Fall', active: 'yes' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/open or closed|true or false/i);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+
+  it('still accepts null as a cleared description', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', notes: null }));
+    expect(res.status).toBe(200);
+    expect(updateAdvertisingCampaign).toHaveBeenCalledWith('campaign-1', { notes: null }, 'admin-1');
+  });
+});

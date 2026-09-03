@@ -23,6 +23,7 @@ import type {
   PortalRoofline,
   PortalVideo,
 } from '@/components/portal/types';
+import { isPackageId } from '@/components/portal/types';
 import { buildLineItemId, parseLineItem } from './lineItemKind';
 import { derivePackages, derivePackagesLegacyRebook, chargesFromResult, minimumOrderSubtotal } from './derivePackages';
 import { roundMoney } from '@/lib/money';
@@ -48,7 +49,7 @@ type ApprovalSnapshotJson = {
   version?: number;
   approvedAt?: string;
   customerSelection?: {
-    packageId?: 'A' | 'B' | 'C' | 'D';
+    packageId?: PackageId;
     activeName?: string;
     selectedItemIds?: string[];
     currentTotalUsd?: number;
@@ -100,7 +101,7 @@ type ApprovalSnapshotJson = {
 // flat, since there's no separate "envelope" metadata (version/approvedAt) to
 // wrap it in.
 type BrowsingSelectionJson = {
-  packageId?: 'A' | 'B' | 'C' | 'D';
+  packageId?: PackageId;
   selectedItemIds?: string[];
   rushSelected?: boolean;
   takedownSelected?: boolean;
@@ -186,8 +187,14 @@ function deriveFirstName(fullName: string | null): string {
 // the engine's custom result rows in order — returning a Map<engineLabel,
 // recommended>. Matching by label keeps it robust if other categories' rows
 // happen to interleave.
-function recommendedByCustomLabel(inputs: QuoteInputs | null): Map<string, boolean> {
-  const out = new Map<string, boolean>();
+// (Named for the `recommended` flag it was written for; it now carries the
+// `allTiers` bundling choice too — both live on inputs.customLineItems and are
+// recovered by the identical label zip, so splitting them into two functions
+// would mean two copies of the engine's filter + label rules to keep in step.)
+type CustomLineFlags = { recommended: boolean; allTiers: boolean };
+
+function customFlagsByLabel(inputs: QuoteInputs | null): Map<string, CustomLineFlags> {
+  const out = new Map<string, CustomLineFlags>();
   const customs = inputs?.customLineItems;
   if (!Array.isArray(customs)) return out;
   for (const c of customs as CustomLineItem[]) {
@@ -206,7 +213,9 @@ function recommendedByCustomLabel(inputs: QuoteInputs | null): Map<string, boole
         ? Math.floor(c.quantity)
         : 1;
     const label = qty === 1 ? c.label.trim() : `${c.label.trim()} × ${qty}`;
-    if (c.recommended) out.set(label, true);
+    if (c.recommended || c.allTiers) {
+      out.set(label, { recommended: c.recommended === true, allTiers: c.allTiers === true });
+    }
   }
   return out;
 }
@@ -285,7 +294,7 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
   // packages will all show "—" and the customer can pick "Build Your
   // Own" with nothing — surfaced as a clearly empty quote).
   const items = Array.isArray(result.lineItems) ? result.lineItems : [];
-  const customRecommended = recommendedByCustomLabel(inputs);
+  const customFlags = customFlagsByLabel(inputs);
 
   // Track per-kind counts so each item gets a unique, deterministic id.
   const counts: Partial<Record<PortalLineItemKind, number>> = {};
@@ -443,10 +452,13 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
           item.detail = '';
         }
       }
-      // A custom line item flagged `recommended` by staff (#12). Matched by the
-      // engine's exact label (custom labels never contain "Gingerbread Ridge",
-      // so the shim above is a no-op for them).
-      if (customRecommended.get(raw.label)) item.recommended = true;
+      // A custom line item flagged `recommended` by staff (#12), and/or set to
+      // bundle into every permanent package rather than Whole Home alone.
+      // Matched by the engine's exact label (custom labels never contain
+      // "Gingerbread Ridge", so the shim above is a no-op for them).
+      const flags = customFlags.get(raw.label);
+      if (flags?.recommended) item.recommended = true;
+      if (flags?.allTiers) item.bundleInAllTiers = true;
       // #12: Winter Wonderland + Stake are measurement-driven (no scene item to
       // hold `recommended` when drawn as manual footage), so their staff-recommend
       // flag rides the quote inputs — matched by the stable line id (#104).
@@ -632,7 +644,7 @@ function buildBrowsingSelection(row: QuoteRowForPortal): PortalBrowsingSelection
   const raw = row.browsing_selection;
   if (!raw || typeof raw !== 'object') return undefined;
   const packageId = raw.packageId;
-  if (packageId !== 'A' && packageId !== 'B' && packageId !== 'C' && packageId !== 'D') return undefined;
+  if (!isPackageId(packageId)) return undefined;
   const installTiming: InstallTiming =
     raw.installTiming === 'september' || raw.installTiming === 'october' ? raw.installTiming : 'none';
   return {
@@ -870,8 +882,17 @@ export function resolveApprovalSelectionSeed(
   fallback: { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined },
 ): { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined } {
   if (!approval) return fallback;
-  if (approval.packageId === 'D') {
-    return { initialPackageId: 'D', initialSelectedItemIds: approval.selectedItemIds };
+  // 'D' and 'E' honour the FROZEN id list; A/B/C reseed from their own tier
+  // bundle. The split is about whether a package's contents can move after
+  // approval. A/B/C are fixed by the quote's own surfaces, so reseeding from
+  // the tier is the same set and stays right through an amendment. 'D' is the
+  // customer's own hand-picked set, and 'E' (permanent's "Our Recommendation")
+  // is whatever staff have ticked RIGHT NOW — untick a side after a customer
+  // approves and reseeding from the live card would silently show them a
+  // different order than they signed, or, once the ticked set stops matching
+  // anything, no items at all: the empty-booked-portal failure.
+  if (approval.packageId === 'D' || approval.packageId === 'E') {
+    return { initialPackageId: approval.packageId, initialSelectedItemIds: approval.selectedItemIds };
   }
   return { initialPackageId: approval.packageId, initialSelectedItemIds: undefined };
 }
@@ -1078,13 +1099,61 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     (jobCharges.rush.defaultOn ? jobCharges.rush.amount : 0) +
     (jobCharges.takedown.defaultOn ? jobCharges.takedown.amount : 0);
   const priceById = new Map(lineItems.map((li) => [li.id, li.price]));
+  // The basis every gate decision below uses: the tile's own items plus the
+  // default-on fees, exactly what orderMinimumStatus measures at approval time.
+  const gateBasisOf = (pkg: PortalPackage) =>
+    pkg.includedItemIds.reduce((sum, id) => sum + (priceById.get(id) ?? 0), 0) + defaultOnFees;
+  const clearsGate = (pkg: PortalPackage) =>
+    pkg.includedItemIds.length === 0 || gateBasisOf(pkg) >= approvalGate;
+
   let packages = allPackages;
-  if (approvalGate > 0) {
-    const kept = allPackages.filter((pkg) => {
-      if (pkg.includedItemIds.length === 0) return true; // placeholder slot (holiday 'D')
-      const subtotal = pkg.includedItemIds.reduce((sum, id) => sum + (priceById.get(id) ?? 0), 0);
-      return subtotal + defaultOnFees >= approvalGate;
-    });
+  if (approvalGate > 0 && isPermanent) {
+    // PERMANENT: lock the tile, don't hide it (quote #1303).
+    //
+    // Permanent's A/B/C/D are mutually-exclusive SURFACES, not a cumulative
+    // ladder — "Back of Home" is a different product from "Front & Sides", not
+    // a smaller version of it. Hiding a surface under the gate told the
+    // customer that side cannot be lit at all, and told the staff member who
+    // built the quote nothing whatsoever: on #1303 both "Front of Home"
+    // ($1,400) and "Back of Home" ($1,050) vanished under a $1,600 minimum and
+    // the operator's first sight of it was the sent portal.
+    //
+    // The gate is unchanged — a locked tile is not selectable and could not be
+    // approved anyway. It now states the shortfall instead of disappearing.
+    //
+    // Two carve-outs:
+    //   • If NOTHING clears the gate, lock nothing. A portal of dead tiles is
+    //     worse than the below-min tiles themselves, and it is the same
+    //     situation the old filter's "keep them all" fallback covered (the
+    //     maintenance add-on lifting a quote past auto-waive while sitting in
+    //     no package).
+    //   • The customer's APPROVED tile is never locked. A later rate change can
+    //     drop it under a newer gate, and telling a booked customer their own
+    //     order is not allowed is a lie about a settled fact.
+    const approvedPackageId = row.customer_approved_at
+      ? row.approval_snapshot?.customerSelection?.packageId
+      : undefined;
+    if (allPackages.some(clearsGate)) {
+      packages = allPackages.map((pkg) =>
+        clearsGate(pkg) || pkg.id === approvedPackageId
+          ? pkg
+          : {
+              ...pkg,
+              // A locked tile must not also wear the "recommended" badge. Staff
+              // can tick a set that lands under the minimum (the derive has no
+              // sight of the gate, which is resolved here), and a tile reading
+              // "recommended" next to "Add $200 to book this" tells the customer
+              // we advise something we will not sell them. The portal already
+              // refuses to OPEN on such a tile; this stops it claiming to be our
+              // pick as well.
+              recommended: undefined,
+              belowMinimum: true,
+              amountToMinimum: roundMoney(approvalGate - gateBasisOf(pkg)),
+            },
+      );
+    }
+  } else if (approvalGate > 0) {
+    const kept = allPackages.filter(clearsGate);
     packages = kept.some((pkg) => pkg.includedItemIds.length > 0) ? kept : allPackages;
   }
   // Same-price tier dedupe (operator screenshot: Tier 2 "Full Festive" and

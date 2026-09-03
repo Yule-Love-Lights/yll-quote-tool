@@ -71,6 +71,7 @@ import type { PermanentWarranty } from '@/lib/permanent/types';
 // exactly what the portal's SelectionContext displays, so we never freeze a
 // client-tampered total/deposit/discount into the authoritative snapshot.
 import { buildPortalLineItems } from '@/lib/portal/adapter';
+import { PACKAGE_IDS, isPackageId, type PackageId } from '@/components/portal/types';
 import {
   chargesFromResult,
   effectiveCharges,
@@ -138,7 +139,7 @@ type QuoteRow = {
 };
 
 type ApproveBody = {
-  packageId?: 'A' | 'B' | 'C' | 'D';
+  packageId?: PackageId;
   selectedItemIds?: string[];
   activeName?: string;
   currentTotal?: number;
@@ -218,7 +219,7 @@ type ApprovalSnapshot = {
   version: 1;
   approvedAt: string;              // ISO timestamp
   customerSelection: {
-    packageId: 'A' | 'B' | 'C' | 'D';
+    packageId: PackageId;
     activeName: string;
     selectedItemIds: string[];
     currentTotalUsd: number;
@@ -295,8 +296,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // portal might send a partial selection (e.g., currentTotal missing if
   // client-side state hasn't settled) — but the packageId must be present.
   const packageId = body.packageId;
-  if (packageId !== 'A' && packageId !== 'B' && packageId !== 'C' && packageId !== 'D') {
-    return NextResponse.json({ error: 'packageId must be A, B, C, or D' }, { status: 400 });
+  if (!isPackageId(packageId)) {
+    return NextResponse.json(
+      { error: `packageId must be one of ${PACKAGE_IDS.join(', ')}` },
+      { status: 400 },
+    );
   }
   const selectedItemIds = Array.isArray(body.selectedItemIds)
     ? body.selectedItemIds.filter((x): x is string => typeof x === 'string').slice(0, 200)
@@ -910,7 +914,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     //    #38: SKIPPED when the online checkout is ON — staff shouldn't get an
     //    "approved, go collect" email on the click. The customer pays online
     //    next, and the webhook sends the staff "✅ deposit received" alert on the
-    //    actual payment instead. With checkout OFF (placeholder) it still fires.
+    //    actual payment instead (email, with a Telegram fallback + a durable
+    //    deposit_notify_failed_at marker if that email fails — 2026-09-02
+    //    incident). With checkout OFF (placeholder) it still fires.
     const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
     if (!isValorCheckoutEnabled() && internalContactId) {
       try {

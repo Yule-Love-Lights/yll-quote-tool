@@ -175,7 +175,15 @@ export async function refuseIfFrozen(designId: string): Promise<NextResponse | n
     );
   }
   if (lock.locked) {
-    return NextResponse.json({ error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE }, { status: 409 });
+    // Row 444, S57 wrap (integration lens): this shared helper guards four
+    // design-photo routes and was the ONE call site the migrated-message sweep
+    // did not reach, so a migrated order was still told to "decline it, revive
+    // it, edit, and re-send" — the futile remedy every other site had already
+    // been fixed to stop giving.
+    return NextResponse.json(
+      { error: sceneLockedMessage(lock.migrated), code: SCENE_LOCKED_CODE },
+      { status: 409 },
+    );
   }
   return null;
 }

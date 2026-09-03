@@ -5,9 +5,10 @@ import { logAdvertisingActivity } from '@/lib/advertising/activity';
 // Placements: one row per yard sign (or door hanger batch) placed, plus the
 // review transitions and the earnings math. The money rules (Naldo
 // 2026-08-27, pay basis updated by Naldo 2026-08-29): the campaign rate is
-// paid PER ACCEPTED PHOTO, whatever the kind — the campaign's NAME says
-// whether it is a yard-sign or door-hanger campaign, and the kind on the row
-// records which it was. The rate is stamped at acceptance
+// paid PER ACCEPTED PHOTO, whatever the kind. The campaign carries its own
+// `kind` column (yard_sign | door_hanger) and the placement takes its kind
+// from THAT, never from the request body; the campaign's name is how a human
+// tells the campaigns apart, not how the code decides. The rate is stamped at acceptance
 // (accepted_rate_cents) so later rate changes never move history; pending
 // and rejected placements never count for pay; a
 // rejected-then-resubmitted-then-accepted placement pays exactly once.
@@ -36,6 +37,14 @@ export type AdvertisingPlacement = {
   neighborhood: string | null;
   propertyId: string | null;
   rejectionReason: string | null;
+  workerNote: string | null;
+  /** Perceptual dHash of the proof photo (photoHash.ts); null before hashing shipped. */
+  photoHash: string | null;
+  /** Void overlay (Naldo 2026-08-29): a voided row counts for NOTHING but
+   * its history stays. All three travel together; reason required. */
+  voidedAt: string | null;
+  voidedBy: string | null;
+  voidReason: string | null;
   acceptedRateCents: number | null;
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -60,6 +69,11 @@ type Row = {
   neighborhood: string | null;
   property_id: string | null;
   rejection_reason: string | null;
+  worker_note: string | null;
+  photo_hash: string | null;
+  voided_at: string | null;
+  voided_by: string | null;
+  void_reason: string | null;
   accepted_rate_cents: number | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -69,7 +83,7 @@ type Row = {
 };
 
 const SELECT =
-  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
+  'id, campaign_id, worker_id, kind, status, lat, lng, accuracy_m, captured_at, photo_path, suggested_address, route, neighborhood, property_id, rejection_reason, worker_note, photo_hash, voided_at, voided_by, void_reason, accepted_rate_cents, reviewed_by, reviewed_at, is_test, created_at, updated_at';
 
 function toPlacement(row: Row): AdvertisingPlacement {
   return {
@@ -88,6 +102,11 @@ function toPlacement(row: Row): AdvertisingPlacement {
     neighborhood: row.neighborhood,
     propertyId: row.property_id,
     rejectionReason: row.rejection_reason,
+    workerNote: row.worker_note,
+    photoHash: row.photo_hash,
+    voidedAt: row.voided_at,
+    voidedBy: row.voided_by,
+    voidReason: row.void_reason,
     acceptedRateCents: row.accepted_rate_cents,
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
@@ -169,6 +188,8 @@ export async function submitPlacement(input: {
   route?: string | null;
   neighborhood?: string | null;
   propertyId?: string | null;
+  workerNote?: string | null;
+  photoHash?: string | null;
   isTest?: boolean;
 }): Promise<AdvertisingPlacement> {
   const db = getSupabaseServiceClient();
@@ -202,6 +223,8 @@ export async function submitPlacement(input: {
       route: input.route?.trim() || null,
       neighborhood: input.neighborhood?.trim() || null,
       property_id: input.propertyId ?? null,
+      worker_note: input.workerNote?.trim() || null,
+      photo_hash: input.photoHash ?? null,
       is_test: input.isTest ?? false,
     })
     .select(SELECT)
@@ -216,6 +239,150 @@ export async function submitPlacement(input: {
     placementId: placement.id,
     workerId: placement.workerId,
     detail: { kind: placement.kind },
+  });
+  return placement;
+}
+
+/** Thrown when the DB's own uniqueness guard refuses a second accepted row
+ * for the same worker, campaign and photo hash. The pre-check above can
+ * lose a race (two admin tabs); this is the authority that cannot. */
+export class DuplicatePlacementError extends Error {
+  constructor() {
+    super('This photo is already uploaded and accepted for this worker and campaign.');
+    this.name = 'DuplicatePlacementError';
+  }
+}
+
+/**
+ * Bulk-upload dedupe (technical lens HIGH, PR #1093): an exact re-upload of
+ * an already-accepted photo must never mint a second paid row. Exact hash
+ * equality only (never the hamming-distance similarity the review flags
+ * use), scoped to the same worker and campaign. Best-effort: a null hash
+ * matches nothing, and a read error reports null rather than blocking the
+ * upload path.
+ */
+export async function findAcceptedByPhotoHash(
+  workerId: string,
+  campaignId: string,
+  photoHash: string | null,
+): Promise<AdvertisingPlacement | null> {
+  if (!photoHash) return null;
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  // limit(1), never maybeSingle: PostgREST answers a multi-row maybeSingle
+  // with PGRST116 and NULL data, which a catch-all null return reads as
+  // "no duplicate" — disarming this guard exactly where duplicates already
+  // exist (delta-verify HIGH, PR #1093).
+  const { data, error } = await db
+    .from('advertising_placements')
+    .select(SELECT)
+    .eq('worker_id', workerId.trim())
+    .eq('campaign_id', campaignId.trim())
+    .eq('status', 'accepted')
+    // A VOIDED row is not a duplicate. Void is an overlay that leaves
+    // status='accepted' forever, so without this the office could never
+    // re-do the very work a void exists to undo: the re-upload would be
+    // reported as an already-uploaded duplicate and silently skipped
+    // (close integration lens HIGH — the dedupe shipped before void
+    // existed, so neither PR's own review could see the seam).
+    .is('voided_at', null)
+    .eq('photo_hash', photoHash)
+    .limit(1);
+  if (error) {
+    console.error('findAcceptedByPhotoHash error:', error);
+    return null;
+  }
+  const rows = (data ?? []) as Row[];
+  return rows.length > 0 ? toPlacement(rows[0]) : null;
+}
+
+/**
+ * Admin bulk upload (Naldo, 2026-08-29): a photo backfilled for work done
+ * BEFORE the tool existed lands directly ACCEPTED, stamped with the rate
+ * the caller read from the campaign at upload time and reviewed by the
+ * uploading admin. GPS is optional (camera-roll files often carry none)
+ * but never one-sided: a lat without a lng is corrupt, not partial. This
+ * is a pay-creating write, so every guard here is a money guard.
+ */
+export async function submitAcceptedPlacement(input: {
+  campaignId: string;
+  workerId: string;
+  kind: PlacementKind;
+  rateCents: number;
+  reviewedBy: string;
+  lat: number | null;
+  lng: number | null;
+  capturedAt?: string | null;
+  photoPath: string;
+  suggestedAddress?: string | null;
+  photoHash?: string | null;
+  isTest?: boolean;
+}): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const photoPath = input.photoPath.trim();
+  if (!photoPath) throw new Error('submitAcceptedPlacement: a proof photo is required');
+  if (!Number.isInteger(input.rateCents) || input.rateCents < 0) {
+    throw new Error(
+      `submitAcceptedPlacement: invalid rate ${String(input.rateCents)}: must be a non-negative integer number of cents`,
+    );
+  }
+  const reviewedBy = input.reviewedBy.trim();
+  if (!reviewedBy) throw new Error('submitAcceptedPlacement: the reviewing admin is required');
+  if ((input.lat === null) !== (input.lng === null)) {
+    throw new Error('submitAcceptedPlacement: one-sided GPS refused (lat and lng must come together)');
+  }
+  if (input.lat !== null && input.lng !== null) {
+    if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates must be numbers');
+    }
+    if (input.lat < -90 || input.lat > 90 || input.lng < -180 || input.lng > 180) {
+      throw new Error('submitAcceptedPlacement: GPS coordinates out of range');
+    }
+  }
+  if (input.kind !== 'yard_sign' && input.kind !== 'door_hanger') {
+    throw new Error(`submitAcceptedPlacement: unknown kind ${String(input.kind)}`);
+  }
+
+  const { data, error } = await db
+    .from('advertising_placements')
+    .insert({
+      campaign_id: input.campaignId.trim(),
+      worker_id: input.workerId.trim(),
+      kind: input.kind,
+      status: 'accepted',
+      lat: input.lat,
+      lng: input.lng,
+      accuracy_m: null,
+      captured_at: input.capturedAt ?? new Date().toISOString(),
+      photo_path: photoPath,
+      suggested_address: input.suggestedAddress?.trim() || null,
+      photo_hash: input.photoHash ?? null,
+      accepted_rate_cents: input.rateCents,
+      reviewed_by: reviewedBy,
+      reviewed_at: new Date().toISOString(),
+      is_test: input.isTest ?? false,
+    })
+    .select(SELECT)
+    .maybeSingle();
+  if (error) {
+    // 23505: the partial unique index on (worker_id, campaign_id,
+    // photo_hash) where status='accepted' refused a second paid row. This
+    // is the guard that survives a lost race, so it reports as a duplicate
+    // rather than a failure.
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`submitAcceptedPlacement: ${error.message}`);
+  }
+  if (!data) throw new Error('submitAcceptedPlacement: no row returned');
+
+  const placement = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: reviewedBy,
+    action: 'accepted',
+    placementId: placement.id,
+    workerId: placement.workerId,
+    detail: { kind: placement.kind, acceptedRateCents: placement.acceptedRateCents, bulkUpload: true },
   });
   return placement;
 }
@@ -238,6 +405,7 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
   const placementId = id.trim();
   const row = await getPlacementRow(db, placementId);
   if (!row) throw new Error(`acceptPlacement: no placement found for id ${placementId}`);
+  if (row.voided_at) throw new Error('acceptPlacement: placement is voided and cannot be reviewed');
   if (row.status === 'accepted') return toPlacement(row); // idempotent retry
   if (row.status === 'rejected') {
     throw new Error('acceptPlacement: placement is rejected — it must be resubmitted before it can be accepted');
@@ -274,13 +442,24 @@ export async function acceptPlacement(id: string, reviewedBy: string): Promise<A
     })
     .eq('id', placementId)
     .in('status', ['pending', 'resubmitted'])
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
-  if (error) throw new Error(`acceptPlacement: ${error.message}`);
+  if (error) {
+    // The accepted-photo unique index guards the TRANSITION into accepted,
+    // not just inserts: accepting a second copy of a photo already accepted
+    // for this worker and campaign is refused here. Report it as the
+    // duplicate it is rather than a raw 500 (delta-verify, PR #1093).
+    if ((error as { code?: string }).code === '23505') throw new DuplicatePlacementError();
+    throw new Error(`acceptPlacement: ${error.message}`);
+  }
 
   if (!data) {
     // Lost the CAS race: someone else reviewed it between our read and write.
     const current = await getPlacementRow(db, placementId);
+    if (current?.voided_at) {
+      throw new Error('acceptPlacement: placement was voided before this accept landed');
+    }
     if (current?.status === 'accepted') return toPlacement(current);
     throw new Error(
       `acceptPlacement: placement ${placementId} moved to '${current?.status ?? 'missing'}' before this accept landed`,
@@ -325,6 +504,7 @@ export async function rejectPlacement(
     })
     .eq('id', placementId)
     .in('status', ['pending', 'resubmitted'])
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`rejectPlacement: ${error.message}`);
@@ -332,6 +512,7 @@ export async function rejectPlacement(
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`rejectPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) throw new Error('rejectPlacement: placement is voided and cannot be reviewed');
     if (current.status === 'rejected') return toPlacement(current); // idempotent retry
     throw new Error(`rejectPlacement: placement ${placementId} is '${current.status}' and cannot be rejected`);
   }
@@ -360,6 +541,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
     .update({ status: 'resubmitted' })
     .eq('id', placementId)
     .eq('status', 'rejected')
+    .is('voided_at', null)
     .select(SELECT)
     .maybeSingle();
   if (error) throw new Error(`resubmitPlacement: ${error.message}`);
@@ -367,6 +549,7 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
   if (!data) {
     const current = await getPlacementRow(db, placementId);
     if (!current) throw new Error(`resubmitPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) throw new Error('resubmitPlacement: placement is voided and cannot be resubmitted');
     if (current.status === 'resubmitted') return toPlacement(current); // idempotent retry
     throw new Error(`resubmitPlacement: placement ${placementId} is '${current.status}', only rejected placements can be resubmitted`);
   }
@@ -379,6 +562,123 @@ export async function resubmitPlacement(id: string): Promise<AdvertisingPlacemen
     workerId: resubmitted.workerId,
   });
   return resubmitted;
+}
+
+/** Has this placement already been paid, RIGHT NOW? Read straight from the
+ * settlement lines rather than through payouts.ts, which imports THIS module
+ * for the earnings engine; the guard has to sit at the state change
+ * (voidPlacement), so the one-line read lives here to keep the import
+ * one-directional.
+ *
+ * Only a LIVE line counts. When a payment is voided (ledger row 492) its
+ * lines are stamped too, the money goes back to unpaid, and the photo is
+ * released, so it can be voided again. Missing that filter kept a released
+ * photo locked forever while the pay screen said it was unpaid, which is the
+ * state this whole overlay exists to avoid. This is the ONLY reader of that
+ * rule now: payouts.ts used to expose an unused twin, and a test reaching
+ * for the twin is exactly why this one shipped without the filter. */
+async function placementIsPaid(db: Db, placementId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from('advertising_settlement_lines')
+    .select('id')
+    .eq('placement_id', placementId)
+    .is('voided_at', null) // only a LIVE line is a claim (ledger row 492)
+    .limit(1);
+  if (error) throw new Error(`voidPlacement: could not check whether this photo was paid — ${error.message}`);
+  return ((data ?? []) as unknown[]).length > 0;
+}
+
+/**
+ * VOID a placement (Naldo 2026-08-29): it stops counting for pay, estimates,
+ * stock counts and duplicate flags — but NOT for sign allotments, which keep
+ * counting it (Naldo 2026-08-31, ledger row 479: a placed sign is a used
+ * sign, and the plastic is in the ground whatever happens to the photo)
+ * — while the row,
+ * its status history, and its stamped rate remain as the record. There is no
+ * un-void; a wrongly voided sign gets re-submitted. CAS on voided_at IS NULL:
+ * the first void wins and a retry returns it unchanged.
+ *
+ * A PAID photo cannot be voided at all (Naldo's ruling, 2026-08-30): the
+ * money has already been handed over, and voiding it would take the row out
+ * of earned while the settlement still counts it as paid — which is how
+ * "unpaid" goes negative on the pay screen. The check runs before the write
+ * AND again after it, because a settlement landing in the gap would produce
+ * exactly that state; if it does, this void is unwound (our own write, not
+ * an un-void) and the caller gets a named conflict.
+ */
+export async function voidPlacement(
+  id: string,
+  voidedBy: string,
+  reason: string,
+): Promise<AdvertisingPlacement> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const placementId = id.trim();
+  const voidReason = reason.trim();
+  if (!voidReason) throw new Error('voidPlacement: a reason is required');
+
+  if (await placementIsPaid(db, placementId)) {
+    throw new Error(
+      `voidPlacement: this photo has been paid and cannot be voided — undo that payment on the pay screen first, then void the photo`,
+    );
+  }
+
+  const voidedAt = new Date().toISOString();
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({
+      voided_at: voidedAt,
+      voided_by: voidedBy,
+      void_reason: voidReason,
+    })
+    .eq('id', placementId)
+    .is('voided_at', null)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`voidPlacement: ${error.message}`);
+
+  if (!data) {
+    const current = await getPlacementRow(db, placementId);
+    if (!current) throw new Error(`voidPlacement: no placement found for id ${placementId}`);
+    if (current.voided_at) return toPlacement(current); // idempotent: first void stands
+    throw new Error(`voidPlacement: placement ${placementId} could not be voided`);
+  }
+
+  // A settlement that landed while this update was in flight would leave the
+  // row both paid and voided — paid counts it, earned does not, and the pay
+  // screen reads a negative unpaid figure. Unwind OUR write (CAS on the
+  // exact stamp, so a later legitimate void is never touched) and refuse.
+  if (await placementIsPaid(db, placementId)) {
+    const { error: revertError } = await db
+      .from('advertising_placements')
+      .update({ voided_at: null, voided_by: null, void_reason: null })
+      .eq('id', placementId)
+      .eq('voided_at', voidedAt);
+    if (revertError) {
+      throw new Error(
+        `voidPlacement: photo ${placementId} was paid while this void was being written AND the void could not be undone (${revertError.message}) — fix this row by hand before paying again`,
+      );
+    }
+    throw new Error(
+      `voidPlacement: this photo was paid while the void was being recorded — the void was undone, nothing changed`,
+    );
+  }
+
+  const voided = toPlacement(data as Row);
+  await logAdvertisingActivity({
+    actor: voidedBy,
+    action: 'placement_voided',
+    placementId: voided.id,
+    workerId: voided.workerId,
+    detail: {
+      reason: voidReason,
+      priorStatus: voided.status,
+      acceptedRateCents: voided.acceptedRateCents,
+      kind: voided.kind,
+    },
+  });
+  return voided;
 }
 
 // --- Earnings -----------------------------------------------------------------
@@ -455,6 +755,10 @@ export function summarizeEarnings(
       byWorker.set(p.workerId, acc);
     }
 
+    // Voided rows count for NOTHING (Naldo 2026-08-29) — but their worker
+    // still shows up with zeros rather than vanishing.
+    if (p.voidedAt) continue;
+
     let earned = 0;
     let estimated = 0;
     let at: string | null = null;
@@ -462,7 +766,12 @@ export function summarizeEarnings(
     if (p.status === 'accepted') {
       if (p.acceptedRateCents == null) continue; // unstorable by CHECK; belt-and-braces
       earned = p.acceptedRateCents;
-      at = p.reviewedAt ?? p.createdAt;
+      // Bucket by the day the WORK happened (capturedAt), matching the
+      // pending buckets and Naldo's date-taken ruling for backfill (PR
+      // #1093): a photo's pay week no longer jumps when review happens,
+      // and a backfilled batch lands in its historical weeks instead of
+      // spiking the upload day. Totals are unaffected; this is grouping.
+      at = p.capturedAt ?? p.reviewedAt ?? p.createdAt;
     } else if (p.status === 'pending' || p.status === 'resubmitted') {
       estimated = currentRateCentsByCampaign.get(p.campaignId) ?? 0;
       at = p.capturedAt ?? p.createdAt;
@@ -496,12 +805,67 @@ export function summarizeEarnings(
     }));
 }
 
-/** Per-worker earnings: pending estimated cents and accepted earned cents,
- * total plus ET day and week groupings. Scope with workerId for the worker's
- * own view; unscoped for the admin pay summary. */
-export async function earningsSummary(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+/** PURE: door hangers placed per worker (ops suggestions round; written
+ * under the old never-pays rule, kept under pay-per-photo 2026-08-29
+ * because the visibility question survives the rule change: the count shows
+ * whether workers log door hangers at all, independent of the money
+ * figures they now also appear in). Test rows count for nothing, and
+ * neither do VOIDED rows: the paged doorHangerCountsByWorker below filters
+ * them at the database, and this function claims to be the tested pin of
+ * the counting rules, so it has to enforce the same ones or the claim is
+ * false (close integration lens LOW, S81). */
+export function countDoorHangersByWorker(placements: AdvertisingPlacement[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const p of placements) {
+    if (p.isTest || p.voidedAt || p.kind !== 'door_hanger') continue;
+    out.set(p.workerId, (out.get(p.workerId) ?? 0) + 1);
+  }
+  return out;
+}
+
+/** Door hangers placed per worker, PAGED to completeness — both premerge
+ * lenses on the ops-polish PR caught the first cut riding listPlacements'
+ * bounded newest-first 500, where the count silently drifts (even DOWN) as
+ * other workers submit. Reads only worker_id with the predicates pushed to
+ * the server; the pure countDoorHangersByWorker above stays as the tested
+ * pin of the counting rules (door hangers only, test rows never count). */
+export async function doorHangerCountsByWorker(): Promise<Map<string, number>> {
   const db = getSupabaseServiceClient();
-  if (!db) return [];
+  if (!db) return new Map();
+  const out = new Map<string, number>();
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await db
+      .from('advertising_placements')
+      .select('worker_id')
+      .eq('kind', 'door_hanger')
+      .eq('is_test', false)
+      .is('voided_at', null)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) {
+      console.error('doorHangerCountsByWorker error:', error);
+      return new Map(); // fail empty, never a partial count dressed as truth
+    }
+    const rows = (data ?? []) as { worker_id: string }[];
+    for (const r of rows) out.set(r.worker_id, (out.get(r.worker_id) ?? 0) + 1);
+    if (rows.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
+/**
+ * Per-worker earnings, THROWING on a failed read. Money callers use this one:
+ * a settlement's "unpaid" is earned minus paid, so an earnings read that
+ * quietly returns nothing turns earned into 0 and unpaid into a negative
+ * number, which is the money screen stating a confident falsehood rather than
+ * admitting it could not load. (Delta-verify, PR #1130: the first cut of this
+ * only protected workers who had already been paid, which is the smaller
+ * population and not the one most likely to be misread.)
+ */
+export async function earningsSummaryOrThrow(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('earningsSummaryOrThrow: Supabase service role not configured');
 
   // Page to completeness: a pay total computed from a silently truncated
   // read is exactly the wrong-money class this repo's history warns about.
@@ -518,8 +882,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) {
-      console.error('earningsSummary placements error:', error);
-      return [];
+      throw new Error(`earningsSummary: could not read placements — ${error.message}`);
     }
     const rows = (data ?? []) as Row[];
     placements.push(...rows.map((row) => toPlacement(row)));
@@ -535,8 +898,7 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
       .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (campaignsError) {
-      console.error('earningsSummary campaigns error:', campaignsError);
-      return [];
+      throw new Error(`earningsSummary: could not read campaigns — ${campaignsError.message}`);
     }
     const rows = (campaigns ?? []) as { id: string; rate_cents: number }[];
     for (const c of rows) rateByCampaign.set(c.id, c.rate_cents);
@@ -544,4 +906,103 @@ export async function earningsSummary(opts?: { workerId?: string }): Promise<Wor
   }
 
   return summarizeEarnings(placements, rateByCampaign);
+}
+
+/**
+ * The DISPLAY wrapper: same numbers, but a failed read degrades to an empty
+ * list rather than an exception, which is what the two earnings routes have
+ * always done. Anything deriving money from this (a settlement's unpaid
+ * figure) must call earningsSummaryOrThrow instead, so a read failure
+ * surfaces as a refusal instead of a wrong number.
+ */
+export async function earningsSummary(opts?: { workerId?: string }): Promise<WorkerEarningsSummary[]> {
+  try {
+    return await earningsSummaryOrThrow(opts);
+  } catch (error) {
+    console.error('earningsSummary error:', error);
+    return [];
+  }
+}
+
+// --- Simple Crew replica additions (Naldo, 2026-08-29) ------------------------
+
+/**
+ * The worker's own per-photo note ("Take a note..." in the capture queue).
+ * Ownership is enforced IN the write (`worker_id` filter), so a forged id
+ * for someone else's placement matches nothing and returns null. Any status:
+ * a note is commentary, never money. Pass null to clear.
+ */
+export async function updatePlacementNote(
+  id: string,
+  workerId: string,
+  note: string | null,
+): Promise<AdvertisingPlacement | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const trimmed = note?.trim() || null;
+  const { data, error } = await db
+    .from('advertising_placements')
+    .update({ worker_note: trimmed })
+    .eq('id', id.trim())
+    .eq('worker_id', workerId)
+    .select(SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`updatePlacementNote: ${error.message}`);
+  return data ? toPlacement(data as Row) : null;
+}
+
+export type CampaignActivity = {
+  campaignId: string;
+  photoCount: number;
+  workerCount: number;
+  lastPhotoAt: string | null;
+  /** Non-test placements awaiting review (pending + resubmitted). */
+  pendingCount: number;
+};
+
+/**
+ * Per-campaign activity for the Campaigns cards ("Last photo 19 minutes
+ * ago", photo count, distinct-worker count). Non-test placements only, so
+ * fixtures never inflate the cards. Campaigns are few; placements per
+ * campaign are read shallowly (newest first) just for the header numbers.
+ */
+export async function campaignActivitySummary(campaignIds: string[]): Promise<Map<string, CampaignActivity>> {
+  const out = new Map<string, CampaignActivity>();
+  const db = getSupabaseServiceClient();
+  if (!db) return out;
+
+  await Promise.all(
+    campaignIds.map(async (campaignId) => {
+      const { count, error: countError } = await db
+        .from('advertising_placements')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId)
+        .eq('is_test', false)
+        .is('voided_at', null); // voided rows count for nothing
+      if (countError) console.error('campaignActivitySummary count error:', countError);
+
+      const { data: rows, error: rowsError } = await db
+        .from('advertising_placements')
+        .select('worker_id, created_at, status')
+        .eq('campaign_id', campaignId)
+        .eq('is_test', false)
+        .is('voided_at', null)
+        .order('created_at', { ascending: false })
+        .range(0, 999);
+      if (rowsError) console.error('campaignActivitySummary rows error:', rowsError);
+      const list = (rows ?? []) as { worker_id: string; created_at: string; status: string }[];
+
+      out.set(campaignId, {
+        campaignId,
+        photoCount: count ?? list.length,
+        workerCount: new Set(list.map((r) => r.worker_id)).size,
+        lastPhotoAt: list[0]?.created_at ?? null,
+        // The cross-campaign "where is review needed" signal (admin lens,
+        // PR #1078): the cards badge this so nobody opens every campaign
+        // hunting for pending photos.
+        pendingCount: list.filter((r) => r.status === 'pending' || r.status === 'resubmitted').length,
+      });
+    }),
+  );
+  return out;
 }
