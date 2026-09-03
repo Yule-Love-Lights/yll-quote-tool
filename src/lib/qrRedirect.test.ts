@@ -1,16 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { buildQrDestination, QR_DESTINATION } from './qrRedirect';
 
-// The two slugs below are the REAL printed codes, read off the old account's
-// Sites -> QR Codes screen on 2026-09-03 and confirmed by Naldo against the
-// physical items. That account is unpaid and can be purged at any time, after
-// which this mapping is unrecoverable — so these tests are the durable record
-// of it as much as they are a check.
+// The two slugs below are the REAL printed codes. They were verified on
+// 2026-09-03 by requesting the old account's own white-label host directly,
+// which still answers them:
+//
+//   link.surgecrm.ai/qr/hbJhlsQLHpFv    302 -> https://yulelovelights.com/
+//   link.surgecrm.ai/qr/DjzJS9mzhTOm    302 -> https://yulelovelights.com/get-a-quote/
+//
+// That account is unpaid and belongs to a former agency, so it can be purged
+// without notice, after which this mapping is unrecoverable. These tests are
+// the durable record of it as much as they are a check.
 const VAN = 'hbJhlsQLHpFv';
 const BUSINESS_CARD = 'DjzJS9mzhTOm';
 
 const HOMEPAGE = 'https://yulelovelights.com/';
-const QUOTE_PAGE = 'https://yulelovelights.com/get-a-quote/';
 
 const originAndPath = (raw: string) => {
   const url = new URL(raw);
@@ -27,20 +31,29 @@ describe('buildQrDestination', () => {
     expect(url.searchParams.get('utm_medium')).toBe('print');
   });
 
-  it('sends the business card to the QUOTE page, not the homepage', () => {
+  // The card originally pointed at /get-a-quote/. That page dead-ends today (a
+  // bare request 301s to the homepage), so sending the card there would have
+  // reproduced the outage this route exists to fix. Naldo chose the homepage on
+  // 2026-09-03. This test pins that the old destination is NOT resurrected by a
+  // later well-meaning edit without someone first fixing the WordPress redirect.
+  it('sends the business card to the homepage, not the dead /get-a-quote/ page', () => {
     const url = new URL(buildQrDestination(BUSINESS_CARD));
-    expect(url.origin + url.pathname).toBe(QUOTE_PAGE);
+    expect(url.origin + url.pathname).toBe(HOMEPAGE);
+    expect(url.pathname).not.toContain('get-a-quote');
     expect(url.searchParams.get('utm_campaign')).toBe('business_card');
     expect(url.searchParams.get('utm_content')).toBe(BUSINESS_CARD);
   });
 
-  // The defect this pins is the easy one to ship by accident: collapsing both
-  // printed codes onto one destination. The card is a lead-capture scan and the
-  // van is a browse; treating them alike silently downgrades the code most
-  // likely to be held by a homeowner who just asked for a price.
-  it('does not collapse the two printed codes onto the same destination', () => {
-    expect(originAndPath(buildQrDestination(VAN))).not.toBe(
-      originAndPath(buildQrDestination(BUSINESS_CARD)),
+  // Landing the two codes in the same place is a product decision, not an
+  // accident, but it must not cost us the ability to tell them apart: the whole
+  // point of capturing the mapping before the old account dies is knowing which
+  // printed thing a scan came from.
+  it('still reports the two printed codes as different campaigns', () => {
+    const van = new URL(buildQrDestination(VAN));
+    const card = new URL(buildQrDestination(BUSINESS_CARD));
+    expect(originAndPath(van.toString())).toBe(originAndPath(card.toString()));
+    expect(van.searchParams.get('utm_campaign')).not.toBe(
+      card.searchParams.get('utm_campaign'),
     );
   });
 
