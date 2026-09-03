@@ -366,6 +366,24 @@ export function parseLeadForwardDisplay(
 
 // normalizeEmail / normalizePhone are already imported at the top of this file.
 
+/**
+ * How long after a lead arrives an outbound touch can still be read as
+ * answering it (premerge staff lens, 2026-09-02).
+ *
+ * Without a bound the match is open-ended, so a call to a returning customer
+ * months later would close a lead nobody ever worked. Fourteen days is chosen
+ * to be uncomfortable rather than tight: leads are worked the same day, and a
+ * forwarded lead still open after two weeks is already a process failure, so
+ * anything beyond that is far more likely to be a different conversation with
+ * the same person.
+ *
+ * The two failure directions are not symmetric, which is why the number errs
+ * generous. Too tight and staff mark the row by hand, exactly as they did
+ * before this feature existed. Too loose and a real lead is closed by a call
+ * that had nothing to do with it, and nobody ever calls that customer.
+ */
+export const LEAD_FORWARD_ANSWER_WINDOW_DAYS = 14;
+
 /** An open row this sweep may clear, as read from the database. */
 export type LeadForwardCandidateRow = {
   id: string;
@@ -389,8 +407,10 @@ export type OutboundTouchIdentity = {
  *   1. It parses as a lead forward from its OWN subject and preview.
  *   2. It is still open. A dismissed row stays dismissed (spam is sticky),
  *      and a handled or completed one keeps its existing attribution.
- *   3. The outbound happened strictly AFTER the lead arrived. An earlier call
- *      answered something else; it cannot answer a lead that did not exist.
+ *   3. The outbound happened strictly AFTER the lead arrived, and within
+ *      LEAD_FORWARD_ANSWER_WINDOW_DAYS of it. An earlier call answered
+ *      something else and cannot answer a lead that did not exist; a call
+ *      months later is a different conversation with the same person.
  *   4. The outbound reached a phone or email the ROW itself names.
  */
 export function outboundAnswersLeadForward(
@@ -405,7 +425,9 @@ export function outboundAnswersLeadForward(
   // No arrival time means we cannot show the outbound came after it. Refuse
   // rather than guess: a wrongly cleared lead is a customer nobody calls.
   if (!row.lastMessageAt) return false;
-  if (outbound.at.getTime() <= row.lastMessageAt.getTime()) return false;
+  const sinceArrival = outbound.at.getTime() - row.lastMessageAt.getTime();
+  if (sinceArrival <= 0) return false;
+  if (sinceArrival > LEAD_FORWARD_ANSWER_WINDOW_DAYS * 24 * 60 * 60 * 1000) return false;
 
   const rowPhone = parsed.phone ? normalizePhone(parsed.phone) : null;
   const rowEmail = parsed.email ? normalizeEmail(parsed.email) : null;

@@ -19,7 +19,10 @@ type Resp = { data: unknown; error: { message: string } | null };
 // (or calling .returns()) resolves the queued response for its table.
 function chain(resp: Resp) {
   const c: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'in', 'gte', 'lt', 'is', 'order', 'limit']) {
+  // 'range' matters: settledShiftIds pages with it, and without it here the
+  // call threw into loadFleetDay's catch on EVERY test — a fail-safe path
+  // firing constantly while the suite stayed green.
+  for (const m of ['select', 'eq', 'in', 'gte', 'lt', 'is', 'order', 'limit', 'range']) {
     c[m] = vi.fn(() => c);
   }
   c.returns = vi.fn(() => Promise.resolve(resp));
@@ -57,6 +60,59 @@ function seedEmptyVehiclesAndVisits() {
 beforeEach(() => {
   for (const k of Object.keys(tables)) delete tables[k];
   fakeSb.from.mockClear();
+});
+
+describe('loadFleetDay paid-shift lock (ledger row 459)', () => {
+  it('marks a shift that sits on a live settlement line', async () => {
+    seedEmptyVehiclesAndVisits();
+    queue('shifts', {
+      data: [
+        { id: 's-paid', crew_member_id: 'c-field', clock_in_at: `${DAY}T11:01:00Z`, clock_out_at: `${DAY}T18:00:00Z` },
+      ],
+      error: null,
+    });
+    queue('crew_members', { data: [{ id: 'c-field', display_name: 'Field', is_office: false }], error: null });
+    queue('shift_settlement_lines', {
+      data: [{ shift_id: 's-paid', settlement_id: 'settlement-1', voided_at: null }],
+      error: null,
+    });
+    const day = await loadFleetDay(DAY);
+    expect(day.errors).toEqual([]);
+    expect(day.shifts.map((s) => s.paidAndLocked)).toEqual([true]);
+  });
+
+  it('leaves an unpaid shift editable', async () => {
+    seedEmptyVehiclesAndVisits();
+    queue('shifts', {
+      data: [
+        { id: 's-free', crew_member_id: 'c-field', clock_in_at: `${DAY}T11:01:00Z`, clock_out_at: `${DAY}T18:00:00Z` },
+      ],
+      error: null,
+    });
+    queue('crew_members', { data: [{ id: 'c-field', display_name: 'Field', is_office: false }], error: null });
+    queue('shift_settlement_lines', { data: [], error: null });
+    const day = await loadFleetDay(DAY);
+    expect(day.errors).toEqual([]);
+    expect(day.shifts.map((s) => s.paidAndLocked)).toEqual([false]);
+  });
+
+  it('FAILS SAFE when the settlement read errors: the control stays, and the page says why', async () => {
+    // Hiding a working control on a transient read error is the worse failure
+    // on the page staff use to fix a forgotten punch — and the server refuses
+    // a paid write unconditionally regardless of what this page renders.
+    seedEmptyVehiclesAndVisits();
+    queue('shifts', {
+      data: [
+        { id: 's-free', crew_member_id: 'c-field', clock_in_at: `${DAY}T11:01:00Z`, clock_out_at: `${DAY}T18:00:00Z` },
+      ],
+      error: null,
+    });
+    queue('crew_members', { data: [{ id: 'c-field', display_name: 'Field', is_office: false }], error: null });
+    queue('shift_settlement_lines', { data: null, error: { message: 'connection reset' } });
+    const day = await loadFleetDay(DAY);
+    expect(day.shifts.map((s) => s.paidAndLocked)).toEqual([false]);
+    expect(day.errors.join(' ')).toContain('connection reset');
+  });
 });
 
 describe('loadFleetDay crew clock', () => {

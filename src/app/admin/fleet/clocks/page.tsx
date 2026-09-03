@@ -3,6 +3,7 @@
 // and Jason; any other operator is sent back to the live fleet page. The gate
 // runs server-side on the session role, not in the UI.
 
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
@@ -153,20 +154,39 @@ export default async function FleetClocksPage({
                       {' '}
                       · in {fmtFleetTime(s.clockInAt)} · out {fmtFleetTime(s.clockOutAt)}{' '}
                     </span>
-                    <EditShiftTimes
-                      shiftId={s.id}
-                      clockInAt={s.clockInAt}
-                      clockOutAt={s.clockOutAt}
-                    />
-                    {s.officeEntry && (
+                    {/* A paid shift is locked (ledger row 459) and shifts.ts
+                        refuses both writes, so the row says so instead of
+                        offering a control that answers with a 409. The
+                        person's own page already did this; THIS sibling
+                        surface was missed when the guard shipped, and only a
+                        whole-session integration lens could see it, because
+                        this file was in none of the four PRs' diffs. */}
+                    {s.paidAndLocked ? (
+                      <span className="text-xs text-gray-500">
+                        Paid — undo the payment on their{' '}
+                        <Link href="/admin/time-tracking" className="underline">
+                          hours page
+                        </Link>{' '}
+                        to change these times
+                      </span>
+                    ) : (
                       <>
-                        {' · '}
-                        <VoidShiftButton
+                        <EditShiftTimes
                           shiftId={s.id}
-                          crewName={s.crewName}
                           clockInAt={s.clockInAt}
                           clockOutAt={s.clockOutAt}
                         />
+                        {s.officeEntry && (
+                          <>
+                            {' · '}
+                            <VoidShiftButton
+                              shiftId={s.id}
+                              crewName={s.crewName}
+                              clockInAt={s.clockInAt}
+                              clockOutAt={s.clockOutAt}
+                            />
+                          </>
+                        )}
                       </>
                     )}
                     {s.manualBy && (
