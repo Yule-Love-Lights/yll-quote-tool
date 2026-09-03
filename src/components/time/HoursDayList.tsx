@@ -198,7 +198,14 @@ function ShiftRow({
               copy that narrates it are one change. */}
           {shift.settlementId ? (
             <span className="text-xs text-gray-500">
-              Paid — undo the payment below to change these times
+              {/* A payment can now cover PART of a shift, and a bare "Paid"
+                  on a row that is half covered claims money that was never
+                  handed over for it. Seen live on a real row during the
+                  browser check. The LOCK is unconditional either way: any
+                  live payment refuses an edit. */}
+              {shift.settledSeconds > 0 && shift.settledSeconds < shift.paidSeconds
+                ? `${formatHours(shift.settledSeconds)} of this is paid — undo the payment below to change these times`
+                : 'Paid — undo the payment below to change these times'}
             </span>
           ) : (
             <EditShiftTimes

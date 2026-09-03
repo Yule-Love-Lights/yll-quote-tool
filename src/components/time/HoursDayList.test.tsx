@@ -164,6 +164,20 @@ describe('HoursDayList — the Paid mark', () => {
     expect(render('none', { settlementId: null, settledSeconds: 0 }, true)).not.toContain('>Paid<');
   });
 
+  it('does not call a PART-paid shift simply "Paid" on the admin row', () => {
+    // Seen live on Khaye's 28 Aug row: 3h 48m of a 4h 23m shift, reading a
+    // bare "Paid". The LOCK is unconditional — any live payment refuses an
+    // edit — but the claim about money is not.
+    const admin = render('admin', PART, true);
+    expect(admin).toContain('3h 00m of this is paid');
+    expect(admin).toContain('undo the payment below');
+    expect(admin).not.toContain('Paid — undo');
+  });
+
+  it('still says plainly PAID when the whole shift is covered', () => {
+    expect(render('admin', WHOLE, true)).toContain('Paid — undo');
+  });
+
   it('leaves the admin row to its own lock copy rather than adding a mark', () => {
     const admin = render('admin', WHOLE, true);
     expect(admin).not.toContain('>Paid<');

@@ -97,9 +97,9 @@ export function PersonHoursSection({
       </div>
 
       <p className="text-sm text-gray-500 mb-4">
-        Clocked time, day by day. Nothing here is approved or paid. A shift counts on the day it
-        started (New York time) and is never split across midnight, so an overnight shift shows
-        in full on the day it began.
+        Clocked time, day by day, with what has been paid for marked on each row. A shift counts
+        on the day it started (New York time) and is never split across midnight, so an overnight
+        shift shows in full on the day it began.
       </p>
 
       {errors.length > 0 && (
@@ -204,9 +204,10 @@ export function ShiftPaySection({
     <section className="mb-10">
       <h2 className="text-lg font-semibold text-gray-900 mb-1">Pay</h2>
       <p className="text-sm text-gray-500 mb-4">
-        You pay {crewName} however you normally do, then record it here against the shifts it
-        covered. The tool does not work out what to pay — it keeps the record of what you paid and
-        which hours it was for. A paid shift is locked until the payment is undone.
+        You pay {crewName} however you normally do, then record the amount here. The tool does not
+        work out what to pay — it takes what you actually handed over and marks off that many
+        hours, oldest first. Anything the money does not reach stays unpaid and carries over to
+        the next payment. A shift a payment has touched is locked until that payment is undone.
       </p>
 
       {!settlementsReadable ? (
