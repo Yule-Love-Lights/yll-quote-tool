@@ -12,6 +12,7 @@ import {
   listPendingColorRequests,
 } from '@/lib/dashboard/inbox/store';
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
+import { highLevelLocationId } from '@/lib/highLevelLinks';
 import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { GmailWritebackFailuresBanner } from '@/components/dashboard/inbox/GmailWritebackFailuresBanner';
@@ -151,7 +152,14 @@ export default async function InboxPage() {
         )}
 
         {openRes.ok ? (
-          <InboxList initialItems={openRes.items} nowMs={now.getTime()} currentOperatorId={operator?.id ?? null} />
+          <InboxList
+            initialItems={openRes.items}
+            nowMs={now.getTime()}
+            currentOperatorId={operator?.id ?? null}
+            /* Read here, on the server, because building a HighLevel URL
+               needs it and InboxList is a client component. */
+            hlLocationId={highLevelLocationId()}
+          />
         ) : (
           <div
             className="rounded-md border p-4 text-sm"

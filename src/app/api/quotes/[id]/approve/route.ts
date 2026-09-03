@@ -914,7 +914,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     //    #38: SKIPPED when the online checkout is ON — staff shouldn't get an
     //    "approved, go collect" email on the click. The customer pays online
     //    next, and the webhook sends the staff "✅ deposit received" alert on the
-    //    actual payment instead. With checkout OFF (placeholder) it still fires.
+    //    actual payment instead (email, with a Telegram fallback + a durable
+    //    deposit_notify_failed_at marker if that email fails — 2026-09-02
+    //    incident). With checkout OFF (placeholder) it still fires.
     const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
     if (!isValorCheckoutEnabled() && internalContactId) {
       try {

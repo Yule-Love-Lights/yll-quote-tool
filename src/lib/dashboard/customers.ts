@@ -128,3 +128,39 @@ export function aggregateCustomers(quotes: DashboardQuote[]): CustomerSummary[] 
   summaries.sort((a, b) => new Date(b.latestQuoteAt).getTime() - new Date(a.latestQuoteAt).getTime());
   return summaries;
 }
+
+/**
+ * The HighLevel contact id to load a customer profile from, given that
+ * customer's quotes and the route id the page was addressed by.
+ *
+ * A quote's own HighLevel id wins: it is the id this tool recorded for them.
+ * When the customer has NO quotes at all, the route id is used instead,
+ * because the route id for a CRM-linked customer IS their HighLevel contact
+ * id. Without that fallback the profile page resolved null, never attempted
+ * the CRM fetch, and 404'd for every customer who has never been quoted,
+ * which is precisely the new lead someone opening a call task wants to read
+ * up on. Found by driving a real Office Task link in the browser: HighLevel
+ * returned the contact happily and the page 404'd anyway.
+ *
+ * Returns null for a customer who HAS quotes but no HighLevel id, so the
+ * page keeps saying "not linked to HighLevel" for a genuine non-CRM customer
+ * rather than attempting a fetch with a customer_id and reporting the more
+ * alarming "could not be loaded".
+ *
+ * KNOWN LIMITATION, dormant today and worth knowing before it is not.
+ * `quotes` reaches this function already filtered out of a CAPPED read
+ * (the profile page calls listQuotesForDashboard(500)), so an empty list
+ * means "none in the newest 500 quotes system-wide", not provably "none
+ * ever". Once the tool holds more than 500 quotes, a returning customer
+ * whose whole history has aged out of that window would take the route-id
+ * fallback and render a profile stating "0 quotes" for someone who has
+ * several. That is a quiet wrong answer where the old behaviour was a loud
+ * 404. Measured 2026-09-02: 225 quotes exist in total, so no customer can
+ * hit this yet. The fix when it matters is to count that customer's quotes
+ * directly rather than infer it from a capped list.
+ */
+export function resolveHlContactId(quotes: DashboardQuote[], routeId: string): string | null {
+  const fromQuotes = quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id;
+  if (fromQuotes) return fromQuotes;
+  return quotes.length === 0 ? routeId : null;
+}

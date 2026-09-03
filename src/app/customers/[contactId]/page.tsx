@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
-import { statusOf, matchesCustomerRoute, expandHlContactIds } from '@/lib/dashboard/customers';
+import { statusOf, matchesCustomerRoute, expandHlContactIds, resolveHlContactId } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
 import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { CustomerActivityFeed } from '@/components/dashboard/CustomerActivityFeed';
@@ -17,6 +17,7 @@ import { CustomerPropertiesPanel } from '@/components/dashboard/CustomerProperti
 import { getPropertiesForCustomer, getCustomer } from '@/lib/customers';
 import { getCustomerTenure, tenureHeaderLabel } from '@/lib/customerTenure';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import { highLevelContactUrlFromEnv } from '@/lib/highLevelLinks';
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { listJobsForCustomer } from '@/lib/jobs';
@@ -36,12 +37,12 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/** HighLevel app URL for a contact, built from the location id. Null if the
- *  location id isn't configured. (locationId is not a secret — it's in HL URLs.) */
+/** HighLevel app URL for a contact, or null when this environment has no
+ *  location id configured. The URL shape itself now lives in one place
+ *  (src/lib/highLevelLinks.ts) so it cannot drift between the surfaces that
+ *  build it. Kept as a local name because this file calls it several times. */
 function highLevelContactUrl(contactId: string): string | null {
-  const loc = process.env.HIGHLEVEL_LOCATION_ID;
-  if (!loc) return null;
-  return `https://app.gohighlevel.com/v2/location/${loc}/contacts/detail/${encodeURIComponent(contactId)}`;
+  return highLevelContactUrlFromEnv(contactId);
 }
 
 function fieldList(contact: CrmContact): Array<{ label: string; value: string }> {
@@ -83,8 +84,21 @@ export default async function CustomerDetailPage({
   // When the route id IS a HL id this is just that id; when the route id is a
   // customer_id, this recovers the HL link (if the customer also has one) so the
   // live panel + "View in HighLevel" still work.
-  const hlContactId: string | null =
-    quotes.find(q => q.highlevel_contact_id)?.highlevel_contact_id ?? null;
+  //
+  // The fallback matters: with no quotes at all this used to resolve to null,
+  // so the CRM fetch never ran, `contact` stayed null, and the page 404'd for
+  // every customer who has never been quoted. Since the route id for a
+  // CRM-linked customer IS the HighLevel contact id, trying it is enough to
+  // render them. Found by driving a real Office Task link for a contact with
+  // no quotes: HighLevel returned that contact happily, the page 404'd anyway.
+  //
+  // Scoped to the no-quotes case on purpose. A customer WITH quotes and no
+  // HighLevel id is a genuine non-CRM customer, and must keep saying "not
+  // linked to HighLevel" rather than trying a fetch with a customer_id and
+  // reporting the more alarming "could not be loaded". A route id that is not
+  // a real HighLevel id still 404s exactly as before: getContact throws, and
+  // the no-contact-no-quotes check below catches it.
+  const hlContactId: string | null = resolveHlContactId(quotes, routeId);
 
   // EVERY HL contact id this customer has ever carried, not just the one
   // above — expanded via customer_id over allQuotes (see expandHlContactIds),
