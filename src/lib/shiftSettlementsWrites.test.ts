@@ -579,6 +579,29 @@ describe('recordShiftSettlement — the money buys hours, oldest first', () => {
     await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'lost-race' });
   });
 
+  it('refuses a shift whose live line disagrees about its length, through the ordinary path', async () => {
+    // Not by injecting an error: this seeds a live line claiming the shift is
+    // a different length, which is what a shift edited under a payment leaves
+    // behind, and lets the fake's trigger model produce the refusal itself.
+    // The commit that added that model claimed it was covered when only a
+    // directly-injected error exercised it (delta-verify on PR #1190).
+    stateRef.current.lines = [
+      {
+        id: 'stale',
+        settlement_id: 'old',
+        shift_id: 'shift-2',
+        paid_seconds: 60,
+        shift_total_seconds: 999,
+        rate_cents_per_hour: 900,
+        reference_cents: 15,
+        voided_at: null,
+      },
+    ];
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'shift-edited' });
+    expect(stateRef.current.settlements).toHaveLength(0);
+  });
+
   it('REFUSES with its own message when a shift was edited under a live payment', async () => {
     // The trigger raises check_violation for two different situations, and
     // only one of them is a race. A length disagreement can never be cleared
@@ -720,6 +743,30 @@ describe('voidShiftSettlement', () => {
     ).rejects.toThrow(/nothing was undone/);
     expect(stateRef.current.lines.every((l) => l.voided_at === null)).toBe(true);
     expect(stateRef.current.settlements[0]!.voided_at).toBeNull();
+  });
+
+  it('tells the person the RIGHT hours on a half-undone re-run, not zero', async () => {
+    // The first attempt releases the lines and fails to stamp the settlement,
+    // so it sends nothing. By the time the admin runs Undo again every line
+    // already reads as voided — and computing the released time from LIVE
+    // lines then gave 0m, in the person's only message about the whole event
+    // (delta-verify on PR #1190).
+    const created = await recordOne();
+    // recordOne sends its own "you were paid" notice; this test is about what
+    // the UNDO sends.
+    sendTelegramMock.mockClear();
+    const { voidShiftSettlement } = await import('./shiftSettlements');
+    stateRef.current.settlementUpdateError = { message: 'stamp failed' };
+    await expect(
+      voidShiftSettlement({ settlementId: created.id, voidedBy: 'Jason', reason: 'mistake' }),
+    ).rejects.toThrow(/still reads as live/);
+    expect(sendTelegramMock).not.toHaveBeenCalled();
+
+    stateRef.current.settlementUpdateError = null;
+    await voidShiftSettlement({ settlementId: created.id, voidedBy: 'Jason', reason: 'mistake' });
+    const text = String(sendTelegramMock.mock.calls[0]![1]);
+    expect(text).toContain('4h 27m of your time goes back to unpaid');
+    expect(text).not.toContain('0m of your time');
   });
 
   it('says the undo is HALF DONE when the shifts released but the payment did not stamp, and re-running finishes it', async () => {

@@ -658,15 +658,14 @@ export async function unpaidRemainders(
  *   * `no-rate`      — the person has no positive rate, so the money cannot
  *                      be converted to hours at all. Guessing one here would
  *                      be inventing payroll.
- *   * `over-payment` — the amount is worth more than every unpaid hour they
- *                      have. Refused with the maximum, rather than swallowing
- *                      the excess or inventing a credit balance (Jason's
- *                      choice, 2026-09-03). Measured in CENTS against the
- *                      rounded value of the unpaid hours, never in seconds:
- *                      2051 seconds at $9/h is worth 512.75 cents, so a
- *                      seconds-exact test would make the last remainder of a
- *                      week literally unpayable.
  *   * `no-shifts`    — nothing closed and unpaid to put the money against.
+ *
+ * NOT refused: an amount worth MORE than the unpaid hours. There was a
+ * ceiling here briefly and it made an overtime premium, a bonus or back-pay
+ * impossible to record at all, so it was removed the same day (Jason,
+ * 2026-09-03). The allocation still stops at the last unpaid second; the
+ * excess is simply money recorded above what those hours come to, and the
+ * panel names the difference before anyone confirms it.
  *
  * Under a double-submit the DATABASE decides, not this code: the trigger
  * added 2026-09-03 refuses lines that would sum past a shift's hours, taking
@@ -976,9 +975,19 @@ export async function voidShiftSettlement(input: {
   // were PAID than when a payment was taken back, on the screen the whole
   // feature exists to make trustworthy (staff lens on PR #1190). With part
   // payments the amount alone no longer implies which hours moved.
-  const releasedSeconds = lines
-    .filter((l) => l.voided_at === null)
-    .reduce((sum, l) => sum + l.paid_seconds, 0);
+  // EVERY line of this settlement, voided or not — not just the ones that
+  // were live when this function started.
+  //
+  // Only this settlement's own undo ever voids these lines, so the sum is the
+  // same number either way on a first run. On the HALF-UNDONE re-run it is
+  // the only correct answer: the first attempt released the lines and then
+  // failed to stamp the settlement, so by the time the admin runs Undo again
+  // every line already reads as voided. Filtering to live lines made that
+  // second run compute ZERO, and the crew member's only message for the whole
+  // event would have said "$40.00 undone... 0m of your time goes back to
+  // unpaid" — self-contradictory, and the true figure never sent, because the
+  // first attempt sent nothing at all (delta-verify on PR #1190).
+  const releasedSeconds = lines.reduce((sum, l) => sum + l.paid_seconds, 0);
   await notifyCrewOfPayment(db, {
     crewMemberId: voided.crew_member_id,
     text: `${input.voidedBy} undid the record of a ${dollars(voided.total_cents)} payment to you: ${reason}. ${formatSeconds(releasedSeconds)} of your time goes back to unpaid. Tell the office if that looks wrong. This bot only understands clock commands, so a reply here will not reach anyone.`,

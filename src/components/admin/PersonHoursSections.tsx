@@ -153,10 +153,13 @@ export function PersonHoursSection({
  * Recording what has been paid, and what is still owed against hours nobody
  * has been paid for — time-tracking plan phase 3, ledger row 459.
  *
- * The payable list is the shifts ON SCREEN that are closed and unpaid, so it
- * always agrees with the hours above it. It is deliberately scoped to the
- * chosen range rather than to all time: an admin paying "the last two weeks"
- * should not be one click away from settling a shift from March.
+ * The payable list is EVERY closed shift with time still owing, oldest first,
+ * regardless of the range shown above it. Phase 3 scoped it to the chosen
+ * range so an admin paying "the last two weeks" could not settle a shift from
+ * March by accident; that protected a tick-box list which no longer exists.
+ * The server now spends a payment across all unpaid shifts oldest first, so a
+ * range-scoped list here would preview an allocation that is not the one
+ * about to happen (two lenses on PR #1190, independently).
  */
 export function ShiftPaySection({
   crewMemberId,
