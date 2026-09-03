@@ -47,6 +47,17 @@ export type DashboardQuote = {
    *  send-wave drafts (legacy_rebook=true, unsent) from the inbox — every other
    *  dashboard surface still counts these as real pipeline. */
   legacy_rebook?: boolean | null;
+  /** YLL Neighbor tag on the CUSTOMER row (customers.is_yll_neighbor, #198),
+   *  flattened onto the quote by the dashboard read. Optional: surfaces that
+   *  do not join customers leave it undefined, which reads as not a neighbor.
+   *  Naldo's rule (2026-09-03): this OR legacy_rebook makes a quote a
+   *  neighbor quote — see isNeighbor in metrics.ts. */
+  is_yll_neighbor?: boolean | null;
+  /** Set when this quote was built, held, and sent later as part of a wave —
+   *  the created→sent gap was a scheduling decision, not a response time.
+   *  Excluded from the turnaround average ONLY; counted everywhere else.
+   *  migrations/2026-09-03-quote-backlog-send.sql. */
+  backlog_send_at?: string | null;
 };
 
 /** The 5 KPIs shown in the header strip. */
@@ -65,6 +76,24 @@ export type Kpis = {
    *  all-time. Always in [0,1]; null if no quote has reached a customer. Counting
    *  approved-but-never-sent quotes in the denominator avoids a >100% rate. */
   conversionRate: number | null;
+  /** How many sent quotes the turnaround average left out because they were
+   *  marked as backlog sends. Shown on the KPI card so the average is never
+   *  quietly narrower than the population it claims to describe. */
+  turnaroundExcluded: number;
+  /** Conversion for quotes belonging to YLL Neighbors (isNeighbor). */
+  conversionNeighbor: ConversionSplit;
+  /** Conversion for everyone else. Neighbor + regular reconcile exactly to
+   *  the overall conversionRate's numerator and denominator. */
+  conversionRegular: ConversionSplit;
+};
+
+/** One side of the neighbor/regular conversion split. `rate` is
+ *  approved/reached, or null when nobody in this group was reached — a null
+ *  says "no data", which a bare 0% would misreport as a total failure. */
+export type ConversionSplit = {
+  reached: number;
+  approved: number;
+  rate: number | null;
 };
 
 /** Kinds of worklist rows. Phase 1 ships two; more added in later phases. */

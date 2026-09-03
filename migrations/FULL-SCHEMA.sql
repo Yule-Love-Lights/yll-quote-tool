@@ -305,7 +305,12 @@ alter table quotes
   -- own "✅ deposit received" staff alert. migrations/2026-09-02-deposit-
   -- notify-failed.sql.
   add column if not exists deposit_notify_failed_at timestamptz,
-  add column if not exists deposit_notify_error text;
+  add column if not exists deposit_notify_error text,
+  -- 2026-09-03 backlog-send marker: a quote held and sent long after it was
+  -- built, where the delay was a scheduling decision rather than a response
+  -- time. Left out of the turnaround average only; every other metric still
+  -- counts it. migrations/2026-09-03-quote-backlog-send.sql.
+  add column if not exists backlog_send_at timestamptz;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -355,6 +360,9 @@ create index if not exists quotes_approval_notify_failed_idx
   on quotes (approval_notify_failed_at desc) where approval_notify_failed_at is not null;
 create index if not exists quotes_deposit_notify_failed_idx
   on quotes (deposit_notify_failed_at desc) where deposit_notify_failed_at is not null;
+
+create index if not exists quotes_backlog_send_idx
+  on quotes (backlog_send_at desc) where backlog_send_at is not null;
 create index if not exists quotes_is_test_idx on quotes (is_test);
 -- quotes_customer_id_idx is created later, alongside the customer_id column
 -- itself (see the "Quote ⇄ customer/property linkage" block near the
