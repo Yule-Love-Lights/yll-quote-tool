@@ -749,6 +749,14 @@ describe('awaitingNeedsAttention', () => {
     expect(awaitingNeedsAttention({ ...fresh, needsLookReason: 'Follow-up due' }, 3, NOW)).toBe(true);
   });
 
+  it('keeps a fresh row with a pending colour request, which row 321 exists to surface', () => {
+    // Caught in self-review, not by a failing test: the filter was written
+    // against the two tags Naldo named, and a row can carry a third. Parking a
+    // pending colour request would bury exactly what that badge was added to
+    // stop being buried, and the customer is waiting on a decision.
+    expect(awaitingNeedsAttention({ ...fresh, isColorRequest: true }, 3, NOW)).toBe(true);
+  });
+
   it('parks a row with no activity date rather than guessing it is overdue', () => {
     // isStale returns false on null, and inheriting that is deliberate: a row
     // with no clock should not be presented as demanding attention today.

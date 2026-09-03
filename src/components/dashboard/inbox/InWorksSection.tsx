@@ -260,17 +260,30 @@ export function combinedCompleteConfirmMessage(item: Pick<InWorksItem, 'needsLoo
  * "Show Handled" toggle since #307, which is exactly this pattern already.
  */
 export function awaitingNeedsAttention(
-  item: Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason'>,
+  item: Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason' | 'isColorRequest'>,
   followUpDays: number,
   nowMs: number,
 ): boolean {
   if (item.needsLookReason != null) return true;
+  // Row 321's badge is the third signal a row can carry, and it means a
+  // customer is waiting on a colour decision. Parking a fresh one would bury
+  // exactly what that badge was added to stop being buried, so it keeps the
+  // row on screen regardless of how recently anyone touched it. Found by
+  // reading every badge renderRow can draw rather than only the two Naldo
+  // named; the two he named are the two he SEES most, which is not the same
+  // list.
+  if (item.isColorRequest) return true;
   return isStale(item.lastActivityAt, followUpDays, new Date(nowMs));
 }
 
-/** Split awaiting rows into what to show and what to park. PURE, order kept. */
+/** Split awaiting rows into what to show and what to park. PURE, order kept.
+ *
+ *  Note what is deliberately NOT a reason to show: row 502's "no call or
+ *  text on record" marker. That is information about a stamp already made,
+ *  not a job waiting to be done, and most stamps are manual, so treating it
+ *  as an ask would park almost nothing and undo the point of this split. */
 export function splitAwaitingByAttention<
-  T extends Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason'>,
+  T extends Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason' | 'isColorRequest'>,
 >(items: T[], followUpDays: number, nowMs: number): { attention: T[]; parked: T[] } {
   const attention: T[] = [];
   const parked: T[] = [];
