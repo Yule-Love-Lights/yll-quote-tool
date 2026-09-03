@@ -28,3 +28,9 @@
 - **STILL OPEN at close:** PR #1191, awaiting Naldo's merge-go. The scan analytics in the old GoHighLevel account were deliberately let go (row 500).
 
 - Gates at close: tsc 0 · lint 0 errors (23 pre-existing warnings) · vitest **10427 / 596 files**, on the #1191 branch merged with current master. Master at close: `f9517ef4`.
+
+**POST-CLOSE DELTA (2026-09-03, same session).** Naldo gave the merge-go on #1191 after the close, so the fix for this session's own regression is now live and the outage is fully closed rather than half-closed.
+
+- **#1191 merged (`ac368372`) and verified live.** Every non-`/qr` path on `link.yulelovelights.com` now 307s to the marketing site tagged `utm_source=legacy_link`, where before it rendered the operator login page to a signed-out homeowner: `/appointment/abc123`, `/widget/form/xyz`, `/review`, the bare root and a deep path all measured. The six `/qr` cases were re-measured in the same pass and are untouched, including the tagging and the never-404 behaviour, which was the thing this change could most easily have broken.
+- **The merge-window guard fired for real, and it was right.** The first merge attempt refused because `#1192` landed on master while this branch was gating, so `git merge-base --is-ancestor` returned false and the chained `gh pr merge` never ran. Re-synced, re-gated, re-pushed, waited for CI on the new SHA, merged. This is the AGENTS.md rule about the BASE moving rather than the head, which `--match-head-commit` alone does not cover, working exactly as written. It cost one extra cycle and prevented a merge onto a master that had never been gated against.
+- Gates on the merged head: tsc 0 · lint 0 errors (23 warnings) · vitest **10452 / 597 files**. Master after the merge: `ac368372`.

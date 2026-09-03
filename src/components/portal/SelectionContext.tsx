@@ -42,6 +42,7 @@ import {
 import { DEFAULT_PERMANENT_EFFECT, isPermanentEffect, type SceneEffect } from '@/lib/design/permanentScenes';
 import type { ServiceType } from '@/lib/serviceType';
 import { usePersistedSelection } from '@/lib/portal/usePersistedSelection';
+import { summarizeSelectedFreeSpritzers, type FreeSpritzerSummary } from '@/lib/portal/freeSpritzers';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -90,6 +91,10 @@ type SelectionContextValue = {
   manualDiscount: { rate: number; flat: number } | null;
   /** convenience: true when a staff manual discount is in effect (picker hidden) */
   hasManualDiscount: boolean;
+  /** Free spritzers promised by the SELECTED line items' labels. Derived from
+   *  the live selection, never once on the server, so the promise and what the
+   *  customer has chosen cannot drift apart. */
+  freeSpritzers: FreeSpritzerSummary;
   /** name of the active package ("Build Your Own" when custom) */
   activeName: string;
   selectPackage: (id: PackageId) => void;
@@ -599,6 +604,22 @@ export function SelectionProvider({
     return hidden;
   }, [lineItems, selectedItemIds]);
 
+  // Free spritzers this quote promises, read from the labels of the SELECTED
+  // line items only.
+  //
+  // Deriving it here rather than once on the server is the whole point: staff
+  // record the gift inside the label of a PAID package line (measured 2026-09-
+  // 03, 94 of 96 live lines), so the promise travels with that line. Computed
+  // over every label instead, a customer who toggled that package off would
+  // still be told the spritzers were coming — and on a booked quote the
+  // approval snapshot seeds this selection, so the thank you then reflects what
+  // they actually approved. Found by the PR #1192 admin lens; 4 live quotes
+  // could reach it, and every future multi-item quote could.
+  const freeSpritzers = useMemo(
+    () => summarizeSelectedFreeSpritzers(lineItems, selectedItemIds),
+    [lineItems, selectedItemIds],
+  );
+
   // Price EVERY selection (tier or custom) from the actual selected items via
   // the shared priceSelection, so the displayed total always equals the sum of
   // what's checked — plus rush/takedown + tax — with no silent $1,000 floor
@@ -718,6 +739,7 @@ export function SelectionProvider({
     earlyInstallHidden,
     manualDiscount,
     hasManualDiscount,
+    freeSpritzers,
     activeName,
     selectPackage: frozen.items ? noop : selectPackage,
     toggleItem: frozen.items ? noop : toggleItem,
