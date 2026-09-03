@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  LEAD_FORWARD_ANSWER_WINDOW_DAYS,
   leadForwardsAnsweredBy,
   matchLeadForwardPlatform,
   outboundAnswersLeadForward,
@@ -304,6 +305,31 @@ describe('outboundAnswersLeadForward', () => {
     expect(
       outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: earlier }),
     ).toBe(false);
+  });
+
+  it('stops matching once the lead is stale, so a later unrelated call cannot close it', () => {
+    // The open-ended version would let a call to a returning customer months
+    // afterwards close a lead nobody ever worked (premerge staff lens).
+    const day = 24 * 60 * 60 * 1000;
+    const justInside = new Date(ARRIVED.getTime() + LEAD_FORWARD_ANSWER_WINDOW_DAYS * day - 1000);
+    const justOutside = new Date(ARRIVED.getTime() + LEAD_FORWARD_ANSWER_WINDOW_DAYS * day + 1000);
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: justInside }),
+    ).toBe(true);
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: justOutside }),
+    ).toBe(false);
+  });
+
+  it('leaves the window generous enough not to bite the real workflow', () => {
+    // Erring tight would just push staff back to marking rows by hand, which
+    // is the thing this feature removed. A lead answered the NEXT day still
+    // clears.
+    const nextDay = new Date(ARRIVED.getTime() + 24 * 60 * 60 * 1000);
+    expect(
+      outboundAnswersLeadForward(openLead(), { phones: ['+15551234567'], emails: [], at: nextDay }),
+    ).toBe(true);
+    expect(LEAD_FORWARD_ANSWER_WINDOW_DAYS).toBeGreaterThanOrEqual(7);
   });
 
   it('does not treat the arrival instant itself as an answer', () => {

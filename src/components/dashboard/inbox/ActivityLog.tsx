@@ -55,6 +55,10 @@ export function friendlyAction(action: string): string {
 // without jsdom (mirrors friendlyAction/isPermanentReverseRefusal).
 const AUTO_REASON_LABEL: Record<string, string> = {
   quote_terminal: 'quote booked/declined/abandoned',
+  // Naldo 2026-09-02: the sweep that marks a row followed because staff PHONED
+  // the customer. Without a label here the row reads "Followed up . System"
+  // and a staffer cannot tell a call from any other automated action.
+  phone_call: 'we phoned them',
 };
 
 export function friendlyAutoReason(reason: string): string {

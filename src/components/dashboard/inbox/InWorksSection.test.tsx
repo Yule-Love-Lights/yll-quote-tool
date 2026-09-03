@@ -36,6 +36,8 @@ import {
   retiresFollowUp,
   replyRowAction,
   replyOutcomeMessage,
+  followedButtonFor,
+  withRowFollowedNow,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -573,5 +575,138 @@ describe('replyOutcomeMessage (fix round 2 — worded differently per outcome)',
 
   it('the two messages are different strings — a staffer must not see the same note for both', () => {
     expect(replyOutcomeMessage('refused')).not.toBe(replyOutcomeMessage('error'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The forwarded-lead affordance in "Needs a look" (2026-09-02).
+//
+// #268's fix round left this documented as a follow-up: this section could only
+// say "Reply in Gmail" because IN_WORKS_SELECT never selected `subject`, which
+// parseLeadForwardDisplay needs alongside `preview`. It does now.
+//
+// It matters more than a label. An outbound touch can auto-clear a forwarded
+// lead INTO this section, so this is where staff meet the row after the system
+// moved it, and replying in Gmail reaches the platform's no-reply relay rather
+// than the customer.
+
+const LEAD_SUBJECT = 'New Lead from GML Media! - Jamie Test';
+const LEAD_PREVIEW =
+  'Here ya go Naldoven: Jamie Test +15551234567 Email: jamie.test@example.com Street Address: 42 Fake Lane City: Faketown Areas to light up: Roof Line - (Standard Package)';
+
+describe('InWorksSection — a forwarded lead tells staff how to actually reach them', () => {
+  const leadRow: InWorksItem = {
+    ...baseItem,
+    id: 'lead-1',
+    source: 'gmail',
+    channel: 'email',
+    subject: LEAD_SUBJECT,
+    preview: LEAD_PREVIEW,
+    needsLookReason: 'They wrote last',
+  };
+
+  it('shows the number to call instead of "Reply in Gmail"', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[leadRow]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('call or text the customer directly');
+    expect(html).toContain('+15551234567');
+    expect(html).not.toContain('Reply in Gmail');
+  });
+
+  it('still says "Reply in Gmail" for an ordinary Gmail row', () => {
+    // The affordance is message-level: an ordinary customer email IS answerable
+    // in its own channel, and telling staff to phone instead would be wrong.
+    const ordinary: InWorksItem = {
+      ...baseItem,
+      id: 'ordinary-1',
+      source: 'gmail',
+      channel: 'email',
+      subject: 'Question about my quote',
+      preview: 'Hi, can you call me on +15551234567?',
+      needsLookReason: 'They wrote last',
+    };
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[ordinary]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Reply in Gmail');
+    expect(html).not.toContain('call or text the customer directly');
+  });
+});
+
+// ── followedButtonFor — the "I followed up" button, per bucket ─────────────
+//
+// Naldo 2026-09-02: the awaiting bucket (every row carrying an amber "Nd
+// quiet" or blue "Follow-up due" tag) had no such button at all. It rendered
+// for the handled bucket only, so a staffer who phoned one of those people
+// could either reply by text or complete the whole conversation, and nothing
+// else. These pin the two things that button has to get right.
+describe('followedButtonFor', () => {
+  it('a never-followed row gets a plain first stamp with no restamp flag', () => {
+    const fb = followedButtonFor('handled');
+    expect(fb.label).toBe('Followed');
+    expect(fb.body).toBeUndefined();
+  });
+
+  it('an already-followed row asks for the restamp EXPLICITLY', () => {
+    // Without `again` the click is a silent no-op: the store refuses a second
+    // stamp, the route turns that refusal into a 200, and the row never moves.
+    const fb = followedButtonFor('awaiting');
+    expect(fb.body).toEqual({ again: true });
+  });
+
+  it('says "again" on a row that is already followed', () => {
+    // A bare "Followed" on an already-followed row claims nothing new.
+    expect(followedButtonFor('awaiting').label).toBe('Followed again');
+  });
+
+  it('the two buckets never share a label, so the row lock targets one action', () => {
+    // act() records WHICH action was attempted by its visible label
+    // (unreachableActions); two buttons sharing a label would cross the locks.
+    expect(followedButtonFor('awaiting').label).not.toBe(followedButtonFor('handled').label);
+  });
+
+  it('both buckets carry a title that explains what the click does', () => {
+    for (const group of ['awaiting', 'handled'] as const) {
+      expect(followedButtonFor(group).title.length).toBeGreaterThan(10);
+    }
+  });
+});
+
+// ── withRowFollowedNow — the awaiting row has to visibly change ────────────
+//
+// Found by the pre-merge staff lens. "Followed again" acts on a row that is
+// ALREADY in the awaiting bucket, so the existing moveGroup(id,'awaiting',
+// 'awaiting') returns immediately (`if (from === to) return`), and this
+// component seeds its list with useState(awaiting) and never syncs props, so
+// router.refresh() does not touch these rows either. The click therefore
+// changed nothing a staffer could see: the amber "45d quiet" tag still read
+// 45d. This is the optimistic update that makes it real.
+describe('withRowFollowedNow', () => {
+  const NOW = '2026-09-02T12:00:00.000Z';
+  const rows: InWorksItem[] = [
+    { id: 'a', source: 'ghl', channel: 'sms', preview: null, customerName: 'A', lastActivityAt: '2026-07-20T00:00:00.000Z', needsLookReason: 'Follow-up due' },
+    { id: 'b', source: 'ghl', channel: 'sms', preview: null, customerName: 'B', lastActivityAt: '2026-07-21T00:00:00.000Z', needsLookReason: 'Follow-up due' },
+  ];
+
+  it('restarts the quiet counter on the row that was acted on', () => {
+    const next = withRowFollowedNow(rows, 'a', NOW);
+    expect(next.find((r) => r.id === 'a')!.lastActivityAt).toBe(NOW);
+  });
+
+  it('clears the follow-up-due marker on that row, which the click just answered', () => {
+    const next = withRowFollowedNow(rows, 'a', NOW);
+    expect(next.find((r) => r.id === 'a')!.needsLookReason).toBeNull();
+  });
+
+  it('never touches another row', () => {
+    const next = withRowFollowedNow(rows, 'a', NOW);
+    const b = next.find((r) => r.id === 'b')!;
+    expect(b.lastActivityAt).toBe('2026-07-21T00:00:00.000Z');
+    expect(b.needsLookReason).toBe('Follow-up due');
+  });
+
+  it('returns the SAME array when the id is not present, so no needless re-render', () => {
+    expect(withRowFollowedNow(rows, 'missing', NOW)).toBe(rows);
   });
 });
