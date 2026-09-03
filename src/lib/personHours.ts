@@ -105,8 +105,10 @@ export type PersonTime = {
    * totals, flagged, same rule as the summary table. */
   autoClosed: { count: number; seconds: number };
   audit: ShiftAuditEntry[];
-  /** False when the settlement read FAILED. The page hides the pay panel
-   * rather than showing shifts as payable that may already be paid. */
+  /** False when the settlement read FAILED — or was never asked for
+   * (`withSettlements: false`). Either way the pay panel must hide rather
+   * than show shifts as payable that may already be paid; "not looked up"
+   * and "looked up and broke" are the same answer to that question. */
   settlementsReadable: boolean;
   /** True when the audit list could be scoped only by this person's KNOWN
    * shift ids — see readAudit. Nothing is hidden that we could have found;
@@ -433,7 +435,22 @@ export async function loadPersonTime(
   crewMemberId: string,
   range: RangeKey,
   nowIso?: string,
+  options?: {
+    /**
+     * Whether to read which shifts are already paid. TRUE for the admin
+     * record, which shows the pay panel and locks a paid row.
+     *
+     * The staff self-view (phase 4) passes FALSE: it shows no money and no
+     * edit control, so reading settlements would buy nothing and its failure
+     * message — "nothing can be paid or corrected from this page" — would be
+     * false copy on a page where nothing ever could be. With it false every
+     * shift comes back `settlementId: null`, which means "not looked up",
+     * NOT "not paid": never render a paid/unpaid claim from this data.
+     */
+    withSettlements?: boolean;
+  },
 ): Promise<PersonTime> {
+  const withSettlements = options?.withSettlements ?? true;
   const asOf = new Date(resolveNowMs(nowIso)).toISOString();
   const errors: string[] = [];
   const empty: PersonTime = {
@@ -502,12 +519,17 @@ export async function loadPersonTime(
     // paid": that would offer Edit and Remove on rows the server refuses, and
     // list an already-paid shift as payable a second time. Null means unknown,
     // and the page hides the pay panel on it.
-    settledShiftIds(shiftIds).catch((e: unknown) => {
-      errors.push(
-        `${e instanceof Error ? e.message : 'settlement read failed'} — payments could not be read, so nothing can be paid or corrected from this page until that works`,
-      );
-      return null;
-    }),
+    // An empty map, not null, when the caller opted out: null means "the read
+    // FAILED", which hides the admin pay panel. A caller that never asked
+    // must not look like a caller whose read broke.
+    withSettlements
+      ? settledShiftIds(shiftIds).catch((e: unknown) => {
+          errors.push(
+            `${e instanceof Error ? e.message : 'settlement read failed'} — payments could not be read, so nothing can be paid or corrected from this page until that works`,
+          );
+          return null;
+        })
+      : Promise.resolve(new Map<string, string>()),
   ]);
 
   const grouped = groupPersonDays(
@@ -535,7 +557,7 @@ export async function loadPersonTime(
     autoClosed: grouped.autoClosed,
     audit: audit.entries,
     auditPartial: audit.partial,
-    settlementsReadable: settled !== null,
+    settlementsReadable: withSettlements && settled !== null,
     asOf,
     errors,
   };

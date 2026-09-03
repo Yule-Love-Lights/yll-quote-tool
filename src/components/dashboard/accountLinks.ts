@@ -62,6 +62,12 @@ export const ACCOUNT_LINKS: ReadonlyArray<AccountLink> = [
   // in this menu, not the tab row). Admin only, and the page redirects a
   // non-admin server-side; the row is the door, the redirect is the refusal.
   { label: 'Time tracking', href: '/admin/time-tracking', adminOnly: true },
+  // Your own hours (Jason, time-tracking plan phase 4). NOT adminOnly: this is
+  // the one row here that every signed-in staff member may open, and it is the
+  // only door to it in the app. The page shows the caller's own record and
+  // nobody else's — identity comes from the session, not the URL — so opening
+  // it to operators grants no sight of anyone else's hours.
+  { label: 'My hours', href: '/my-hours' },
 ];
 
 /**

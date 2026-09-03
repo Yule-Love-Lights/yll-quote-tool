@@ -229,6 +229,23 @@ the FIRST editor for office shifts, not a mirror of an existing one; the phase 1
 **Phase 4 — the staff self-view.** Same detail page, own data only, edit and approve controls
 absent (not merely hidden), clock in/out buttons. Office staff only.
 
+**Done 2026-09-03 (Jason's S60):** `/my-hours`, reached from the account menu by a row that is
+NOT admin-only. It is not the same page: it shares the day/shift ROW RENDERER with the admin
+record (`src/components/time/HoursDayList.tsx`, extracted from PersonHoursSections for this) and
+nothing else, because the two pages talk to different people about the same rows — the admin
+page says "ask them what time they stopped", this one is talking to the person who stopped.
+Identity is `getOfficeClockCaller` on the session's `auth_user_id`, and there is NO id segment
+and no accepted query id, so there is nowhere to put a request for someone else's hours. Each
+refusal (crew login, advertising login, unlinked, inactive, unconfigured) gets its own named
+state; an unlinked login never falls through to an empty table. Controls and money are absent
+rather than hidden: `controls="none"` renders no edit/remove/pay markup at all, and the page
+passes `withSettlements: false` so no pay figure is read.
+
+**The clock buttons this phase asked for already existed** and were deliberately NOT added
+again: Naldo moved `ClockCard` into the header on every operator page on 2026-09-01, desktop and
+mobile, so this page carries the clock in its own nav bar. A second clock would be two controls
+for one state.
+
 **Phase 5 (optional) — warehouse grouping and anything money-facing**, if §4.1/4.4 said yes.
 
 ---
