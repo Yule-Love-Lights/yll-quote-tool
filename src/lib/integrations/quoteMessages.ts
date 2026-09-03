@@ -10,6 +10,7 @@
 // DEFAULT_SERVICE_TYPE (unknown/missing service_type → holiday).
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, SERVICE_TYPE_LABELS, type ServiceType } from '@/lib/serviceType';
+import { highLevelContactUrl, highLevelConversationUrl } from '@/lib/highLevelLinks';
 import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
 import { spritzerRetailValueUsd, REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 
@@ -283,12 +284,19 @@ export function internalChangesRequestedEmailHtml(input: {
 
 // ─── HighLevel deep links (S75) ───────────────────────────────
 // Staff following up on a quote used to search the customer by name in
-// HighLevel every time. These build the two URLs that skip the search: the
+// HighLevel every time. These are the two URLs that skip the search: the
 // contact record, and the conversation thread it is called and texted from.
+//
+// The URL SHAPES live in src/lib/highLevelLinks.ts, which landed on master
+// while this branch was open and exists precisely so one pattern is stated
+// once. This function had its own copy of both; that copy is gone and the
+// conversation builder moved there. What is left here is the part specific to
+// an EMAIL: requiring both ids, and html-escaping the result, because a link
+// dropped into a staff email is still untrusted output.
+//
 // Returns null unless BOTH ids are present, so a quote with no linked contact
 // (or an unconfigured location) renders no links at all rather than a broken
-// one. Ids are url-encoded then html-escaped: they come from GHL, but a link in
-// a staff email is still untrusted output.
+// one.
 
 export function highLevelContactLinks(
   contactId: string | null | undefined,
@@ -297,11 +305,9 @@ export function highLevelContactLinks(
   const contact = contactId?.trim();
   const location = locationId?.trim();
   if (!contact || !location) return null;
-  const base = `https://app.gohighlevel.com/v2/location/${escapeHtml(encodeURIComponent(location))}`;
-  const c = escapeHtml(encodeURIComponent(contact));
   return {
-    contactUrl: `${base}/contacts/detail/${c}`,
-    conversationUrl: `${base}/conversations/conversations/${c}`,
+    contactUrl: escapeHtml(highLevelContactUrl(location, contact)),
+    conversationUrl: escapeHtml(highLevelConversationUrl(location, contact)),
   };
 }
 
