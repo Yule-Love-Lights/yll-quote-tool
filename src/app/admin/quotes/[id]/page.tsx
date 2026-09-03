@@ -173,6 +173,13 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
 
   // #163 Slice B — a pending customer colour-change request (set by the portal
   // "Request colour change" button). Staff Apply (re-freeze) or Dismiss it.
+  // S75: the marker the HighLevel opportunity-stage webhook stamps when it
+  // closes a quote. Read defensively — it is absent on every quote closed any
+  // other way, which is most of them.
+  const ghlArchived = quote.approval_snapshot?.ghlArchived as
+    | { outcome?: string; at?: string; priorStatus?: string }
+    | undefined;
+
   const pendingColorRequest = quote.approval_snapshot?.pendingColorRequest as
     | { label?: string }
     | undefined;
@@ -278,6 +285,18 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               engine cannot reproduce it, so /api/quote refuses to re-price it.
               The badge is the only thing on screen that explains the refusal. */}
           {isMigratedQuote(quote.approval_snapshot) && <MigratedBadge />}
+          {/* S75, premerge staff lens (MED): the archive webhook writes a
+              ghlArchived marker and, until this pill, nothing rendered it — so
+              a staffer could not tell a quote closed by a HighLevel drag from
+              one a person declined here. Says which, and when. */}
+          {ghlArchived && (
+            <span
+              className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+              title={`Closed as ${ghlArchived.outcome} because the contact was moved in HighLevel on ${ghlArchived.at}. It was ${ghlArchived.priorStatus} before that.`}
+            >
+              Closed from HighLevel
+            </span>
+          )}
           {/* View-only portal (#176) — mirrors the Test pill above. */}
           {quote.view_only && (
             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">

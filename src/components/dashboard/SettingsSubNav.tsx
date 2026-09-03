@@ -22,6 +22,8 @@ const ITEMS = [
   // Fleet GPS — connection health, devices, and where the data shows up
   // (Naldo 2026-08-27: every integration gets its own section).
   { label: 'Bouncie', href: '/settings/bouncie', key: 'bouncie' as const },
+  // Who the inbox stopped notifying us about, and the undo (S75).
+  { label: 'Not a lead', href: '/settings/suppressed-senders', key: 'suppressed-senders' as const },
 ];
 
 export function SettingsSubNav({
@@ -37,7 +39,8 @@ export function SettingsSubNav({
     | 'quotes'
     | 'hotkeys'
     | 'highlevel'
-    | 'bouncie';
+    | 'bouncie'
+    | 'suppressed-senders';
 }) {
   return (
     <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>

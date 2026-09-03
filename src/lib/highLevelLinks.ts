@@ -45,3 +45,17 @@ export function highLevelContactUrlFromEnv(contactId: string | null): string | n
   if (!locationId || !contactId) return null;
   return highLevelContactUrl(locationId, contactId);
 }
+
+/**
+ * The HighLevel conversation thread for one contact: the screen a staffer
+ * calls and texts from. Same shape rule as highLevelContactUrl above, and it
+ * lives here for the same reason, so the two URL patterns cannot drift apart
+ * on different surfaces.
+ *
+ * Added when the quote-viewed staff email started deep-linking into HighLevel
+ * (S75). That email had its own private copy of both URL patterns; this is
+ * where the copy went.
+ */
+export function highLevelConversationUrl(locationId: string, contactId: string): string {
+  return `https://app.gohighlevel.com/v2/location/${locationId}/conversations/conversations/${encodeURIComponent(contactId)}`;
+}

@@ -5,6 +5,12 @@
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { normalizeEmail, normalizePhone } from './normalize';
+import {
+  recordSuppressionChange,
+  SUPPRESSED_ACTION,
+  UNSUPPRESSED_ACTION,
+  type SuppressionContext,
+} from './suppressionAudit';
 
 const KEY = 'dashboard.suppressedSenders';
 
@@ -36,24 +42,44 @@ export async function getSuppressedSenders(): Promise<Set<string>> {
   return new Set(normalizeSuppressionValues(list.map((x) => (typeof x === 'string' ? x : null))));
 }
 
-/** Add senders to the suppression list (idempotent, normalized). Best-effort. */
-export async function addSuppressedSenders(values: (string | null | undefined)[]): Promise<void> {
+/** Add senders to the suppression list (idempotent, normalized). Best-effort.
+ *
+ *  S75: also writes a dashboard_activity row per sender that was NOT already on
+ *  the list, so the settings panel can say who silenced an address and when.
+ *  Only genuinely-new additions are logged — a repeat dismiss of the same
+ *  sender changes nothing, and logging it anyway would bury the real entry.
+ *  The audit is best-effort and never throws, so it cannot fail the dismiss. */
+export async function addSuppressedSenders(
+  values: (string | null | undefined)[],
+  ctx?: SuppressionContext,
+): Promise<void> {
   const additions = normalizeSuppressionValues(values);
   if (!additions.length) return;
   const sb = getSupabaseServiceClient();
   if (!sb) return;
   const current = await getSuppressedSenders();
+  const genuinelyNew = additions.filter((a) => !current.has(a));
   for (const a of additions) current.add(a);
   await sb.from('app_settings').upsert({ key: KEY, value: [...current] }, { onConflict: 'key' });
+  await recordSuppressionChange(SUPPRESSED_ACTION, genuinelyNew, ctx ?? {});
 }
 
-/** Remove senders from the suppression list (normalized). Best-effort. */
-export async function removeSuppressedSenders(values: (string | null | undefined)[]): Promise<void> {
+/** Remove senders from the suppression list (normalized). Best-effort.
+ *
+ *  S75: logs the reverse side of the same audit, and only for values that were
+ *  actually on the list, so the panel's history reads as a real sequence rather
+ *  than a stream of no-op removals. */
+export async function removeSuppressedSenders(
+  values: (string | null | undefined)[],
+  ctx?: SuppressionContext,
+): Promise<void> {
   const drop = new Set(normalizeSuppressionValues(values));
   if (!drop.size) return;
   const sb = getSupabaseServiceClient();
   if (!sb) return;
   const current = await getSuppressedSenders();
+  const actuallyRemoved = [...current].filter((v) => drop.has(v));
   const next = [...current].filter((v) => !drop.has(v));
   await sb.from('app_settings').upsert({ key: KEY, value: next }, { onConflict: 'key' });
+  await recordSuppressionChange(UNSUPPRESSED_ACTION, actuallyRemoved, ctx ?? {});
 }

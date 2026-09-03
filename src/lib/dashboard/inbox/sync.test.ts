@@ -35,6 +35,7 @@ const recordSyncRunMock = vi.fn();
 const recordSuppressedFollowUpMock = vi.fn();
 const sweepOrphanedFollowUpsMock = vi.fn();
 const sweepResolvedItemFollowUpsMock = vi.fn();
+const sweepCallFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
   closeFollowUp: (...args: unknown[]) => closeFollowUpMock(...args),
@@ -57,6 +58,7 @@ vi.mock('./store', () => ({
   setSyncCursor: vi.fn(),
   sweepOrphanedFollowUps: (...args: unknown[]) => sweepOrphanedFollowUpsMock(...args),
   sweepResolvedItemFollowUps: (...args: unknown[]) => sweepResolvedItemFollowUpsMock(...args),
+  sweepCallFollowUps: (...args: unknown[]) => sweepCallFollowUpsMock(...args),
 }));
 
 const listQuotesForDashboardMock = vi.fn();
@@ -474,6 +476,7 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
     sweepResolvedItemFollowUpsMock.mockResolvedValue(0);
+    sweepCallFollowUpsMock.mockResolvedValue({ ok: true, planned: [], stamped: 0, failed: 0 });
     // row 317 fix-round FIX 3: completeTerminalQuoteItems now returns
     // { completed, failed } instead of a bare count.
     completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 0, failed: false });
@@ -826,6 +829,7 @@ describe('runQuoteToolReconcile — terminal-quote auto-complete wiring (#317)',
     getFollowUpDaysMock.mockResolvedValue(3);
     sweepOrphanedFollowUpsMock.mockResolvedValue(0);
     sweepResolvedItemFollowUpsMock.mockResolvedValue(0);
+    sweepCallFollowUpsMock.mockResolvedValue({ ok: true, planned: [], stamped: 0, failed: 0 });
     ingestTouchMock.mockResolvedValue(OK_RESULT);
     closeFollowUpMock.mockResolvedValue(0);
   });

@@ -58,6 +58,9 @@ type QuoteRow = {
   customer_phone: string | null;
   customer_email: string | null;
   highlevel_contact_id: string | null;
+  // S75 — named in the staff view receipt so a follow-up call knows which
+  // vertical it is about without opening the quote.
+  service_type: string | null;
   quote_sent_at: string | null;
   viewed_at: string | null;
   view_count: number | null;
@@ -93,7 +96,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, viewed_at, view_count, status',
+      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, quote_sent_at, viewed_at, view_count, status',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -200,6 +203,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           viewCount,
           portalUrl,
           adminUrl,
+          serviceType: quote.service_type,
+          // S75 deep links. The location id is the same env var the HighLevel
+          // client requires, so it is present whenever isHighLevelConfigured()
+          // is true (checked above) — a quote with no linked contact still
+          // renders the receipt, just without the two links.
+          highlevelContactId: quote.highlevel_contact_id,
+          highlevelLocationId: process.env.HIGHLEVEL_LOCATION_ID ?? null,
         }),
         emailFrom,
       });

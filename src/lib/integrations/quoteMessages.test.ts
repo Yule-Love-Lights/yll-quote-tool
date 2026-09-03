@@ -32,6 +32,7 @@ import {
   referralEarnedSmsBody,
   referralEarnedEmailHtml,
   colorChangeAppliedEmailHtml,
+  internalViewedEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -1112,5 +1113,62 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
   it('never fixes interior capitals (documents the shared limitation, not a full name-caser)', () => {
     expect(quoteSmsBody("o'brien", 'https://x/portal/1', 'holiday')).toContain("Hi O'brien!");
     expect(receiptSmsBody("o'brien", 2700, '(631) 517-0186')).toContain("Hi O'brien!");
+  });
+});
+
+describe('quote-viewed receipt: HighLevel deep links + service type (S75)', () => {
+  const base = {
+    customerName: 'Stephen Siena',
+    address: '7 Country Lake Ct, Centerport NY 11721',
+    phone: '+15169659190',
+    email: 'stephensiena@gmail.com',
+    viewCount: 5,
+    portalUrl: 'https://quote.example.com/portal/q1',
+    adminUrl: 'https://quote.example.com/quote/q1',
+  };
+
+  it('names the service type so staff can leave a voicemail without opening the quote', () => {
+    expect(internalViewedEmailHtml({ ...base, serviceType: 'permanent' })).toContain('Permanent');
+    expect(internalViewedEmailHtml({ ...base, serviceType: 'event' })).toContain('Event');
+    expect(internalViewedEmailHtml({ ...base, serviceType: 'permanent_bistro' })).toContain('Bistro');
+  });
+
+  it('reads an unset service type as Holiday, matching DEFAULT_SERVICE_TYPE', () => {
+    expect(internalViewedEmailHtml({ ...base, serviceType: null })).toContain('Holiday');
+    expect(internalViewedEmailHtml({ ...base, serviceType: 'nonsense' })).toContain('Holiday');
+  });
+
+  it('links straight to the HighLevel contact profile and conversation thread', () => {
+    const html = internalViewedEmailHtml({
+      ...base,
+      serviceType: 'holiday',
+      highlevelContactId: 'contact123',
+      highlevelLocationId: 'loc456',
+    });
+    expect(html).toContain('https://app.gohighlevel.com/v2/location/loc456/contacts/detail/contact123');
+    expect(html).toContain('https://app.gohighlevel.com/v2/location/loc456/conversations/conversations/contact123');
+  });
+
+  it('omits both HighLevel links when the quote has no contact id', () => {
+    const html = internalViewedEmailHtml({ ...base, serviceType: 'holiday', highlevelContactId: null, highlevelLocationId: 'loc456' });
+    expect(html).not.toContain('gohighlevel.com');
+    // the rest of the receipt still renders
+    expect(html).toContain('Stephen Siena');
+    expect(html).toContain('Customer portal');
+  });
+
+  it('omits both HighLevel links when the location id is missing', () => {
+    const html = internalViewedEmailHtml({ ...base, serviceType: 'holiday', highlevelContactId: 'contact123', highlevelLocationId: null });
+    expect(html).not.toContain('gohighlevel.com');
+  });
+
+  it('escapes a contact id so it cannot break out of the href', () => {
+    const html = internalViewedEmailHtml({
+      ...base,
+      serviceType: 'holiday',
+      highlevelContactId: 'a"><script>x</script>',
+      highlevelLocationId: 'loc456',
+    });
+    expect(html).not.toContain('<script>');
   });
 });
