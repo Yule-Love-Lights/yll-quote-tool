@@ -329,7 +329,14 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             </p>
           )}
         </div>
-        <div className="flex shrink-0 gap-2">
+        {/* Row 496. Six controls held ONE line and pushed the row 294px past a
+            phone's width, taking the contact name and badges off screen.
+            flex-wrap alone did not fix it, measured: with shrink-0 still on
+            this container it never shrinks below its content, so the wrap can
+            never engage. Dropping shrink-0 for min-w-0 is what actually lets
+            it wrap. InWorksSection's identical row carries the same shrink-0
+            and only fits because it holds fewer buttons. */}
+        <div className="flex min-w-0 gap-2 flex-wrap justify-end">
           <button
             type="button"
             disabled={!!busyIds[item.id] || lockedOut('Handled')}
@@ -340,7 +347,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               act(item.id, '/api/dashboard/handled', 'Handled');
             }}
             title={lockedOut('Handled') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as answered'}
-            className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
+            className="px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap disabled:opacity-50"
             style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
           >
             Handled
@@ -350,7 +357,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             disabled={!!busyIds[item.id] || lockedOut('Not a lead')}
             onClick={() => act(item.id, '/api/dashboard/dismiss', 'Not a lead')}
             title={lockedOut('Not a lead') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Permanently hidden as spam'}
-            className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap disabled:opacity-50"
             style={{ color: 'var(--op-text-2)' }}
           >
             Not a lead
@@ -360,7 +367,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             disabled={!!busyIds[item.id] || lockedOut('Followed')}
             onClick={() => act(item.id, '/api/dashboard/followed', 'Followed')}
             title={lockedOut('Followed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'I followed up: snoozed until they reply'}
-            className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap disabled:opacity-50"
             style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
           >
             Followed
@@ -373,7 +380,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               act(item.id, '/api/dashboard/completed', 'Mark completed');
             }}
             title={lockedOut('Mark completed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as done'}
-            className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap disabled:opacity-50"
             style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
           >
             Mark completed
@@ -414,7 +421,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             <button
               type="button"
               onClick={() => toggleComposer(item.id)}
-              className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+              className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap disabled:opacity-50"
               style={{ border: '1px solid var(--op-border)', color: 'var(--op-text)' }}
             >
               {composerFor === item.id ? 'Cancel' : 'Reply'}

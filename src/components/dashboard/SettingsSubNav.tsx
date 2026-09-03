@@ -40,14 +40,17 @@ export function SettingsSubNav({
     | 'bouncie';
 }) {
   return (
-    <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'var(--op-border)' }}>
+    <div
+      className="flex gap-1 mb-5 border-b flex-wrap"
+      style={{ borderColor: 'var(--op-border)' }}
+    >
       {ITEMS.map(item => {
         const on = item.key === active;
         return (
           <Link
             key={item.key}
             href={item.href}
-            className="px-3 py-2 text-sm font-medium -mb-px border-b-2 transition-colors"
+            className="px-3 py-2 text-sm font-medium -mb-px border-b-2 transition-colors shrink-0 whitespace-nowrap"
             style={
               on
                 ? { borderColor: 'var(--brand-evergreen)', color: 'var(--op-text)' }

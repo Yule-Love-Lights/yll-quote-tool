@@ -479,7 +479,11 @@ export function InWorksSection({
               </p>
             )}
           </div>
-          <div className="flex shrink-0 gap-2 flex-wrap justify-end">
+          {/* Row 496, same treatment as InboxList's identical row: flex-wrap alone
+              cannot fire while shrink-0 keeps the container at its content's
+              natural width. Measured, this row was the last 22px of phone
+              overflow left on the page after the other one was fixed. */}
+          <div className="flex min-w-0 gap-2 flex-wrap justify-end">
             {item.source === 'gmail' ? (
               // #268 fix round (sibling-guard check against InboxList.tsx's
               // matching fix), UPDATED round 3: InboxList's real fix is a
@@ -523,7 +527,7 @@ export function InWorksSection({
               <button
                 type="button"
                 onClick={() => setComposerFor(composerFor === item.id ? null : item.id)}
-                className="px-3 py-1.5 rounded-md text-sm"
+                className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap"
                 style={{ border: '1px solid var(--op-border)', color: 'var(--op-text)' }}
               >
                 {composerFor === item.id ? 'Cancel' : 'Reply'}
@@ -535,7 +539,7 @@ export function InWorksSection({
                 disabled={!!busyIds[item.id] || lockedOut('Followed')}
                 onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting', 'Followed')}
                 title={lockedOut('Followed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'I followed up — snooze until they reply'}
-                className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap disabled:opacity-50"
                 style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
               >
                 Followed
@@ -546,7 +550,7 @@ export function InWorksSection({
               disabled={!!busyIds[item.id] || lockedOut('Mark completed')}
               onClick={() => handleMarkCompleted(item, group)}
               title={lockedOut('Mark completed') ? `Locked until the ${lockedTo} attempt is confirmed` : undefined}
-              className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+              className="px-3 py-1.5 rounded-md text-sm whitespace-nowrap disabled:opacity-50"
               style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
             >
               {busyIds[item.id] ? 'Saving…' : 'Mark completed'}

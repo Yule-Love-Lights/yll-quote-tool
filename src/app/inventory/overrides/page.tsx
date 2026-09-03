@@ -121,13 +121,13 @@ export default function OverridesPage() {
           {note && <span role="status" className="text-sm text-gray-500">{note}</span>}
         </div>
 
-        <div className="flex gap-1 border-b border-gray-200 mb-5">
+        <div className="flex gap-1 border-b border-gray-200 mb-5 flex-wrap">
           {(['categories', 'items'] as const).map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setTab(t)}
-              className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 capitalize ${
+              className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 capitalize shrink-0 whitespace-nowrap ${
                 tab === t ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500 hover:text-gray-800'
               }`}
             >
