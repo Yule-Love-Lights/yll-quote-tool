@@ -20,12 +20,12 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { settledShiftIdsMock, serviceClientMock } = vi.hoisted(() => ({
-  settledShiftIdsMock: vi.fn(),
+const { settledSecondsMock, serviceClientMock } = vi.hoisted(() => ({
+  settledSecondsMock: vi.fn(),
   serviceClientMock: vi.fn(),
 }));
 
-vi.mock('@/lib/shiftSettlements', () => ({ settledShiftIds: settledShiftIdsMock }));
+vi.mock('@/lib/shiftSettlements', () => ({ settledSecondsByShift: settledSecondsMock }));
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: serviceClientMock }));
 
 import { loadPersonTime } from './personHours';
@@ -86,31 +86,47 @@ function fakeDb(shifts: unknown[] = [SHIFT_A]) {
 beforeEach(() => {
   vi.clearAllMocks();
   serviceClientMock.mockReturnValue(fakeDb());
-  settledShiftIdsMock.mockResolvedValue(new Map([['shift-a', 'settlement-1']]));
+  settledSecondsMock.mockResolvedValue(
+    new Map([['shift-a', { seconds: 8 * 3600, settlementId: 'settlement-1' }]]),
+  );
 });
 
 describe('loadPersonTime — the settlement read', () => {
   it('reads settlements by default, and stamps the paid shift', async () => {
     const time = await loadPersonTime('crew-1', 'all', NOW);
 
-    expect(settledShiftIdsMock).toHaveBeenCalledTimes(1);
-    expect(settledShiftIdsMock.mock.calls[0][0]).toEqual(['shift-a']);
+    expect(settledSecondsMock).toHaveBeenCalledTimes(1);
+    expect(settledSecondsMock.mock.calls[0][0]).toEqual(['shift-a']);
     expect(time.settlementsReadable).toBe(true);
     expect(time.days[0].shifts[0].settlementId).toBe('settlement-1');
+    // The whole shift is 8h and the whole 8h is covered.
+    expect(time.days[0].shifts[0].settledSeconds).toBe(8 * 3600);
   });
 
   it('leaves a shift no settlement covers unstamped', async () => {
-    settledShiftIdsMock.mockResolvedValue(new Map());
+    settledSecondsMock.mockResolvedValue(new Map());
 
     const time = await loadPersonTime('crew-1', 'all', NOW);
 
     expect(time.settlementsReadable).toBe(true);
     expect(time.days[0].shifts[0].settlementId).toBeNull();
+    expect(time.days[0].shifts[0].settledSeconds).toBe(0);
     expect(time.errors).toEqual([]);
   });
 
+  it('carries a PART payment through as seconds, not as a yes/no', async () => {
+    settledSecondsMock.mockResolvedValue(
+      new Map([['shift-a', { seconds: 3 * 3600, settlementId: 'settlement-1' }]]),
+    );
+    const time = await loadPersonTime('crew-1', 'all', NOW);
+    expect(time.days[0].shifts[0].settledSeconds).toBe(3 * 3600);
+    // Still locked: any live payment refuses an edit, half or whole.
+    expect(time.days[0].shifts[0].settlementId).toBe('settlement-1');
+    expect(time.days[0].shifts[0].removable).toBe(false);
+  });
+
   it('reports a FAILED settlement read as unreadable, and says so in words', async () => {
-    settledShiftIdsMock.mockRejectedValue(new Error('shift_settlement_lines: boom'));
+    settledSecondsMock.mockRejectedValue(new Error('shift_settlement_lines: boom'));
 
     const time = await loadPersonTime('crew-1', 'all', NOW);
 
@@ -132,7 +148,7 @@ describe('loadPersonTime — the settlement read', () => {
 
     // settledShiftIds short-circuits on an empty id list, so this is the one
     // case where no read happens and the answer is still trustworthy.
-    expect(settledShiftIdsMock).toHaveBeenCalledWith([]);
+    expect(settledSecondsMock).toHaveBeenCalledWith([]);
     expect(time.person?.displayName).toBe('Khaye');
     expect(time.days).toEqual([]);
     expect(time.totalSeconds).toBe(0);

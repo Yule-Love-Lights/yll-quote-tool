@@ -25,6 +25,7 @@ function shift(over: Partial<PersonShift> = {}): PersonShift {
     manualBy: null,
     removable: false,
     settlementId: null,
+    settledSeconds: 0,
     ...over,
   };
 }
@@ -137,23 +138,48 @@ describe('HoursDayList — what each reader sees', () => {
 });
 
 describe('HoursDayList — the Paid mark', () => {
-  it('marks a settled shift for a staff reader who asked for the marks', () => {
-    expect(render('none', { settlementId: 'settlement-1' }, true)).toContain('>Paid<');
+  const WHOLE = { settlementId: 'settlement-1', settledSeconds: 8 * 3600 };
+  const PART = { settlementId: 'settlement-1', settledSeconds: 3 * 3600 };
+
+  it('marks a fully paid shift for a staff reader who asked for the marks', () => {
+    expect(render('none', WHOLE, true)).toContain('>Paid<');
+  });
+
+  it('says PART paid, with the hours, when a payment stopped half way through', () => {
+    // The whole reason for the rollover: a shift can be covered in part, and
+    // saying only "Paid" there would claim money that was never handed over.
+    const html = render('none', PART, true);
+    expect(html).toContain('3h 00m of 8h 00m paid');
+    expect(html).not.toContain('>Paid<');
   });
 
   it('marks nothing when the caller did NOT ask — the default', () => {
     // The default is off so a caller that has not thought about whether its
     // settlement data is trustworthy cannot render a payment claim by
     // accident. This is the failed-read path on the staff page.
-    expect(render('none', { settlementId: 'settlement-1' })).not.toContain('>Paid<');
+    expect(render('none', WHOLE)).not.toContain('>Paid<');
   });
 
   it('never marks an unsettled shift, however loudly the caller asks', () => {
-    expect(render('none', { settlementId: null }, true)).not.toContain('>Paid<');
+    expect(render('none', { settlementId: null, settledSeconds: 0 }, true)).not.toContain('>Paid<');
+  });
+
+  it('does not call a PART-paid shift simply "Paid" on the admin row', () => {
+    // Seen live on Khaye's 28 Aug row: 3h 48m of a 4h 23m shift, reading a
+    // bare "Paid". The LOCK is unconditional — any live payment refuses an
+    // edit — but the claim about money is not.
+    const admin = render('admin', PART, true);
+    expect(admin).toContain('3h 00m of this is paid');
+    expect(admin).toContain('undo the payment below');
+    expect(admin).not.toContain('Paid — undo');
+  });
+
+  it('still says plainly PAID when the whole shift is covered', () => {
+    expect(render('admin', WHOLE, true)).toContain('Paid — undo');
   });
 
   it('leaves the admin row to its own lock copy rather than adding a mark', () => {
-    const admin = render('admin', { settlementId: 'settlement-1' }, true);
+    const admin = render('admin', WHOLE, true);
     expect(admin).not.toContain('>Paid<');
     expect(admin).toContain('undo the payment below');
   });
