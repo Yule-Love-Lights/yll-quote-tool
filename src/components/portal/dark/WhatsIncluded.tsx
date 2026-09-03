@@ -17,7 +17,6 @@ import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
 import { resolvePortalImageVisibility } from '@/lib/portal/imageVisibility';
-import type { FreeSpritzerSummary } from '@/lib/portal/freeSpritzers';
 import { EARLY_INSTALL_ANCHOR_ID } from '../snowglobe/EarlyInstallBanner';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
@@ -188,10 +187,6 @@ export type WhatsIncludedProps = {
   // showStaffPreselectNotice for the gating + self-clear reasoning. Absent/
   // false ⇒ no line, unchanged from before this fix.
   showStaffPreselectNotice?: boolean;
-  // Free spritzers promised by this quote's line-item labels, read by
-  // src/lib/portal/freeSpritzers.ts. Absent/not present → no thank-you
-  // callout, unchanged from before this feature.
-  freeSpritzers?: FreeSpritzerSummary;
   // True when this customer has a season with YLL BEFORE this one. Gates the
   // "thank you for coming back" wording only: a referral friend gets free
   // spritzers on their FIRST install, so the neutral wording is what they get.
@@ -205,7 +200,6 @@ export function WhatsIncluded({
   renderSettings,
   serviceType,
   showStaffPreselectNotice,
-  freeSpritzers,
   isReturningCustomer = false,
 }: WhatsIncludedProps) {
   // Holiday (or a legacy/null service_type, which reads as holiday) is the only
@@ -264,6 +258,7 @@ export function WhatsIncluded({
     hasManualDiscount,
     manualDiscount,
     earlyInstallHidden,
+    freeSpritzers,
     locked,
     legacyRebook,
     depositRate,
@@ -411,7 +406,7 @@ export function WhatsIncluded({
             This renders on a booked quote too (unlike the banner, which stands
             down for BookedBanner) — a customer re-reading their booked order
             should still see what they were given. */}
-        {freeSpritzers?.present && (
+        {freeSpritzers.present && (
           <div className="mt-8 md:mt-10 flex items-start gap-3.5 rounded-2xl border border-[#86C9A0]/40 bg-[#111C16] p-4 md:p-5">
             <Gift className="w-5 h-5 text-[#86C9A0] shrink-0 mt-0.5" aria-hidden />
             <p className="text-[14px] text-[#E0D7C1] leading-[1.6] max-w-[60ch]">

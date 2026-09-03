@@ -24,7 +24,7 @@
 
 import { useSelection } from '../SelectionContext';
 import { formatUsd } from '../format';
-import type { FreeSpritzerSummary } from '@/lib/portal/freeSpritzers';
+import { track } from '@/lib/analytics/posthog';
 import type { ServiceType } from '@/lib/serviceType';
 import { ArrowDown, ArrowRight, CheckCircle2, Gift, PiggyBank } from 'lucide-react';
 
@@ -33,16 +33,25 @@ export const EARLY_INSTALL_ANCHOR_ID = 'portal-early-install';
 
 export type EarlyInstallBannerProps = {
   serviceType?: ServiceType | null;
-  /** Free spritzers promised by this quote's line-item labels. */
-  freeSpritzers: FreeSpritzerSummary;
   /** True when this customer has at least one season with YLL BEFORE this one.
    *  Gates the "thank you for coming back" wording: a referral friend gets free
    *  spritzers on their FIRST install, and thanking them for returning would be
    *  a lie. False falls back to neutral wording. */
   isReturningCustomer: boolean;
+  /** True when a signed-in operator is previewing the customer's page. The
+   *  banner then renders in normal flow instead of sticking to the top.
+   *
+   *  StaffPreselectBar is also `sticky top-0` and sits BELOW this in the DOM,
+   *  so with both pinned this banner (z-50) covers the staff bar (z-40) the
+   *  moment the page scrolls: measured on the real page at scrollY 2000, the
+   *  centre of "Save as customer's starting selection" resolved to this
+   *  banner's link, meaning the button could not be clicked at all. Customers
+   *  never see that bar, so they keep the sticky banner; staff keep their tool.
+   *  Found by the PR #1192 staff lens. */
+  staffPreview?: boolean;
 };
 
-export function EarlyInstallBanner({ serviceType, freeSpritzers, isReturningCustomer }: EarlyInstallBannerProps) {
+export function EarlyInstallBanner({ serviceType, isReturningCustomer, staffPreview = false }: EarlyInstallBannerProps) {
   const {
     installTiming,
     breakdown,
@@ -51,6 +60,8 @@ export function EarlyInstallBanner({ serviceType, freeSpritzers, isReturningCust
     locked,
     septemberDiscountRate,
     octoberDiscountRate,
+    freeSpritzers,
+    quoteId,
   } = useSelection();
 
   // Positive holiday match, never `!== 'permanent'` — a future vertical must
@@ -74,6 +85,16 @@ export function EarlyInstallBanner({ serviceType, freeSpritzers, isReturningCust
   const octoberPct = Math.round(octoberDiscountRate * 100);
 
   const goToPicker = () => {
+    // Without this the owner has no way to tell whether the banner moved
+    // discount uptake, which is the whole reason it exists (PR #1192 admin
+    // lens). Click only, not an impression: the banner is above the fold by
+    // construction, so an impression event would just count page loads.
+    track('early_install_banner_clicked', {
+      quote_id: quoteId,
+      service_type: serviceType ?? 'holiday',
+      install_timing: installTiming,
+      already_chosen: chosen,
+    });
     const el = document.getElementById(EARLY_INSTALL_ANCHOR_ID);
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -83,7 +104,11 @@ export function EarlyInstallBanner({ serviceType, freeSpritzers, isReturningCust
   };
 
   return (
-    <div className="sticky top-0 z-50 w-full bg-[#0D1519]/95 backdrop-blur border-b border-[#FFB744]/30">
+    <div
+      className={`${
+        staffPreview ? 'relative' : 'sticky top-0'
+      } z-50 w-full bg-[#0D1519]/95 backdrop-blur border-b border-[#FFB744]/30`}
+    >
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-2 sm:py-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 sm:gap-y-1 text-center">
         {discountAvailable && (
           <>

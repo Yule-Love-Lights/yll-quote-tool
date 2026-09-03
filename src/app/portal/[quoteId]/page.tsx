@@ -394,7 +394,12 @@ export default async function PortalPage({
   // of 96 lines write the promise into the label of a PAID package line
   // ("Santa's Roofline Display Package · 6 FREE Spritzers!"). See
   // src/lib/portal/freeSpritzers.ts for the parsing and its known blind spot.
-  const freeSpritzers = summarizeFreeSpritzers(quote.lineItems.map((li) => li.label));
+  // NOTE: this server-side pass is ONLY a gate for the tenure lookup below. The
+  // number the customer is shown is derived from the SELECTED line items inside
+  // SelectionContext, because the promise lives in the label of a specific line
+  // and has to disappear with it. Computing it here would tell a customer who
+  // toggled that package off that the spritzers were still coming.
+  const anyLabelPromisesSpritzers = summarizeFreeSpritzers(quote.lineItems.map((li) => li.label)).present;
 
   // Only ask the database about tenure when a thank-you is actually going to
   // render — this is the one wording that can be WRONG rather than merely
@@ -404,7 +409,7 @@ export default async function PortalPage({
   // or mock data) gets the neutral wording, which is true for everyone.
   const currentYear = new Date().getUTCFullYear();
   const isReturningCustomer =
-    freeSpritzers.present && quote.customerId
+    anyLabelPromisesSpritzers && quote.customerId
       ? (await getCustomerTenure(quote.customerId, null, new Date())).years.some((y) => y < currentYear)
       : false;
 
@@ -479,8 +484,8 @@ export default async function PortalPage({
             this slot and this one stands down. */}
         <EarlyInstallBanner
           serviceType={quote.serviceType}
-          freeSpritzers={freeSpritzers}
           isReturningCustomer={isReturningCustomer}
+          staffPreview={!!operator}
         />
 
         {/* Ledger row 324 — staff-only "Save as customer's starting selection".
@@ -542,7 +547,6 @@ export default async function PortalPage({
           // choices were staff-preselected sees one plain line explaining it
           // — see showStaffPreselectNotice's own comment for the self-clear.
           showStaffPreselectNotice={showStaffPreselectNotice(quote.browsingSelection, quote.viewedAt)}
-          freeSpritzers={freeSpritzers}
           isReturningCustomer={isReturningCustomer}
         />
 
