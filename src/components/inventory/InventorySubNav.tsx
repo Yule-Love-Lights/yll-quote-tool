@@ -31,7 +31,7 @@ export type InventoryTab =
 export function InventorySubNav({ active }: { active: InventoryTab }) {
   return (
     <div
-      className="flex gap-1 mb-5 border-b overflow-x-auto"
+      className="flex gap-1 mb-5 border-b flex-wrap"
       style={{ borderColor: 'var(--op-border)' }}
     >
       {ITEMS.map((item) => {

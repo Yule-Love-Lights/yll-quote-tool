@@ -110,7 +110,7 @@ export default function SettingsPage() {
         </Link>
       </div>
 
-      <div className="flex gap-1 border-b border-gray-200 mb-5 overflow-x-auto">
+      <div className="flex gap-1 border-b border-gray-200 mb-5 flex-wrap">
         {TABS.map((t) => (
           <button
             key={t.id}

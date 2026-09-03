@@ -121,7 +121,7 @@ export default function OverridesPage() {
           {note && <span role="status" className="text-sm text-gray-500">{note}</span>}
         </div>
 
-        <div className="flex gap-1 border-b border-gray-200 mb-5 overflow-x-auto">
+        <div className="flex gap-1 border-b border-gray-200 mb-5 flex-wrap">
           {(['categories', 'items'] as const).map((t) => (
             <button
               key={t}

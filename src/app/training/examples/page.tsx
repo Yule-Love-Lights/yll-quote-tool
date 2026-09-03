@@ -177,7 +177,7 @@ export default function TrainingExamplesPage() {
 
         {/* #141 — Holiday / Permanent tabs. Separate library + table per
             vertical; this just switches which panel renders. */}
-        <div className="flex gap-1 mb-4 border-b border-gray-200">
+        <div className="flex gap-1 mb-4 border-b border-gray-200 flex-wrap">
           {(['holiday', 'permanent'] as const).map((t) => (
             <button
               key={t}

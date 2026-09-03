@@ -20,7 +20,7 @@ export type BillingTab = 'quotes' | 'jobs' | 'invoices' | 'installments';
 
 export function BillingSubNav({ active }: { active: BillingTab }) {
   return (
-    <div className="flex gap-1 mb-5 border-b border-gray-200 overflow-x-auto">
+    <div className="flex gap-1 mb-5 border-b border-gray-200 flex-wrap">
       {ITEMS.map((item) => {
         const on = item.key === active;
         return (
