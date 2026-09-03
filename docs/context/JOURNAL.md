@@ -3942,5 +3942,5 @@ live-surface changes, since there is no git diff to review.
 
 - MISTAKES: the S86 mis-announcement; telling Naldo to hand-check a page our own ledger had already diagnosed; writing "flyers" without evidence; and shipping an allowlist narrowing that was worse than the alternative. All in the scorecard.
 
-- Gates at close: tsc 0 · lint 0 errors (23 pre-existing warnings) · vitest **10337 / 591 files** on branch head `ba993926`. PR #1186 open, not merged, no merge-go given.
+- Gates at close: tsc 0 · lint 0 errors (23 pre-existing warnings) · vitest **10337 / 591 files**, measured on branch head `ba993926`. PR #1186 open, not merged, no merge-go given. **The branch kept moving after this close** — the desktop session pushed `7b9a6c9a` adding a test that pins the two headers this session contributed, which is the right follow-through since they shipped without coverage. So treat that SHA as "where these gate numbers were measured", not as the branch head: #1186 is a live lane owned by the desktop session, and its final state is whatever that session lands.
 
