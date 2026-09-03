@@ -183,15 +183,22 @@ export function ShiftPaySection({
 }) {
   const payable: PayableShift[] = days
     .flatMap((d) => d.shifts)
-    .filter((s) => s.clockOutAt !== null && !s.settlementId)
+    // Anything CLOSED with time still owing, including a shift a previous
+    // payment only part covered — that remainder is exactly what the next
+    // payment is meant to pick up.
+    .filter((s) => s.clockOutAt !== null && s.settledSeconds < s.paidSeconds)
     .map((s) => ({
       id: s.id,
       clockInAt: s.clockInAt,
       paidSeconds: s.paidSeconds,
+      unpaidSeconds: s.paidSeconds - s.settledSeconds,
       // Carried through so the warning reaches the panel where paying LOCKS
       // these hours, not only the list above it.
       needsReview: s.closeSource === 'system',
-    }));
+    }))
+    // OLDEST FIRST, because that is the order the money is spent in and the
+    // preview has to read in the order it happens. `days` is newest first.
+    .sort((a, b) => a.clockInAt.localeCompare(b.clockInAt));
 
   return (
     <section className="mb-10">

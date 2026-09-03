@@ -176,9 +176,14 @@ function ShiftRow({
         {/* A record, not a control: the staff page cannot undo a payment, and
             the amount is never shown here (hours only — the office records
             what was paid, which is not always hours times a rate). */}
-        {showPaidMarks && controls === 'none' && shift.settlementId && (
+        {showPaidMarks && controls === 'none' && shift.settledSeconds > 0 && (
           <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-            Paid
+            {shift.settledSeconds >= shift.paidSeconds
+              ? 'Paid'
+              : // A payment can stop half way through a shift, and saying
+                // only "Paid" there would claim money that was never handed
+                // over. The rest has rolled over to the next payment.
+                `${formatHours(shift.settledSeconds)} of ${formatHours(shift.paidSeconds)} paid`}
           </span>
         )}
         {shift.manualBy && (
