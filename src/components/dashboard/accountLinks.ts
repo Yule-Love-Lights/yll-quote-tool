@@ -58,6 +58,10 @@ export const ACCOUNT_LINKS: ReadonlyArray<AccountLink> = [
   // redirects a non-admin server-side too: hiding the row is cosmetic, the
   // redirect is the refusal.
   { label: 'Who can see what', href: '/admin/permissions', adminOnly: true },
+  // Time tracking (Jason, 2026-09-01, time-tracking plan section 10: it lives
+  // in this menu, not the tab row). Admin only, and the page redirects a
+  // non-admin server-side; the row is the door, the redirect is the refusal.
+  { label: 'Time tracking', href: '/admin/time-tracking', adminOnly: true },
 ];
 
 /**

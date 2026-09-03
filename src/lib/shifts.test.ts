@@ -92,6 +92,9 @@ const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
       deleteError: null as DbError | null,
       activityError: null as DbError | null,
       childReadError: null as DbError | null,
+      // Row 459's paid-shift guard reads this table on every edit and void.
+      settlementLines: [] as { id: string; settlement_id: string; shift_id: string; voided_at: string | null }[],
+      settlementReadError: null as DbError | null,
     },
   },
 }));
@@ -223,6 +226,30 @@ function makeDb() {
           maybeSingle: () => Promise.resolve({ data: list[0] ? { ...list[0] } : null, error: null }),
         };
         return crewBuilder as never;
+      }
+      if (table === 'shift_settlement_lines') {
+        // assertNotSettled: select(...).eq('shift_id', x).is('voided_at', null).limit(1)
+        let list = [...stateRef.current.settlementLines];
+        const settlementBuilder = {
+          select: () => settlementBuilder,
+          eq: (col: string, val: unknown) => {
+            list = list.filter((row) => (row as unknown as Record<string, unknown>)[col] === val);
+            return settlementBuilder;
+          },
+          is: (col: string, val: unknown) => {
+            if (val === null) {
+              list = list.filter((row) => (row as unknown as Record<string, unknown>)[col] === null);
+            }
+            return settlementBuilder;
+          },
+          limit: (n: number) =>
+            Promise.resolve(
+              stateRef.current.settlementReadError
+                ? { data: null, error: stateRef.current.settlementReadError }
+                : { data: list.slice(0, n), error: null },
+            ),
+        };
+        return settlementBuilder as never;
       }
       if (table === 'dashboard_activity') {
         return {
@@ -416,6 +443,8 @@ beforeEach(() => {
     deleteError: null,
     activityError: null,
     childReadError: null,
+    settlementLines: [],
+    settlementReadError: null,
   };
   dbRef.current = makeDb();
 });
@@ -967,6 +996,121 @@ describe('adminVoidShift', () => {
       'has-children',
     );
     expect(stateRef.current.rows).toHaveLength(1);
+  });
+});
+
+describe('the paid-shift guard (ledger row 459)', () => {
+  const paidLine = (shiftId: string, voidedAt: string | null = null) => ({
+    id: `line-${shiftId}`,
+    settlement_id: 'settlement-1',
+    shift_id: shiftId,
+    voided_at: voidedAt,
+  });
+
+  it('refuses to rewrite the times of a shift somebody has been paid for', async () => {
+    stateRef.current.settlementLines = [paidLine(CLOSED_SHIFT.id)];
+    const { adminUpdateShiftTimes, ManualShiftRefusedError } = await import('./shifts');
+    await expect(
+      adminUpdateShiftTimes({
+        shiftId: CLOSED_SHIFT.id,
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor: 'Jason (jason@x)',
+      }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    await expect(
+      adminUpdateShiftTimes({
+        shiftId: CLOSED_SHIFT.id,
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor: 'Jason (jason@x)',
+      }),
+    ).rejects.toBeInstanceOf(ManualShiftRefusedError);
+    // Nothing was written: not the row, not the trail.
+    expect(stateRef.current.updated).toHaveLength(0);
+    expect(stateRef.current.activityInserts).toHaveLength(0);
+  });
+
+  it('refuses to remove a shift somebody has been paid for, BEFORE writing any trail entry', async () => {
+    // A manual office entry, which is the only kind a void would otherwise
+    // accept — so the refusal here is the settlement, not the row's shape.
+    const manual = { ...CLOSED_SHIFT, id: 'shift-manual-paid', manual_by: 'Ann (ann@x)' };
+    stateRef.current.rows = [manual];
+    stateRef.current.settlementLines = [paidLine(manual.id)];
+    const { adminVoidShift } = await import('./shifts');
+    await expect(
+      adminVoidShift({ shiftId: manual.id, actor: 'Jason (jason@x)' }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    expect(stateRef.current.deleted).toHaveLength(0);
+    // The trail must not record a removal that was refused.
+    expect(stateRef.current.activityInserts).toHaveLength(0);
+  });
+
+  it('lets an edit through once the payment has been VOIDED, which releases the shift', async () => {
+    stateRef.current.settlementLines = [paidLine(CLOSED_SHIFT.id, '2026-08-10T14:00:00.000Z')];
+    const { adminUpdateShiftTimes } = await import('./shifts');
+    const updated = await adminUpdateShiftTimes({
+      shiftId: CLOSED_SHIFT.id,
+      clockInAt: '2026-08-10T08:00:00.000Z',
+      clockOutAt: '2026-08-10T11:00:00.000Z',
+      actor: 'Jason (jason@x)',
+    });
+    expect(updated.clockOutAt).toBe('2026-08-10T11:00:00.000Z');
+    expect(stateRef.current.updated).toHaveLength(1);
+  });
+
+  it('lets an edit through for a shift on nobody else’s settlement', async () => {
+    stateRef.current.settlementLines = [paidLine('some-other-shift')];
+    const { adminUpdateShiftTimes } = await import('./shifts');
+    const updated = await adminUpdateShiftTimes({
+      shiftId: CLOSED_SHIFT.id,
+      clockInAt: '2026-08-10T08:00:00.000Z',
+      clockOutAt: '2026-08-10T11:00:00.000Z',
+      actor: 'Jason (jason@x)',
+    });
+    expect(updated.clockOutAt).toBe('2026-08-10T11:00:00.000Z');
+  });
+
+  it('FAILS CLOSED: an unreadable settlement lookup refuses the edit rather than allowing it', async () => {
+    // On payroll a refusal costs a retry; rewriting hours somebody was
+    // already paid for costs a correction nobody can see.
+    stateRef.current.settlementReadError = { message: 'connection reset' };
+    const { adminUpdateShiftTimes } = await import('./shifts');
+    await expect(
+      adminUpdateShiftTimes({
+        shiftId: CLOSED_SHIFT.id,
+        clockInAt: '2026-08-10T08:00:00.000Z',
+        clockOutAt: '2026-08-10T11:00:00.000Z',
+        actor: 'Jason (jason@x)',
+      }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    expect(stateRef.current.updated).toHaveLength(0);
+  });
+
+  it('FAILS CLOSED on the void path too', async () => {
+    const manual = { ...CLOSED_SHIFT, id: 'shift-manual-2', manual_by: 'Ann (ann@x)' };
+    stateRef.current.rows = [manual];
+    stateRef.current.settlementReadError = { message: 'connection reset' };
+    const { adminVoidShift } = await import('./shifts');
+    await expect(
+      adminVoidShift({ shiftId: manual.id, actor: 'Jason (jason@x)' }),
+    ).rejects.toMatchObject({ code: 'already-paid' });
+    expect(stateRef.current.deleted).toHaveLength(0);
+  });
+
+  it('still allows ADDING a shift to a day that already holds a paid one', async () => {
+    // Settlement is per shift, not per day. A new shift is hours nobody has
+    // been paid for yet, and refusing it would strand real work behind a
+    // payment for different hours.
+    stateRef.current.settlementLines = [paidLine(CLOSED_SHIFT.id)];
+    const { adminCreateShift } = await import('./shifts');
+    const created = await adminCreateShift({
+      crewMemberId: 'crew-3',
+      clockInAt: '2026-08-10T12:00:00.000Z',
+      clockOutAt: '2026-08-10T13:00:00.000Z',
+      actor: 'Jason (jason@x)',
+    });
+    expect(created.clockOutAt).toBe('2026-08-10T13:00:00.000Z');
   });
 });
 

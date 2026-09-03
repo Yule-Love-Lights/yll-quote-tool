@@ -10,10 +10,17 @@ import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
-import { isHighLevelConfigured, listPipelines } from '@/lib/integrations/highlevel';
+import {
+  isHighLevelConfigured,
+  listPipelines,
+  getContactDndState,
+  type ContactDndState,
+} from '@/lib/integrations/highlevel';
 import { parsePipelines, guessAssignments, type Pipeline } from '@/lib/integrations/highlevelPipelines';
 import { resolvePipelineStages, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
 import { SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
+import { highLevelContactUrlFromEnv } from '@/lib/highLevelLinks';
+import { getSupabaseServiceClient } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +41,8 @@ const ENV_VARS: { name: string; desc: string }[] = [
   { name: 'HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_BISTRO', desc: 'Same, for permanent-bistro quotes' },
   { name: 'HIGHLEVEL_SMS_FROM_NUMBER', desc: 'Outbound SMS "from" number for referral, balance, approval and internal-alert texts (falls back to email if unset or no phone on file)' },
   { name: 'HIGHLEVEL_EMAIL_FROM', desc: '"From" address for the same outbound sends, and the fallback channel when SMS is unset' },
-  { name: 'HIGHLEVEL_INTERNAL_CONTACT_ID', desc: 'Internal GHL contact that staff-facing alert emails send to (inbox escalations, low stock, decline, cancel, request-changes)' },
+  { name: 'HIGHLEVEL_INTERNAL_CONTACT_ID', desc: 'Internal GHL contact that staff-facing alert emails send to (inbox escalations, low stock, decline, cancel, request-changes, deposit received)' },
+  { name: 'HIGHLEVEL_LEADS_ALERT_CONTACT_ID', desc: 'Contact HighLevel routes lead + site-form alert emails to; falls back to HIGHLEVEL_INTERNAL_CONTACT_ID above when unset' },
   { name: 'HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK', desc: 'Contact field for a referring customer\'s personal link (stamp is skipped when unset)' },
   { name: 'HIGHLEVEL_CONTACT_FIELD_SERVICE', desc: 'Contact field written with a website lead\'s selected service' },
 ];
@@ -49,6 +57,69 @@ const STAGE_LABELS = {
   declined: 'Declined',
 } as const;
 type StageKey = keyof typeof STAGE_LABELS;
+
+// The three-state DND health render, shared by the internal contact's row
+// and the leads-alert contact's row (fix round, staff lens asked for a
+// clickable fix link — added here so both rows get it, not just one).
+// `unsetNote` lets the leads-alert row say something more specific than the
+// internal contact's generic "not set" wording, since an unset leads-alert
+// var isn't a misconfiguration on its own (it falls back to the internal
+// contact) — plain copy, no "dndSettings" jargon on screen.
+function DndHealthBlock({
+  configured,
+  contactId,
+  contactUrl,
+  unsetNote,
+  dndState,
+  dndCheckError,
+}: {
+  configured: boolean;
+  contactId: string | undefined;
+  contactUrl: string | null;
+  unsetNote: string;
+  dndState: ContactDndState | null;
+  dndCheckError: string | null;
+}) {
+  if (!configured) {
+    return (
+      <p className="text-[11px] font-semibold text-amber-700 mt-2">Email DND: could not verify (HighLevel not connected)</p>
+    );
+  }
+  if (!contactId) {
+    return <p className="text-[11px] font-semibold text-amber-700 mt-2">Email DND: {unsetNote}</p>;
+  }
+  if (dndCheckError) {
+    return <p className="text-[11px] font-semibold text-amber-700 mt-2">Email DND: could not verify ({dndCheckError})</p>;
+  }
+  if (dndState === null) {
+    return (
+      <p className="text-[11px] font-semibold text-amber-700 mt-2">Email DND: could not verify (contact not found in HighLevel)</p>
+    );
+  }
+  if (dndState.emailDnd) {
+    return (
+      <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-2">
+        <p className="text-[11px] font-semibold text-red-700">
+          ⚠️ Email DND is ON for this contact — every staff alert email (deposit received, approval, decline, low
+          stock, inbox escalation...) is being refused by HighLevel right now.
+        </p>
+        <p className="text-[11px] text-red-700 mt-1">
+          HighLevel: {dndState.message ?? 'no message'}
+          {dndState.code ? ` (code ${dndState.code})` : ''}
+        </p>
+        <p className="text-[11px] text-red-700 mt-1">Fix: switch Email DND off on this contact in HighLevel.</p>
+        {contactUrl ? (
+          <p className="text-[11px] mt-1">
+            <a href={contactUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-red-700 underline">
+              Open this contact in HighLevel →
+            </a>
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+  return <p className="text-[11px] font-semibold text-green-700 mt-2">Email DND: off</p>;
+}
 
 export default async function HighLevelSettingsPage() {
   // #81 defense-in-depth — engaged by default; dormant only on the explicit
@@ -70,6 +141,85 @@ export default async function HighLevelSettingsPage() {
   }
   // Best-guess mapping for each env var (suggestion only — confirm below).
   const guesses = guessAssignments(pipelines);
+
+  // 2026-09-02 incident: the internal alert contact's Email DND flipped on in
+  // GHL and every staff alert email (deposit received, approval, decline...)
+  // was silently refused for two days — the only prior signal was a
+  // console.warn nobody was watching. Live health check, rendered inline on
+  // the HIGHLEVEL_INTERNAL_CONTACT_ID row below (and, fix round, the leads-
+  // alert contact's own row). Three states, all rendered (never nothing):
+  // dndState.emailDnd true → red, false → a quiet green "off", and
+  // unconfigured/unreachable → amber "could not verify" — a silent-empty
+  // read here is exactly the class this repo has been bitten by before
+  // (AGENTS.md Pitfalls, S74 geocoding).
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  let dndState: ContactDndState | null = null;
+  let dndCheckError: string | null = null;
+  if (configured && internalContactId) {
+    try {
+      dndState = await getContactDndState(internalContactId);
+    } catch (err) {
+      dndCheckError = err instanceof Error ? err.message : 'Failed to check DND status';
+    }
+  }
+
+  // Fix round (admin lens, row: leads-alert contact): the lead/site-form
+  // alert routes (src/lib/leads/leadAlerts.ts, src/lib/siteForms/
+  // siteFormAlerts.ts) read HIGHLEVEL_LEADS_ALERT_CONTACT_ID, falling back to
+  // HIGHLEVEL_INTERNAL_CONTACT_ID when unset — confirmed by reading both
+  // consumers, not guessed. Same DND check, run only when this var is
+  // actually set (an unset var isn't its own contact — its rows are already
+  // covered by the internal contact's own check above).
+  const leadsAlertContactId = process.env.HIGHLEVEL_LEADS_ALERT_CONTACT_ID;
+  let leadsDndState: ContactDndState | null = null;
+  let leadsDndCheckError: string | null = null;
+  if (configured && leadsAlertContactId) {
+    try {
+      leadsDndState = await getContactDndState(leadsAlertContactId);
+    } catch (err) {
+      leadsDndCheckError = err instanceof Error ? err.message : 'Failed to check DND status';
+    }
+  }
+
+  // Fix round (admin lens): the deposit_notify_failed_at/deposit_notify_error
+  // marker the Valor webhook stamps (src/app/api/integrations/valor/webhook/
+  // route.ts's internalEmail()) had zero readers — it existed only to be
+  // queried by hand. Surface the last 20 non-test rows right on this page, by
+  // the exact same route this page already uses for everything else
+  // (service-role read, server-side, no client fetch). A failed read renders
+  // an amber "could not read" line, NEVER a false "none" — the check-the-
+  // check pitfall this repo has been bitten by before (AGENTS.md).
+  type FailedNotifyRow = {
+    id: string;
+    quote_number: number | null;
+    customer_name: string | null;
+    deposit_notify_failed_at: string;
+    deposit_notify_error: string | null;
+  };
+  let failedNotifies: FailedNotifyRow[] = [];
+  let failedNotifiesError: string | null = null;
+  const sb = getSupabaseServiceClient();
+  if (!sb) {
+    failedNotifiesError = 'database not configured';
+  } else {
+    const { data, error } = await sb
+      .from('quotes')
+      .select('id, quote_number, customer_name, deposit_notify_failed_at, deposit_notify_error')
+      .eq('is_test', false)
+      .not('deposit_notify_failed_at', 'is', null)
+      .order('deposit_notify_failed_at', { ascending: false })
+      .limit(20);
+    if (error) {
+      failedNotifiesError = error.message;
+    } else {
+      failedNotifies = (data ?? []) as FailedNotifyRow[];
+    }
+  }
+
+  // Fix round (staff lens): a direct link into HighLevel for the red DND
+  // panel's fix instruction, so "open this contact" isn't a manual search.
+  const internalContactUrl = highLevelContactUrlFromEnv(internalContactId ?? null);
+  const leadsAlertContactUrl = highLevelContactUrlFromEnv(leadsAlertContactId ?? null);
 
   // Cross-check the hardcoded per-vertical pipeline map (ghlPipelineMap.ts)
   // against the live pipelines just fetched above, so a renamed/deleted
@@ -143,6 +293,63 @@ export default async function HighLevelSettingsPage() {
                         Best guess: <span className="font-medium">{guessLabel}</span>{' '}
                         <code className="font-mono text-gray-500 break-all">{guess.value}</code>
                       </p>
+                    )}
+                    {name === 'HIGHLEVEL_INTERNAL_CONTACT_ID' && (
+                      <>
+                        <DndHealthBlock
+                          configured={configured}
+                          contactId={internalContactId}
+                          contactUrl={internalContactUrl}
+                          unsetNote="could not verify (this var isn't set)"
+                          dndState={dndState}
+                          dndCheckError={dndCheckError}
+                        />
+                        {/* Fix round (admin lens): make deposit_notify_failed_at
+                            readable, not write-only. Zero → a quiet one-liner;
+                            some → the last 20, newest first, each linking to
+                            the quote; a failed read → amber, never a false
+                            "none". */}
+                        <div className="mt-2 pt-2 border-t border-gray-100">
+                          {failedNotifiesError ? (
+                            <p className="text-[11px] font-semibold text-amber-700">
+                              Failed deposit alerts: could not read ({failedNotifiesError})
+                            </p>
+                          ) : failedNotifies.length === 0 ? (
+                            <p className="text-[11px] text-gray-500">No bookings with a failed staff alert.</p>
+                          ) : (
+                            <div>
+                              <p className="text-[11px] font-semibold text-gray-700 mb-1">
+                                Bookings whose &ldquo;deposit received&rdquo; staff alert failed ({failedNotifies.length}):
+                              </p>
+                              <ul className="space-y-1">
+                                {failedNotifies.map((row) => (
+                                  <li key={row.id} className="text-[11px] text-gray-700">
+                                    <a href={`/quote/${row.id}`} className="font-semibold underline">
+                                      Quote #{row.quote_number ?? row.id.slice(0, 8)}
+                                    </a>{' '}
+                                    · {row.customer_name ?? 'Unknown customer'} ·{' '}
+                                    {new Date(row.deposit_notify_failed_at).toLocaleString('en-US', {
+                                      dateStyle: 'medium',
+                                      timeStyle: 'short',
+                                    })}{' '}
+                                    · {row.deposit_notify_error ?? 'no error recorded'}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                    {name === 'HIGHLEVEL_LEADS_ALERT_CONTACT_ID' && (
+                      <DndHealthBlock
+                        configured={configured}
+                        contactId={leadsAlertContactId}
+                        contactUrl={leadsAlertContactUrl}
+                        unsetNote="not set — lead alerts fall back to the internal contact above"
+                        dndState={leadsDndState}
+                        dndCheckError={leadsDndCheckError}
+                      />
                     )}
                   </div>
                   <div className="text-right shrink-0">
