@@ -246,6 +246,26 @@ export function formatSeconds(seconds: number): string {
   return `${h}h ${String(m).padStart(2, '0')}m`;
 }
 
+/**
+ * PURE. What a typed amount is worth ABOVE the hours it can be spent on.
+ *
+ * Zero when the money fits inside the unpaid hours, positive when it does
+ * not — an overtime premium, a bonus, back-pay. Nothing refuses a positive
+ * value (Jason, 2026-09-03); the panel names the figure and asks.
+ *
+ * Extracted from the panel deliberately. The pay panel is a client component
+ * and this repo has no screen tests, so a decision left inline there is a
+ * decision nothing can check — and the browser could not drive it either
+ * (the preview pane blocks real clicks, and a scripted input never reaches
+ * React's state, which made a first attempt at verifying it silently
+ * meaningless). Out here it is four lines with its own tests.
+ */
+export function excessOverHours(typedCents: number | null, maxCents: number): number {
+  if (typedCents === null || !Number.isFinite(typedCents)) return 0;
+  if (!Number.isFinite(maxCents) || maxCents < 0) return 0;
+  return Math.max(0, typedCents - maxCents);
+}
+
 /** Cents as an admin reads them. */
 export function dollars(cents: number): string {
   const sign = cents < 0 ? '-' : '';

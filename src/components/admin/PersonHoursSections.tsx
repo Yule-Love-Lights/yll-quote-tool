@@ -163,7 +163,6 @@ export function ShiftPaySection({
   crewName,
   rateCentsPerHour,
   remainders,
-  range,
   settlements,
   settledCents,
   settlementsReadable,
@@ -176,7 +175,6 @@ export function ShiftPaySection({
    * time — not the range on screen. The server spends a payment globally
    * oldest-first, so a range-scoped list would preview the wrong shifts. */
   remainders: PayableRemainder[];
-  range: RangeKey;
   settlements: ShiftSettlement[];
   settledCents: number;
   settlementsReadable: boolean;
@@ -222,8 +220,7 @@ export function ShiftPaySection({
               as paid, all time
             </span>
             <span className="text-sm text-gray-500 tabular-nums">
-              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'} in{' '}
-              {rangeLabel(range).toLowerCase()}
+              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'}, all time
             </span>
           </div>
 
@@ -239,24 +236,22 @@ export function ShiftPaySection({
             </div>
           )}
 
-          {/* KEYED ON THE RANGE (staff lens on PR #1179). Switching range is a
-              same-route search-param navigation, which does NOT remount a
-              client component, so a selection made under "Last 7 days" would
-              survive into "Last 90 days" against a different list while the
-              typed amount stayed put. The key forces a clean slate. */}
+          {/* The range key is GONE (it was added by the staff lens on PR #1179
+              to clear a selection when the range-scoped list changed
+              underneath it). There is no selection any more, and this list no
+              longer moves with the range, so keying on it would only throw
+              away a typed amount when somebody switched range to look at the
+              hours table above. */}
           <ShiftPayPanel
-            key={range}
             crewMemberId={crewMemberId}
             crewName={crewName}
             rateCentsPerHour={rateCentsPerHour}
             payable={payable}
           />
-          {range !== 'all' && (
-            <p className="mt-2 text-xs text-gray-500">
-              Only unpaid shifts inside {rangeLabel(range).toLowerCase()} are listed. Switch to All
-              time to be sure nothing older is still unpaid.
-            </p>
-          )}
+          <p className="mt-2 text-xs text-gray-500">
+            Every unpaid shift is listed here, however old — the range above changes the hours
+            table, not this. A payment is always spent oldest first.
+          </p>
 
           <h3 className="text-sm font-semibold text-gray-900 mt-6 mb-2">Payments recorded</h3>
           {settlements.length === 0 ? (

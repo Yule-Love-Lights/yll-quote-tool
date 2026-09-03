@@ -8,7 +8,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { allocatePayment, secondsBoughtBy, type PayableRemainder } from './shiftSettlements';
+import {
+  allocatePayment,
+  excessOverHours,
+  secondsBoughtBy,
+  type PayableRemainder,
+} from './shiftSettlements';
 
 const H = 3600;
 const RATE = 900; // $9.00/hour, Khaye's real rate
@@ -147,5 +152,27 @@ describe('allocatePayment — the rules', () => {
     const newestFirst = [...shifts(4 * H, 4 * H)].reverse();
     const out = allocatePayment(newestFirst, 900, RATE);
     expect(out.lines[0].shiftId).toBe('shift-2');
+  });
+});
+
+describe('excessOverHours', () => {
+  it('is zero while the money fits inside the unpaid hours', () => {
+    expect(excessOverHours(17370, 17370)).toBe(0);
+    expect(excessOverHours(100, 17370)).toBe(0);
+  });
+
+  it('names the difference when the money is worth more than the hours', () => {
+    // $200.00 against $173.70 of unpaid time: the overtime case.
+    expect(excessOverHours(20000, 17370)).toBe(2630);
+  });
+
+  it('is zero for an unparsed amount, so an empty box warns about nothing', () => {
+    expect(excessOverHours(null, 17370)).toBe(0);
+    expect(excessOverHours(Number.NaN, 17370)).toBe(0);
+  });
+
+  it('never goes negative, and shrugs off a nonsense ceiling', () => {
+    expect(excessOverHours(500, -1)).toBe(0);
+    expect(excessOverHours(500, Number.NaN)).toBe(0);
   });
 });

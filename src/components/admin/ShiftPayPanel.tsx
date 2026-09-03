@@ -27,6 +27,7 @@ import { formatHours } from '@/lib/hoursSummary';
 import {
   allocatePayment,
   dollars,
+  excessOverHours,
   parseAmountCents,
   referenceCentsFor,
   SETTLEMENT_METHODS,
@@ -106,7 +107,8 @@ export function ShiftPayPanel({
     );
   }, [payable, typedCents, rateCentsPerHour]);
 
-  const tooMuch = typedCents !== null && typedCents > maxCents;
+  const excessCents = excessOverHours(typedCents, maxCents);
+  const tooMuch = excessCents > 0;
   const byId = useMemo(() => new Map(payable.map((s) => [s.id, s])), [payable]);
   const touchedUnverified = (preview?.lines ?? []).filter((l) => byId.get(l.shiftId)?.needsReview);
   const rollover = preview ? owedSeconds - preview.secondsCovered : owedSeconds;
@@ -147,7 +149,7 @@ export function ShiftPayPanel({
     if (tooMuch) {
       lines.push(
         '',
-        `That is ${dollars(typedCents - maxCents)} MORE than those hours come to at ${dollars(rateCentsPerHour)}/hr. Fine if it is overtime, a bonus or an advance — but check the amount if it is not.`,
+        `That is ${dollars(excessCents)} MORE than those hours come to at ${dollars(rateCentsPerHour)}/hr. Fine if it is overtime, a bonus or an advance — but check the amount if it is not.`,
       );
     }
     // Named BEFORE the lock, not discovered after it (admin lens on PR #1179).
@@ -273,7 +275,7 @@ export function ShiftPayPanel({
             is — but the admin should see the figure before confirming. */}
         {tooMuch && (
           <p className="mt-2 text-xs text-amber-800">
-            {dollars(typedCents - maxCents)} more than those {formatHours(owedSeconds)} come to at{' '}
+            {dollars(excessCents)} more than those {formatHours(owedSeconds)} come to at{' '}
             {dollars(rateCentsPerHour)}/hr. That is fine for overtime, a bonus or an advance — the
             extra is recorded as paid, and no hours beyond the ones listed are marked off.
           </p>

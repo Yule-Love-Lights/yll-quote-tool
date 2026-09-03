@@ -144,7 +144,6 @@ export default async function PersonTimePage({
           crewName={person.displayName}
           rateCentsPerHour={person.baseRateCents}
           remainders={remainders ?? []}
-          range={time.range}
           settlements={settlements ?? []}
           settledCents={settlementSummary.settledCents}
           halfUndone={settlementSummary.halfUndone}
