@@ -234,7 +234,7 @@ describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1; cop
   it('dollarizes the friend spritzer reward and still names the physical item (never hardcodes 170)', () => {
     const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" {...REWARD_TERMS} />);
     expect(html).toContain('$170');
-    expect(html).toContain('$150 off instead');
+    expect(html).toContain('$125 off instead');
     expect(html).toContain('free 16&quot; spritzers');
     expect(html).toContain('16&quot; spritzers');
     // A DIFFERENT spritzerValueUsd must show up verbatim -- proves the

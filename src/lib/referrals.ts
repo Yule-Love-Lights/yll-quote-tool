@@ -44,7 +44,7 @@ export const REFERRAL_FRIEND_SPRITZERS = { count: 2, sizeInches: 16 } as const;
 /** The friend's cash alternative to the spritzers. Defined in the
  *  client-safe module (client components state this offer too) and
  *  re-exported here so server callers get every referral constant from one
- *  import. See referralSpritzerValue.ts for the reasoning and the $150 vs
+ *  import. See referralSpritzerValue.ts for the reasoning and the $125 vs
  *  $170 distinction. */
 export { REFERRAL_FRIEND_ALT_CREDIT_USD } from './referralSpritzerValue';
 
