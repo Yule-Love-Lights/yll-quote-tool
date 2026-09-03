@@ -18,7 +18,7 @@ import Link from 'next/link';
 
 import { HoursDayList, fmtTime, sourceLabel } from '@/components/time/HoursDayList';
 import { ShiftPayPanel, VoidSettlementButton, type PayableShift } from '@/components/admin/ShiftPayPanel';
-import { dollars, type ShiftSettlement } from '@/lib/shiftSettlements';
+import { dollars, type PayableRemainder, type ShiftSettlement } from '@/lib/shiftSettlements';
 import { formatHours } from '@/lib/hoursSummary';
 import {
   RANGE_KEYS,
@@ -97,9 +97,9 @@ export function PersonHoursSection({
       </div>
 
       <p className="text-sm text-gray-500 mb-4">
-        Clocked time, day by day. Nothing here is approved or paid. A shift counts on the day it
-        started (New York time) and is never split across midnight, so an overnight shift shows
-        in full on the day it began.
+        Clocked time, day by day, with what has been paid for marked on each row. A shift counts
+        on the day it started (New York time) and is never split across midnight, so an overnight
+        shift shows in full on the day it began.
       </p>
 
       {errors.length > 0 && (
@@ -153,17 +153,19 @@ export function PersonHoursSection({
  * Recording what has been paid, and what is still owed against hours nobody
  * has been paid for — time-tracking plan phase 3, ledger row 459.
  *
- * The payable list is the shifts ON SCREEN that are closed and unpaid, so it
- * always agrees with the hours above it. It is deliberately scoped to the
- * chosen range rather than to all time: an admin paying "the last two weeks"
- * should not be one click away from settling a shift from March.
+ * The payable list is EVERY closed shift with time still owing, oldest first,
+ * regardless of the range shown above it. Phase 3 scoped it to the chosen
+ * range so an admin paying "the last two weeks" could not settle a shift from
+ * March by accident; that protected a tick-box list which no longer exists.
+ * The server now spends a payment across all unpaid shifts oldest first, so a
+ * range-scoped list here would preview an allocation that is not the one
+ * about to happen (two lenses on PR #1190, independently).
  */
 export function ShiftPaySection({
   crewMemberId,
   crewName,
   rateCentsPerHour,
-  days,
-  range,
+  remainders,
   settlements,
   settledCents,
   settlementsReadable,
@@ -172,8 +174,10 @@ export function ShiftPaySection({
   crewMemberId: string;
   crewName: string;
   rateCentsPerHour: number;
-  days: PersonDay[];
-  range: RangeKey;
+  /** Every closed shift with time still owing, oldest first, across ALL
+   * time — not the range on screen. The server spends a payment globally
+   * oldest-first, so a range-scoped list would preview the wrong shifts. */
+  remainders: PayableRemainder[];
   settlements: ShiftSettlement[];
   settledCents: number;
   settlementsReadable: boolean;
@@ -181,25 +185,29 @@ export function ShiftPaySection({
    * stamp. Running the undo again finishes them. */
   halfUndone: string[];
 }) {
-  const payable: PayableShift[] = days
-    .flatMap((d) => d.shifts)
-    .filter((s) => s.clockOutAt !== null && !s.settlementId)
-    .map((s) => ({
-      id: s.id,
-      clockInAt: s.clockInAt,
-      paidSeconds: s.paidSeconds,
+  // Already oldest-first and already filtered to what is still owing: this
+  // is the SAME list the server spends the money over, so the preview and
+  // the write cannot disagree about which shifts are in play.
+  const payable: PayableShift[] = remainders
+    .filter((r) => r.unpaidSeconds > 0)
+    .map((r) => ({
+      id: r.shiftId,
+      clockInAt: r.clockInAt,
+      paidSeconds: r.totalSeconds,
+      unpaidSeconds: r.unpaidSeconds,
       // Carried through so the warning reaches the panel where paying LOCKS
       // these hours, not only the list above it.
-      needsReview: s.closeSource === 'system',
+      needsReview: r.needsReview,
     }));
 
   return (
     <section className="mb-10">
       <h2 className="text-lg font-semibold text-gray-900 mb-1">Pay</h2>
       <p className="text-sm text-gray-500 mb-4">
-        You pay {crewName} however you normally do, then record it here against the shifts it
-        covered. The tool does not work out what to pay — it keeps the record of what you paid and
-        which hours it was for. A paid shift is locked until the payment is undone.
+        You pay {crewName} however you normally do, then record the amount here. The tool does not
+        work out what to pay — it takes what you actually handed over and marks off that many
+        hours, oldest first. Anything the money does not reach stays unpaid and carries over to
+        the next payment. A shift a payment has touched is locked until that payment is undone.
       </p>
 
       {!settlementsReadable ? (
@@ -215,8 +223,7 @@ export function ShiftPaySection({
               as paid, all time
             </span>
             <span className="text-sm text-gray-500 tabular-nums">
-              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'} in{' '}
-              {rangeLabel(range).toLowerCase()}
+              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'}, all time
             </span>
           </div>
 
@@ -232,24 +239,22 @@ export function ShiftPaySection({
             </div>
           )}
 
-          {/* KEYED ON THE RANGE (staff lens on PR #1179). Switching range is a
-              same-route search-param navigation, which does NOT remount a
-              client component, so a selection made under "Last 7 days" would
-              survive into "Last 90 days" against a different list while the
-              typed amount stayed put. The key forces a clean slate. */}
+          {/* The range key is GONE (it was added by the staff lens on PR #1179
+              to clear a selection when the range-scoped list changed
+              underneath it). There is no selection any more, and this list no
+              longer moves with the range, so keying on it would only throw
+              away a typed amount when somebody switched range to look at the
+              hours table above. */}
           <ShiftPayPanel
-            key={range}
             crewMemberId={crewMemberId}
             crewName={crewName}
             rateCentsPerHour={rateCentsPerHour}
             payable={payable}
           />
-          {range !== 'all' && (
-            <p className="mt-2 text-xs text-gray-500">
-              Only unpaid shifts inside {rangeLabel(range).toLowerCase()} are listed. Switch to All
-              time to be sure nothing older is still unpaid.
-            </p>
-          )}
+          <p className="mt-2 text-xs text-gray-500">
+            Every unpaid shift is listed here, however old — the range above changes the hours
+            table, not this. A payment is always spent oldest first.
+          </p>
 
           <h3 className="text-sm font-semibold text-gray-900 mt-6 mb-2">Payments recorded</h3>
           {settlements.length === 0 ? (
@@ -270,12 +275,23 @@ export function ShiftPaySection({
                       <span className="text-xs text-gray-500">
                         {liveLines.length} {liveLines.length === 1 ? 'shift' : 'shifts'} ·{' '}
                         {formatHours(st.coveredSeconds)}
-                        {/* The reference is shown only when it DIFFERS, so the
-                            common case stays quiet and a real gap (overtime, an
-                            advance) is the thing that stands out. */}
-                        {st.referenceCents !== st.totalCents && !st.voidedAt && (
-                          <> · {dollars(st.referenceCents)} at the stamped rate</>
-                        )}
+                        {/* Shown only when the reference differs by MORE THAN
+                            ROUNDING, so a real gap (overtime, an advance) is
+                            what stands out.
+
+                            An exact !== fired on the very first real payment:
+                            $180.01 of per-line references against $180.00
+                            recorded, because each line rounds to its own cent
+                            and the amount was rounded once as a whole. Since
+                            the hours are now derived FROM the money, that is
+                            the ordinary case rather than the interesting one,
+                            so an exact test would light up on almost every
+                            multi-shift payment and mean nothing. One cent per
+                            line is the most rounding can account for. */}
+                        {Math.abs(st.referenceCents - st.totalCents) > liveLines.length &&
+                          !st.voidedAt && (
+                            <> · {dollars(st.referenceCents)} at the stamped rate</>
+                          )}
                       </span>
                       {st.voidedAt ? (
                         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium">

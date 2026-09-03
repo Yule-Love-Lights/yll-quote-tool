@@ -27,6 +27,9 @@ type LineRow = {
   settlement_id: string;
   shift_id: string;
   paid_seconds: number;
+  /** Optional so the pre-migration fixtures in this file stay valid: a line
+   * written before 2026-09-03 carried no shift total. */
+  shift_total_seconds?: number;
   rate_cents_per_hour: number;
   reference_cents: number;
   voided_at: string | null;
@@ -89,8 +92,40 @@ function makeDb() {
 
       if (table === 'shifts') {
         let list = [...stateRef.current.shifts];
+        const sorts: { col: string; asc: boolean }[] = [];
         const b = {
           select: () => b,
+          eq: (col: string, val: unknown) => {
+            list = list.filter((r) => (r as unknown as Record<string, unknown>)[col] === val);
+            return b;
+          },
+          // `.not('clock_out_at', 'is', null)` — the OPEN-shift exclusion.
+          not: (col: string, op: string, val: unknown) => {
+            if (op === 'is' && val === null) {
+              list = list.filter((r) => (r as unknown as Record<string, unknown>)[col] !== null);
+            }
+            return b;
+          },
+          // MULTI-KEY, like Postgres. Applying each .order() as its own sort
+          // would let the second key throw the first away, which is exactly
+          // what happened here first time: ordering by (clock_in_at, id)
+          // came out ordered by id alone and the oldest-first rule looked
+          // broken when it was not.
+          order: (col: string, opts?: { ascending?: boolean }) => {
+            sorts.push({ col, asc: opts?.ascending !== false });
+            return b;
+          },
+          range: (from: number) => {
+            const sorted = [...list].sort((x, y) => {
+              for (const s of sorts) {
+                const a = String((x as unknown as Record<string, unknown>)[s.col] ?? '');
+                const c = String((y as unknown as Record<string, unknown>)[s.col] ?? '');
+                if (a !== c) return s.asc ? a.localeCompare(c) : c.localeCompare(a);
+              }
+              return 0;
+            });
+            return Promise.resolve({ data: from === 0 ? sorted.map((r) => ({ ...r })) : [], error: null });
+          },
           in: (col: string, vals: unknown[]) => {
             list = list.filter((r) => vals.includes((r as unknown as Record<string, unknown>)[col]));
             return Promise.resolve({ data: list.map((r) => ({ ...r })), error: null });
@@ -143,17 +178,42 @@ function makeDb() {
               if (stateRef.current.lineInsertError) {
                 return Promise.resolve({ data: null, error: stateRef.current.lineInsertError });
               }
-              // The real guarantee is the partial unique index; model it.
+              // The real guarantee is now the 2026-09-03 TRIGGER, not a
+              // unique index: live lines against one shift may not sum past
+              // that shift's hours. Modelled here so a double-submit is
+              // refused for the reason the database would refuse it, with
+              // the check_violation code the caller actually maps.
               for (const row of payload) {
-                const clash = stateRef.current.lines.some(
+                const live = stateRef.current.lines.filter(
                   (l) => l.shift_id === row.shift_id && l.voided_at === null,
                 );
-                if (clash) {
+                // The trigger's OTHER refusal, which this fake used to be
+                // missing: live lines for one shift must agree on how long
+                // that shift is. Without it, a regression test for the
+                // edited-under-payment case would pass against a fake that
+                // could not produce the failure (technical lens on PR #1190).
+                const disagrees = live.some(
+                  (l) =>
+                    l.shift_total_seconds !== undefined &&
+                    l.shift_total_seconds !== Number(row.shift_total_seconds),
+                );
+                if (disagrees) {
                   return Promise.resolve({
                     data: null,
                     error: {
-                      code: '23505',
-                      message: 'duplicate key value violates unique constraint "shift_settlement_lines_shift_key"',
+                      code: '23514',
+                      message: `shift ${String(row.shift_id)} has live settlement lines disagreeing on its length (2 distinct totals)`,
+                    },
+                  });
+                }
+                const already = live.reduce((sum, l) => sum + l.paid_seconds, 0);
+                const total = Number(row.shift_total_seconds);
+                if (already + Number(row.paid_seconds) > total) {
+                  return Promise.resolve({
+                    data: null,
+                    error: {
+                      code: '23514',
+                      message: `shift ${String(row.shift_id)} would be paid ${already + Number(row.paid_seconds)} seconds of its ${total}`,
                     },
                   });
                 }
@@ -163,6 +223,7 @@ function makeDb() {
                 settlement_id: String(row.settlement_id),
                 shift_id: String(row.shift_id),
                 paid_seconds: Number(row.paid_seconds),
+                shift_total_seconds: Number(row.shift_total_seconds),
                 rate_cents_per_hour: Number(row.rate_cents_per_hour),
                 reference_cents: Number(row.reference_cents),
                 voided_at: null,
@@ -340,83 +401,145 @@ afterEach(() => {
 
 const base = {
   crewMemberId: 'crew-1',
-  shiftIds: ['shift-1'],
   totalCents: 4000,
   paidBy: 'Jason (jason@x)',
   method: 'cash' as const,
 };
 
-describe('recordShiftSettlement', () => {
-  it('records the TYPED amount, and stamps the hours and rate as a reference beside it', async () => {
+/** CLOSED_2 (31 Aug, 3h) is OLDER than CLOSED (1 Sep, 4h), so oldest-first
+ * spends CLOSED_2 before CLOSED. 7h of work at $9.00/h is worth $63.00. */
+const H = 3600;
+
+describe('recordShiftSettlement — the money buys hours, oldest first', () => {
+  // crew-1 has two closed shifts: 31 Aug (3h, OLDER) and 1 Sep (4h), plus an
+  // open one. 7h at $9.00/h is worth $63.00, which is the ceiling on what any
+  // single payment can cover.
+
+  it('spends the amount OLDEST first and leaves the rest owing', async () => {
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    // 4 hours at $9.00/hr is $36.00, but $40.00 was actually handed over.
+    // $40.00 buys 4h 26m 40s. That is the whole 3h shift and part of the 4h one.
     const out = await recordShiftSettlement({ ...base, totalCents: 4000 });
+
     expect(out.totalCents).toBe(4000);
-    expect(out.lines).toHaveLength(1);
-    expect(out.lines[0]!.paidSeconds).toBe(4 * 3600);
+    expect(out.lines).toHaveLength(2);
+    expect(out.lines[0]!.shiftId).toBe('shift-2'); // 31 Aug, the older
+    expect(out.lines[0]!.paidSeconds).toBe(3 * H);
+    expect(out.lines[1]!.shiftId).toBe('shift-1'); // 1 Sep, part paid
+    expect(out.lines[1]!.paidSeconds).toBe(16000 - 3 * H);
+    // The rollover: what this payment did NOT reach on that shift.
+    expect(4 * H - out.lines[1]!.paidSeconds).toBe(4 * H - (16000 - 3 * H));
+    expect(out.coveredSeconds).toBe(16000);
+  });
+
+  it('the leftover ROLLS OVER: a second payment picks up where the first stopped', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await recordShiftSettlement({ ...base, totalCents: 4000 });
+
+    // 25200 - 16000 = 9200s still owing, worth exactly $23.00.
+    const second = await recordShiftSettlement({ ...base, totalCents: 2300 });
+    expect(second.lines).toHaveLength(1);
+    expect(second.lines[0]!.shiftId).toBe('shift-1');
+    expect(second.lines[0]!.paidSeconds).toBe(9200);
+    // And nothing is left: a third payment has nowhere to go.
+    await expect(recordShiftSettlement({ ...base, totalCents: 100 })).rejects.toMatchObject({
+      code: 'no-shifts',
+    });
+  });
+
+  it('stamps the rate, and the reference now AGREES with the amount by construction', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    const out = await recordShiftSettlement({ ...base, totalCents: 4000 });
     expect(out.lines[0]!.rateCentsPerHour).toBe(900);
-    expect(out.lines[0]!.referenceCents).toBe(3600);
-    // The gap is the whole point and must never be asserted away.
-    expect(out.referenceCents).not.toBe(out.totalCents);
+    // Worth being explicit about, because it reverses a phase 3 property.
+    // Phase 3 marked whole shifts, so the reference and the amount were free
+    // to differ and the design leaned on that. Deriving the hours FROM the
+    // money closes the gap: the two now agree to within per-line rounding.
+    // Nothing asserts it in the code, and the schema still permits a
+    // difference — but no longer expects one.
+    expect(Math.abs(out.referenceCents - out.totalCents)).toBeLessThanOrEqual(out.lines.length);
   });
 
-  it('subtracts breaks from the stamped hours', async () => {
+  it('subtracts breaks before spending the money on a shift', async () => {
     stateRef.current.breaks = [
-      { shift_id: 'shift-1', started_at: '2026-09-01T13:00:00.000Z', ended_at: '2026-09-01T13:30:00.000Z' },
+      { shift_id: 'shift-2', started_at: '2026-08-31T13:00:00.000Z', ended_at: '2026-08-31T13:30:00.000Z' },
     ];
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    const out = await recordShiftSettlement(base);
-    expect(out.lines[0]!.paidSeconds).toBe(3.5 * 3600);
+    const out = await recordShiftSettlement({ ...base, totalCents: 4000 });
+    // The older shift is now 2h 30m, so more of the money lands on the newer.
+    expect(out.lines[0]!.paidSeconds).toBe(2.5 * H);
+    expect(out.lines[1]!.paidSeconds).toBe(16000 - 2.5 * H);
   });
 
-  it('REFUSES a shift that is still running, because its hours are still growing', async () => {
+  it('never touches a shift that is still running, even when the money would reach it', async () => {
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    await expect(
-      recordShiftSettlement({ ...base, shiftIds: ['shift-open'] }),
-    ).rejects.toMatchObject({ code: 'still-open' });
+    // The maximum: every closed unpaid hour crew-1 has.
+    const out = await recordShiftSettlement({ ...base, totalCents: 6300 });
+    expect(out.lines.map((l) => l.shiftId).sort()).toEqual(['shift-1', 'shift-2']);
+    // Its hours are still growing, so a payment against it would stamp a
+    // reference that was already wrong when it was written.
+    expect(out.lines.some((l) => l.shiftId === 'shift-open')).toBe(false);
+  });
+
+  it("never touches somebody else's shift", async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    const out = await recordShiftSettlement({ ...base, totalCents: 6300 });
+    expect(out.lines.some((l) => l.shiftId === 'shift-theirs')).toBe(false);
+  });
+
+  it('RECORDS an amount worth more than the hours, without marking off hours that do not exist', async () => {
+    // Overtime, a bonus, back-pay. A ceiling at straight-rate value made all
+    // three impossible to record, because once the hours were paid there was
+    // nothing left to attach money to (admin lens on PR #1190). Jason
+    // reversed his earlier "refuse it" call once that was clear.
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    // $100.00 against $63.00 of unpaid work at $9.00/h.
+    const out = await recordShiftSettlement({ ...base, totalCents: 10000 });
+
+    expect(out.totalCents).toBe(10000);
+    // Every unpaid hour is marked off, and NOT a second more.
+    expect(out.coveredSeconds).toBe(7 * H);
+    expect(out.lines).toHaveLength(2);
+    // The money and the hours are allowed to disagree, and here they do —
+    // which is the phase 3 property this design had accidentally removed.
+    expect(out.referenceCents).toBeLessThan(out.totalCents);
+  });
+
+  it('leaves nothing payable afterwards, so the extra cannot silently eat future hours', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await recordShiftSettlement({ ...base, totalCents: 10000 });
+    // The excess bought no future claim: the next payment starts from zero
+    // unpaid, not from a credit.
+    await expect(recordShiftSettlement({ ...base, totalCents: 100 })).rejects.toMatchObject({
+      code: 'no-shifts',
+    });
+  });
+
+  it('allows the exact maximum, so the last remainder of a week is payable', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    const out = await recordShiftSettlement({ ...base, totalCents: 6300 });
+    expect(out.coveredSeconds).toBe(7 * H);
+  });
+
+  it('REFUSES when the person has no rate, rather than inventing one', async () => {
+    stateRef.current.crew[0]!.base_rate_cents = 0;
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'no-rate' });
     expect(stateRef.current.settlements).toHaveLength(0);
   });
 
-  it("REFUSES somebody else's shift", async () => {
+  it('REFUSES when there is nothing unpaid to put the money against', async () => {
+    stateRef.current.shifts = [OPEN, OTHERS];
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    await expect(
-      recordShiftSettlement({ ...base, shiftIds: ['shift-theirs'] }),
-    ).rejects.toMatchObject({ code: 'not-theirs' });
-    expect(stateRef.current.settlements).toHaveLength(0);
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'no-shifts' });
   });
 
-  it('REFUSES a shift that is already on a live settlement line', async () => {
-    stateRef.current.lines = [
-      { id: 'l0', settlement_id: 'old', shift_id: 'shift-1', paid_seconds: 1, rate_cents_per_hour: 900, reference_cents: 0, voided_at: null },
-    ];
-    const { recordShiftSettlement } = await import('./shiftSettlements');
-    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'already-settled' });
-    expect(stateRef.current.settlements).toHaveLength(0);
-  });
-
-  it('ALLOWS a shift whose previous payment was voided', async () => {
-    stateRef.current.lines = [
-      { id: 'l0', settlement_id: 'old', shift_id: 'shift-1', paid_seconds: 1, rate_cents_per_hour: 900, reference_cents: 0, voided_at: '2026-09-02T09:00:00.000Z' },
-    ];
-    const { recordShiftSettlement } = await import('./shiftSettlements');
-    const out = await recordShiftSettlement(base);
-    expect(out.totalCents).toBe(4000);
-  });
-
-  it('REFUSES a zero or negative amount, so a payment always records money', async () => {
+  it('REFUSES a zero, negative or sub-cent amount, so a payment always records money', async () => {
     const { recordShiftSettlement } = await import('./shiftSettlements');
     for (const totalCents of [0, -1, 1.5]) {
       await expect(recordShiftSettlement({ ...base, totalCents })).rejects.toMatchObject({
         code: 'invalid-amount',
       });
     }
-  });
-
-  it('REFUSES an empty selection', async () => {
-    const { recordShiftSettlement } = await import('./shiftSettlements');
-    await expect(recordShiftSettlement({ ...base, shiftIds: [] })).rejects.toMatchObject({
-      code: 'no-shifts',
-    });
   });
 
   it('REFUSES when the breaks cannot be read, rather than overstating the hours it covered', async () => {
@@ -434,15 +557,85 @@ describe('recordShiftSettlement', () => {
     expect(stateRef.current.deletedSettlementIds).toHaveLength(1);
   });
 
-  it('loses a double-submit to the database, and unwinds its own settlement', async () => {
-    // The unique index is the real guarantee; the app check can be stale.
+  it('loses a double-submit to the TRIGGER, and unwinds its own settlement', async () => {
+    // 23514, the check_violation the 2026-09-03 trigger raises when two
+    // payments would sum past a shift's hours. It replaced the 23505 the old
+    // unique index produced; both still map to the same refusal.
+    stateRef.current.lineInsertError = {
+      code: '23514',
+      message: 'shift shift-2 would be paid 20000 seconds of its 10800',
+    };
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'lost-race' });
+    expect(stateRef.current.settlements).toHaveLength(0);
+  });
+
+  it('still loses a double-submit to the OLD unique index, for lines written before the migration', async () => {
     stateRef.current.lineInsertError = {
       code: '23505',
       message: 'duplicate key value violates unique constraint "shift_settlement_lines_shift_key"',
     };
     const { recordShiftSettlement } = await import('./shiftSettlements');
     await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'lost-race' });
+  });
+
+  it('refuses a shift whose live line disagrees about its length, through the ordinary path', async () => {
+    // Not by injecting an error: this seeds a live line claiming the shift is
+    // a different length, which is what a shift edited under a payment leaves
+    // behind, and lets the fake's trigger model produce the refusal itself.
+    // The commit that added that model claimed it was covered when only a
+    // directly-injected error exercised it (delta-verify on PR #1190).
+    stateRef.current.lines = [
+      {
+        id: 'stale',
+        settlement_id: 'old',
+        shift_id: 'shift-2',
+        paid_seconds: 60,
+        shift_total_seconds: 999,
+        rate_cents_per_hour: 900,
+        reference_cents: 15,
+        voided_at: null,
+      },
+    ];
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'shift-edited' });
     expect(stateRef.current.settlements).toHaveLength(0);
+  });
+
+  it('REFUSES with its own message when a shift was edited under a live payment', async () => {
+    // The trigger raises check_violation for two different situations, and
+    // only one of them is a race. A length disagreement can never be cleared
+    // by retrying, so mapping it to "try again" sent an admin round a loop
+    // forever on a shift that had quietly become unpayable.
+    stateRef.current.lineInsertError = {
+      code: '23514',
+      message: 'shift shift-2 has live settlement lines disagreeing on its length (2 distinct totals)',
+    };
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'shift-edited' });
+    // And the instruction is one that actually works.
+    await expect(recordShiftSettlement(base)).rejects.toThrow(/Undo that payment/);
+    expect(stateRef.current.settlements).toHaveLength(0);
+  });
+
+  it('lets a remainder worth less than a cent still be cleared', async () => {
+    // referenceCentsFor rounds to nearest, so a second or two of remaining
+    // time is worth under half a cent and rounds to ZERO. With a zero ceiling
+    // no positive amount is ever allowed, and those seconds would be
+    // permanently unpayable.
+    stateRef.current.shifts = [
+      { id: 'tiny', crew_member_id: 'crew-1', clock_in_at: '2026-08-30T12:00:00.000Z', clock_out_at: '2026-08-30T12:00:01.000Z' },
+    ];
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    const out = await recordShiftSettlement({ ...base, totalCents: 1 });
+    expect(out.totalCents).toBe(1);
+    expect(out.lines[0]!.paidSeconds).toBe(1);
+    // Two cents is worth more than one second, and that is allowed now — it
+    // just cannot mark off time that does not exist.
+    stateRef.current.settlements = [];
+    stateRef.current.lines = [];
+    const over = await recordShiftSettlement({ ...base, totalCents: 2 });
+    expect(over.coveredSeconds).toBe(1);
   });
 
   it('says plainly when the unwind ITSELF fails, because an empty payment is then on the books', async () => {
@@ -453,18 +646,31 @@ describe('recordShiftSettlement', () => {
   });
 
   it('refuses to return when fewer lines LAND than were sent', async () => {
-    // Both shifts belong to crew-1 on purpose. An earlier version of this
-    // test used another person's shift, so it refused on ownership and never
-    // reached the assertion its own name describes — a passing test that
-    // proved nothing about the short-insert case.
     stateRef.current.lineInsertReturnsFewer = true;
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    await expect(
-      recordShiftSettlement({ ...base, shiftIds: ['shift-1', 'shift-2'] }),
-    ).rejects.toThrow(/but 1 landed/);
+    // $40.00 spans two shifts, so one line can go missing.
+    await expect(recordShiftSettlement({ ...base, totalCents: 4000 })).rejects.toThrow(/but 1 landed/);
   });
 
-  it('tells the person their pay record moved, and never fails the payment when that note does not send', async () => {
+  it('tells the person in HOURS what was covered, and what is still carried over', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await recordShiftSettlement({ ...base, totalCents: 4000 });
+    const text = String(sendTelegramMock.mock.calls[0]![1]);
+    // Hours, not "N shifts": a payment can stop part way through one now, so
+    // a shift count would overstate what it covered.
+    expect(text).toContain('4h 27m');
+    expect(text).toContain('still unpaid and carried over');
+    expect(text).not.toMatch(/covering \d+ shifts/);
+  });
+
+  it('tells the person when nothing is left owing', async () => {
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await recordShiftSettlement({ ...base, totalCents: 6300 });
+    const text = String(sendTelegramMock.mock.calls[0]![1]);
+    expect(text).toContain('nothing is left unpaid');
+  });
+
+  it('never fails the payment when that note does not send', async () => {
     sendTelegramMock.mockRejectedValueOnce(new Error('telegram down'));
     const { recordShiftSettlement } = await import('./shiftSettlements');
     const out = await recordShiftSettlement(base);
@@ -474,7 +680,7 @@ describe('recordShiftSettlement', () => {
 
   it('sends nothing to somebody with no Telegram account linked', async () => {
     const { recordShiftSettlement } = await import('./shiftSettlements');
-    await recordShiftSettlement({ ...base, crewMemberId: 'crew-2', shiftIds: ['shift-theirs'] });
+    await recordShiftSettlement({ crewMemberId: 'crew-2', totalCents: 100, paidBy: 'Jason (jason@x)', method: 'wise' });
     expect(sendTelegramMock).not.toHaveBeenCalled();
   });
 });
@@ -539,6 +745,30 @@ describe('voidShiftSettlement', () => {
     expect(stateRef.current.settlements[0]!.voided_at).toBeNull();
   });
 
+  it('tells the person the RIGHT hours on a half-undone re-run, not zero', async () => {
+    // The first attempt releases the lines and fails to stamp the settlement,
+    // so it sends nothing. By the time the admin runs Undo again every line
+    // already reads as voided — and computing the released time from LIVE
+    // lines then gave 0m, in the person's only message about the whole event
+    // (delta-verify on PR #1190).
+    const created = await recordOne();
+    // recordOne sends its own "you were paid" notice; this test is about what
+    // the UNDO sends.
+    sendTelegramMock.mockClear();
+    const { voidShiftSettlement } = await import('./shiftSettlements');
+    stateRef.current.settlementUpdateError = { message: 'stamp failed' };
+    await expect(
+      voidShiftSettlement({ settlementId: created.id, voidedBy: 'Jason', reason: 'mistake' }),
+    ).rejects.toThrow(/still reads as live/);
+    expect(sendTelegramMock).not.toHaveBeenCalled();
+
+    stateRef.current.settlementUpdateError = null;
+    await voidShiftSettlement({ settlementId: created.id, voidedBy: 'Jason', reason: 'mistake' });
+    const text = String(sendTelegramMock.mock.calls[0]![1]);
+    expect(text).toContain('4h 27m of your time goes back to unpaid');
+    expect(text).not.toContain('0m of your time');
+  });
+
   it('says the undo is HALF DONE when the shifts released but the payment did not stamp, and re-running finishes it', async () => {
     const created = await recordOne();
     stateRef.current.settlementUpdateError = { message: 'connection reset' };
@@ -582,6 +812,11 @@ describe('voidShiftSettlement', () => {
     expect(chatId).toBe('555');
     expect(text).toContain('wrong person');
     expect(text).toContain('$40.00');
+    // And HOW MUCH TIME went back to unpaid. With part payments the amount
+    // alone no longer implies which hours moved, and leaving this out made
+    // the person better informed when they were paid than when a payment was
+    // taken back (staff lens on PR #1190). $40.00 at $9.00/h bought 4h 27m.
+    expect(text).toContain('4h 27m of your time goes back to unpaid');
   });
 
   it('does not notify a second time when the same payment is undone twice', async () => {

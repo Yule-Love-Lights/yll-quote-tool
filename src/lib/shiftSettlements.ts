@@ -37,14 +37,27 @@ import { resolveNowMs } from '@/lib/timeSpans';
 import { sendTelegramMessage } from '@/lib/integrations/telegram';
 
 /**
- * How the money physically moved. The SAME four values as
- * advertising/payouts.ts, so "how much did we pay in cash this month" stays
- * answerable across both — but declared here rather than imported, because
- * importing that module would drag advertising placements, workers and
- * activity logging into a payroll module that needs none of them. The list
- * is four strings; the coupling would not be.
+ * How the money physically moved. Declared here rather than imported from
+ * advertising/payouts.ts, because importing that module would drag
+ * advertising placements, workers and activity logging into a payroll module
+ * that needs none of them. The list is a few strings; the coupling would not
+ * be.
+ *
+ * It STARTED as the same four values as advertising and has since diverged,
+ * on purpose: `wise` and `moneygram` were added 2026-09-03 because they are
+ * how this company actually pays its office staff (Jason: Wise for Khaye and
+ * Ann, MoneyGram for himself), and payroll answering "how much went out by
+ * Wise" matters more than the two lists staying identical. Advertising was
+ * deliberately left alone — it pays a different population.
  */
-export const SETTLEMENT_METHODS = ['cash', 'venmo', 'check', 'other'] as const;
+export const SETTLEMENT_METHODS = [
+  'cash',
+  'venmo',
+  'check',
+  'wise',
+  'moneygram',
+  'other',
+] as const;
 export type SettlementMethod = (typeof SETTLEMENT_METHODS)[number];
 
 export function isSettlementMethod(value: unknown): value is SettlementMethod {
@@ -61,6 +74,8 @@ export class SettlementRefusedError extends Error {
       | 'already-settled'
       | 'invalid-amount'
       | 'invalid-method'
+      | 'no-rate'
+      | 'shift-edited'
       | 'lost-race',
     message: string,
   ) {
@@ -111,6 +126,144 @@ export function referenceCentsFor(paidSeconds: number, rateCentsPerHour: number)
   if (!Number.isFinite(paidSeconds) || !Number.isFinite(rateCentsPerHour)) return 0;
   if (paidSeconds <= 0 || rateCentsPerHour <= 0) return 0;
   return Math.round((paidSeconds * rateCentsPerHour) / 3600);
+}
+
+/**
+ * PURE. How many SECONDS of work an amount of money buys at a rate.
+ *
+ * The inverse of `referenceCentsFor`, and the one place this feature turns
+ * money into hours. Read the warning in `allocatePayment` before using it:
+ * this arithmetic is only true while every hour is worth the base rate.
+ *
+ * Rounded to the nearest second. A cent buys four seconds at $9/hour, so the
+ * rounding here is worth well under a cent and cannot move anybody's pay; it
+ * only decides where the boundary between two shifts falls.
+ */
+export function secondsBoughtBy(totalCents: number, rateCentsPerHour: number): number {
+  if (!Number.isFinite(totalCents) || !Number.isFinite(rateCentsPerHour)) return 0;
+  if (totalCents <= 0 || rateCentsPerHour <= 0) return 0;
+  return Math.round((totalCents * 3600) / rateCentsPerHour);
+}
+
+/** One shift a payment could be applied to, with what is left owing on it. */
+export type PayableRemainder = {
+  shiftId: string;
+  /** Sort key. The caller passes these OLDEST FIRST; this module does not
+   * re-sort, so that the order a payment consumes hours in is decided in one
+   * place and is visible to the caller's own tests. */
+  clockInAt: string;
+  /** The shift's whole paid seconds, breaks already subtracted. */
+  totalSeconds: number;
+  /** True when the midnight sweep closed this shift, so its clock-out is a
+   * placeholder rather than a real time. Carried so the panel where paying
+   * LOCKS these hours can say so before the money lands on them. */
+  needsReview: boolean;
+  /** What is still unpaid on it: `totalSeconds` minus every live line
+   * already written against it. Never negative. */
+  unpaidSeconds: number;
+};
+
+export type PaymentAllocation = {
+  lines: { shiftId: string; paidSeconds: number; totalSeconds: number }[];
+  /** Seconds this payment actually covers — equal to what it bought, unless
+   * it bought more than exists, which the caller refuses. */
+  secondsCovered: number;
+  /** Seconds the money bought that no unpaid shift could absorb. Non-zero is
+   * NOT an error: it is a payment worth more than the hours it covers, which
+   * is what an overtime premium or a bonus looks like. The panel names the
+   * difference in its confirmation; nothing refuses it. */
+  unusedSeconds: number;
+};
+
+/**
+ * PURE. Spend a payment across a person's unpaid hours, OLDEST FIRST.
+ *
+ * Jason's rule, 2026-09-03: "when I put an amount of money in, I want it to
+ * automatically mark off the corresponding amount of hours... the first
+ * record to be marked approved will be the one from last week, the oldest
+ * record." The leftover ROLLS OVER: it stays unpaid and the next payment
+ * picks it up, instead of being written off by a payment that did not cover
+ * it. The case that produced the rule: $180.00 at $9.00/h buys exactly 20h
+ * against 20h 34m of shifts, and the odd 34 minutes must survive.
+ *
+ * A SHIFT CAN THEREFORE BE PART PAID. That is the whole point, and it is why
+ * the database no longer holds "one live line per shift" as a unique index —
+ * see the 2026-09-03 migration, where a trigger now holds the weaker but
+ * correct invariant that a shift's live lines cannot sum past its hours.
+ *
+ * ⚠ THIS IS THE ARITHMETIC PHASE 3 DELIBERATELY AVOIDED, POINTED THE OTHER
+ * WAY. Phase 3 refused to compute what to PAY from hours, because overtime
+ * has no agreed formula here (ledger row 285). This computes which HOURS a
+ * payment covered, which needs the same rate and inherits the same limit: it
+ * is exact only while every hour is worth the base rate. The day an hour is
+ * worth 1.5x, a payment buys fewer hours than this says. Told to Jason
+ * 2026-09-03 and accepted; the rate used is stamped on every line so a later
+ * overtime rule can find and re-judge these rows rather than inherit them
+ * silently.
+ */
+export function allocatePayment(
+  /** Unpaid shifts, OLDEST FIRST. Not re-sorted here. Deliberately typed to
+   * the three fields it READS rather than to PayableRemainder, so a caller
+   * with its own shape (the panel's preview) needs no adapter and this
+   * function cannot start depending on a field it has no business in. */
+  remainders: readonly { shiftId: string; totalSeconds: number; unpaidSeconds: number }[],
+  totalCents: number,
+  rateCentsPerHour: number,
+): PaymentAllocation {
+  const lines: PaymentAllocation['lines'] = [];
+  let remaining = secondsBoughtBy(totalCents, rateCentsPerHour);
+  let covered = 0;
+
+  for (const shift of remainders) {
+    if (remaining <= 0) break;
+    // A shift with nothing owing on it is skipped rather than written as a
+    // zero line: a line claiming to cover no time is not a record of
+    // anything, and it would make the settlement look like it touched more
+    // shifts than it paid for.
+    if (shift.unpaidSeconds <= 0) continue;
+    const take = Math.min(remaining, shift.unpaidSeconds);
+    lines.push({ shiftId: shift.shiftId, paidSeconds: take, totalSeconds: shift.totalSeconds });
+    remaining -= take;
+    covered += take;
+  }
+
+  return { lines, secondsCovered: covered, unusedSeconds: Math.max(0, remaining) };
+}
+
+/**
+ * PURE. Seconds as a person reads them: "4h 22m", "34m", "0m".
+ *
+ * Deliberately not imported from hoursSummary's formatHours: this module is
+ * read by the Telegram notifier and by refusal messages, and a payroll
+ * message should not start failing because a display helper changed shape.
+ */
+export function formatSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0m';
+  const whole = Math.round(seconds / 60);
+  const h = Math.floor(whole / 60);
+  const m = whole % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${String(m).padStart(2, '0')}m`;
+}
+
+/**
+ * PURE. What a typed amount is worth ABOVE the hours it can be spent on.
+ *
+ * Zero when the money fits inside the unpaid hours, positive when it does
+ * not — an overtime premium, a bonus, back-pay. Nothing refuses a positive
+ * value (Jason, 2026-09-03); the panel names the figure and asks.
+ *
+ * Extracted from the panel deliberately. The pay panel is a client component
+ * and this repo has no screen tests, so a decision left inline there is a
+ * decision nothing can check — and the browser could not drive it either
+ * (the preview pane blocks real clicks, and a scripted input never reaches
+ * React's state, which made a first attempt at verifying it silently
+ * meaningless). Out here it is four lines with its own tests.
+ */
+export function excessOverHours(typedCents: number | null, maxCents: number): number {
+  if (typedCents === null || !Number.isFinite(typedCents)) return 0;
+  if (!Number.isFinite(maxCents) || maxCents < 0) return 0;
+  return Math.max(0, typedCents - maxCents);
 }
 
 /** Cents as an admin reads them. */
@@ -260,27 +413,69 @@ async function readLinesForSettlements(db: Db, settlementIds: string[]): Promise
  * settlement. Used to mark rows on screen; the write path asks the same
  * question again for itself, because a screen's answer is minutes old.
  */
-export async function settledShiftIds(
+export type ShiftCoverage = {
+  /** Live seconds paid against this shift, summed across every settlement
+   * that has touched it. A shift can now be part paid, so this is a number
+   * rather than a yes/no. */
+  seconds: number;
+  /** One live settlement covering it — enough for the lock message, which
+   * only has to say "a payment holds this". */
+  settlementId: string;
+};
+
+/**
+ * How much of each shift has been PAID FOR, live lines only.
+ *
+ * Since 2026-09-03 a payment can land in the middle of a shift, so "is this
+ * paid" became "how much of it is". Read this when you need the amount;
+ * read `settledShiftIds` when all you need is whether a shift is locked.
+ */
+export async function settledSecondsByShift(
   shiftIds: readonly string[],
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+): Promise<Map<string, ShiftCoverage>> {
+  const out = new Map<string, ShiftCoverage>();
   if (shiftIds.length === 0) return out;
   const db = requireDb();
   for (const ids of chunk(shiftIds, ID_CHUNK)) {
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await db
         .from('shift_settlement_lines')
-        .select('shift_id, settlement_id, voided_at')
+        .select('shift_id, settlement_id, paid_seconds, voided_at')
         .in('shift_id', ids)
         .is('voided_at', null)
         .range(from, from + PAGE - 1);
-      if (error) throw new Error(`settledShiftIds: ${error.message}`);
-      const page = (data ?? []) as { shift_id: string; settlement_id: string }[];
-      for (const row of page) out.set(row.shift_id, row.settlement_id);
+      if (error) throw new Error(`settledSecondsByShift: ${error.message}`);
+      const page = (data ?? []) as {
+        shift_id: string;
+        settlement_id: string;
+        paid_seconds: number;
+      }[];
+      for (const row of page) {
+        const prev = out.get(row.shift_id);
+        out.set(row.shift_id, {
+          seconds: (prev?.seconds ?? 0) + row.paid_seconds,
+          settlementId: prev?.settlementId ?? row.settlement_id,
+        });
+      }
       if (page.length < PAGE) break;
     }
   }
   return out;
+}
+
+/**
+ * Which shifts a live payment holds, whether in part or in full.
+ *
+ * Unchanged in meaning by the 2026-09-03 rollover work, which is why its
+ * three callers did not have to move: a shift with ANY live line is locked
+ * against edit and removal (ledger row 459). Half paid is still paid enough
+ * that rewriting the times would rewrite what somebody was paid for.
+ */
+export async function settledShiftIds(
+  shiftIds: readonly string[],
+): Promise<Map<string, string>> {
+  const coverage = await settledSecondsByShift(shiftIds);
+  return new Map([...coverage].map(([shiftId, c]) => [shiftId, c.settlementId]));
 }
 
 /** One person's payments, newest first, with their lines attached. */
@@ -354,25 +549,133 @@ type ShiftRow = {
   crew_member_id: string;
   clock_in_at: string;
   clock_out_at: string | null;
+  close_source?: string | null;
 };
 
 /**
- * Record that money was handed to a person for these exact shifts.
+ * Every closed shift this person has, with what is still owing on each,
+ * OLDEST FIRST — the order a payment is spent in (Jason, 2026-09-03).
  *
- * Every named shift is re-read and must still be theirs, CLOSED, and unpaid —
- * checked at the write, not against whatever the screen was showing. An OPEN
- * shift is refused because its hours are still growing: paying one would
- * stamp a reference figure that was already wrong when it was written.
+ * OPEN shifts are excluded: their hours are still growing, so paying one
+ * would stamp a reference that was already wrong when it was written. That
+ * was phase 3's `still-open` refusal, and it survives here as an exclusion
+ * rather than an error, because the admin no longer names shifts and so
+ * cannot name a running one by mistake.
  *
- * Under a double-submit the DATABASE decides, not this code: `shift_id` is
- * unique across live settlement lines, so the second insert loses, its own
- * settlement row is unwound, and the caller gets a named conflict. That is
- * why the settlement is written BEFORE its lines — the row it would leave
- * behind on a lost race is removable, whereas lines with no parent are not.
+ * A break read that FAILS throws. With no break rows nothing is subtracted,
+ * every shift looks longer than it is, and a payment would be recorded as
+ * covering hours that were never worked.
+ */
+export async function unpaidRemainders(
+  crewMemberId: string,
+  nowIso?: string,
+): Promise<PayableRemainder[]> {
+  const db = requireDb();
+  const now = new Date(resolveNowMs(nowIso)).toISOString();
+
+  const shiftRows: ShiftRow[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db
+      .from('shifts')
+      .select('id, crew_member_id, clock_in_at, clock_out_at, close_source')
+      .eq('crew_member_id', crewMemberId)
+      .not('clock_out_at', 'is', null)
+      .order('clock_in_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`unpaidRemainders: shifts: ${error.message}`);
+    const page = (data ?? []) as ShiftRow[];
+    shiftRows.push(...page);
+    if (page.length < PAGE) break;
+  }
+  if (shiftRows.length === 0) return [];
+
+  const ids = shiftRows.map((r) => r.id);
+  const breakRows: { shift_id: string; started_at: string; ended_at: string | null }[] = [];
+  for (const part of chunk(ids, ID_CHUNK)) {
+    const { data, error } = await db
+      .from('shift_breaks')
+      .select('shift_id, started_at, ended_at')
+      .in('shift_id', part);
+    if (error) {
+      throw new Error(
+        `unpaidRemainders: breaks could not be read (${error.message}); the hours would be overstated`,
+      );
+    }
+    breakRows.push(...((data ?? []) as typeof breakRows));
+  }
+  const breaksByShift = new Map<string, { startedAt: string; endedAt: string | null }[]>();
+  for (const b of breakRows) {
+    const list = breaksByShift.get(b.shift_id);
+    const entry = { startedAt: b.started_at, endedAt: b.ended_at };
+    if (list) list.push(entry);
+    else breaksByShift.set(b.shift_id, [entry]);
+  }
+
+  const covered = await settledSecondsByShift(ids);
+
+  const out: PayableRemainder[] = [];
+  for (const row of shiftRows) {
+    const totalSeconds = paidSecondsForShift(
+      { clockInAt: row.clock_in_at, clockOutAt: row.clock_out_at },
+      breaksByShift.get(row.id) ?? [],
+      now,
+    );
+    const paid = covered.get(row.id)?.seconds ?? 0;
+    if (paid > totalSeconds) {
+      console.error(
+        `unpaidRemainders: shift ${row.id} has ${paid}s paid against ${totalSeconds}s worked — somebody has been paid for time that is no longer on the record`,
+      );
+    }
+    out.push({
+      shiftId: row.id,
+      clockInAt: row.clock_in_at,
+      totalSeconds,
+      needsReview: row.close_source === 'system',
+      // Never negative: a shift whose live lines exceed its length would
+      // otherwise become a NEGATIVE remainder that quietly absorbs part of
+      // the next payment. The clamp stays — but it is no longer SILENT. It
+      // can only happen when a shift was shortened after being paid, and
+      // burying that means burying a real overpayment (technical lens on
+      // PR #1190).
+      unpaidSeconds: Math.max(0, totalSeconds - paid),
+    });
+  }
+  return out;
+}
+
+/**
+ * Record that money was handed to a person, and mark off the hours it bought.
+ *
+ * AMOUNT-DRIVEN SINCE 2026-09-03. Phase 3 took a list of shift ids and marked
+ * each one paid in full; the first real payment showed why that is wrong.
+ * $180.00 covered five weekdays worth 20h 34m at $9.00/h — the money buys
+ * exactly 20h, and phase 3 wrote off the odd 34 minutes. Now the amount is
+ * converted to seconds and spent over the unpaid shifts OLDEST FIRST, a shift
+ * may be left part paid, and the remainder ROLLS OVER to the next payment.
+ *
+ * WHAT IS REFUSED, and why each:
+ *   * `no-rate`      — the person has no positive rate, so the money cannot
+ *                      be converted to hours at all. Guessing one here would
+ *                      be inventing payroll.
+ *   * `no-shifts`    — nothing closed and unpaid to put the money against.
+ *
+ * NOT refused: an amount worth MORE than the unpaid hours. There was a
+ * ceiling here briefly and it made an overtime premium, a bonus or back-pay
+ * impossible to record at all, so it was removed the same day (Jason,
+ * 2026-09-03). The allocation still stops at the last unpaid second; the
+ * excess is simply money recorded above what those hours come to, and the
+ * panel names the difference before anyone confirms it.
+ *
+ * Under a double-submit the DATABASE decides, not this code: the trigger
+ * added 2026-09-03 refuses lines that would sum past a shift's hours, taking
+ * a lock on the shift row so two admins paying the same person serialise.
+ * The settlement is written BEFORE its lines for the same reason as phase 3 —
+ * the row it leaves behind on a lost race is removable, whereas lines with no
+ * parent are not.
  */
 export async function recordShiftSettlement(input: {
   crewMemberId: string;
-  shiftIds: readonly string[];
   totalCents: number;
   paidBy: string;
   method: SettlementMethod;
@@ -395,13 +698,9 @@ export async function recordShiftSettlement(input: {
   }
 
   const crewMemberId = input.crewMemberId.trim();
-  const ids = [...new Set(input.shiftIds.map((s) => s.trim()).filter(Boolean))];
-  if (ids.length === 0) {
-    throw new SettlementRefusedError('no-shifts', 'Pick at least one shift this payment covers.');
-  }
 
-  // The person, for the rate to stamp. Read at the write so the reference
-  // reflects the rate in force when the payment was recorded.
+  // The person, for the rate to spend at and to stamp. Read at the write so
+  // the conversion uses the rate in force when the payment was recorded.
   const { data: crewData, error: crewError } = await db
     .from('crew_members')
     .select('id, display_name, base_rate_cents')
@@ -410,92 +709,58 @@ export async function recordShiftSettlement(input: {
   if (crewError) throw new Error(`recordShiftSettlement: crew lookup: ${crewError.message}`);
   const crew = crewData as { id: string; display_name: string; base_rate_cents: number } | null;
   if (!crew) throw new SettlementRefusedError('not-found', 'No staff member with that id.');
-
-  // Re-read every named shift.
-  const shiftRows: ShiftRow[] = [];
-  for (const part of chunk(ids, ID_CHUNK)) {
-    const { data, error } = await db
-      .from('shifts')
-      .select('id, crew_member_id, clock_in_at, clock_out_at')
-      .in('id', part);
-    if (error) throw new Error(`recordShiftSettlement: shifts: ${error.message}`);
-    shiftRows.push(...((data ?? []) as ShiftRow[]));
-  }
-  const byId = new Map(shiftRows.map((r) => [r.id, r]));
-  for (const id of ids) {
-    const row = byId.get(id);
-    if (!row) {
-      throw new SettlementRefusedError(
-        'not-found',
-        'One of those shifts no longer exists. Reload and try again.',
-      );
-    }
-    if (row.crew_member_id !== crewMemberId) {
-      throw new SettlementRefusedError(
-        'not-theirs',
-        `One of those shifts does not belong to ${crew.display_name}. Reload and try again.`,
-      );
-    }
-    if (row.clock_out_at === null) {
-      throw new SettlementRefusedError(
-        'still-open',
-        'One of those shifts is still running. A shift can only be paid once it has been clocked out.',
-      );
-    }
-  }
-
-  // Already paid? The unique index is the real guarantee; this check exists to
-  // give a person a sentence instead of a constraint violation.
-  const alreadySettled = await settledShiftIds(ids);
-  if (alreadySettled.size > 0) {
-    // No "reload": the panel refreshes itself and keeps the typed amount, and
-    // telling an office staffer to hit F5 would throw that away (staff lens
-    // on PR #1179).
+  if (!Number.isFinite(crew.base_rate_cents) || crew.base_rate_cents <= 0) {
     throw new SettlementRefusedError(
-      'already-settled',
-      `${alreadySettled.size} of those shifts ${alreadySettled.size === 1 ? 'has' : 'have'} already been paid. The list below has been brought up to date — check it and record again.`,
+      'no-rate',
+      `${crew.display_name} has no hourly rate set, so there is no way to work out which hours this payment covers. Set their rate first.`,
     );
   }
 
-  // The breaks, for the stamped hours. Read failure REFUSES: with no break
-  // rows nothing is subtracted, so the reference would overstate the hours
-  // this payment says it covered.
-  const breakRows: { shift_id: string; started_at: string; ended_at: string | null }[] = [];
-  for (const part of chunk(ids, ID_CHUNK)) {
-    const { data, error } = await db
-      .from('shift_breaks')
-      .select('shift_id, started_at, ended_at')
-      .in('shift_id', part);
-    if (error) {
-      throw new Error(
-        `recordShiftSettlement: breaks could not be read (${error.message}); nothing was recorded`,
-      );
-    }
-    breakRows.push(...((data ?? []) as typeof breakRows));
+  const remainders = await unpaidRemainders(crewMemberId, input.nowIso);
+  const owedSeconds = remainders.reduce((sum, r) => sum + r.unpaidSeconds, 0);
+  if (owedSeconds <= 0) {
+    throw new SettlementRefusedError(
+      'no-shifts',
+      `${crew.display_name} has no unpaid hours to put this against. Every closed shift is already paid for.`,
+    );
   }
-  const breaksByShift = new Map<string, { startedAt: string; endedAt: string | null }[]>();
-  for (const b of breakRows) {
-    const list = breaksByShift.get(b.shift_id);
-    const entry = { startedAt: b.started_at, endedAt: b.ended_at };
-    if (list) list.push(entry);
-    else breaksByShift.set(b.shift_id, [entry]);
+
+  // NO CEILING ON THE AMOUNT (Jason, 2026-09-03, reversing his earlier call
+  // once the consequence was clear). A cap at straight-rate value made an
+  // overtime premium, a bonus or back-pay IMPOSSIBLE to record: once someone's
+  // hours were paid at base rate there was no unpaid shift left to attach
+  // anything to, and void-and-re-record recomputed the same ceiling every
+  // time. Overtime has no agreed formula here (ledger row 285) and a 50h 55m
+  // week is already in the data, so the tool must be able to record a payment
+  // worth more than the hours (admin lens on PR #1190).
+  //
+  // What the money cannot do is mark off hours that do not exist: the
+  // allocation stops at the last unpaid second, and anything beyond that is
+  // simply money recorded above what those hours come to. That restores the
+  // phase 3 property this design had accidentally removed — total_cents is
+  // the money record, the per-line reference is what the hours were worth,
+  // and the two are ALLOWED to differ. The difference is now meaningful
+  // again rather than rounding noise, which is exactly when it should be.
+  //
+  // The confirmation lives in the panel, where a person can see the figure
+  // before agreeing to it. This function does not second-guess a number an
+  // admin has confirmed.
+  const allocation = allocatePayment(remainders, input.totalCents, crew.base_rate_cents);
+  if (allocation.lines.length === 0) {
+    throw new SettlementRefusedError(
+      'no-shifts',
+      'That amount covers no time at all. Record a larger amount.',
+    );
   }
 
   const nowIso = new Date(resolveNowMs(input.nowIso)).toISOString();
-  const linePayloads = ids.map((id) => {
-    const row = byId.get(id) as ShiftRow;
-    const paidSeconds = paidSecondsForShift(
-      { clockInAt: row.clock_in_at, clockOutAt: row.clock_out_at },
-      breaksByShift.get(id) ?? [],
-      nowIso,
-    );
-    return {
-      shift_id: id,
-      paid_seconds: paidSeconds,
-      rate_cents_per_hour: crew.base_rate_cents,
-      reference_cents: referenceCentsFor(paidSeconds, crew.base_rate_cents),
-    };
-  });
+  const linePayloads = allocation.lines.map((line) => ({
+    shift_id: line.shiftId,
+    paid_seconds: line.paidSeconds,
+    shift_total_seconds: line.totalSeconds,
+    rate_cents_per_hour: crew.base_rate_cents,
+    reference_cents: referenceCentsFor(line.paidSeconds, crew.base_rate_cents),
+  }));
 
   const { data: created, error: createError } = await db
     .from('shift_settlements')
@@ -525,11 +790,34 @@ export async function recordShiftSettlement(input: {
       .from('shift_settlements')
       .delete()
       .eq('id', settlement.id);
-    const lostRace = (lineError as { code?: string }).code === '23505';
+    // 23505 was the phase 3 unique index; 23514 is the check_violation the
+    // 2026-09-03 trigger raises. Both usually mean the same thing to the
+    // person: somebody else paid these hours while this page was open. Kept
+    // BOTH, because a shift paid before that migration ran is still covered
+    // by a line the old index created.
+    //
+    // EXCEPT for one 23514, which is not a race at all. The trigger also
+    // refuses lines that DISAGREE about how long a shift is, which happens
+    // when a shift was edited while a payment was live against it — the
+    // narrow window between assertNotSettled's read and its write in
+    // shifts.ts. Retrying can never clear that, so telling the admin to try
+    // again would send them round a loop forever on a shift that has quietly
+    // become unpayable (technical lens on PR #1190). It gets its own refusal
+    // and the only instruction that actually works.
+    const raced = (lineError as { code?: string }).code;
+    const disagreeing =
+      raced === '23514' && /disagreeing on its length/.test(lineError.message ?? '');
+    const lostRace = !disagreeing && (raced === '23505' || raced === '23514');
     if (unwindError) {
       // Say what is actually true: an empty payment is on the books.
       throw new Error(
         `recordShiftSettlement: the shifts could not be attached (${lineError.message}) and the empty payment could not be removed (${unwindError.message}) — settlement ${settlement.id} is on the books covering nothing and must be voided by hand`,
+      );
+    }
+    if (disagreeing) {
+      throw new SettlementRefusedError(
+        'shift-edited',
+        `One of ${crew.display_name}'s shifts was changed after a payment was already recorded against it, so the tool cannot tell which hours that payment covered. Undo that payment, correct the shift, then record both again. Nothing was recorded here.`,
       );
     }
     if (lostRace) {
@@ -550,9 +838,14 @@ export async function recordShiftSettlement(input: {
     );
   }
 
+  const stillOwed = owedSeconds - allocation.secondsCovered;
   await notifyCrewOfPayment(db, {
     crewMemberId,
-    text: `${input.paidBy} recorded a payment to you of ${dollars(input.totalCents)} by ${input.method}, covering ${lines.length} ${lines.length === 1 ? 'shift' : 'shifts'}. Tell the office if that does not match what you received. This bot only understands clock commands, so a reply here will not reach anyone.`,
+    // HOURS, not "N shifts": a payment can now stop part way through a shift,
+    // so a shift count would overstate what it covered. The rollover is named
+    // too — the whole reason for this change is that the leftover survives,
+    // and the person should hear that from the same message.
+    text: `${input.paidBy} recorded a payment to you of ${dollars(input.totalCents)} by ${input.method}, covering ${formatSeconds(allocation.secondsCovered)} of your unpaid time${stillOwed > 0 ? `, with ${formatSeconds(stillOwed)} still unpaid and carried over` : ' — nothing is left unpaid'}. Tell the office if that does not match what you received. This bot only understands clock commands, so a reply here will not reach anyone.`,
   });
 
   return toSettlement(settlement, lines);
@@ -674,9 +967,30 @@ export async function voidShiftSettlement(input: {
     return toSettlement(current, await readLinesForSettlements(db, [id]));
   }
 
+  // The HOURS that just went back to unpaid, not only the amount. `lines`
+  // was read before the void, so this is what was live at that moment.
+  //
+  // The record-payment message names hours and rollover; leaving this one at
+  // "a $180.00 payment was undone" made the person better informed when they
+  // were PAID than when a payment was taken back, on the screen the whole
+  // feature exists to make trustworthy (staff lens on PR #1190). With part
+  // payments the amount alone no longer implies which hours moved.
+  // EVERY line of this settlement, voided or not — not just the ones that
+  // were live when this function started.
+  //
+  // Only this settlement's own undo ever voids these lines, so the sum is the
+  // same number either way on a first run. On the HALF-UNDONE re-run it is
+  // the only correct answer: the first attempt released the lines and then
+  // failed to stamp the settlement, so by the time the admin runs Undo again
+  // every line already reads as voided. Filtering to live lines made that
+  // second run compute ZERO, and the crew member's only message for the whole
+  // event would have said "$40.00 undone... 0m of your time goes back to
+  // unpaid" — self-contradictory, and the true figure never sent, because the
+  // first attempt sent nothing at all (delta-verify on PR #1190).
+  const releasedSeconds = lines.reduce((sum, l) => sum + l.paid_seconds, 0);
   await notifyCrewOfPayment(db, {
     crewMemberId: voided.crew_member_id,
-    text: `${input.voidedBy} undid the record of a ${dollars(voided.total_cents)} payment to you: ${reason}. Tell the office if that looks wrong. This bot only understands clock commands, so a reply here will not reach anyone.`,
+    text: `${input.voidedBy} undid the record of a ${dollars(voided.total_cents)} payment to you: ${reason}. ${formatSeconds(releasedSeconds)} of your time goes back to unpaid. Tell the office if that looks wrong. This bot only understands clock commands, so a reply here will not reach anyone.`,
   });
 
   return toSettlement(voided, await readLinesForSettlements(db, [id]));

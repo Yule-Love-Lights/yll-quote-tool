@@ -1,15 +1,21 @@
 // Recording and undoing a payment for someone's shifts — time-tracking plan
 // phase 3, ledger row 459. ADMIN ONLY: this writes the payroll payment record.
 //
-// POST   { crewMemberId, shiftIds[], amount, method, note? }  → record
-// DELETE { settlementId, reason }                             → undo
+// POST   { crewMemberId, amount, method, note? }  → record
+// DELETE { settlementId, reason }                  → undo
 //
-// `amount` is what an admin TYPED. The tool never computes a payment (see
+// `amount` is what an admin TYPED. The tool never computes what to PAY (see
 // shiftSettlements.ts): overtime has no ruling here, so a figure this code
 // produced would be wrong for a real week that already exists in the data.
 // The string is parsed server-side rather than trusting a number from the
 // client, so "1,350.00" and "1350" mean the same thing and "1350.005" is
 // refused rather than silently rounded into somebody's pay.
+//
+// NO SHIFT IDS SINCE 2026-09-03. The client used to name the shifts a payment
+// covered; now it names only the money, and the server spends it over the
+// unpaid hours oldest first (Jason's rule). That also removes a whole class
+// of request: a client can no longer name somebody else's shift, a running
+// one, or one already paid, because it names none.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/supabaseServer';
@@ -28,10 +34,16 @@ const REFUSAL_STATUS: Record<SettlementRefusedError['code'], number> = {
   'no-shifts': 400,
   'invalid-amount': 400,
   'invalid-method': 400,
+  // The amount is well formed and the world is fine; there is simply no rate
+  // to convert it with. The admin's to correct, so 400 not 409.
+  'no-rate': 400,
   'not-found': 404,
   // All conflicts with the state of the record: the request was well formed,
   // the world moved or disagrees.
   'not-theirs': 409,
+  // The world disagrees with itself and a retry cannot fix it: the admin has
+  // to undo a payment first.
+  'shift-edited': 409,
   'still-open': 409,
   'already-settled': 409,
   'lost-race': 409,
@@ -69,9 +81,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { crewMemberId, shiftIds, amount, method, note } = (body as {
+  const { crewMemberId, amount, method, note } = (body as {
     crewMemberId?: unknown;
-    shiftIds?: unknown;
     amount?: unknown;
     method?: unknown;
     note?: unknown;
@@ -79,9 +90,6 @@ export async function POST(req: NextRequest) {
 
   if (typeof crewMemberId !== 'string' || !crewMemberId.trim()) {
     return NextResponse.json({ error: 'crewMemberId is required', code: 'invalid-body' }, { status: 400 });
-  }
-  if (!Array.isArray(shiftIds) || shiftIds.some((id) => typeof id !== 'string')) {
-    return NextResponse.json({ error: 'shiftIds must be a list of ids', code: 'invalid-body' }, { status: 400 });
   }
   if (!isSettlementMethod(method)) {
     return NextResponse.json({ error: 'Pick how it was paid.', code: 'invalid-method' }, { status: 400 });
@@ -103,7 +111,6 @@ export async function POST(req: NextRequest) {
   try {
     const settlement = await recordShiftSettlement({
       crewMemberId,
-      shiftIds: shiftIds as string[],
       totalCents,
       paidBy: gateActor(operator),
       method,
