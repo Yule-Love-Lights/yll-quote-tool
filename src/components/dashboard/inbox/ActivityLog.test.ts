@@ -44,6 +44,16 @@ describe('friendlyAction', () => {
 // ever carries a value listActivity actually produces — 'quote_terminal' from
 // completeTerminalQuoteItems today. Pure-function test only (no jsdom — see
 // this file's header note above).
+describe('friendlyAutoReason — a call-driven follow-up says so', () => {
+  it('names the phone call instead of printing the raw key', () => {
+    // The automatic sweep stamps rows as actor 'system'. Without this the
+    // activity log reads "Followed up . System" and a staffer cannot tell a
+    // call-driven follow-up from any other unexplained automated action.
+    expect(friendlyAutoReason('phone_call')).toBe('we phoned them');
+    expect(friendlyAutoReason('phone_call')).not.toBe('phone_call');
+  });
+});
+
 describe('friendlyAutoReason (row 317 fix-round FIX 4)', () => {
   it('labels quote_terminal', () => {
     expect(friendlyAutoReason('quote_terminal')).toBe('quote booked/declined/abandoned');

@@ -39,6 +39,7 @@ import {
   setSyncCursor,
   sweepOrphanedFollowUps,
   sweepResolvedItemFollowUps,
+  sweepCallFollowUps,
 } from './store';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
@@ -148,6 +149,13 @@ export type QuoteReconcileSummary = {
    *  the cron route's HTTP status. Folded into `degraded`/`ok` the same way
    *  followUpErrors is (see below). */
   autoCompleteErrors: number;
+  /** Naldo 2026-09-02: inbox items marked followed this tick because staff
+   *  PHONED that person (an outbound call of 30 seconds or more, placed since
+   *  the row's last activity). See sweepCallFollowUps / callFollowUp.ts. */
+  callFollowUpsStamped: number;
+  /** Stamps that failed to write. Folded into `degraded` like its two
+   *  siblings above, so a silently failing sweep still shows up. */
+  callFollowUpErrors: number;
   errors: number;
   error?: string;
 };
@@ -271,17 +279,44 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // learned to close it at the write site. Self-heals on the next reconcile —
     // no manual production data edit needed.
     followUpsClosed += await sweepResolvedItemFollowUps();
+    // Naldo 2026-09-02: mark rows followed where staff have rung the customer.
+    // Runs here rather than on a cron of its own because it reads the same
+    // inbox state this tick has just settled, and because it is idempotent
+    // (planCallFollowUps stamps at the call's own time, so a call it has
+    // already applied cannot qualify again) — repeating it every tick is
+    // exactly as safe as running it once, which is also what let the backfill
+    // over historical calls simply be its first run.
+    let callFollowUpsStamped = 0;
+    let callFollowUpErrors = 0;
+    // Fails OPEN, like ensureFollowUp (#310): this sweep reads two tables and
+    // is the newest thing in the tick, so a throw here must never take ingest
+    // down with it. A failure is counted, logged, and folded into `degraded`
+    // below so it cannot fail silently either.
+    try {
+      const callSweep = await sweepCallFollowUps();
+      if (callSweep.ok) {
+        callFollowUpsStamped = callSweep.stamped;
+        callFollowUpErrors = callSweep.failed;
+      } else {
+        callFollowUpErrors = 1;
+        console.warn('[inbox] call follow-up sweep failed:', callSweep.error);
+      }
+    } catch (e) {
+      callFollowUpErrors = 1;
+      console.warn('[inbox] call follow-up sweep threw (non-fatal):', e);
+    }
     // #310 fix-round: a follow-up read failure used to throw all the way out
     // of this function (aborting the whole tick) — now ensureFollowUp fails
     // open per-item, so `errors > 0` alone would no longer catch it. Fold
     // followUpErrors into the same 'error'/'ok' decision so a degraded tick
     // still shows up here (sync_runs / /inbox/activity). row 317 fix-round
     // FIX 3: autoCompleteErrors folded in the SAME way, same reasoning.
-    const degraded = errors > 0 || followUpErrors > 0 || autoCompleteErrors > 0;
+    const degraded = errors > 0 || followUpErrors > 0 || autoCompleteErrors > 0 || callFollowUpErrors > 0;
     const errorParts: string[] = [];
     if (errors > 0) errorParts.push(`${errors} item error(s)`);
     if (followUpErrors > 0) errorParts.push(`${followUpErrors} follow-up error(s)`);
     if (autoCompleteErrors > 0) errorParts.push(`${autoCompleteErrors} auto-complete error(s)`);
+    if (callFollowUpErrors > 0) errorParts.push(`${callFollowUpErrors} call follow-up error(s)`);
     await recordSyncRun('quotetool', degraded ? 'error' : 'ok', degraded ? errorParts.join(', ') : undefined);
     // `ok` drives the reconcile route's HTTP status (200 vs 500) — a
     // followUpErrors-only tick still processed every quote and both sweeps
@@ -293,7 +328,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // autoCompleteErrors DOES flip `ok`, same as followUpErrors — both are the
     // same "degraded, not aborted" shape (#825/#310's precedent).
     return {
-      ok: followUpErrors === 0 && autoCompleteErrors === 0,
+      ok: followUpErrors === 0 && autoCompleteErrors === 0 && callFollowUpErrors === 0,
       scanned: quotes.length,
       ingested,
       skipped,
@@ -303,6 +338,8 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       followUpsClosed,
       followUpErrors,
       autoCompleteErrors,
+      callFollowUpsStamped,
+      callFollowUpErrors,
       errors,
     };
   } catch (err) {
@@ -319,6 +356,8 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       followUpsClosed: 0,
       followUpErrors: 0,
       autoCompleteErrors: 0,
+      callFollowUpsStamped: 0,
+      callFollowUpErrors: 0,
       errors: 1,
       error,
     };
