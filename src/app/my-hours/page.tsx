@@ -36,17 +36,30 @@ import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
 import { MyHoursSection } from '@/components/time/MyHoursSection';
-import { getOfficeClockCaller } from '@/lib/auth/officeClock';
+import { getOfficeClockCaller, type OfficeLookup } from '@/lib/auth/officeClock';
 import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
 
 export const dynamic = 'force-dynamic';
 
 const DEFAULT_RANGE: RangeKey = '30';
 
-/** What to say for each way the identity lookup can refuse. One sentence per
+/**
+ * What to say for each way the identity lookup can refuse. One sentence per
  * reason, because "no hours" is the one answer that must never stand in for
- * any of them. */
-const DENIAL: Record<string, { title: string; body: string }> = {
+ * any of them.
+ *
+ * KEYED OFF THE UNION, not `Record<string, …>`. A new reason added to
+ * `OfficeLookup` later must break the BUILD here, the way it already breaks
+ * `officeDenialResponse`'s switch — with a loose key type it would compile
+ * happily and then read `copy.title` off `undefined` at request time, so the
+ * first person to hit the new reason would get a 500 instead of a sentence.
+ * No test can cover a reason that does not exist yet; the type is the only
+ * thing that can.
+ */
+const DENIAL: Record<
+  Exclude<Exclude<OfficeLookup, { ok: true }>['reason'], 'unauthenticated'>,
+  { title: string; body: string }
+> = {
   is_crew: {
     title: 'Crew hours are not on the website',
     body: 'Crew clock in and out through Telegram, and their hours live with the office. Ask the office for your hours.',

@@ -45,6 +45,37 @@ const SOURCE_LABEL: Record<string, string> = {
 
 export const sourceLabel = (s: string) => SOURCE_LABEL[s] ?? s;
 
+/**
+ * Who typed a manual correction, as the reader of THIS page should see them.
+ *
+ * `manual_by` is stamped by `gateActor` as `"Name (email)"` whenever the
+ * operator has both — which is every real admin session. That was fine while
+ * this string only ever appeared on an admin-only page (phase 2). Phase 4 is
+ * the first time it reaches a non-admin: without this, the moment an admin
+ * hand-corrects a swept shift, the person whose shift it was reads their
+ * boss's real login email on their own hours page. The midnight sweep alone
+ * has touched 5 of 27 real shifts, so this is an everyday path, not a corner.
+ *
+ * The NAME still shows on both pages — knowing who changed your hours is the
+ * point of the stamp, and phase 2's audit trail exists to say so. Only the
+ * parenthetical login identifier is dropped, and only for the self-view;
+ * admins keep the full string, which is what makes the two rows distinguish
+ * two people with the same first name.
+ *
+ * PURE, and exported for its own test: a fallback that silently returned the
+ * whole string would put the email back with nothing failing.
+ */
+export function actorLabel(manualBy: string, controls: 'admin' | 'none'): string {
+  if (controls === 'admin') return manualBy;
+  const open = manualBy.lastIndexOf(' (');
+  // No parenthetical (gateActor's name-only or email-only fallbacks) — return
+  // it as it stands. An email-only stamp is the one case this cannot improve:
+  // there is no name to fall back to, and inventing "an admin" would hide who
+  // it was on the page whose whole job is saying so.
+  if (open <= 0 || !manualBy.endsWith(')')) return manualBy;
+  return manualBy.slice(0, open);
+}
+
 function ShiftRow({
   shift,
   crewName,
@@ -71,6 +102,21 @@ function ShiftRow({
 }) {
   const open = shift.clockOutAt === null;
   const autoClosed = shift.closeSource === 'system';
+  // A swept shift that an admin has since typed over keeps `close_source:
+  // 'system'` forever, so the badge kept asking for a correction that had
+  // already been made — seen live on a real row, sitting directly above its
+  // own "typed by" stamp. The fact stays (the times were not clocked, they
+  // were entered), the call to action goes.
+  const corrected = autoClosed && shift.manualBy !== null;
+  const sweepNote = corrected
+    ? 'Closed by the midnight sweep, since corrected'
+    : controls === 'admin'
+      ? // The admin is being asked to go and find out; the person on the
+        // self-view IS the one who knows, and "ask them" is nonsense on their
+        // own shift. Caught by the phase 4 page test, which is why the voice
+        // is a branch and not a comment.
+        'Closed by the midnight sweep — ask them what time they stopped'
+      : 'Closed by the midnight sweep — tell the office what time you stopped';
   return (
     <li className="px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -100,28 +146,29 @@ function ShiftRow({
             Clocked in now
           </span>
         )}
+        {/* NOT whitespace-nowrap. This is the longest string on the row and
+            the day card around it is `overflow-hidden`, so at 375px a
+            non-wrapping badge is CLIPPED rather than pushed — measured on the
+            live page at 385px of text inside a 359px card, losing the last 55
+            pixels mid-sentence ("...tell the office what time you"). The clip
+            also means a page-level overflow check reports zero, so nothing
+            but looking would have caught it. Pre-existing on the admin page
+            since phase 2; fixed here for both, since both read this row. */}
         {autoClosed &&
-          (evidenceHref ? (
+          (evidenceHref && !corrected ? (
             <Link
               href={evidenceHref}
-              className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 underline whitespace-nowrap"
+              className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 underline"
             >
               Closed by the midnight sweep — check the van&apos;s day
             </Link>
           ) : (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 whitespace-nowrap">
-              {/* Same fact, said to whoever is reading it. The admin is being
-                  asked to go and find out; the person on the self-view IS the
-                  one who knows, and telling them to "ask them" is nonsense on
-                  their own shift. Caught by the phase 4 page test, which is
-                  why the voice is a branch and not a comment. */}
-              {controls === 'admin'
-                ? 'Closed by the midnight sweep — ask them what time they stopped'
-                : 'Closed by the midnight sweep — tell the office what time you stopped'}
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+              {sweepNote}
             </span>
           ))}
         {shift.manualBy && (
-          <span className="text-xs text-gray-400">typed by {shift.manualBy}</span>
+          <span className="text-xs text-gray-400">typed by {actorLabel(shift.manualBy, controls)}</span>
         )}
         {controls === 'admin' && (
         <span className="ml-auto inline-flex items-center gap-3">

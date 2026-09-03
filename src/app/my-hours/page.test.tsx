@@ -159,8 +159,11 @@ describe('/my-hours — no controls and no money', () => {
     expect(html).toContain('8h 00m');
     // ABSENT, not hidden: no edit form, no remove button, no pay panel, and
     // no dollar sign anywhere on the page.
-    expect(html).not.toContain('Edit times');
-    expect(html).not.toContain('Remove');
+    // Matched against the real control markup: the admin button is labelled
+    // "Edit", so an assertion against "Edit times" would have passed whether
+    // or not the button was there.
+    expect(html).not.toContain('>Edit</button>');
+    expect(html).not.toContain('>Remove</button>');
     expect(html).not.toContain('Pay');
     expect(html).not.toContain('$');
     // And it says where a wrong time actually gets fixed, so a screen with no
