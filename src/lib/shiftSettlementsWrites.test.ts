@@ -27,6 +27,9 @@ type LineRow = {
   settlement_id: string;
   shift_id: string;
   paid_seconds: number;
+  /** Optional so the pre-migration fixtures in this file stay valid: a line
+   * written before 2026-09-03 carried no shift total. */
+  shift_total_seconds?: number;
   rate_cents_per_hour: number;
   reference_cents: number;
   voided_at: string | null;
@@ -181,9 +184,29 @@ function makeDb() {
               // refused for the reason the database would refuse it, with
               // the check_violation code the caller actually maps.
               for (const row of payload) {
-                const already = stateRef.current.lines
-                  .filter((l) => l.shift_id === row.shift_id && l.voided_at === null)
-                  .reduce((sum, l) => sum + l.paid_seconds, 0);
+                const live = stateRef.current.lines.filter(
+                  (l) => l.shift_id === row.shift_id && l.voided_at === null,
+                );
+                // The trigger's OTHER refusal, which this fake used to be
+                // missing: live lines for one shift must agree on how long
+                // that shift is. Without it, a regression test for the
+                // edited-under-payment case would pass against a fake that
+                // could not produce the failure (technical lens on PR #1190).
+                const disagrees = live.some(
+                  (l) =>
+                    l.shift_total_seconds !== undefined &&
+                    l.shift_total_seconds !== Number(row.shift_total_seconds),
+                );
+                if (disagrees) {
+                  return Promise.resolve({
+                    data: null,
+                    error: {
+                      code: '23514',
+                      message: `shift ${String(row.shift_id)} has live settlement lines disagreeing on its length (2 distinct totals)`,
+                    },
+                  });
+                }
+                const already = live.reduce((sum, l) => sum + l.paid_seconds, 0);
                 const total = Number(row.shift_total_seconds);
                 if (already + Number(row.paid_seconds) > total) {
                   return Promise.resolve({
@@ -539,6 +562,42 @@ describe('recordShiftSettlement — the money buys hours, oldest first', () => {
     await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'lost-race' });
   });
 
+  it('REFUSES with its own message when a shift was edited under a live payment', async () => {
+    // The trigger raises check_violation for two different situations, and
+    // only one of them is a race. A length disagreement can never be cleared
+    // by retrying, so mapping it to "try again" sent an admin round a loop
+    // forever on a shift that had quietly become unpayable.
+    stateRef.current.lineInsertError = {
+      code: '23514',
+      message: 'shift shift-2 has live settlement lines disagreeing on its length (2 distinct totals)',
+    };
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'shift-edited' });
+    // And the instruction is one that actually works.
+    await expect(recordShiftSettlement(base)).rejects.toThrow(/Undo that payment/);
+    expect(stateRef.current.settlements).toHaveLength(0);
+  });
+
+  it('lets a remainder worth less than a cent still be cleared', async () => {
+    // referenceCentsFor rounds to nearest, so a second or two of remaining
+    // time is worth under half a cent and rounds to ZERO. With a zero ceiling
+    // no positive amount is ever allowed, and those seconds would be
+    // permanently unpayable.
+    stateRef.current.shifts = [
+      { id: 'tiny', crew_member_id: 'crew-1', clock_in_at: '2026-08-30T12:00:00.000Z', clock_out_at: '2026-08-30T12:00:01.000Z' },
+    ];
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    const out = await recordShiftSettlement({ ...base, totalCents: 1 });
+    expect(out.totalCents).toBe(1);
+    expect(out.lines[0]!.paidSeconds).toBe(1);
+    // Two cents is still more than one second is worth.
+    stateRef.current.settlements = [];
+    stateRef.current.lines = [];
+    await expect(recordShiftSettlement({ ...base, totalCents: 2 })).rejects.toMatchObject({
+      code: 'over-payment',
+    });
+  });
+
   it('says plainly when the unwind ITSELF fails, because an empty payment is then on the books', async () => {
     stateRef.current.lineInsertError = { message: 'nope' };
     stateRef.current.settlementDeleteError = { message: 'also nope' };
@@ -689,6 +748,11 @@ describe('voidShiftSettlement', () => {
     expect(chatId).toBe('555');
     expect(text).toContain('wrong person');
     expect(text).toContain('$40.00');
+    // And HOW MUCH TIME went back to unpaid. With part payments the amount
+    // alone no longer implies which hours moved, and leaving this out made
+    // the person better informed when they were paid than when a payment was
+    // taken back (staff lens on PR #1190). $40.00 at $9.00/h bought 4h 27m.
+    expect(text).toContain('4h 27m of your time goes back to unpaid');
   });
 
   it('does not notify a second time when the same payment is undone twice', async () => {

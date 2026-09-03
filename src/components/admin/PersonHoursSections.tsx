@@ -18,7 +18,7 @@ import Link from 'next/link';
 
 import { HoursDayList, fmtTime, sourceLabel } from '@/components/time/HoursDayList';
 import { ShiftPayPanel, VoidSettlementButton, type PayableShift } from '@/components/admin/ShiftPayPanel';
-import { dollars, type ShiftSettlement } from '@/lib/shiftSettlements';
+import { dollars, type PayableRemainder, type ShiftSettlement } from '@/lib/shiftSettlements';
 import { formatHours } from '@/lib/hoursSummary';
 import {
   RANGE_KEYS,
@@ -162,7 +162,7 @@ export function ShiftPaySection({
   crewMemberId,
   crewName,
   rateCentsPerHour,
-  days,
+  remainders,
   range,
   settlements,
   settledCents,
@@ -172,7 +172,10 @@ export function ShiftPaySection({
   crewMemberId: string;
   crewName: string;
   rateCentsPerHour: number;
-  days: PersonDay[];
+  /** Every closed shift with time still owing, oldest first, across ALL
+   * time — not the range on screen. The server spends a payment globally
+   * oldest-first, so a range-scoped list would preview the wrong shifts. */
+  remainders: PayableRemainder[];
   range: RangeKey;
   settlements: ShiftSettlement[];
   settledCents: number;
@@ -181,24 +184,20 @@ export function ShiftPaySection({
    * stamp. Running the undo again finishes them. */
   halfUndone: string[];
 }) {
-  const payable: PayableShift[] = days
-    .flatMap((d) => d.shifts)
-    // Anything CLOSED with time still owing, including a shift a previous
-    // payment only part covered — that remainder is exactly what the next
-    // payment is meant to pick up.
-    .filter((s) => s.clockOutAt !== null && s.settledSeconds < s.paidSeconds)
-    .map((s) => ({
-      id: s.id,
-      clockInAt: s.clockInAt,
-      paidSeconds: s.paidSeconds,
-      unpaidSeconds: s.paidSeconds - s.settledSeconds,
+  // Already oldest-first and already filtered to what is still owing: this
+  // is the SAME list the server spends the money over, so the preview and
+  // the write cannot disagree about which shifts are in play.
+  const payable: PayableShift[] = remainders
+    .filter((r) => r.unpaidSeconds > 0)
+    .map((r) => ({
+      id: r.shiftId,
+      clockInAt: r.clockInAt,
+      paidSeconds: r.totalSeconds,
+      unpaidSeconds: r.unpaidSeconds,
       // Carried through so the warning reaches the panel where paying LOCKS
       // these hours, not only the list above it.
-      needsReview: s.closeSource === 'system',
-    }))
-    // OLDEST FIRST, because that is the order the money is spent in and the
-    // preview has to read in the order it happens. `days` is newest first.
-    .sort((a, b) => a.clockInAt.localeCompare(b.clockInAt));
+      needsReview: r.needsReview,
+    }));
 
   return (
     <section className="mb-10">
@@ -278,12 +277,23 @@ export function ShiftPaySection({
                       <span className="text-xs text-gray-500">
                         {liveLines.length} {liveLines.length === 1 ? 'shift' : 'shifts'} ·{' '}
                         {formatHours(st.coveredSeconds)}
-                        {/* The reference is shown only when it DIFFERS, so the
-                            common case stays quiet and a real gap (overtime, an
-                            advance) is the thing that stands out. */}
-                        {st.referenceCents !== st.totalCents && !st.voidedAt && (
-                          <> · {dollars(st.referenceCents)} at the stamped rate</>
-                        )}
+                        {/* Shown only when the reference differs by MORE THAN
+                            ROUNDING, so a real gap (overtime, an advance) is
+                            what stands out.
+
+                            An exact !== fired on the very first real payment:
+                            $180.01 of per-line references against $180.00
+                            recorded, because each line rounds to its own cent
+                            and the amount was rounded once as a whole. Since
+                            the hours are now derived FROM the money, that is
+                            the ordinary case rather than the interesting one,
+                            so an exact test would light up on almost every
+                            multi-shift payment and mean nothing. One cent per
+                            line is the most rounding can account for. */}
+                        {Math.abs(st.referenceCents - st.totalCents) > liveLines.length &&
+                          !st.voidedAt && (
+                            <> · {dollars(st.referenceCents)} at the stamped rate</>
+                          )}
                       </span>
                       {st.voidedAt ? (
                         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium">

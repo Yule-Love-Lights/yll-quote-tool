@@ -20,6 +20,7 @@ function shifts(...secs: number[]): PayableRemainder[] {
     clockInAt: `2026-08-${String(24 + i).padStart(2, '0')}T13:00:00.000Z`,
     totalSeconds: s,
     unpaidSeconds: s,
+    needsReview: false,
   }));
 }
 
@@ -113,8 +114,8 @@ describe('allocatePayment — the rules', () => {
 
   it('skips a shift that is already fully paid rather than writing a zero line', () => {
     const partly: PayableRemainder[] = [
-      { shiftId: 'done', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 0 },
-      { shiftId: 'owing', clockInAt: '2026-08-25T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 4 * H },
+      { shiftId: 'done', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 0, needsReview: false },
+      { shiftId: 'owing', clockInAt: '2026-08-25T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 4 * H, needsReview: false },
     ];
     const out = allocatePayment(partly, 900, RATE);
     // A line covering no time is not a record of anything, and it would make
@@ -125,7 +126,7 @@ describe('allocatePayment — the rules', () => {
 
   it('takes only what is LEFT on a part-paid shift, not its whole length', () => {
     const partly: PayableRemainder[] = [
-      { shiftId: 'half', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: H },
+      { shiftId: 'half', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: H, needsReview: false },
     ];
     const out = allocatePayment(partly, 900 * 4, RATE);
     expect(out.lines[0].paidSeconds).toBe(H);

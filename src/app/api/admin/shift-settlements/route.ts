@@ -43,6 +43,9 @@ const REFUSAL_STATUS: Record<SettlementRefusedError['code'], number> = {
   // All conflicts with the state of the record: the request was well formed,
   // the world moved or disagrees.
   'not-theirs': 409,
+  // The world disagrees with itself and a retry cannot fix it: the admin has
+  // to undo a payment first.
+  'shift-edited': 409,
   'still-open': 409,
   'already-settled': 409,
   'lost-race': 409,
