@@ -43,6 +43,25 @@ describe('GET /qr/[[...slug]]', () => {
     expect(location.searchParams.get('utm_source')).toBe('qr');
   });
 
+  // Both headers were added because a claim in this file was false: the segment
+  // config governs how Next RENDERS the route and emits no cache header at all,
+  // so "never answered from a cache" only became true when the header did. A
+  // claim with no test is how that happened in the first place, so both are
+  // pinned here rather than described in a comment.
+  it('tells every cache not to hold the redirect', async () => {
+    const res = await call(['hbJhlsQLHpFv']);
+    // Without this the destination is not repointable in practice, which is the
+    // whole reason the status is 302 rather than 301.
+    expect(res.headers.get('cache-control')).toContain('no-store');
+  });
+
+  it('keeps the unbounded slug space out of search results', async () => {
+    const res = await call(['hbJhlsQLHpFv']);
+    const robots = res.headers.get('x-robots-tag') ?? '';
+    expect(robots).toContain('noindex');
+    expect(robots).toContain('nofollow');
+  });
+
   it('never sends a scan off our own host', async () => {
     for (const slug of [['hbJhlsQLHpFv'], ['https://evil.test/'], ['../..'], undefined]) {
       const res = await call(slug);
