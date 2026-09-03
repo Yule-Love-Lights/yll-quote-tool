@@ -12,13 +12,17 @@ import { ReferralShareButton, buildReferralShareMessage } from './ReferralShareB
 const LINK = 'https://quote.yulelovelights.com/refer/ABCD1234';
 
 describe('buildReferralShareMessage', () => {
-  it('states the friend\'s real offer in dollars (never the referrer\'s $125 credit) and still names the physical item', () => {
+  it("states the FRIEND's offer, never the referrer's own credit", () => {
+    // This is the text a customer sends to their neighbour, so it must read as
+    // a gift to the reader, not as what the sender earns. Both sides are $125
+    // as of 2026-09-03, so the dollar figure no longer tells the two apart:
+    // "credit" is the referrer-side word, and it must not appear here.
     const msg = buildReferralShareMessage(LINK, 2, 16, 170);
     expect(msg).toContain('$170');
-    expect(msg).toContain('$150 off instead');
+    expect(msg).toContain('$125 off instead');
     expect(msg).toContain('2 free 16" spritzers');
     expect(msg).toContain('first booked install');
-    expect(msg).not.toContain('$125');
+    expect(msg.toLowerCase()).not.toContain('credit');
   });
 
   it('embeds the exact referral link at the end of the message', () => {
@@ -34,10 +38,11 @@ describe('buildReferralShareMessage', () => {
 
   it('offers the cash alternative, so a friend who is not doing lights still has a reason', () => {
     // Naldo, 2026-08-28: an event, wedding or bistro customer has no use
-    // for spritzers. $150 is deliberately NOT the spritzers' $170 retail
-    // value; the two numbers are independent.
+    // for spritzers. $125 matches the referrer's own credit (Naldo,
+    // 2026-09-03: "125 per person") and is deliberately not the spritzers'
+    // $170 retail value.
     const msg = buildReferralShareMessage(LINK, 2, 16, 170);
-    expect(msg).toContain('$150 off instead');
+    expect(msg).toContain('$125 off instead');
     expect(msg).toContain('your choice');
   });
 
