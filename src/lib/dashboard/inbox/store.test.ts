@@ -7297,8 +7297,51 @@ describe('lead-forward auto-clear wiring', () => {
     // and a Reverse would have guessed.
     const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
     expect(caller).toContain('auto: true');
-    expect(caller).toContain("reason: 'lead_forward_answered_by_outbound'");
     expect(caller).toContain('from,');
+    // 2026-09-03: the reason became a ternary when the wider contact-level
+    // clear joined this same log call, so a single literal no longer describes
+    // it. Both branches are asserted, which is a stronger check than the one
+    // literal was: an audit row has to say WHICH rule fired, because the two
+    // have different false-positive shapes and a Reverse reads this.
+    expect(caller).toContain("'lead_forward_answered_by_outbound'");
+    expect(caller).toContain("'contact_answered_by_outbound'");
+  });
+
+  // 2026-09-03: the wider contact-level clear needs its own wiring tests, and
+  // it needs them for a reason a probe proved: removing the ENTIRE call from
+  // ingestTouch passed all 335 tests in this file. The pure rule was covered,
+  // the log shape was covered, and nothing said the feature was reachable.
+  // That is the inert-fix class, so these assertions are deliberately about
+  // the call site rather than the rule.
+  it('is actually CALLED from ingestTouch, which nothing else asserted', () => {
+    const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
+    expect(caller).toContain('clearContactRowsAnsweredBy(sb, contactId, touch, itemId, now)');
+  });
+
+  it('runs only for an OUTBOUND touch, sharing the forwarded-lead guard', () => {
+    // Scoped to the guard IMMEDIATELY wrapping it, not to isAnsweredByDirection
+    // appearing anywhere earlier: an unrelated use in the same function already
+    // satisfies the loose version, so it would pass with the guard deleted.
+    const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
+    const guard = caller.indexOf('if (isAnsweredByDirection(touch.direction)) {');
+    const call = caller.indexOf('clearContactRowsAnsweredBy(sb, contactId');
+    expect(guard).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(guard);
+  });
+
+  it("passes the item id of the row this touch itself wrote, so it is never re-cleared", () => {
+    // Dropping this argument would make the touch clear the very row it
+    // created, double-logging it and stealing the per-conversation path's job.
+    const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
+    expect(caller).toContain('touch, itemId, now)');
+  });
+
+  it('does nothing when we do not know which customer this is', () => {
+    // contactId can be null. Without the gate the clear would run with an
+    // undefined contact and either error or, worse, match nothing silently
+    // while looking like it worked.
+    const caller = SOURCE.slice(SOURCE.indexOf('export async function ingestTouch'));
+    expect(caller).toMatch(/contactId\s*\?\s*await clearContactRowsAnsweredBy/);
   });
 
   it('only ever runs for an OUTBOUND touch', () => {

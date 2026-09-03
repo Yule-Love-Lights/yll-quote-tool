@@ -161,3 +161,25 @@ describe('reverseConfirmMessage dispatch (Finding 2)', () => {
     expect(reverseConfirmMessage('completed')).toBe(reverseCompletedConfirmMessage());
   });
 });
+
+describe('friendlyAutoReason — every reason the system writes has words', () => {
+  // The promoted pitfall: a guard and the copy that narrates it are one change.
+  // An unmapped reason falls through to the raw key, so the log shows a staffer
+  // something like "contact_answered_by_outbound", which reads as a fault.
+  it('explains the forwarded-lead clear', () => {
+    const words = friendlyAutoReason('lead_forward_answered_by_outbound');
+    expect(words).toBe('we called or texted this lead');
+    expect(words).not.toContain('_');
+  });
+
+  it('explains the wider contact clear', () => {
+    const words = friendlyAutoReason('contact_answered_by_outbound');
+    expect(words).toBe('we reached this customer elsewhere');
+    expect(words).not.toContain('_');
+  });
+
+  it('still falls back to the raw key for a reason nothing has mapped yet', () => {
+    // Deliberate: an unknown reason should look wrong rather than be hidden.
+    expect(friendlyAutoReason('something_new')).toBe('something_new');
+  });
+});
