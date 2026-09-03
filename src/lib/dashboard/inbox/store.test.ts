@@ -1684,6 +1684,10 @@ describe('listInWorks — parallel fetch (#185)', () => {
         source: 'ghl',
         channel: 'sms',
         preview: 'following up',
+        // Selected as of 2026-09-02 so a forwarded lead in this section can
+        // show "call them directly" rather than "Reply in Gmail". Null here
+        // because this fixture row carries no subject.
+        subject: null,
         customerName: 'Awaiting Amy',
         lastActivityAt: '2026-07-20T10:00:00Z',
         needsLookReason: null,
@@ -1696,6 +1700,7 @@ describe('listInWorks — parallel fetch (#185)', () => {
         source: 'gmail',
         channel: 'email',
         preview: 'handled it',
+        subject: null,
         customerName: 'Handled Hank',
         lastActivityAt: '2026-07-21T09:00:00Z',
         needsLookReason: null,
