@@ -20,6 +20,7 @@ import {
   labelPromisesFreeSpritzers,
 } from '@/lib/portal/freeSpritzers';
 import { getCustomerTenure } from '@/lib/customerTenure';
+import { readSpritzerNoticeHistory } from '@/lib/portal/spritzerNoticeAudit';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
@@ -249,6 +250,10 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
         (y) => y < new Date().getUTCFullYear(),
       )
     : false;
+  // The record of who hid this notice and when. Read whenever the panel will
+  // render, so the switch and its history sit together.
+  const spritzerHistory =
+    spritzerNotice.present || spritzerNoticeSuppressed ? await readSpritzerNoticeHistory(id) : [];
 
   // #155 — for a legacy rebook, show what light color/pattern the customer
   // approved with (once approved). null while awaiting approval, or for a
@@ -649,6 +654,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             sourceLabels={spritzerLabels}
             isReturningCustomer={spritzerReturningCustomer}
             basis={spritzerBasis}
+            history={spritzerHistory}
           />
         )}
 

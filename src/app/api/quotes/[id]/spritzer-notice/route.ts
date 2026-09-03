@@ -28,6 +28,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { recordSpritzerNoticeChange } from '@/lib/portal/spritzerNoticeAudit';
+import { summarizeFreeSpritzers } from '@/lib/portal/freeSpritzers';
+import { buildPortalLineItems } from '@/lib/portal/adapter';
+import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
 
@@ -37,6 +41,8 @@ type QuoteRow = {
   id: string;
   inputs: Record<string, unknown> | null;
   total: number | null;
+  quote_number: number | null;
+  result: QuoteResult | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -66,7 +72,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, inputs, total')
+    .select('id, inputs, total, quote_number, result')
     .eq('id', id)
     .single<QuoteRow>();
   if (fetchErr || !quote) {
@@ -118,7 +124,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // order is the one failure this route must never contribute to.
   const { data: after, error: afterErr } = await sb
     .from('quotes')
-    .select('id, inputs, total')
+    .select('id, inputs, total, quote_number, result')
     .eq('id', id)
     .single<QuoteRow>();
   if (afterErr || !after) {
@@ -135,12 +141,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const operator = await getOperator();
-  console.info(
-    `[spritzer-notice] quote=${id} suppressed=${suppressed} by=${operator?.email ?? 'unknown operator'}`,
-  );
+
+  // Capture the count the customer was being SHOWN at the moment of the change.
+  // Read from the quote as it was BEFORE this write, because that is the promise
+  // being taken down; a month later "hid a promise of 6 spritzers" is worth far
+  // more than "hid the notice", since the labels may have been edited since.
+  const shownCount = quote.result
+    ? summarizeFreeSpritzers(
+        buildPortalLineItems(
+          quote.result,
+          quote.inputs as unknown as QuoteInputs | null,
+        ).lineItems.map((li) => li.label),
+      ).count
+    : null;
+
+  const audited = await recordSpritzerNoticeChange({
+    quoteId: id,
+    quoteNumber: quote.quote_number,
+    hidden: suppressed,
+    count: shownCount,
+    actor: operator?.email ?? null,
+  });
 
   return NextResponse.json({
     ok: true,
     suppressed: after.inputs?.suppressFreeSpritzerNotice === true,
+    // Surfaced, not merely returned: the panel shows a warning when the record
+    // did not land, so nobody is told there is a history that does not exist.
+    audited,
   });
 }

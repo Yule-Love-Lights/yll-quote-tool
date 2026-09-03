@@ -33,6 +33,9 @@ type Props = {
    *  when they last looked, and 'all' is a prediction that holds only while the
    *  item carrying the promise stays selected. */
   basis: 'approved' | 'browsing' | 'all';
+  /** Every recorded change to this switch, newest first. Empty for a quote
+   *  nobody has touched, and also for one changed before this record existed. */
+  history: Array<{ hidden: boolean; actor: string; at: string; count: number | null }>;
 };
 
 export function SpritzerNoticePanel({
@@ -43,6 +46,7 @@ export function SpritzerNoticePanel({
   sourceLabels,
   isReturningCustomer,
   basis,
+  history,
 }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -61,6 +65,12 @@ export function SpritzerNoticePanel({
         const b = (await res.json().catch(() => ({}))) as { error?: string };
         setError(b.error ?? 'Something went wrong');
         return;
+      }
+      const b = (await res.json().catch(() => ({}))) as { audited?: boolean };
+      // Say so rather than implying a record exists. The change itself landed;
+      // only the history line did not.
+      if (b.audited === false) {
+        setError('Saved, but this change could not be added to the record below.');
       }
       router.refresh();
     } catch {
@@ -85,7 +95,12 @@ export function SpritzerNoticePanel({
         Free spritzer notice
       </h2>
 
-      {!present ? (
+      {/* Suppressed is checked FIRST on purpose. A quote can be switched off
+          AND have its labels edited afterwards so nothing promises spritzers
+          any more; testing `present` first would then hide the only control
+          that turns it back on, stranding the switch where staff cannot reach
+          it. */}
+      {!present && !suppressed ? (
         <p className="text-sm text-gray-600">
           No line item on this quote mentions free spritzers, so the customer is told nothing about them.
         </p>
@@ -145,6 +160,21 @@ export function SpritzerNoticePanel({
             {busy ? 'Saving…' : 'Do not show this to the customer'}
           </button>
         </>
+      )}
+
+      {history.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-100">
+          <p className="text-xs text-gray-400 mb-1">Record of changes:</p>
+          <ul className="space-y-1">
+            {history.map((h) => (
+              <li key={`${h.at}-${h.actor}`} className="text-xs text-gray-600">
+                {h.hidden ? 'Hidden' : 'Shown again'}
+                {h.hidden && h.count !== null ? ` (a promise of ${h.count})` : ''} by {h.actor} on{' '}
+                {new Date(h.at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}

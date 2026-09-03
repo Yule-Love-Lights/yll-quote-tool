@@ -35,10 +35,20 @@ type Row = Record<string, unknown>;
 /** `before` is served to the first select, `after` to the read-back. */
 function makeSb(before: Row | null, after?: Row | null, casRows: Row[] = [{ id: ID }]) {
   const updates: Row[] = [];
+  const audits: Row[] = [];
   let reads = 0;
+  let table = '';
   const b: Record<string, unknown> = {};
   Object.assign(b, {
-    from: () => b,
+    from: (t: string) => {
+      table = t;
+      return b;
+    },
+    // The audit module inserts into dashboard_activity through this same client.
+    insert: async (row: Row) => {
+      if (table === 'dashboard_activity') audits.push(row);
+      return { error: null };
+    },
     eq: () => b,
     update: (patch: Row) => {
       updates.push(patch);
@@ -53,13 +63,15 @@ function makeSb(before: Row | null, after?: Row | null, casRows: Row[] = [{ id: 
       return row ? { data: row, error: null } : { data: null, error: { message: 'no row' } };
     },
   });
-  return { client: b, updates };
+  return { client: b, updates, audits };
 }
 
 const baseQuote = (inputs: Row | null = { santasFootage: 10 }, total = 1234.5): Row => ({
   id: ID,
   inputs,
   total,
+  quote_number: 1255,
+  result: null,
 });
 
 beforeEach(() => {
@@ -86,7 +98,7 @@ describe('POST /api/quotes/[id]/spritzer-notice', () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ ok: true, suppressed: true });
+    expect(body).toEqual({ ok: true, suppressed: true, audited: true });
     expect(updates).toHaveLength(1);
     // The patch names exactly one column, and that column keeps every other
     // input untouched.
@@ -109,8 +121,34 @@ describe('POST /api/quotes/[id]/spritzer-notice', () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ ok: true, suppressed: false });
+    expect(body).toEqual({ ok: true, suppressed: false, audited: true });
     expect(updates[0].inputs).toMatchObject({ suppressFreeSpritzerNotice: false });
+  });
+
+  it('records who changed it, on which quote, for the audit trail', async () => {
+    const { client, audits } = makeSb(
+      { id: ID, inputs: { santasFootage: 10 }, total: 1234.5, quote_number: 1255, result: null },
+      { id: ID, inputs: { santasFootage: 10, suppressFreeSpritzerNotice: true }, total: 1234.5, quote_number: 1255, result: null },
+    );
+    sbRef.current = client;
+    await POST(req({ suppressed: true }), ctx());
+    expect(audits).toHaveLength(1);
+    expect(audits[0].actor).toBe('staff@yulelovelights.com');
+    expect(audits[0].action).toBe('spritzer_notice_hidden');
+    expect(audits[0].detail).toMatchObject({ quoteId: ID, quoteNumber: 1255 });
+  });
+
+  it('still reports success when the record could not be written, and says so', async () => {
+    // The change landed; only the history line did not. Telling the operator
+    // beats implying a record exists.
+    const { client } = makeSb(baseQuote(), baseQuote());
+    (client as Record<string, unknown>).insert = async () => {
+      throw new Error('socket hang up');
+    };
+    sbRef.current = client;
+    const res = await POST(req({ suppressed: true }), ctx());
+    expect(res.status).toBe(200);
+    expect((await res.json()).audited).toBe(false);
   });
 
   it('never writes the total, the result, or the approval snapshot', async () => {

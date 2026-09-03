@@ -57,6 +57,7 @@ import { ReferralPrefillNotice } from '@/components/quote/ReferralPrefillNotice'
 import { QuoteBuilderCallNotesDrawer } from '@/components/quote/QuoteBuilderCallNotesDrawer';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
+import { BuilderSpritzerNotice } from '@/components/quote/BuilderSpritzerNotice';
 import dynamic from 'next/dynamic';
 
 import DesignSummary from '@/components/quote/DesignSummary';
@@ -8261,6 +8262,20 @@ Send anyway?`,
         {/* ── Result ── */}
         {result && (
           <div ref={resultRef} className="bg-white border border-gray-200 rounded-lg p-6 mb-10">
+            {/* What the customer will be told about free spritzers, read from
+                the very labels above. Staff type the promise into a line-item
+                label and it becomes customer-facing copy; before this, the only
+                place to see the result was the admin quote page, which nobody
+                opens between typing the label and pressing Send (PR #1197 staff
+                lens). Labels are resolved through resolveLineItemLabel first, so
+                this reads what the customer reads, renames included. */}
+            <BuilderSpritzerNotice
+              labels={result.lineItems.map(
+                (li) => resolveLineItemLabel(li.id, li.label, form.labelOverrides).label,
+              )}
+              suppressed={form.suppressFreeSpritzerNotice}
+            />
+
             {/* Totals — moved to the top (#107). The headline shows the "Full Yule"
                 ceiling (all items + the most-expensive roofline) via result.fullYule;
                 the billed figures + the recommended-subtotal gate below stay on the
