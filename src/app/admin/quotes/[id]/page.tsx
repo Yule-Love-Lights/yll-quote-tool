@@ -14,7 +14,11 @@ import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { SpritzerNoticePanel } from '@/components/admin/SpritzerNoticePanel';
-import { summarizeFreeSpritzers, labelPromisesFreeSpritzers } from '@/lib/portal/freeSpritzers';
+import {
+  summarizeFreeSpritzers,
+  summarizeSelectedFreeSpritzers,
+  labelPromisesFreeSpritzers,
+} from '@/lib/portal/freeSpritzers';
 import { getCustomerTenure } from '@/lib/customerTenure';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
@@ -203,17 +207,39 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
       })()
     : [];
 
-  // The free-spritzer thank you the portal will show, computed with the SAME
-  // function the portal uses so this panel can never describe something else.
-  // Read over every line item rather than a selection: on the portal the notice
-  // follows what the customer currently has selected, and the panel names the
-  // labels it came from so staff can see which item carries it.
-  const spritzerLabels: string[] = quote.result
-    ? buildPortalLineItems(quote.result, quote.inputs as QuoteInputs | null)
-        .lineItems.map((li) => li.label)
-        .filter((l) => labelPromisesFreeSpritzers(l))
+  // The free-spritzer thank you, computed through the portal's OWN selection-
+  // aware function so this panel cannot describe something the customer is not
+  // shown. Which selection depends on what the quote actually has:
+  //   approved/booked → the frozen approval snapshot: exact, the customer's
+  //                     order cannot change from here
+  //   browsing        → the customer's last saved portal selection
+  //   neither         → every line, which is a PREDICTION, not a fact
+  // The panel is told which basis it got so its wording matches (PR #1197 staff
+  // lens: the first version claimed "the customer sees this" unconditionally
+  // while computing over lines the customer may well have switched off).
+  const spritzerPortalLines = quote.result
+    ? buildPortalLineItems(quote.result, quote.inputs as QuoteInputs | null).lineItems
     : [];
-  const spritzerNotice = summarizeFreeSpritzers(spritzerLabels);
+  const approvedSelectionIds = quote.approval_snapshot?.customerSelection?.selectedItemIds as
+    | string[]
+    | undefined;
+  const browsingSelectionIds = (quote.browsing_selection as { selectedItemIds?: string[] } | null)
+    ?.selectedItemIds;
+  const spritzerBasis: 'approved' | 'browsing' | 'all' = approvedSelectionIds
+    ? 'approved'
+    : browsingSelectionIds
+      ? 'browsing'
+      : 'all';
+  const spritzerSelectedIds = approvedSelectionIds ?? browsingSelectionIds;
+  const spritzerNotice = spritzerSelectedIds
+    ? summarizeSelectedFreeSpritzers(spritzerPortalLines, new Set(spritzerSelectedIds))
+    : summarizeFreeSpritzers(spritzerPortalLines.map((li) => li.label));
+  // The labels the reading came from, restricted to the same basis, so staff
+  // see exactly which item carries the promise.
+  const spritzerLabels: string[] = spritzerPortalLines
+    .filter((li) => (spritzerSelectedIds ? spritzerSelectedIds.includes(li.id) : true))
+    .map((li) => li.label)
+    .filter((l) => labelPromisesFreeSpritzers(l));
   const spritzerNoticeSuppressed =
     (quote.inputs as { suppressFreeSpritzerNotice?: boolean } | null)?.suppressFreeSpritzerNotice === true;
   // Only ask about tenure when a thank you could actually render — it is the one
@@ -622,6 +648,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             suppressed={spritzerNoticeSuppressed}
             sourceLabels={spritzerLabels}
             isReturningCustomer={spritzerReturningCustomer}
+            basis={spritzerBasis}
           />
         )}
 

@@ -28,6 +28,11 @@ type Props = {
   sourceLabels: string[];
   /** Whether this customer reads as returning, which changes the wording. */
   isReturningCustomer: boolean;
+  /** Which selection the reading came from, so the heading can be honest:
+   *  'approved' is a fact (the order is frozen), 'browsing' is what they had
+   *  when they last looked, and 'all' is a prediction that holds only while the
+   *  item carrying the promise stays selected. */
+  basis: 'approved' | 'browsing' | 'all';
 };
 
 export function SpritzerNoticePanel({
@@ -37,6 +42,7 @@ export function SpritzerNoticePanel({
   suppressed,
   sourceLabels,
   isReturningCustomer,
+  basis,
 }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -86,8 +92,9 @@ export function SpritzerNoticePanel({
       ) : suppressed ? (
         <>
           <p className="text-sm text-gray-600 mb-3">
-            Turned off for this quote. The customer sees no mention of free spritzers, even though a label
-            still promises them.
+            {present
+              ? 'Turned off for this quote. The customer sees no mention of free spritzers, even though a label still promises them.'
+              : 'Turned off for this quote. No label promises free spritzers any more either, so nothing would show even if you turned it back on.'}
           </p>
           <button
             type="button"
@@ -100,7 +107,13 @@ export function SpritzerNoticePanel({
         </>
       ) : (
         <>
-          <p className="text-xs text-gray-400 mb-2">The customer sees this on their portal:</p>
+          <p className="text-xs text-gray-400 mb-2">
+            {basis === 'approved'
+              ? 'The customer approved this order, and sees this on their portal:'
+              : basis === 'browsing'
+                ? 'With the selection this customer last saved, they see:'
+                : 'While the item below stays in their selection, the customer sees:'}
+          </p>
           <div className="rounded-md border border-green-200 bg-green-50 p-3 mb-3">
             <p className="text-sm font-semibold text-green-900">{headline}</p>
             <p className="text-sm text-green-800">{body}</p>

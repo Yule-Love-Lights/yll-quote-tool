@@ -84,12 +84,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const nextInputs = { ...quote.inputs, suppressFreeSpritzerNotice: suppressed };
 
-  const { error: writeErr } = await sb
+  // Compare-and-swap on the WHOLE inputs jsonb, mirroring the identical write
+  // in src/app/api/quotes/[id]/nce/route.ts (and free-items' snapshot CAS).
+  // This route read `inputs`, changed one key, and writes the whole object
+  // back; unguarded, a builder Calculate landing in that gap would have its
+  // entire inputs blob — every footage, rate and override in it — silently
+  // reverted to what this route read. Losing this toggle is a cosmetic retry;
+  // losing a Calculate is money.
+  const { data: casRows, error: writeErr } = await sb
     .from('quotes')
     .update({ inputs: nextInputs })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('inputs', JSON.stringify(quote.inputs))
+    .select('id');
   if (writeErr) {
     return NextResponse.json({ error: `Could not save: ${writeErr.message}` }, { status: 500 });
+  }
+  if (!casRows || casRows.length === 0) {
+    // Somebody else wrote this quote between the read and the write. Say so
+    // plainly and change nothing, rather than overwriting their work.
+    return NextResponse.json(
+      {
+        error: 'Someone else saved this quote while you were changing it. Refresh and try again.',
+        code: 'conflict',
+      },
+      { status: 409 },
+    );
   }
 
   // Read back and assert the money did not move. The update above names only

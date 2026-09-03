@@ -33,18 +33,20 @@ const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 type Row = Record<string, unknown>;
 
 /** `before` is served to the first select, `after` to the read-back. */
-function makeSb(before: Row | null, after?: Row | null) {
+function makeSb(before: Row | null, after?: Row | null, casRows: Row[] = [{ id: ID }]) {
   const updates: Row[] = [];
   let reads = 0;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
-    select: () => b,
     eq: () => b,
     update: (patch: Row) => {
       updates.push(patch);
       return b;
     },
+    // The route CASes on the inputs jsonb and reads back the affected rows.
+    // `casRows` lets a test model a concurrent write (zero rows matched).
+    select: (cols?: string) => (cols === 'id' ? Promise.resolve({ data: casRows, error: null }) : b),
     single: async () => {
       reads += 1;
       const row = reads === 1 ? before : (after === undefined ? before : after);
@@ -131,6 +133,16 @@ describe('POST /api/quotes/[id]/spritzer-notice', () => {
     const res = await POST(req({ suppressed: true }), ctx());
     expect(res.status).toBe(500);
     expect((await res.json()).error).toMatch(/total changed/i);
+  });
+
+  it('refuses when someone else saved the quote in the gap, and changes nothing', async () => {
+    // The CAS matched zero rows: a builder Calculate landed between our read
+    // and our write. Overwriting would revert their whole inputs blob.
+    const { client } = makeSb(baseQuote(), baseQuote(), []);
+    sbRef.current = client;
+    const res = await POST(req({ suppressed: true }), ctx());
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('conflict');
   });
 
   it('rejects a body that is not a boolean flag', async () => {

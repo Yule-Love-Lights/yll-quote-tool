@@ -134,6 +134,43 @@ describe('summarizeFreeSpritzers — numbers that belong to something else', () 
   });
 });
 
+describe('summarizeFreeSpritzers — a gift that is NOT spritzers', () => {
+  // Found by the PR #1197 customer lens. Before this, "free" merely appearing
+  // near "spritzer" was enough, so a label about free WREATHS promised free
+  // spritzers, and once the third shape landed it even stated the wreaths'
+  // number as a spritzer count.
+
+  it('does not read free wreaths as free spritzers', () => {
+    expect(summarizeFreeSpritzers(['16" LED Spritzers, 2 Free Wreaths Included'])).toEqual({
+      present: false,
+      count: null,
+    });
+  });
+
+  it('counts only the spritzers when a label gives away wreaths AND spritzers', () => {
+    expect(
+      summarizeFreeSpritzers(['16" LED Spritzers, 2 Free Wreaths Included · 4 FREE Spritzers!']),
+    ).toEqual({ present: true, count: 4 });
+  });
+
+  it('still reads the reason-style promise it was added for', () => {
+    expect(summarizeFreeSpritzers(['Spritzers - 6 Free!'])).toEqual({ present: true, count: 6 });
+    expect(summarizeFreeSpritzers(['Spritzers - 6 Free For Staying With Us!'])).toEqual({
+      present: true,
+      count: 6,
+    });
+  });
+
+  it('fails closed on an unfamiliar tail rather than claiming someone else’s number', () => {
+    // "2 Free Garland" is not a spritzer promise, and the module says nothing
+    // rather than guessing.
+    expect(summarizeFreeSpritzers(['24" Spritzers, 2 Free Garland Runs'])).toEqual({
+      present: false,
+      count: null,
+    });
+  });
+});
+
 describe('summarizeFreeSpritzers — quotes with no gift', () => {
   it('returns nothing for an ordinary paid quote', () => {
     expect(

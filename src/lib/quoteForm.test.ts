@@ -52,6 +52,7 @@ const fullForm: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 20,
   waiveMinimum: true, // non-default, to exercise the field
+  suppressFreeSpritzerNotice: false,
   depositPercent: 25, // non-default, to exercise the field (#177)
   installTiming: 'none', // manual-discount path; early-install has its own tests
   lineItemPriceOverrides: {},
@@ -158,6 +159,27 @@ describe('buildQuoteInputs', () => {
   it('sends waiveMinimum only when set; omits it otherwise (#59)', () => {
     expect(buildQuoteInputs({ ...fullForm, waiveMinimum: true }).waiveMinimum).toBe(true);
     expect('waiveMinimum' in buildQuoteInputs({ ...fullForm, waiveMinimum: false })).toBe(false);
+  });
+
+  it('sends suppressFreeSpritzerNotice only when set; omits it otherwise', () => {
+    expect(
+      buildQuoteInputs({ ...fullForm, suppressFreeSpritzerNotice: true }).suppressFreeSpritzerNotice,
+    ).toBe(true);
+    expect(
+      'suppressFreeSpritzerNotice' in buildQuoteInputs({ ...fullForm, suppressFreeSpritzerNotice: false }),
+    ).toBe(false);
+  });
+
+  it('survives a builder round trip, so a Calculate cannot silently un-hide the notice', () => {
+    // The defect this pins (PR #1197 admin + technical lenses): the admin quote
+    // page sets this flag straight onto the inputs jsonb, but the builder
+    // REBUILDS that jsonb from form state on every Calculate. Without the two
+    // wirings above, opening the quote and pressing Calculate for any unrelated
+    // reason silently turned the customer's promise back on.
+    const stored = buildQuoteInputs({ ...fullForm, suppressFreeSpritzerNotice: true });
+    const rehydrated = inputsToFormData({}, stored);
+    expect(rehydrated.suppressFreeSpritzerNotice).toBe(true);
+    expect(buildQuoteInputs(rehydrated).suppressFreeSpritzerNotice).toBe(true);
   });
 
   it('sends depositPercent only when set (> 0); omits it when blank (#177)', () => {
@@ -351,6 +373,12 @@ describe('inputsToFormData', () => {
     expect(inputsToFormData({}, { waiveMinimum: true }).waiveMinimum).toBe(true);
     expect(inputsToFormData({}, { waiveMinimum: false }).waiveMinimum).toBe(false);
     expect(inputsToFormData({}, {}).waiveMinimum).toBe(false); // legacy row
+  });
+
+  it('hydrates suppressFreeSpritzerNotice, defaulting to false when absent', () => {
+    expect(inputsToFormData({}, { suppressFreeSpritzerNotice: true }).suppressFreeSpritzerNotice).toBe(true);
+    expect(inputsToFormData({}, { suppressFreeSpritzerNotice: false }).suppressFreeSpritzerNotice).toBe(false);
+    expect(inputsToFormData({}, {}).suppressFreeSpritzerNotice).toBe(false); // legacy row
   });
 
   it('hydrates depositPercent, defaulting to 0 (blank) when absent (#177)', () => {
