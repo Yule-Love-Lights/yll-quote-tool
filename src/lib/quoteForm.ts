@@ -657,6 +657,32 @@ export function contactRelinkConfirmMessage(
  * See the write-site comment in attach/route.ts for the sibling design note
  * on the (deliberately unfrozen pre-freeze) GHL-link write itself.
  */
+/**
+ * The confirm text for the roofline "Clear all" buttons (ledger row 443).
+ *
+ * That button deleted every traced line for a section on a single click,
+ * with no confirm and no undo, while thirteen other destructive actions in
+ * QuoteBuilder already confirmed first. It was a sibling-parity gap rather
+ * than a deliberate choice.
+ *
+ * The message names both halves of what is lost, because the second half is
+ * the one staff do not expect: the trace goes, and the derive pass then
+ * recomputes billed footage from what remains, which overwrites a figure
+ * somebody typed by hand.
+ *
+ * Pure and exported so it is unit-testable without a render harness, the
+ * same convention clearContactConfirmMessage below follows (QuoteBuilder has
+ * no screen coverage, so logic worth testing has to leave the component).
+ */
+export function clearAllLinesConfirmMessage(sectionLabel: string, lineCount: number): string {
+  const lines = lineCount === 1 ? '1 traced line' : `all ${lineCount} traced lines`;
+  return [
+    `Delete ${lines} for ${sectionLabel}?`,
+    '',
+    'The billed footage is then recalculated from what is left, which replaces any footage you typed by hand. This cannot be undone.',
+  ].join('\n');
+}
+
 export function clearContactConfirmMessage(isApproved: boolean): string | null {
   if (!isApproved) return null;
   return [

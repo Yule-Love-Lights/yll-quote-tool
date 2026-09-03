@@ -139,20 +139,6 @@ function buildCrewMemberInsertPayload(input: NewCrewMemberInput): Record<string,
   return payload;
 }
 
-function buildCrewMemberUpdatePayload(patch: Partial<CrewMemberUpsertFields>): Record<string, unknown> {
-  const payload: Record<string, unknown> = {};
-
-  if (patch.displayName !== undefined) payload.display_name = patch.displayName.trim();
-  if (patch.baseRateCents !== undefined) payload.base_rate_cents = patch.baseRateCents;
-  if (patch.inP4pPool !== undefined) payload.in_p4p_pool = patch.inP4pPool;
-  if (patch.payMode !== undefined) payload.pay_mode = patch.payMode;
-  if (patch.language !== undefined) payload.language = patch.language.trim() || 'en';
-  if (patch.active !== undefined) payload.active = patch.active;
-  if (patch.hubEmployeeId !== undefined) payload.hub_employee_id = patch.hubEmployeeId?.trim() || null;
-  if (patch.telegramUserId !== undefined) payload.telegram_user_id = patch.telegramUserId?.trim() || null;
-
-  return payload;
-}
 
 function toCrewMember(row: Row): CrewMember {
   return {
@@ -268,36 +254,6 @@ export async function insertCrewMember(input: NewCrewMemberInput): Promise<CrewM
   return toCrewMember(data as Row);
 }
 
-export async function updateCrewMember(
-  id: string,
-  patch: Partial<CrewMemberUpsertFields>,
-): Promise<CrewMember> {
-  const db = getSupabaseServiceClient();
-  if (!db) throw new Error('Supabase service role not configured');
-
-  const crewMemberId = id.trim();
-  const payload = buildCrewMemberUpdatePayload(patch);
-
-  const { data, error } = await db.from('crew_members').update(payload).eq('id', crewMemberId).select(SELECT).maybeSingle();
-  if (error) {
-    // Unlike insertCrewMember's race, a rename-to-duplicate collision here is
-    // a genuine conflict (this person's name, colliding with a DIFFERENT
-    // existing person) — never "recover" by returning the other row, that
-    // would silently hand back someone else's data as if it were this
-    // update's result. Surface a clear, specific error instead.
-    if (isDisplayNameUniqueViolation(error as { code?: string; message?: string })) {
-      throw new Error(
-        `updateCrewMember: display name "${String(payload.display_name)}" is already in use by another crew member`,
-      );
-    }
-    if (isTelegramUserIdUniqueViolation(error as { code?: string; message?: string })) {
-      throw new TelegramUserIdTakenError(String(payload.telegram_user_id));
-    }
-    throw new Error(`updateCrewMember: ${error.message}`);
-  }
-  if (!data) throw new Error(`updateCrewMember: no row found for id ${crewMemberId}`);
-  return toCrewMember(data as Row);
-}
 
 // --- Office staff (is_office = true) -------------------------------------------
 //
@@ -495,7 +451,7 @@ async function patchStaffRow(
     .select(STAFF_SELECT)
     .maybeSingle();
   if (error) {
-    // Sibling-guard parity with updateCrewMember: a partial-unique collision on
+    // Sibling-guard parity with insertCrewMember: a partial-unique collision on
     // telegram_user_id is a real "that account already belongs to someone else"
     // the office can act on, not a generic write failure. Never recover by
     // returning the other row; that would hand back someone else's pay identity.
@@ -548,7 +504,9 @@ export async function setStaffRate(id: string, baseRateCents: number): Promise<S
  * the display name is unique and the operator no longer appears in the picker
  * once linked, so the only fix was a hand-written UPDATE.
  *
- * The flag's only functional reader is `listActiveFieldCrew`, so this changes
+ * The flag has TWO functional readers: `listActiveFieldCrew` (which decides
+ * who is offered) and `assignCrewToJob` in scheduling.ts (which refuses an
+ * office id server-side, the backstop). Changing this
  * exactly one thing: whether they are offered when assigning crew to a job.
  */
 export async function setStaffType(id: string, isOffice: boolean): Promise<StaffMember | null> {

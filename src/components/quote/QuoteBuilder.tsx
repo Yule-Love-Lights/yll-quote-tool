@@ -33,6 +33,7 @@ import {
   legacyRebookConfirmMessage,
   nceConfirmMessage,
   contactRelinkConfirmMessage,
+  clearAllLinesConfirmMessage,
   clearContactConfirmMessage,
   initialNceDepositProvenance,
 } from '@/lib/quoteForm';
@@ -2858,7 +2859,13 @@ export default function QuoteBuilder({
   // one-at-a-time delete: the #918 disagreement-note clearing (getSetter's
   // santas/gingerbread branches) and the thaw/baseline-seed logic every other
   // line mutation goes through.
-  const clearAllLines = (type: LineType) => {
+  // Row 443: confirm before destroying the trace. This deleted every traced
+  // line for a section on ONE click with no undo, while thirteen other
+  // destructive actions in this file already confirmed first, so it was a
+  // sibling-parity gap rather than a deliberate choice. The label and count
+  // come from the call site, which already renders both.
+  const clearAllLines = (type: LineType, sectionLabel: string, lineCount: number) => {
+    if (!window.confirm(clearAllLinesConfirmMessage(sectionLabel, lineCount))) return;
     const setter = getSetter(type);
     setter(() => []);
   };
@@ -7421,7 +7428,7 @@ Send anyway?`,
                           <span className="w-4 h-1 bg-red-500 rounded"></span>
                           <span className="text-sm font-semibold text-gray-800">Front Gutterline — {form.santasFootage}ft</span>
                           {activeSantasLines.length >= 2 && (
-                            <button type="button" onClick={() => clearAllLines('santas')}
+                            <button type="button" onClick={() => clearAllLines('santas', 'Front Gutterline', activeSantasLines.length)}
                               className="ml-auto text-[11px] font-medium text-gray-500 hover:text-red-600 border border-gray-300 hover:border-red-400 rounded px-2 py-0.5">
                               Clear all
                             </button>
@@ -7451,7 +7458,7 @@ Send anyway?`,
                           <span className="w-4 h-1 bg-blue-500 rounded"></span>
                           <span className="text-sm font-semibold text-gray-800">Ridge + Sides — {form.gingerbreadFootage}ft</span>
                           {activeGingerbreadLines.length >= 2 && (
-                            <button type="button" onClick={() => clearAllLines('gingerbread')}
+                            <button type="button" onClick={() => clearAllLines('gingerbread', 'Ridge + Sides', activeGingerbreadLines.length)}
                               className="ml-auto text-[11px] font-medium text-gray-500 hover:text-red-600 border border-gray-300 hover:border-red-400 rounded px-2 py-0.5">
                               Clear all
                             </button>
