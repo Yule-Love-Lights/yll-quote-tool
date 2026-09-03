@@ -215,7 +215,12 @@ many hours has anyone worked", which nothing does today.
 **Phase 2 — the per-person detail page.** Hours by day / week / month for one person, with the
 existing manual edit/void controls moved or mirrored from `/admin/fleet/clocks`. Row **473**
 (manual payroll edits are recorded where nobody looks) should be closed here by surfacing the
-audit trail on this page.
+audit trail on this page. **Found while shipping phase 1 (S59, PR #1176):** the two clocks
+page lists FIELD shifts only (`fleetDay.ts` drops `is_office=true` rows by Naldo's 2026-08-28
+ruling) and its add form offers field crew only, so an OFFICE person's shift has **no editor
+anywhere in the app today**. On 2026-09-02, 2 of the 5 midnight auto-closes in prod were office
+shifts (Jason Balroop 14.2h, Khaye 12.0h) and cannot be corrected in-app. Phase 2 is therefore
+the FIRST editor for office shifts, not a mirror of an existing one; the phase 1 copy says so.
 
 **Phase 3 — the settlement (approval) mechanism.** Migration + `shiftSettlements.ts` mirroring
 `payouts.ts`. Derived approved/unapproved. The paid-shift edit guard, closing row **459**.
@@ -268,6 +273,10 @@ Recording it here rather than editing the ownership table unilaterally: an owner
 policy change, and AGENTS.md's own rule says those need both devs. **The ownership table should be
 updated in the first build PR, with Naldo's acknowledgement noted.** Until then this document is
 the record of the handoff.
+
+**Done 2026-09-02 (Jason's S59; session numbers are per dev, Naldo's own S59 was 2026-08-19):** Naldo gave his written one-line ack to Jason's direct message; the
+AGENTS.md ownership table now carries the surface under Jason, in its own docs PR rather than the
+build PR (#1176), so the policy change is reviewable on its own.
 
 ---
 

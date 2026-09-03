@@ -9,7 +9,8 @@
 // to holiday's. Type resolution mirrors ghlPipelineMap.ts: asServiceType ??
 // DEFAULT_SERVICE_TYPE (unknown/missing service_type → holiday).
 
-import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { asServiceType, DEFAULT_SERVICE_TYPE, SERVICE_TYPE_LABELS, type ServiceType } from '@/lib/serviceType';
+import { highLevelContactUrl, highLevelConversationUrl } from '@/lib/highLevelLinks';
 import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
 import { spritzerRetailValueUsd, REFERRAL_FRIEND_ALT_CREDIT_USD } from '@/lib/referralSpritzerValue';
 
@@ -281,6 +282,35 @@ export function internalChangesRequestedEmailHtml(input: {
   ].join('\n');
 }
 
+// ─── HighLevel deep links (S75) ───────────────────────────────
+// Staff following up on a quote used to search the customer by name in
+// HighLevel every time. These are the two URLs that skip the search: the
+// contact record, and the conversation thread it is called and texted from.
+//
+// The URL SHAPES live in src/lib/highLevelLinks.ts, which landed on master
+// while this branch was open and exists precisely so one pattern is stated
+// once. This function had its own copy of both; that copy is gone and the
+// conversation builder moved there. What is left here is the part specific to
+// an EMAIL: requiring both ids, and html-escaping the result, because a link
+// dropped into a staff email is still untrusted output.
+//
+// Returns null unless BOTH ids are present, so a quote with no linked contact
+// (or an unconfigured location) renders no links at all rather than a broken
+// one.
+
+export function highLevelContactLinks(
+  contactId: string | null | undefined,
+  locationId: string | null | undefined,
+): { contactUrl: string; conversationUrl: string } | null {
+  const contact = contactId?.trim();
+  const location = locationId?.trim();
+  if (!contact || !location) return null;
+  return {
+    contactUrl: escapeHtml(highLevelContactUrl(location, contact)),
+    conversationUrl: escapeHtml(highLevelConversationUrl(location, contact)),
+  };
+}
+
 // ─── View receipt (#68) ─────────────────────────────────────────────────────
 // Sent to the internal GHL contact each time the customer opens their portal
 // link, so staff know the quote is being looked at (a warm-lead signal to
@@ -299,8 +329,19 @@ export function internalViewedEmailHtml(input: {
   viewCount: number;
   portalUrl: string;
   adminUrl: string;
+  // Which vertical the quote is for, so staff can leave an accurate voicemail
+  // without opening the quote first. Unset reads as holiday, matching
+  // DEFAULT_SERVICE_TYPE and the migration's backfill.
+  serviceType?: string | null;
+  // The quote's linked HighLevel contact, plus the location the deep links are
+  // scoped to. BOTH are required to render a link: a contact id alone cannot
+  // build a URL, and a location alone has nothing to point at. Either missing
+  // drops the two links; the rest of the receipt is unchanged.
+  highlevelContactId?: string | null;
+  highlevelLocationId?: string | null;
 }): string {
   const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const hl = highLevelContactLinks(input.highlevelContactId, input.highlevelLocationId);
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
   // "1st time" / "2nd time" / "3rd time" / "Nth time".
@@ -317,9 +358,13 @@ export function internalViewedEmailHtml(input: {
     row('Phone', escapeHtml(input.phone || '—')),
     row('Email', escapeHtml(input.email || '—')),
     row('Address', escapeHtml(input.address || '—')),
+    row('Service', SERVICE_TYPE_LABELS[asServiceType(input.serviceType) ?? DEFAULT_SERVICE_TYPE]),
     row('Times opened', String(n)),
     `</table>`,
     `<p><a href="${input.portalUrl}">Customer portal →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+    ...(hl
+      ? [`<p><a href="${hl.contactUrl}">HighLevel profile →</a> &nbsp;|&nbsp; <a href="${hl.conversationUrl}">Text / call them →</a></p>`]
+      : []),
   ].join('\n');
 }
 

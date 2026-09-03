@@ -41,6 +41,10 @@ const REFUSAL_STATUS: Record<ManualShiftRefusedError['code'], number> = {
   // Not the admin's fault and worth retrying: the activity log refused the
   // record, so the void was called off with the shift still intact.
   'audit-failed': 503,
+  // Row 459: the shift sits on a live settlement. A conflict with the state
+  // of the record, like not-manual and has-children — undo the payment and
+  // the same request succeeds.
+  'already-paid': 409,
 };
 
 export async function POST(req: NextRequest) {

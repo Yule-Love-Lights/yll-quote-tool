@@ -25,6 +25,63 @@ const SOURCE_LABEL: Record<string, string> = {
 // unit-testable without jsdom or a mocked fetch. withRowFlagCleared fully
 // removes the key rather than setting it false, and a no-op clear returns
 // the SAME object reference.
+/**
+ * The "I followed up" button for a row, per bucket. PURE and exported because
+ * this file has no jsdom coverage (see this component's test header) — a static
+ * render cannot drive a click, so the decision that click encodes is lifted out
+ * where it can be pinned directly.
+ *
+ * The two buckets need genuinely different buttons, which is the whole reason
+ * this exists:
+ *   • handled  — the row has never been followed up. A plain first stamp.
+ *   • awaiting — the row is ALREADY followed and has gone quiet again (every
+ *     row carrying the amber "Nd quiet" / blue "Follow-up due" tags). A plain
+ *     stamp here is a silent no-op: markItemFollowed refuses a second one and
+ *     the route reports success anyway, so the row would never move. It has to
+ *     ask for the restamp explicitly, and it has to SAY "again", because on an
+ *     already-followed row a bare "Followed" claims nothing new.
+ */
+/**
+ * Optimistically mark ONE row as just-followed: restart its quiet counter and
+ * drop the follow-up-due marker the click has now answered.
+ *
+ * "Followed again" acts on a row already in the awaiting bucket, so
+ * moveGroup(id, 'awaiting', 'awaiting') returns immediately (`if (from === to)
+ * return`) and changes nothing. router.refresh() does not rescue it either:
+ * this component seeds its lists with useState(awaiting) and never syncs the
+ * props again, so fresh server data does not reach these rows. Without this
+ * the click was invisible — the amber "45d quiet" tag still read 45d, which
+ * reads as a broken button. Found by the pre-merge staff lens.
+ *
+ * Returns the SAME array when the id is absent, so an unrelated row's action
+ * never forces a re-render (the withRowFlagCleared / omitKey convention above).
+ */
+export function withRowFollowedNow(
+  items: InWorksItem[],
+  itemId: string,
+  nowIso: string,
+): InWorksItem[] {
+  if (!items.some((i) => i.id === itemId)) return items;
+  return items.map((i) =>
+    i.id === itemId ? { ...i, lastActivityAt: nowIso, needsLookReason: null } : i,
+  );
+}
+
+export function followedButtonFor(group: 'awaiting' | 'handled'): {
+  label: string;
+  title: string;
+  body?: Record<string, unknown>;
+} {
+  if (group === 'awaiting') {
+    return {
+      label: 'Followed again',
+      title: 'I chased them again — restart the quiet counter',
+      body: { again: true },
+    };
+  }
+  return { label: 'Followed', title: 'I followed up — snooze until they reply' };
+}
+
 export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
   return { ...map, [id]: true };
 }
@@ -301,6 +358,7 @@ export function InWorksSection({
     path: string,
     outcome: 'awaiting' | 'handled' | 'remove',
     label: string,
+    extraBody?: Record<string, unknown>,
   ) {
     setBusyIds((prev) => withRowFlagSet(prev, item.id));
     // Row 291 fix: clear only THIS row's own error, never every row's — the
@@ -313,11 +371,18 @@ export function InWorksSection({
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ itemId: item.id }),
+        body: JSON.stringify({ itemId: item.id, ...extraBody }),
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (data?.ok) {
-        if (outcome === 'remove') {
+        if (outcome === group) {
+          // Same-bucket action (the awaiting row's "Followed again"): moveGroup
+          // is a no-op here, so update the row in place or the click shows
+          // nothing. See withRowFollowedNow.
+          const nowIso = new Date().toISOString();
+          if (group === 'awaiting') setAwaitingItems((prev) => withRowFollowedNow(prev, item.id, nowIso));
+          else setHandledItems((prev) => withRowFollowedNow(prev, item.id, nowIso));
+        } else if (outcome === 'remove') {
           removeFromGroup(item.id, group);
         } else {
           moveGroup(item.id, group, outcome);
@@ -548,18 +613,38 @@ export function InWorksSection({
                 {composerFor === item.id ? 'Cancel' : 'Reply'}
               </button>
             )}
-            {group === 'handled' && (
-              <button
-                type="button"
-                disabled={!!busyIds[item.id] || lockedOut('Followed')}
-                onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting', 'Followed')}
-                title={lockedOut('Followed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'I followed up — snooze until they reply'}
-                className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
-                style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
-              >
-                Followed
-              </button>
-            )}
+            {/* Naldo 2026-09-02: this used to render for the 'handled' group
+                only, so every row in "Awaiting their reply" — the ones carrying
+                the amber "Nd quiet" and blue "Follow-up due" tags — offered no
+                way to say "I chased them again". A staffer who rang somebody had
+                to either reply by text or mark the whole conversation completed.
+
+                The awaiting row is ALREADY followed, so a plain click is a no-op
+                (the store refuses a second stamp and the route reports success),
+                which is why it passes `again` — the explicit restamp opt-in. The
+                label says "again" for the same reason: on a row that is already
+                followed, a bare "Followed" claims nothing new. */}
+            {(() => {
+              const fb = followedButtonFor(group);
+              return (
+                <button
+                  type="button"
+                  disabled={!!busyIds[item.id] || lockedOut(fb.label)}
+                  onClick={() =>
+                    act(item, group, '/api/dashboard/followed', 'awaiting', fb.label, fb.body)
+                  }
+                  title={
+                    lockedOut(fb.label)
+                      ? `Locked until the ${lockedTo} attempt is confirmed`
+                      : fb.title
+                  }
+                  className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                  style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
+                >
+                  {fb.label}
+                </button>
+              );
+            })()}
             <button
               type="button"
               disabled={!!busyIds[item.id] || lockedOut('Mark completed')}

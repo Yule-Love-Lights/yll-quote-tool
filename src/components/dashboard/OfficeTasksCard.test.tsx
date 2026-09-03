@@ -20,6 +20,7 @@ import OfficeTasksCard, {
   applyTaskViewControls,
   assignedLabel,
   CARD_TASK_LIMIT,
+  customerLinkLabel,
   formatDueTime,
   isAmbiguousMutationFailure,
   personalLabel,
@@ -45,6 +46,9 @@ function task(over: Partial<Parameters<typeof applyTaskViewControls>[0][number]>
     dismissedAt: null,
     createdByLabel: null,
     assignedToLabel: null,
+    customerContactId: null,
+    customerName: null,
+    highLevelUrl: null,
     ...over,
   };
 }
@@ -137,6 +141,17 @@ describe('assignedLabel', () => {
 
   it('shows nothing when nobody is assigned', () => {
     expect(assignedLabel(null)).toBeNull();
+  });
+});
+
+describe('customerLinkLabel', () => {
+  it('uses the customer name when there is one', () => {
+    expect(customerLinkLabel('Sharon McDonough')).toBe('Sharon McDonough');
+  });
+
+  it('falls back to a neutral label rather than inventing a name', () => {
+    expect(customerLinkLabel(null)).toBe('View customer');
+    expect(customerLinkLabel('   ')).toBe('View customer');
   });
 });
 

@@ -87,6 +87,10 @@ const PUBLIC_API_EXACT = new Set([
   '/api/inventory/low-stock-alert', // Vercel Cron (CRON_SECRET-guarded, #82 low-stock alarm)
   '/api/dashboard/ghl/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 inbox safety-net poll)
   '/api/dashboard/ghl/webhook', // GHL "Customer Replied" webhook (shared-secret in the route, #58)
+  '/api/integrations/highlevel/opportunity-stage', // GHL opportunity-stage webhook (S75) — same
+  // shared secret as the entry above, verified inside the route. A HighLevel request carries no
+  // operator session, so without this the perimeter 401s it before that check ever runs. It only
+  // ever archives a quote (terminal status + view_only) and REFUSES anything with money on it.
   '/api/dashboard/escalate', // Vercel Cron (CRON_SECRET-guarded, #58 escalation engine)
   '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)

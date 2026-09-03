@@ -25,6 +25,13 @@ import type {
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
 import { isUuid } from './validate';
+import {
+  planCallFollowUps,
+  MIN_CALL_SECONDS,
+  type CallFollowUpItem,
+  type CallFollowUpStamp,
+  type ContactCall,
+} from './callFollowUp';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { leadForwardsAnsweredBy } from './leadForward';
 import { decideInboxState } from './reducer';
@@ -32,6 +39,7 @@ import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
+import { shouldSuppressOnDismiss } from './dismissSuppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
@@ -979,7 +987,7 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // bidirectional generic inference on the inline argument).
   const baseQuery = sb.from('inbox_items').select(
     'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
-      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
+      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to, ghl_contact_id )',
     { count: 'exact' },
   );
   const { data, error, count } = await applyBucketFilter(baseQuery, 'needs_reply')
@@ -1101,6 +1109,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       quoteValue: (row.quote_value as number | null) ?? null,
       isReturning: row.contact_id ? returning.has(row.contact_id as string) : false,
       contactId: (row.contact_id as string | null) ?? null,
+      // The HighLevel contact id, distinct from contactId above: that one is
+      // the dashboard_contacts row id used for claim/assign, this one is what
+      // /customers/[contactId] and the HighLevel app both address a customer
+      // by. Null on a contact that has never been linked to the CRM.
+      ghlContactId: (c?.ghl_contact_id as string | null) ?? null,
       assignedTo: (c?.assigned_to as string | null) ?? null,
       contact: c
         ? {
@@ -1210,6 +1223,21 @@ async function recordActionFailed(
     console.warn('[inbox] action-failure audit write failed (non-fatal):', e);
   }
 }
+
+/** How a follow-up was recorded. 'call' is written by the automatic sweep that
+ *  reads outbound calls (callFollowUp.ts); the manual button and a sent reply
+ *  pass nothing and keep their original audit shape.
+ *
+ *  It rides the SAME `detail.auto` + `detail.reason` channel the terminal-quote
+ *  auto-complete already uses (row 317 FIX 4), because that channel is the one
+ *  ActivityLog actually renders — see AUTO_REASON_LABEL there. A bespoke key
+ *  would have been written and read by nobody, which the pre-merge staff lens
+ *  caught it being in the first cut of this change. */
+export type FollowedVia = 'call';
+
+/** The `detail.reason` value a call-driven follow-up carries. Must stay in step
+ *  with AUTO_REASON_LABEL in ActivityLog.tsx, which turns it into words. */
+export const FOLLOWED_VIA_CALL_REASON = 'phone_call';
 
 export type HandledTarget = {
   source: InboxSource;
@@ -1340,6 +1368,37 @@ export async function markItemHandledLocal(
  * unchanged: a benign `{ ok: true }` no-op, since under `.neq` a zero-row match
  * can only mean "already dismissed".
  */
+/**
+ * Do these identifiers belong to somebody we have quoted? (S75)
+ *
+ * The last line of defence before a dismiss silences a sender. Best-effort and
+ * fails CLOSED on any error: if we cannot prove they are NOT a customer, we do
+ * not suppress. Losing a suppression is a bit more inbox noise; a wrong
+ * suppression loses a customer's mail silently for months, which is what
+ * actually happened.
+ */
+async function identifiersBelongToACustomer(
+  sb: ReturnType<typeof getSupabaseServiceClient>,
+  identifiers: (string | null)[],
+): Promise<boolean> {
+  if (!sb) return true;
+  const emails = identifiers
+    .filter((v): v is string => !!v && v.includes('@'))
+    .map((v) => v.trim().toLowerCase());
+  if (!emails.length) return false;
+  try {
+    const { data, error } = await sb
+      .from('quotes')
+      .select('id')
+      .in('customer_email', emails)
+      .limit(1);
+    if (error) return true; // cannot tell -> do not suppress
+    return (data?.length ?? 0) > 0;
+  } catch {
+    return true; // cannot tell -> do not suppress
+  }
+}
+
 export async function dismissItem(
   itemId: string,
   operatorId: string | null,
@@ -1359,7 +1418,7 @@ export async function dismissItem(
     : Array.isArray(expectedStatus)
       ? update.in('status', expectedStatus)
       : update.eq('status', expectedStatus))
-    .select('dashboard_contacts ( primary_email, primary_phone )')
+    .select('source, lead_kind, dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
@@ -1380,8 +1439,36 @@ export async function dismissItem(
     return { ok: true };
   }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
-  const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
-  if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
+  const row = data as {
+    source?: string | null;
+    dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null };
+  } | null;
+  const c = row?.dashboard_contacts;
+  // S75 — the dismiss ALWAYS lands; this only decides whether the sender is
+  // silenced from here on. It used to be unconditional, which is how five
+  // paying customers ended up silenced by staff correctly dismissing our own
+  // "we sent a quote" rows and a lead forward. See dismissSuppression.ts for
+  // the traced cases. The check fails CLOSED: anything that looks like one of
+  // our customers keeps notifying us.
+  if (c) {
+    const identifiers = [c.primary_email ?? null, c.primary_phone ?? null];
+    const decision = shouldSuppressOnDismiss({
+      source: row?.source ?? null,
+      isKnownCustomer: await identifiersBelongToACustomer(sb, identifiers),
+    });
+    if (decision.suppress) {
+      await addSuppressedSenders(identifiers, { actor: operatorId, inboxItemId: itemId });
+    } else {
+      // Say so in the activity trail rather than silently doing nothing, so a
+      // staffer wondering why a sender still notifies them can find the answer.
+      await sb.from('dashboard_activity').insert({
+        actor: operatorId ?? 'system',
+        action: 'dismiss_suppression_skipped',
+        inbox_item_id: itemId,
+        detail: { reason: decision.reason },
+      });
+    }
+  }
   // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
   // a real lead, so any pending nag anchored to it should die with it. Only on
   // the matched (real transition) path above, never the already-dismissed no-op.
@@ -1433,7 +1520,7 @@ export async function markItemFollowed(
   itemId: string,
   operatorId: string,
   now: Date,
-  opts?: { allowRestamp?: boolean },
+  opts?: { allowRestamp?: boolean; via?: FollowedVia; requireNoInboundAfter?: Date },
 ): Promise<{ ok: true } | { ok: false; error: string; alreadyFollowed?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1446,6 +1533,19 @@ export async function markItemFollowed(
     .in('status', ['unresponded', 'handled']);
   if (!allowRestamp) {
     query = query.is('followed_up_at', null);
+  }
+  // Enforce the caller's anchor AT THE WRITE, not only at the read that chose
+  // this row. The automatic call sweep reads a snapshot of eligible items and
+  // then writes them one by one, so a customer reply landing through the
+  // ingest webhook in that gap would be overwritten: planIngest clears
+  // followed_up_at on any newer inbound, and a stale stamp written afterwards
+  // would push that unanswered customer back into "awaiting their reply" and
+  // hide them from the list whose job is to surface them. Found by the
+  // pre-merge technical lens. This makes the update itself refuse when a newer
+  // inbound has arrived, which check-then-act cannot do.
+  if (opts?.requireNoInboundAfter) {
+    const iso = opts.requireNoInboundAfter.toISOString();
+    query = query.or(`last_inbound_at.is.null,last_inbound_at.lte.${iso}`);
   }
   const { data, error } = await query.select('id').maybeSingle();
   if (error) {
@@ -1482,7 +1582,17 @@ export async function markItemFollowed(
     await recordActionFailed(itemId, operatorId, 'followed', msg);
     return { ok: false, error: msg };
   }
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
+  // `via` records HOW this follow-up happened, so the activity log can tell a
+  // phone call apart from a text. Omitted by the two original callers (the
+  // manual button and a sent reply), which keeps their audit rows the shape
+  // they already were. Written as auto/reason because that is the pair
+  // listActivity maps into ActivityRow.autoReason and ActivityLog renders.
+  await sb.from('dashboard_activity').insert({
+    actor: operatorId,
+    action: 'followed',
+    inbox_item_id: itemId,
+    detail: { from, ...(opts?.via === 'call' ? { auto: true, reason: FOLLOWED_VIA_CALL_REASON } : {}) },
+  });
   // PR #1005 (premerge STAFF lens, HIGH): "I followed up" is the answer to
   // "you should follow up", so it retires this item's due nag. Before this,
   // the ONLY staff-initiated way to close a quote_sent_no_reply follow-up was
@@ -2633,6 +2743,122 @@ export function findViewOnlyFollowUpItems(
  * match. Fails open (closes nothing) on a lookup error rather than guessing.
  * Returns how many follow-ups were closed.
  */
+/**
+ * Mark inbox items followed when staff have PHONED that person, using the
+ * calls already recorded in `call_recordings`. Naldo's ask, 2026-09-02: the
+ * /inbox "In the works" list kept nagging about people staff had rung, because
+ * nothing but a text or a button click ever cleared a row.
+ *
+ * The rule lives in callFollowUp.ts and is pure; this function is the thin
+ * database wrapper around it. See planCallFollowUps for why it stamps at the
+ * CALL's time (that is what makes re-running this a no-op) and callQualifies
+ * for the outbound / 30-second / after-the-anchor clauses.
+ *
+ * SCOPE is deliberately the "In the works" section and nothing else, matching
+ * what was asked for: the two buckets that section renders (see
+ * applyBucketFilter in lifecycle.ts) are
+ *   • awaiting  — followed_up_at set, status not completed/dismissed
+ *   • handled   — status 'handled', followed_up_at null
+ * The needs-reply list at the TOP of /inbox (status 'unresponded' with no
+ * follow-up stamp) is EXCLUDED on purpose. Those are people waiting on US, and
+ * snoozing one because somebody phoned would hide a live unanswered customer
+ * from the list whose entire job is to show them.
+ *
+ * `dryRun` returns the plan without writing, which is how the one-off backfill
+ * over historical calls was reviewed before it ran.
+ *
+ * Best-effort per row, like the other sweeps here: one failed stamp is counted
+ * and skipped rather than aborting the tick.
+ */
+export async function sweepCallFollowUps(
+  opts: { dryRun?: boolean; limit?: number } = {},
+): Promise<{ ok: true; planned: CallFollowUpStamp[]; stamped: number; failed: number } | { ok: false; error: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const limit = opts.limit ?? 5000;
+
+  // Both "In the works" buckets in one read: anything not terminal that either
+  // carries a follow-up stamp or is sitting handled. The `.or` mirrors
+  // applyBucketFilter's two predicates rather than re-deriving them loosely —
+  // a row must be in one of those two buckets to be eligible.
+  const { data: itemRows, error: itemErr } = await sb
+    .from('inbox_items')
+    .select('id, status, followed_up_at, last_inbound_at, last_message_at, contact_id, dashboard_contacts(ghl_contact_id)')
+    .not('status', 'in', '(completed,dismissed)')
+    .or('followed_up_at.not.is.null,status.eq.handled')
+    .limit(limit);
+  if (itemErr) return { ok: false, error: itemErr.message };
+
+  const items: CallFollowUpItem[] = (itemRows ?? []).map((raw) => {
+    const row = raw as unknown as Record<string, unknown>;
+    const contact = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
+    return {
+      id: String(row.id),
+      ghlContactId: (contact?.ghl_contact_id as string | null) ?? null,
+      followedUpAt: row.followed_up_at ? new Date(String(row.followed_up_at)) : null,
+      lastInboundAt: row.last_inbound_at ? new Date(String(row.last_inbound_at)) : null,
+      lastMessageAt: row.last_message_at ? new Date(String(row.last_message_at)) : null,
+    };
+  });
+
+  const contactIds = [...new Set(items.map((i) => i.ghlContactId).filter((id): id is string => !!id))];
+  if (contactIds.length === 0) return { ok: true, planned: [], stamped: 0, failed: 0 };
+
+  // Filter on the qualifying clauses in the QUERY as well as in the pure rule.
+  // The rule is still the authority (callQualifies re-checks every clause); this
+  // just avoids dragging every ring-out across the wire.
+  const { data: callRows, error: callErr } = await sb
+    .from('call_recordings')
+    .select('ghl_contact_id, direction, called_at, duration_seconds, is_test, skip_reason')
+    .in('ghl_contact_id', contactIds)
+    .eq('direction', 'outbound')
+    .gte('duration_seconds', MIN_CALL_SECONDS)
+    // Newest first, so that if the cap ever bites it drops the OLDEST calls —
+    // the ones least likely to be the latest qualifying call for any row.
+    // Without an order the surviving set past the cap is non-deterministic, and
+    // so is which call the planner picks as "latest" (pre-merge admin lens).
+    .order('called_at', { ascending: false })
+    .limit(limit);
+  if (callErr) return { ok: false, error: callErr.message };
+
+  const calls: ContactCall[] = (callRows ?? []).map((raw) => {
+    const row = raw as unknown as Record<string, unknown>;
+    return {
+      ghlContactId: (row.ghl_contact_id as string | null) ?? null,
+      direction: (row.direction as string | null) ?? null,
+      durationSeconds: typeof row.duration_seconds === 'number' ? row.duration_seconds : null,
+      calledAt: new Date(String(row.called_at)),
+      isTest: row.is_test === true,
+      junkReason: (row.skip_reason as string | null) ?? null,
+    };
+  });
+
+  const planned = planCallFollowUps({ items, calls });
+  if (opts.dryRun) return { ok: true, planned, stamped: 0, failed: 0 };
+
+  let stamped = 0;
+  let failed = 0;
+  for (const stamp of planned) {
+    // allowRestamp: this is the re-chase case by design. A row already marked
+    // followed that has gone quiet again SHOULD have its clock reset by a real
+    // phone call — that is the behaviour Naldo chose, and the reason the manual
+    // button refuses to restamp (a duplicate click must not move the customer's
+    // waiting clock) does not apply to a genuine new conversation.
+    const res = await markItemFollowed(stamp.itemId, 'system', stamp.calledAt, {
+      allowRestamp: true,
+      via: 'call',
+      // The same instant the plan was built against. If the customer has
+      // written since this snapshot was read, the UPDATE matches nothing and
+      // their row correctly stays in the needs-reply state the webhook put it
+      // in, instead of being snoozed by a call that predates their reply.
+      requireNoInboundAfter: stamp.calledAt,
+    });
+    if (res.ok) stamped += 1;
+    else failed += 1;
+  }
+  return { ok: true, planned, stamped, failed };
+}
+
 export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
@@ -3859,7 +4085,12 @@ export async function reverseItemState(
     const dc = (
       c as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null
     )?.dashboard_contacts;
-    if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
+    if (dc)
+      await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null], {
+        actor: operatorId ?? null,
+        inboxItemId: a.inbox_item_id,
+        note: 'reversed a dismiss',
+      });
   }
 
   // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id

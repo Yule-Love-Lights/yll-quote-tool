@@ -17,7 +17,11 @@
 //   3. Idempotently stamp deposit_paid_at + the Valor txn / vault / receipt fields
 //      (Valor retries up to 3× — dedupe so side effects fire at most once).
 //   4. Move the HighLevel opportunity to ⏰Approved.
-//   5. Email + text the customer their receipt, and email staff "deposit received."
+//   5. Email + text the customer their receipt, and email staff "deposit received"
+//      — a failed staff email also gets a Telegram fallback (best-effort) and a
+//      durable deposit_notify_failed_at/deposit_notify_error marker (2026-09-02
+//      incident: the internal contact's Email DND silently ate this email for
+//      two days with no other signal — see internalEmail() below).
 // Steps 4–5 are best-effort: the payment is already recorded even if they fail.
 //
 // Verification probe: Valor's Settings → WebHook "Verify and Update" button (and
@@ -89,6 +93,17 @@ function safePayloadKeyNames(rawBody: string): string[] {
   }
   return keyDump;
 }
+
+// 2026-09-02 incident fix round (customer lens): sendTelegramMessage
+// (src/lib/integrations/telegram.ts) carries no timeout of its own, and this
+// route awaits its Telegram fallback INSIDE the Promise.allSettled batch that
+// gates the 200 handed back to Valor — a hanging Telegram call could stretch
+// that response. telegram.ts is SHARED and prepPing (above) has the same
+// unbounded shape, both out of scope here; bounding it locally, at the one
+// call site that fires on a failure path, is the surgical fix. A timeout is
+// treated exactly like any other fallback failure: logged, and the durable
+// marker write below still runs regardless.
+const DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS = 5_000;
 
 function hlErrorMessage(err: unknown): string {
   return err instanceof HighLevelError
@@ -900,7 +915,83 @@ export async function POST(req: NextRequest) {
       });
       internalEmailSent = true;
     } catch (err) {
-      console.warn('[api/integrations/valor/webhook] internal email failed:', hlErrorMessage(err));
+      const errMsg = hlErrorMessage(err);
+      console.warn('[api/integrations/valor/webhook] internal email failed:', errMsg);
+
+      // 2026-09-02 incident: the internal contact's GHL Email DND flipped on
+      // (code 105, "user clicked unsubscribe"), so every send here failed and
+      // this console.warn was the ONLY signal — two real deposits produced no
+      // staff alert and nobody noticed for two days. Two independent
+      // fallbacks, both best-effort:
+
+      // (a) Telegram fallback to the 'jobs' audience — confirmed as the real
+      // office/management staff-alert channel for a money/booking event by
+      // `GET/POST /api/ops/installment-run`'s own summary alert (that route's
+      // "Best-effort staff alert" comment + `notifyTelegramAudience('jobs',
+      // summary)`), not guessed. Bounded against DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS
+      // (fix round, customer lens): sendTelegramMessage carries no timeout of
+      // its own, and this await sits inside the Promise.allSettled batch that
+      // gates the 200 handed back to Valor, so an unbounded hang here could
+      // stretch that response. A timeout is just another fallback failure —
+      // logged, and the durable marker below still runs.
+      try {
+        // Fix round: hold the timer id and clear it in a `finally` once the
+        // race settles either way — a bare `new Promise((_,reject) =>
+        // setTimeout(...))` with nothing clearing it leaves the timer armed
+        // even after Telegram wins (the common case), keeping the serverless
+        // invocation alive for the remaining ~5s before it fires a rejection
+        // nobody reads (reproduced in a standalone Node run). Clearing it
+        // changes nothing about the invariant: a real timeout is still
+        // caught below and treated as an ordinary fallback failure.
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            notifyTelegramAudience(
+              'jobs',
+              `⚠️ Deposit received but the staff email failed\n` +
+                `The deposit is recorded and the booking is safe — only the staff alert email didn't send.\n` +
+                `${quote.customer_name ?? 'A customer'}${quote.quote_number ? ` (Quote #${quote.quote_number})` : ''} paid ` +
+                `$${depositUsd.toFixed(2)} of $${totalUsd.toFixed(2)} total.\n` +
+                `HighLevel error: ${errMsg}\n` +
+                `Check Settings → HighLevel for details.\n` +
+                `${adminUrl}`,
+            ),
+            new Promise<never>((_resolve, reject) => {
+              timeoutId = setTimeout(
+                () => reject(new Error(`Telegram fallback timed out after ${DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS}ms`)),
+                DEPOSIT_NOTIFY_TELEGRAM_TIMEOUT_MS,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } catch (telegramErr) {
+        console.error(
+          '[api/integrations/valor/webhook] telegram fallback for internal email failure also failed:',
+          telegramErr,
+        );
+      }
+
+      // (b) Durable marker on the quote — mirrors approve route's
+      // approval_notify_failed_at/approval_notify_error pair (same best-effort
+      // posture: its own failure only logs, never undoes the recorded
+      // payment). Test Quote (#93): never write it for is_test — mirrors the
+      // approve route's rule, though in practice this webhook already refuses
+      // is_test quotes earlier (see the is_test guard above), so this branch
+      // is unreachable for them today; kept for parity/defense.
+      if (!quote.is_test) {
+        const { error: markErr } = await sb
+          .from('quotes')
+          .update({
+            deposit_notify_failed_at: new Date().toISOString(),
+            deposit_notify_error: errMsg,
+          })
+          .eq('id', quote.id);
+        if (markErr) {
+          console.warn('[api/integrations/valor/webhook] deposit-notify-marker write failed:', markErr.message);
+        }
+      }
     }
   };
 
