@@ -31,7 +31,7 @@ import {
 } from '@/components/admin/PersonHoursSections';
 import { getSessionRole } from '@/lib/auth/sessionRole';
 import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
-import { listSettlements, summarize } from '@/lib/shiftSettlements';
+import { listSettlements, summarize, unpaidRemainders } from '@/lib/shiftSettlements';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,6 +63,19 @@ export default async function PersonTimePage({
       })
     : null;
   const settlementSummary = summarize(settlements ?? []);
+  // NOT scoped to the range on screen. Phase 3 scoped the payable list to the
+  // chosen range so an admin paying "the last two weeks" could not settle a
+  // shift from March by accident. That reasoning died with the tick-boxes:
+  // the server now spends a payment across ALL unpaid shifts oldest first, so
+  // a range-scoped preview would describe an allocation that is not the one
+  // about to happen — the confirm dialog would name the wrong shifts whenever
+  // an older unpaid shift sat outside the window (admin lens on PR #1190).
+  const remainders = time.person
+    ? await unpaidRemainders(time.person.id).catch((e: unknown) => {
+        console.error('[time-tracking] unpaid remainders read failed:', e);
+        return null;
+      })
+    : null;
   const basePath = `/admin/time-tracking/${encodeURIComponent(crewMemberId)}`;
 
   if (!time.person) {
@@ -130,15 +143,17 @@ export default async function PersonTimePage({
           crewMemberId={person.id}
           crewName={person.displayName}
           rateCentsPerHour={person.baseRateCents}
-          days={time.days}
-          range={time.range}
+          remainders={remainders ?? []}
           settlements={settlements ?? []}
           settledCents={settlementSummary.settledCents}
           halfUndone={settlementSummary.halfUndone}
           // Both reads have to have worked: the marks say which shifts are
           // already paid, the list says what was paid. Either failing makes
           // the panel misleading rather than merely incomplete.
-          settlementsReadable={time.settlementsReadable && settlements !== null}
+          // The remainder read is part of the same claim: without it the
+          // panel cannot say what is unpaid, so it must hide rather than
+          // show a shorter list than the truth.
+          settlementsReadable={time.settlementsReadable && settlements !== null && remainders !== null}
         />
 
         <ShiftAuditSection entries={time.audit} partial={time.auditPartial} />
