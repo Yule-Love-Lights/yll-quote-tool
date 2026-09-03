@@ -20,14 +20,14 @@ export type BillingTab = 'quotes' | 'jobs' | 'invoices' | 'installments';
 
 export function BillingSubNav({ active }: { active: BillingTab }) {
   return (
-    <div className="flex gap-1 mb-5 border-b border-gray-200">
+    <div className="flex gap-1 mb-5 border-b border-gray-200 overflow-x-auto">
       {ITEMS.map((item) => {
         const on = item.key === active;
         return (
           <Link
             key={item.key}
             href={item.href}
-            className={`px-3 py-2 text-sm font-medium -mb-px border-b-2 transition-colors ${
+            className={`px-3 py-2 text-sm font-medium -mb-px border-b-2 transition-colors shrink-0 whitespace-nowrap ${
               on
                 ? 'border-gray-900 text-gray-900'
                 : 'border-transparent text-gray-500 hover:text-gray-700'

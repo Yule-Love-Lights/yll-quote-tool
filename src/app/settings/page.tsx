@@ -110,13 +110,13 @@ export default function SettingsPage() {
         </Link>
       </div>
 
-      <div className="flex gap-1 border-b border-gray-200 mb-5">
+      <div className="flex gap-1 border-b border-gray-200 mb-5 overflow-x-auto">
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
-            className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 ${
+            className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 shrink-0 whitespace-nowrap ${
               tab === t.id
                 ? 'border-green-600 text-green-700'
                 : 'border-transparent text-gray-500 hover:text-gray-800'
@@ -192,8 +192,12 @@ function PaletteTab({
         but you can recolor them.
       </p>
       <div className="space-y-2">
+        {/* Row 469: each row packs a swatch, a flex-1 name field, two colour
+            pickers and a 16-wide action onto one line, which is 74px more than
+            a phone has. flex-wrap lets the controls fall to a second line
+            instead of pushing the whole page sideways. */}
         {colors.map((c, i) => (
-          <div key={c.id} className="flex items-center gap-3 border border-gray-200 rounded-md p-2">
+          <div key={c.id} className="flex flex-wrap items-center gap-3 border border-gray-200 rounded-md p-2">
             <span
               aria-hidden
               className="w-7 h-7 rounded-full ring-1 ring-black/10 shrink-0"

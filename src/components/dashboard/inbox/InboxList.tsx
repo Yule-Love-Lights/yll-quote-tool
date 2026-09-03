@@ -329,7 +329,14 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             </p>
           )}
         </div>
-        <div className="flex shrink-0 gap-2">
+        {/* Row 496. Six controls held ONE line and pushed the row 294px past a
+            phone's width, taking the contact name and badges off screen.
+            flex-wrap alone did not fix it, measured: with shrink-0 still on
+            this container it never shrinks below its content, so the wrap can
+            never engage. Dropping shrink-0 for min-w-0 is what actually lets
+            it wrap. InWorksSection's identical row carries the same shrink-0
+            and only fits because it holds fewer buttons. */}
+        <div className="flex min-w-0 gap-2 flex-wrap justify-end">
           <button
             type="button"
             disabled={!!busyIds[item.id] || lockedOut('Handled')}

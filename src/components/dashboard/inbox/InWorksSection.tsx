@@ -479,7 +479,11 @@ export function InWorksSection({
               </p>
             )}
           </div>
-          <div className="flex shrink-0 gap-2 flex-wrap justify-end">
+          {/* Row 496, same treatment as InboxList's identical row: flex-wrap alone
+              cannot fire while shrink-0 keeps the container at its content's
+              natural width. Measured, this row was the last 22px of phone
+              overflow left on the page after the other one was fixed. */}
+          <div className="flex min-w-0 gap-2 flex-wrap justify-end">
             {item.source === 'gmail' ? (
               // #268 fix round (sibling-guard check against InboxList.tsx's
               // matching fix), UPDATED round 3: InboxList's real fix is a
