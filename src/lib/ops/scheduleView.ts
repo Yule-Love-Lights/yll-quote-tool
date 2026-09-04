@@ -14,6 +14,24 @@
  * position 41 of 43 (2026-09-04).
  */
 export function visibleUnscheduled<T>(jobs: readonly T[], cap: number): { shown: T[]; hidden: number } {
-  const shown = jobs.slice(0, Math.max(0, cap));
+  // A non-finite cap would slice to nothing while the note claimed a count, so
+  // clamp it to something real first (technical lens).
+  const limit = Number.isFinite(cap) ? Math.max(0, Math.floor(cap)) : 0;
+  const shown = jobs.slice(0, limit);
   return { shown, hidden: Math.max(0, jobs.length - shown.length) };
 }
+
+/**
+ * One row of the "Not scheduled yet" list, as the page needs it. Declared in
+ * this PURE module so a client component can type its state without importing
+ * scheduling.ts, which pulls in the Supabase service client.
+ */
+export type UnscheduledRow = {
+  jobId: string;
+  jobNumber: number | null;
+  status: string;
+  budgetedHours: number | null;
+  hoursArePlaceholder: boolean;
+  customerName: string | null;
+  address: string | null;
+};

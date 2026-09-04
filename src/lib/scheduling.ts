@@ -340,7 +340,18 @@ export async function getSchedule(
  * or after `fromDate`. This is the "unscheduled work" list the plan calls for.
  */
 export async function listUnscheduledJobs(fromDate: string): Promise<{
-  jobs: Array<{ jobId: string; jobNumber: number | null; status: string; budgetedHours: number | null; hoursArePlaceholder: boolean }>;
+  jobs: Array<{
+    jobId: string;
+    jobNumber: number | null;
+    status: string;
+    budgetedHours: number | null;
+    hoursArePlaceholder: boolean;
+    /** Whose job it is, so the list can be searched by eye. Null when the job
+     * has no linked customer or the lookup failed. */
+    customerName: string | null;
+    /** Where it is, same reason. */
+    address: string | null;
+  }>;
   errors: string[];
 }> {
   const db = getSupabaseServiceClient();
@@ -358,18 +369,52 @@ export async function listUnscheduledJobs(fromDate: string): Promise<{
 
   const { data: jobData, error: jobError } = await db
     .from('jobs')
-    .select('id, job_number, status, budgeted_hours, labor_revenue_cents, rates_are_placeholder')
+    .select('id, job_number, status, budgeted_hours, labor_revenue_cents, rates_are_placeholder, customer_id, property_id')
     .not('status', 'in', '(done,cancelled)');
   if (jobError) return { jobs: [], errors: [`job scan: ${jobError.message}`] };
 
-  const jobs = ((jobData as unknown as JobRowForSchedule[] | null) ?? [])
-    .filter((j) => !assigned.has(j.id))
+  // Who and where, so a staffer can find "the Smith job" by eye instead of
+  // detouring to /admin/jobs for its number first (staff lens, PR #1210). A
+  // failed lookup leaves the field null and lands in errors; it never drops a
+  // job from the list.
+  const errors: string[] = [];
+  const rows = (jobData as unknown as Array<JobRowForSchedule & { customer_id: string | null; property_id: string | null }> | null) ?? [];
+  const open = rows.filter((j) => !assigned.has(j.id));
+
+  const customerIds = [...new Set(open.map((j) => j.customer_id).filter((v): v is string => !!v))];
+  const nameById = new Map<string, string | null>();
+  if (customerIds.length) {
+    const { data, error } = await db.from('customers').select('id, name').in('id', customerIds);
+    if (error) errors.push(`customer lookup: ${error.message}`);
+    for (const c of ((data as unknown as { id: string; name: string | null }[] | null) ?? [])) nameById.set(c.id, c.name);
+  }
+
+  const propertyIds = [...new Set(open.map((j) => j.property_id).filter((v): v is string => !!v))];
+  const addressById = new Map<string, string | null>();
+  if (propertyIds.length) {
+    const { data, error } = await db.from('properties').select('id, address').in('id', propertyIds);
+    if (error) errors.push(`property lookup: ${error.message}`);
+    for (const p of ((data as unknown as { id: string; address: string | null }[] | null) ?? [])) addressById.set(p.id, p.address);
+  }
+
+  const jobs = open
     // NEWEST first. The page truncates this list, and unordered it put a job
     // created minutes ago at position 41 of 43, past the cut, with nothing on
     // screen saying more existed (Naldo hit exactly this with job #1069,
     // 2026-09-04). A job with no number sorts last rather than to the top,
     // where a null would otherwise win the comparison.
-    .sort((a, b) => (b.job_number ?? -Infinity) - (a.job_number ?? -Infinity))
+    .sort((a, b) => {
+      // Explicit null handling rather than an -Infinity trick: with BOTH
+      // numbers null that subtraction is NaN, which is not a valid comparator
+      // return. V8 happens to keep those rows in stable order, but relying on
+      // that is a tradeoff nobody should have to rediscover (technical lens).
+      const an = a.job_number;
+      const bn = b.job_number;
+      if (an == null && bn == null) return 0;
+      if (an == null) return 1;
+      if (bn == null) return -1;
+      return bn - an;
+    })
     .map((j) => {
       const plan = readLaborPlan(j as unknown as LaborPlanSource);
       return {
@@ -378,10 +423,12 @@ export async function listUnscheduledJobs(fromDate: string): Promise<{
         status: j.status,
         budgetedHours: plan.status === 'none' ? null : plan.budgetedHours,
         hoursArePlaceholder: plan.status === 'placeholder',
+        customerName: j.customer_id ? (nameById.get(j.customer_id) ?? null) : null,
+        address: j.property_id ? (addressById.get(j.property_id) ?? null) : null,
       };
     });
 
-  return { jobs, errors: [] };
+  return { jobs, errors };
 }
 
 /**
