@@ -719,7 +719,7 @@ This decides which hours a payment covered at each day's straight rate; the
 rate is stamped per line so a later overtime rule can find and re-judge these
 rows rather than inherit them silently.
 
-# 21. The spreadsheet import (S61, 2026-09-04, PR #1216) — DONE
+# 21. The spreadsheet import (S61, 2026-09-04, PR #1215) — DONE
 
 §19 guessed at the file from a screenshot. The real one is BIGGER, and this
 records what it actually contained.
