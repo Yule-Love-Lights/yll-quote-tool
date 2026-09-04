@@ -88,10 +88,13 @@ export function ConversionSplitCard({
         {fmtRate(overall)} overall · {totalApproved}/{totalReached} reached
       </div>
       {/* Named, never silent. These quotes are in none of the three rates
-          above, and after a send wave they can be most of the pipeline. */}
+          above, and after a send wave they can be most of the pipeline.
+          Deliberately NOT "still out": this bucket also holds quotes already
+          won or cancelled inside the window, which wait for their own cohort
+          rather than being counted while their siblings cannot be. */}
       {pendingRecent > 0 && (
         <div className="mt-0.5 text-xs tabular-nums" style={{ color: 'var(--op-text-dim)' }}>
-          {pendingRecent} still out, too recent to count
+          {pendingRecent} sent too recently to count yet
         </div>
       )}
     </div>

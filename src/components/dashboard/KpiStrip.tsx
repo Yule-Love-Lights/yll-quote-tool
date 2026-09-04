@@ -25,9 +25,17 @@ function turnaroundSub(excluded: number): string {
   return `${base} · ${excluded} ${noun} excluded`;
 }
 
+/**
+ * Two cards span two columns (turnaround, conversion), so the strip needs an
+ * even count below xl and seven above it. Seven columns everywhere squeezed
+ * the money cards until "Booked (lifetime)" ran past its own border, measured
+ * at 39px over at 768px and 3px at 1024px. Four columns there wraps the strip
+ * to two rows instead, which is the trade: a taller strip beats a number
+ * printed over the page background.
+ */
 export function KpiStrip({ kpis }: { kpis: Kpis }) {
   return (
-    <section aria-label="Key metrics" className="grid grid-cols-2 md:grid-cols-7 gap-3 mb-8">
+    <section aria-label="Key metrics" className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-8">
       <KpiCard
         label="Quote turnaround"
         value={fmtDays(kpis.avgTurnaroundDays)}

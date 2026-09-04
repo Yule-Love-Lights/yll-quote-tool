@@ -100,7 +100,7 @@ export default async function InsightsPage() {
           <KpiCard
             label="Close ratio"
             value={pct(stats.closeRatio)}
-            sub={`approved / reached · sent ${DASHBOARD_CONFIG.conversionCoolingDays}+ days ago`}
+            sub={`approved / reached · excludes the last ${DASHBOARD_CONFIG.conversionCoolingDays} days of sends`}
           />
           <KpiCard label="Avg job value" value={money(stats.avgJobValue)} sub="approved quotes" />
           <KpiCard label="Avg quote value" value={money(stats.avgQuoteValue)} sub="all quotes" />

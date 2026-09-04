@@ -578,6 +578,21 @@ describe('computeKpis — the cooling window applies to every conversion number 
     expect(k.conversionRate).toBeNull();
   });
 
+  // A quote cancelled two days after it was sent is decided, but it waits for
+  // its own cohort exactly as a recent WIN does. Counting the loss now while
+  // holding the win back would tilt the rate downwards.
+  it('holds a loss inside the window back too, not just a win', () => {
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: days(30), customer_approved_at: days(28) }),
+        makeQuote({ quote_sent_at: days(2), status: 'declined' }),
+      ],
+      NOW,
+    );
+    expect(k.conversionRate).toBe(1);
+    expect(k.conversionPendingRecent).toBe(1);
+  });
+
   it('applies the window to neighbors and regular by the same rule', () => {
     const k = computeKpis(
       [

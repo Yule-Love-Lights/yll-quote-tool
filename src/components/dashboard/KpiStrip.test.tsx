@@ -76,13 +76,20 @@ describe('KpiStrip — conversion split', () => {
 });
 
 describe('KpiStrip — quotes too recent to count are named, not hidden', () => {
-  it('says how many are still out', () => {
+  it('says how many were sent too recently to count', () => {
     const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis({ conversionPendingRecent: 51 })} />);
-    expect(html).toContain('51 still out');
+    expect(html).toContain('51 sent too recently to count yet');
   });
 
   it('says nothing when none are pending', () => {
     const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis({ conversionPendingRecent: 0 })} />);
+    expect(html).not.toContain('too recently');
+  });
+
+  // This bucket also holds quotes already won or cancelled inside the window,
+  // so the wording must not claim they are awaiting a reply.
+  it('does not claim the pending quotes are still awaiting an answer', () => {
+    const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis({ conversionPendingRecent: 51 })} />);
     expect(html).not.toContain('still out');
   });
 });
