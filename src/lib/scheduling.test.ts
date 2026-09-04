@@ -11,6 +11,7 @@ import {
   unassignCrewFromJob,
   type ScheduledJob,
 } from './scheduling';
+import { visibleUnscheduled } from './ops/scheduleView';
 
 // ─── Row 300: the four DB functions were untested ──────────────────────────
 // A tiny chainable stub: each from(table) call consumes the next programmed
@@ -256,6 +257,44 @@ describe('listUnscheduledJobs (row 300)', () => {
     expect(got.jobs[0]).toMatchObject({ hoursArePlaceholder: true, budgetedHours: 6 });
   });
 
+  // Naldo, 2026-09-04: job #1069 sat at position 41 of 43 in an unordered list
+  // the page truncates at 25, so a job created minutes earlier was invisible
+  // with nothing saying more existed.
+  it('returns the NEWEST jobs first, so a job just created is at the top', async () => {
+    makeDb({
+      job_assignments: [chain({ data: [], error: null })],
+      jobs: [
+        chain({
+          data: [
+            { id: 'j-old', job_number: 1042, status: 'to_schedule', budgeted_hours: 8, labor_revenue_cents: 1000, rates_are_placeholder: false },
+            { id: 'j-new', job_number: 1069, status: 'to_schedule', budgeted_hours: 8, labor_revenue_cents: 1000, rates_are_placeholder: false },
+            { id: 'j-mid', job_number: 1050, status: 'to_schedule', budgeted_hours: 8, labor_revenue_cents: 1000, rates_are_placeholder: false },
+          ],
+          error: null,
+        }),
+      ],
+    });
+    const got = await listUnscheduledJobs('2026-08-27');
+    expect(got.jobs.map((j) => j.jobNumber)).toEqual([1069, 1050, 1042]);
+  });
+
+  it('puts a job with no number last rather than at the top', async () => {
+    makeDb({
+      job_assignments: [chain({ data: [], error: null })],
+      jobs: [
+        chain({
+          data: [
+            { id: 'j-null', job_number: null, status: 'to_schedule', budgeted_hours: 8, labor_revenue_cents: 1000, rates_are_placeholder: false },
+            { id: 'j-num', job_number: 1042, status: 'to_schedule', budgeted_hours: 8, labor_revenue_cents: 1000, rates_are_placeholder: false },
+          ],
+          error: null,
+        }),
+      ],
+    });
+    const got = await listUnscheduledJobs('2026-08-27');
+    expect(got.jobs.map((j) => j.jobId)).toEqual(['j-num', 'j-null']);
+  });
+
   it('an assignment-scan error returns the error, never a confident empty list', async () => {
     makeDb({ job_assignments: [chain({ data: null, error: { message: 'scan died' } })] });
     const got = await listUnscheduledJobs('2026-08-27');
@@ -421,5 +460,31 @@ describe('propertyArchiveBlock', () => {
       jobs: [chain({ data: null, error: { message: 'boom' } })],
     });
     expect(await propertyArchiveBlock('c1', 'p1')).toBe('has-jobs');
+  });
+});
+
+describe('visibleUnscheduled - the cap must never read as the whole list', () => {
+  const jobs = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ jobId: `j${i}`, jobNumber: 2000 - i, status: 'to_schedule', budgetedHours: null, hoursArePlaceholder: false }));
+
+  it('shows everything and hides nothing when the list fits', () => {
+    const got = visibleUnscheduled(jobs(10), 25);
+    expect(got.shown).toHaveLength(10);
+    expect(got.hidden).toBe(0);
+  });
+
+  it('reports exactly how many are hidden when it does not fit', () => {
+    const got = visibleUnscheduled(jobs(43), 25);
+    expect(got.shown).toHaveLength(25);
+    expect(got.hidden).toBe(18);
+  });
+
+  it('keeps the order it was given, so newest-first survives the cap', () => {
+    const got = visibleUnscheduled(jobs(43), 25);
+    expect(got.shown[0]!.jobNumber).toBe(2000);
+  });
+
+  it('handles an empty list without pretending something is hidden', () => {
+    expect(visibleUnscheduled([], 25)).toEqual({ shown: [], hidden: 0 });
   });
 });

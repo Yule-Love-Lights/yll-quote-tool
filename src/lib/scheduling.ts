@@ -364,6 +364,12 @@ export async function listUnscheduledJobs(fromDate: string): Promise<{
 
   const jobs = ((jobData as unknown as JobRowForSchedule[] | null) ?? [])
     .filter((j) => !assigned.has(j.id))
+    // NEWEST first. The page truncates this list, and unordered it put a job
+    // created minutes ago at position 41 of 43, past the cut, with nothing on
+    // screen saying more existed (Naldo hit exactly this with job #1069,
+    // 2026-09-04). A job with no number sorts last rather than to the top,
+    // where a null would otherwise win the comparison.
+    .sort((a, b) => (b.job_number ?? -Infinity) - (a.job_number ?? -Infinity))
     .map((j) => {
       const plan = readLaborPlan(j as unknown as LaborPlanSource);
       return {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { visibleUnscheduled } from '@/lib/ops/scheduleView';
 
 /**
  * Dispatch / day view (P4P Phase 3).
@@ -103,6 +104,8 @@ export function ScheduleDay({
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [capacity, setCapacity] = useState<DayCapacity | null>(null);
   const [unscheduled, setUnscheduled] = useState<ScheduledJob[]>([]);
+  // 25 keeps the page short; the note below says what that hides.
+  const unscheduledView = visibleUnscheduled(unscheduled, 25);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(0);
@@ -347,14 +350,22 @@ export function ScheduleDay({
           </section>
 
           <section>
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">
               Not scheduled yet ({unscheduled.length})
             </h3>
+            {/* The heading counts the WHOLE list while the rows below are
+                capped, so say which is on screen. Newest first, because the job
+                someone just created is the one they are looking for. */}
+            {unscheduledView.hidden > 0 && (
+              <p className="text-xs text-gray-500 mb-2">
+                Showing the {unscheduledView.shown.length} newest. {unscheduledView.hidden} more not shown.
+              </p>
+            )}
             {unscheduled.length === 0 ? (
               <p className="text-sm text-gray-500">Everything open is on the calendar.</p>
             ) : (
               <ul className="text-sm divide-y divide-gray-100 border border-gray-200 rounded-md">
-                {unscheduled.slice(0, 25).map((j) => (
+                {unscheduledView.shown.map((j) => (
                   <li key={j.jobId} className="flex justify-between items-center px-3 py-1.5">
                     <span>
                       Job {j.jobNumber !== null ? `#${j.jobNumber}` : j.jobId.slice(0, 8)}
