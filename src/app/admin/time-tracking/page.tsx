@@ -61,6 +61,14 @@ export default async function TimeTrackingPage() {
   const last7Seconds = hours.rows.reduce((s, r) => s + r.last7Seconds, 0);
   const incomplete = hours.errors.length > 0;
   const clockedInNames = clockedIn.map((r) => r.displayName);
+  // Direction-neutral on purpose (technical lens on PR #1218): a shifts read
+  // failure leaves these SHORT, a breaks read failure leaves them too HIGH
+  // (hoursSummary.ts names both), so "incomplete" would be wrong half the
+  // time. The card below says exactly which read failed.
+  const readFailed = 'a read failed — this figure may be wrong, see below';
+  // The queue's own read, not the crew-name lookup: a missing name falls
+  // back to a short id inside the section, the queue itself is still whole.
+  const exceptionsFailed = errors.length > 0;
 
   return (
     <OperatorShell active="time">
@@ -71,33 +79,46 @@ export default async function TimeTrackingPage() {
         />
 
         <StatStrip>
+          {/* All four flip on a failed read, not just the two that sum
+              (admin lens on PR #1218): a confident "0 — nobody on the
+              clock" over a failed shifts read is the tile lying. */}
           <StatTile
             label="Clocked in now"
             value={String(clockedIn.length)}
-            tone={clockedIn.length > 0 ? 'good' : 'muted'}
+            tone={incomplete ? 'muted' : clockedIn.length > 0 ? 'good' : 'muted'}
             sub={
-              clockedInNames.length === 0
-                ? 'nobody on the clock'
-                : clockedInNames.length <= 3
-                  ? clockedInNames.join(', ')
-                  : `${clockedInNames.slice(0, 2).join(', ')} and ${clockedInNames.length - 2} more`
+              incomplete
+                ? readFailed
+                : clockedInNames.length === 0
+                  ? 'nobody on the clock'
+                  : clockedInNames.length <= 3
+                    ? clockedInNames.join(', ')
+                    : `${clockedInNames.slice(0, 2).join(', ')} and ${clockedInNames.length - 2} more`
             }
           />
           <StatTile
             label="Today"
             value={formatHours(todaySeconds)}
-            sub={incomplete ? 'incomplete — some rows failed to read' : 'all staff, still counting'}
+            tone={incomplete ? 'muted' : 'default'}
+            sub={incomplete ? readFailed : 'all staff, still counting'}
           />
           <StatTile
             label="Last 7 days"
             value={formatHours(last7Seconds)}
-            sub={incomplete ? 'incomplete — some rows failed to read' : 'all staff, today included'}
+            tone={incomplete ? 'muted' : 'default'}
+            sub={incomplete ? readFailed : 'all staff, today included'}
           />
           <StatTile
             label="Open exceptions"
-            value={String(exceptions.length)}
-            tone={exceptions.length > 0 ? 'warn' : 'muted'}
-            sub={exceptions.length > 0 ? 'need a human — see below' : 'nothing stuck'}
+            value={exceptionsFailed ? '—' : String(exceptions.length)}
+            tone={exceptionsFailed || exceptions.length > 0 ? 'warn' : 'muted'}
+            sub={
+              exceptionsFailed
+                ? 'could not be read — see below'
+                : exceptions.length > 0
+                  ? 'need a human — see below'
+                  : 'nothing stuck'
+            }
           />
         </StatStrip>
 

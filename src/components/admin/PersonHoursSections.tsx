@@ -430,7 +430,11 @@ export function ShiftAuditSection({
   return (
     <Card
       title="Manual changes"
-      subtitle="Changes made by hand to this person's shifts: added, corrected or removed."
+      // The best-effort caveat, in one clause, stays visible (staff lens on
+      // PR #1218): somebody reading this list during a dispute must not take
+      // a gap as proof nobody touched the shift. The full explanation is in
+      // the disclosure.
+      subtitle="Changes made by hand to this person's shifts: added, corrected or removed. A removal always leaves its entry; an add or a correction is recorded best-effort."
       helpLabel="What is and is not recorded here"
       help={
         // NOT "every time" (admin lens on PR #1178). The audit row for a

@@ -43,7 +43,12 @@ export function TimeExceptionsSection({
   return (
     <Card
       title="Time exceptions"
-      subtitle="Stuck time records that need a human: a shift, break, or job segment left open that no automatic path will close."
+      // The "look at those first" sentence stays VISIBLE, not in the
+      // disclosure: it exists because of an earlier admin-lens HIGH, and two
+      // lenses on PR #1218 independently flagged it going behind a click.
+      // Every exception type wears the same amber pill, so this sentence is
+      // the only thing that ranks them.
+      subtitle="Stuck time records that need a human: a shift, break, or job segment left open that no automatic path will close. A possible missed tap can corrupt job time and pay while the day is still live, so look at those first."
       helpLabel="What these mean, and how to fix one"
       help={
         <>

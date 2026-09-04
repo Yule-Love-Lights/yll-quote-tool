@@ -272,12 +272,17 @@ export function Pill({
 /* ── range tabs ───────────────────────────────────────────────────────── */
 
 /** Last 7 / 30 / 90 days / All time, as a segmented control. Plain links, so
- * the choice lives in the URL and survives a refresh. */
+ * the choice lives in the URL and survives a refresh.
+ *
+ * `max-w-full overflow-x-auto`: the control sits in a Card that clips its
+ * overflow, so if the four labels ever outgrow a phone-width header they
+ * must SCROLL rather than vanish (staff lens on PR #1218). Measured at 390px
+ * they fit with room; this is the guard for a longer label or a bigger font. */
 export function RangeTabs({ basePath, range }: { basePath: string; range: RangeKey }) {
   return (
     <nav
       aria-label="Range"
-      className="inline-flex rounded-lg border p-0.5"
+      className="inline-flex max-w-full overflow-x-auto rounded-lg border p-0.5"
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg)' }}
     >
       {RANGE_KEYS.map((key) => {
