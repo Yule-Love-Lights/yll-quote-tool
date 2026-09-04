@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/auth/supabaseServer';
 import {
+  CampaignHasPhotosError,
   CampaignRateConflictError,
   createAdvertisingCampaign,
+  deleteAdvertisingCampaign,
   listAdvertisingCampaigns,
   updateAdvertisingCampaign,
 } from '@/lib/advertising/campaigns';
@@ -19,7 +21,9 @@ export const runtime = 'nodejs';
  *
  *   GET   /api/admin/advertising/campaigns — all campaigns, active first
  *   POST  /api/admin/advertising/campaigns — create (defaults 250 cents)
- *   PATCH /api/admin/advertising/campaigns — edit name/notes/rate/active
+ *   PATCH /api/admin/advertising/campaigns — edit name/notes/type/rate/active
+ *     (a rate change also sends expectedRateCents: the rate the caller saw)
+ *   DELETE /api/admin/advertising/campaigns — remove a campaign nothing points at
  */
 
 export async function GET() {
@@ -51,9 +55,10 @@ export async function GET() {
  */
 function readRateCents(
   body: Record<string, unknown> | null,
+  field = 'rateCents',
 ): { ok: true; value: number | undefined } | { ok: false } {
-  if (!body || !('rateCents' in body)) return { ok: true, value: undefined };
-  const v = body.rateCents;
+  if (!body || !(field in body)) return { ok: true, value: undefined };
+  const v = body[field];
   if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return { ok: true, value: v };
   return { ok: false };
 }
@@ -104,13 +109,29 @@ export async function PATCH(req: NextRequest) {
   if ('response' in auth) return auth.response;
 
   const body = (await req.json().catch(() => null)) as
-    | { campaignId?: unknown; name?: unknown; notes?: unknown; rateCents?: unknown; active?: unknown }
+    | {
+        campaignId?: unknown;
+        name?: unknown;
+        notes?: unknown;
+        rateCents?: unknown;
+        expectedRateCents?: unknown;
+        active?: unknown;
+        kind?: unknown;
+      }
     | null;
   const campaignId = String(body?.campaignId ?? '').trim();
   if (!campaignId) return NextResponse.json({ error: 'Choose a campaign.' }, { status: 400 });
 
   const rate = readRateCents(body as Record<string, unknown> | null);
   if (!rate.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
+  const expected = readRateCents(body as Record<string, unknown> | null, 'expectedRateCents');
+  if (!expected.ok) return NextResponse.json({ error: BAD_RATE }, { status: 400 });
+  // A rate change says what rate it believes it is replacing, so a screen
+  // left open while somebody else moved the rate is refused rather than
+  // obeyed (technical lens HIGH on this PR).
+  if (rate.value !== undefined && expected.value === undefined) {
+    return NextResponse.json({ error: 'Reload the campaign and set the rate again.' }, { status: 400 });
+  }
 
   // A name that is present but blank (or not a string at all) is a user
   // error, and it reads as one. Without this the data layer's throw lands in
@@ -132,12 +153,29 @@ export async function PATCH(req: NextRequest) {
   if (body?.active !== undefined && typeof body.active !== 'boolean') {
     return NextResponse.json({ error: 'Send the campaign as open or closed, true or false.' }, { status: 400 });
   }
+  if (body?.kind !== undefined && body.kind !== 'yard_sign' && body.kind !== 'door_hanger') {
+    return NextResponse.json(
+      { error: 'A campaign is either yard signs or door hangers.' },
+      { status: 400 },
+    );
+  }
 
-  const patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean } = {};
+  const patch: {
+    name?: string;
+    notes?: string | null;
+    rateCents?: number;
+    expectedRateCents?: number;
+    active?: boolean;
+    kind?: 'yard_sign' | 'door_hanger';
+  } = {};
   if (typeof body?.name === 'string') patch.name = body.name;
   if (typeof body?.notes === 'string' || body?.notes === null) patch.notes = body?.notes as string | null;
-  if (rate.value !== undefined) patch.rateCents = rate.value;
+  if (rate.value !== undefined) {
+    patch.rateCents = rate.value;
+    patch.expectedRateCents = expected.value;
+  }
   if (typeof body?.active === 'boolean') patch.active = body.active;
+  if (body?.kind === 'yard_sign' || body?.kind === 'door_hanger') patch.kind = body.kind;
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({ error: 'Nothing to update.' }, { status: 400 });
   }
@@ -159,5 +197,36 @@ export async function PATCH(req: NextRequest) {
       { error: badRate ? 'The rate must be a whole number of cents, 0 or more.' : 'Failed to update the campaign' },
       { status: badRate ? 400 : 500 },
     );
+  }
+}
+
+/**
+ * DELETE — remove a campaign that nothing points at.
+ *
+ * A campaign holding photos is somebody's paid work, so this refuses with a
+ * 409 and the count rather than cascading. Closing is the answer there: it
+ * keeps every photo and every payment and can be undone.
+ */
+export async function DELETE(req: NextRequest) {
+  const auth = await requireAdmin();
+  if ('response' in auth) return auth.response;
+
+  const body = (await req.json().catch(() => null)) as { campaignId?: unknown } | null;
+  const campaignId = String(body?.campaignId ?? '').trim();
+  if (!campaignId) return NextResponse.json({ error: 'Choose a campaign.' }, { status: 400 });
+
+  try {
+    await deleteAdvertisingCampaign(campaignId, auth.operator.id);
+    return NextResponse.json({ deleted: true });
+  } catch (e) {
+    if (e instanceof CampaignHasPhotosError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
+    const message = e instanceof Error ? e.message : 'Failed to delete the campaign';
+    if (/no campaign found/i.test(message)) {
+      return NextResponse.json({ error: 'That campaign does not exist.' }, { status: 404 });
+    }
+    console.error('DELETE /api/admin/advertising/campaigns:', message);
+    return NextResponse.json({ error: 'Failed to delete the campaign' }, { status: 500 });
   }
 }

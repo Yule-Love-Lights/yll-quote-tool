@@ -60,6 +60,35 @@ export async function logAdvertisingActivity(entry: {
   }
 }
 
+/**
+ * The same append, but it REPORTS failure instead of swallowing it.
+ *
+ * Use this when the audit row is the only thing that will survive the action
+ * it describes. A destruction writes its record FIRST and refuses to proceed
+ * if the record cannot be written, because of the two ways that pair can
+ * lie, the recoverable lie is the one where the thing still exists.
+ */
+export async function logAdvertisingActivityOrThrow(entry: {
+  actor: string;
+  action: string;
+  placementId?: string | null;
+  workerId?: string | null;
+  detail?: Record<string, unknown>;
+}): Promise<void> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('logAdvertisingActivityOrThrow: Supabase service role not configured');
+  const { error } = await db.from('advertising_activity').insert({
+    actor: entry.actor,
+    action: entry.action,
+    placement_id: entry.placementId ?? null,
+    worker_id: entry.workerId ?? null,
+    detail: entry.detail ?? null,
+  });
+  // supabase-js reports a refused insert as { error } and never throws, so a
+  // caller that does not read this reads an RLS refusal as success.
+  if (error) throw new Error(`logAdvertisingActivityOrThrow: ${error.message}`);
+}
+
 /** Recent audit rows, newest first, optionally scoped to one placement or
  * worker. Bounded read: this is a trail viewer, not an export. */
 export async function listAdvertisingActivity(opts?: {
