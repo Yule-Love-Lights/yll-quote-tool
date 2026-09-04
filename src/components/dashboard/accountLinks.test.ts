@@ -15,6 +15,7 @@ describe('ACCOUNT_LINKS', () => {
       'Website leads',
       'Who can see what',
       'Time tracking',
+      'My hours',
     ]);
   });
 
@@ -78,12 +79,13 @@ describe('accountLinksFor', () => {
       'Website leads',
       'Who can see what',
       'Time tracking',
+      'My hours',
     ]);
   });
 
   it('hides the admin-only rows from a plain operator', () => {
     const labels = accountLinksFor('operator', true).map((l) => l.label);
-    expect(labels).toEqual(['Settings', 'Insights', 'Call recordings']);
+    expect(labels).toEqual(['Settings', 'Insights', 'Call recordings', 'My hours']);
     expect(labels).not.toContain('Website leads');
     expect(labels).not.toContain('Who can see what');
     expect(labels).not.toContain('Time tracking');
@@ -107,7 +109,7 @@ describe('accountLinksFor', () => {
   it('withholds an admin-only row while the role is only a HINT', () => {
     const labels = accountLinksFor('admin', false).map((l) => l.label);
     expect(labels).not.toContain('Website leads');
-    expect(labels).toEqual(['Settings', 'Insights', 'Call recordings']);
+    expect(labels).toEqual(['Settings', 'Insights', 'Call recordings', 'My hours']);
   });
 
   it('never hides a row that is open to everyone, confirmed or not', () => {

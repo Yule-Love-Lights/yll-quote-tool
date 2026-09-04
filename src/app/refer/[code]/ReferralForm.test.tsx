@@ -48,7 +48,7 @@ describe('ReferralSuccessScreen: preview present (#41 V2 auto-analyze succeeded)
     expect(html).toContain('ready to glow');
     expect(html).toContain('123 Main St, Smithtown, NY 11787');
     expect(html).toContain('$170');
-    expect(html).toContain('$150 off instead');
+    expect(html).toContain('$125 off instead');
     expect(html).toContain('2 free 16&quot; spritzers');
     expect(html).toContain('16&quot; spritzers');
     expect(html).not.toContain('We are on it.');

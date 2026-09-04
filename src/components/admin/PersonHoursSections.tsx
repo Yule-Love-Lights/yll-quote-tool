@@ -5,31 +5,28 @@
 // passes the result in. The only interactive parts are the existing
 // ManualShiftEditor client controls, which are the SAME components the two
 // clocks page uses — one editor, not a second one that could drift from it.
+// They are drawn by HoursDayList, which moved to components/time/ in phase 4
+// so the staff self-view could share the row renderer without importing an
+// admin module; it draws them only for `controls="admin"`, which is what this
+// file passes and the self-view does not.
 //
-// HOURS ONLY, like phase 1: no rate, no money, no approval control.
+// The Hours section is HOURS ONLY, like phase 1: no rate, no money, no
+// approval control. The Pay section below it is phase 3 and is where money
+// lives on this page.
 
 import Link from 'next/link';
 
-import { EditShiftTimes, VoidShiftButton } from '@/components/admin/ManualShiftEditor';
+import { HoursDayList, fmtTime, sourceLabel } from '@/components/time/HoursDayList';
 import { ShiftPayPanel, VoidSettlementButton, type PayableShift } from '@/components/admin/ShiftPayPanel';
-import { dollars, type ShiftSettlement } from '@/lib/shiftSettlements';
+import { dollars, type PayableRemainder, type ShiftSettlement } from '@/lib/shiftSettlements';
 import { formatHours } from '@/lib/hoursSummary';
 import {
   RANGE_KEYS,
   rangeLabel,
   type PersonDay,
-  type PersonShift,
   type RangeKey,
   type ShiftAuditEntry,
 } from '@/lib/personHours';
-
-// ET regardless of the server's own timezone: prod renders on a UTC box.
-const fmtTime = (iso: string) =>
-  new Date(iso).toLocaleString('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
 
 const fmtDateTime = (iso: string) =>
   new Date(iso).toLocaleString('en-US', {
@@ -37,126 +34,6 @@ const fmtDateTime = (iso: string) =>
     dateStyle: 'medium',
     timeStyle: 'short',
   });
-
-/** A YYYY-MM-DD ET day key as a heading. Built from the parts rather than
- * `new Date(key)`, which would parse as UTC midnight and print the previous
- * day for anyone reading east of Greenwich. */
-function fmtDayKey(day: string): string {
-  const m = day.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return 'Date unknown';
-  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString(
-    'en-US',
-    { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' },
-  );
-}
-
-const SOURCE_LABEL: Record<string, string> = {
-  office: 'web clock',
-  telegram: 'Telegram',
-  pwa: 'crew app',
-  system: 'system',
-};
-
-const sourceLabel = (s: string) => SOURCE_LABEL[s] ?? s;
-
-function ShiftRow({
-  shift,
-  crewName,
-  evidenceHref,
-}: {
-  shift: PersonShift;
-  crewName: string;
-  /** Where the admin can SEE what really happened that day, or null when
-      nothing in the app knows. A badge saying "correct it" with no evidence
-      to correct it from invites a confident guess typed into payroll (admin
-      lens on PR #1178). */
-  evidenceHref: string | null;
-}) {
-  const open = shift.clockOutAt === null;
-  const autoClosed = shift.closeSource === 'system';
-  return (
-    <li className="px-3 py-2">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
-          {fmtTime(shift.clockInAt)} – {open ? 'still open' : fmtTime(shift.clockOutAt as string)}
-        </span>
-        <span className="text-sm tabular-nums text-gray-700 whitespace-nowrap">
-          {formatHours(shift.paidSeconds)}
-        </span>
-        {/* A break shorter than half a minute rounds to "0m", and "after 0m
-            of breaks" reads as a bug rather than as a 13-second break — which
-            is a real row in prod, seen on this page during the phase 2
-            browser check. Say it in words below the rounding floor. */}
-        {shift.breakSeconds > 0 && (
-          <span className="text-xs text-gray-500 whitespace-nowrap">
-            {shift.breakSeconds >= 30
-              ? `after ${formatHours(shift.breakSeconds)} of breaks`
-              : 'after a break under a minute long'}
-          </span>
-        )}
-        <span className="text-xs text-gray-400 whitespace-nowrap">
-          in: {sourceLabel(shift.source)}
-          {shift.closeSource ? ` · out: ${sourceLabel(shift.closeSource)}` : ''}
-        </span>
-        {open && (
-          <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-800 whitespace-nowrap">
-            Clocked in now
-          </span>
-        )}
-        {autoClosed &&
-          (evidenceHref ? (
-            <Link
-              href={evidenceHref}
-              className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 underline whitespace-nowrap"
-            >
-              Closed by the midnight sweep — check the van&apos;s day
-            </Link>
-          ) : (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 whitespace-nowrap">
-              Closed by the midnight sweep — ask them what time they stopped
-            </span>
-          ))}
-        {shift.manualBy && (
-          <span className="text-xs text-gray-400">typed by {shift.manualBy}</span>
-        )}
-        <span className="ml-auto inline-flex items-center gap-3">
-          {/* A paid shift is locked (ledger row 459): shifts.ts refuses both
-              the edit and the void. Showing the controls anyway would be a
-              door into a refusal, so the row says what is true and names the
-              way out — undoing the payment releases it. The guard and the
-              copy that narrates it are one change. */}
-          {shift.settlementId ? (
-            <span className="text-xs text-gray-500">
-              Paid — undo the payment below to change these times
-            </span>
-          ) : (
-            <EditShiftTimes
-              shiftId={shift.id}
-              clockInAt={shift.clockInAt}
-              clockOutAt={shift.clockOutAt}
-            />
-          )}
-          {/* Only on rows the office TYPED: a shift the person clocked
-              themselves is their own record and is corrected, never erased.
-              This mirrors the FIRST of adminVoidShift's guards, not all of
-              them — the server also refuses a row carrying a break or job
-              segment, and that one is not mirrored here, so Remove can still
-              come back with a refusal an admin reads inline (technical lens
-              on PR #1178). Checking it client-side would mean shipping the
-              child rows to the page for a case that has never occurred. */}
-          {shift.removable && (
-            <VoidShiftButton
-              shiftId={shift.id}
-              crewName={crewName}
-              clockInAt={shift.clockInAt}
-              clockOutAt={shift.clockOutAt}
-            />
-          )}
-        </span>
-      </div>
-    </li>
-  );
-}
 
 /**
  * The day's GPS timeline, when there is one for this person.
@@ -220,9 +97,9 @@ export function PersonHoursSection({
       </div>
 
       <p className="text-sm text-gray-500 mb-4">
-        Clocked time, day by day. Nothing here is approved or paid. A shift counts on the day it
-        started (New York time) and is never split across midnight, so an overnight shift shows
-        in full on the day it began.
+        Clocked time, day by day, with what has been paid for marked on each row. A shift counts
+        on the day it started (New York time) and is never split across midnight, so an overnight
+        shift shows in full on the day it began.
       </p>
 
       {errors.length > 0 && (
@@ -261,30 +138,12 @@ export function PersonHoursSection({
       {days.length === 0 ? (
         <p className="text-sm text-gray-500">No shifts in this range.</p>
       ) : (
-        <div className="space-y-4">
-          {days.map((d) => (
-            <div key={d.day} className="rounded-md border border-gray-200 overflow-hidden">
-              <div className="flex items-baseline justify-between bg-gray-50 px-3 py-2">
-                <h3 className="text-sm font-semibold text-gray-900">
-                  {d.day === 'unknown' ? 'Date unreadable' : fmtDayKey(d.day)}
-                </h3>
-                <span className="text-sm tabular-nums text-gray-700">
-                  {formatHours(d.paidSeconds)}
-                </span>
-              </div>
-              <ul className="divide-y divide-gray-100">
-                {d.shifts.map((s) => (
-                  <ShiftRow
-                    key={s.id}
-                    shift={s}
-                    crewName={crewName}
-                    evidenceHref={evidenceHrefFor(isOffice, d.day)}
-                  />
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
+        <HoursDayList
+          days={days}
+          crewName={crewName}
+          controls="admin"
+          evidenceFor={(day) => evidenceHrefFor(isOffice, day)}
+        />
       )}
     </section>
   );
@@ -294,17 +153,19 @@ export function PersonHoursSection({
  * Recording what has been paid, and what is still owed against hours nobody
  * has been paid for — time-tracking plan phase 3, ledger row 459.
  *
- * The payable list is the shifts ON SCREEN that are closed and unpaid, so it
- * always agrees with the hours above it. It is deliberately scoped to the
- * chosen range rather than to all time: an admin paying "the last two weeks"
- * should not be one click away from settling a shift from March.
+ * The payable list is EVERY closed shift with time still owing, oldest first,
+ * regardless of the range shown above it. Phase 3 scoped it to the chosen
+ * range so an admin paying "the last two weeks" could not settle a shift from
+ * March by accident; that protected a tick-box list which no longer exists.
+ * The server now spends a payment across all unpaid shifts oldest first, so a
+ * range-scoped list here would preview an allocation that is not the one
+ * about to happen (two lenses on PR #1190, independently).
  */
 export function ShiftPaySection({
   crewMemberId,
   crewName,
   rateCentsPerHour,
-  days,
-  range,
+  remainders,
   settlements,
   settledCents,
   settlementsReadable,
@@ -313,8 +174,10 @@ export function ShiftPaySection({
   crewMemberId: string;
   crewName: string;
   rateCentsPerHour: number;
-  days: PersonDay[];
-  range: RangeKey;
+  /** Every closed shift with time still owing, oldest first, across ALL
+   * time — not the range on screen. The server spends a payment globally
+   * oldest-first, so a range-scoped list would preview the wrong shifts. */
+  remainders: PayableRemainder[];
   settlements: ShiftSettlement[];
   settledCents: number;
   settlementsReadable: boolean;
@@ -322,25 +185,29 @@ export function ShiftPaySection({
    * stamp. Running the undo again finishes them. */
   halfUndone: string[];
 }) {
-  const payable: PayableShift[] = days
-    .flatMap((d) => d.shifts)
-    .filter((s) => s.clockOutAt !== null && !s.settlementId)
-    .map((s) => ({
-      id: s.id,
-      clockInAt: s.clockInAt,
-      paidSeconds: s.paidSeconds,
+  // Already oldest-first and already filtered to what is still owing: this
+  // is the SAME list the server spends the money over, so the preview and
+  // the write cannot disagree about which shifts are in play.
+  const payable: PayableShift[] = remainders
+    .filter((r) => r.unpaidSeconds > 0)
+    .map((r) => ({
+      id: r.shiftId,
+      clockInAt: r.clockInAt,
+      paidSeconds: r.totalSeconds,
+      unpaidSeconds: r.unpaidSeconds,
       // Carried through so the warning reaches the panel where paying LOCKS
       // these hours, not only the list above it.
-      needsReview: s.closeSource === 'system',
+      needsReview: r.needsReview,
     }));
 
   return (
     <section className="mb-10">
       <h2 className="text-lg font-semibold text-gray-900 mb-1">Pay</h2>
       <p className="text-sm text-gray-500 mb-4">
-        You pay {crewName} however you normally do, then record it here against the shifts it
-        covered. The tool does not work out what to pay — it keeps the record of what you paid and
-        which hours it was for. A paid shift is locked until the payment is undone.
+        You pay {crewName} however you normally do, then record the amount here. The tool does not
+        work out what to pay — it takes what you actually handed over and marks off that many
+        hours, oldest first. Anything the money does not reach stays unpaid and carries over to
+        the next payment. A shift a payment has touched is locked until that payment is undone.
       </p>
 
       {!settlementsReadable ? (
@@ -356,8 +223,7 @@ export function ShiftPaySection({
               as paid, all time
             </span>
             <span className="text-sm text-gray-500 tabular-nums">
-              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'} in{' '}
-              {rangeLabel(range).toLowerCase()}
+              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'}, all time
             </span>
           </div>
 
@@ -373,24 +239,22 @@ export function ShiftPaySection({
             </div>
           )}
 
-          {/* KEYED ON THE RANGE (staff lens on PR #1179). Switching range is a
-              same-route search-param navigation, which does NOT remount a
-              client component, so a selection made under "Last 7 days" would
-              survive into "Last 90 days" against a different list while the
-              typed amount stayed put. The key forces a clean slate. */}
+          {/* The range key is GONE (it was added by the staff lens on PR #1179
+              to clear a selection when the range-scoped list changed
+              underneath it). There is no selection any more, and this list no
+              longer moves with the range, so keying on it would only throw
+              away a typed amount when somebody switched range to look at the
+              hours table above. */}
           <ShiftPayPanel
-            key={range}
             crewMemberId={crewMemberId}
             crewName={crewName}
             rateCentsPerHour={rateCentsPerHour}
             payable={payable}
           />
-          {range !== 'all' && (
-            <p className="mt-2 text-xs text-gray-500">
-              Only unpaid shifts inside {rangeLabel(range).toLowerCase()} are listed. Switch to All
-              time to be sure nothing older is still unpaid.
-            </p>
-          )}
+          <p className="mt-2 text-xs text-gray-500">
+            Every unpaid shift is listed here, however old — the range above changes the hours
+            table, not this. A payment is always spent oldest first.
+          </p>
 
           <h3 className="text-sm font-semibold text-gray-900 mt-6 mb-2">Payments recorded</h3>
           {settlements.length === 0 ? (
@@ -411,12 +275,23 @@ export function ShiftPaySection({
                       <span className="text-xs text-gray-500">
                         {liveLines.length} {liveLines.length === 1 ? 'shift' : 'shifts'} ·{' '}
                         {formatHours(st.coveredSeconds)}
-                        {/* The reference is shown only when it DIFFERS, so the
-                            common case stays quiet and a real gap (overtime, an
-                            advance) is the thing that stands out. */}
-                        {st.referenceCents !== st.totalCents && !st.voidedAt && (
-                          <> · {dollars(st.referenceCents)} at the stamped rate</>
-                        )}
+                        {/* Shown only when the reference differs by MORE THAN
+                            ROUNDING, so a real gap (overtime, an advance) is
+                            what stands out.
+
+                            An exact !== fired on the very first real payment:
+                            $180.01 of per-line references against $180.00
+                            recorded, because each line rounds to its own cent
+                            and the amount was rounded once as a whole. Since
+                            the hours are now derived FROM the money, that is
+                            the ordinary case rather than the interesting one,
+                            so an exact test would light up on almost every
+                            multi-shift payment and mean nothing. One cent per
+                            line is the most rounding can account for. */}
+                        {Math.abs(st.referenceCents - st.totalCents) > liveLines.length &&
+                          !st.voidedAt && (
+                            <> · {dollars(st.referenceCents)} at the stamped rate</>
+                          )}
                       </span>
                       {st.voidedAt ? (
                         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium">

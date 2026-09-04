@@ -44,6 +44,16 @@ describe('friendlyAction', () => {
 // ever carries a value listActivity actually produces — 'quote_terminal' from
 // completeTerminalQuoteItems today. Pure-function test only (no jsdom — see
 // this file's header note above).
+describe('friendlyAutoReason — a call-driven follow-up says so', () => {
+  it('names the phone call instead of printing the raw key', () => {
+    // The automatic sweep stamps rows as actor 'system'. Without this the
+    // activity log reads "Followed up . System" and a staffer cannot tell a
+    // call-driven follow-up from any other unexplained automated action.
+    expect(friendlyAutoReason('phone_call')).toBe('we phoned them');
+    expect(friendlyAutoReason('phone_call')).not.toBe('phone_call');
+  });
+});
+
 describe('friendlyAutoReason (row 317 fix-round FIX 4)', () => {
   it('labels quote_terminal', () => {
     expect(friendlyAutoReason('quote_terminal')).toBe('quote booked/declined/abandoned');
@@ -149,5 +159,27 @@ describe('reverseConfirmMessage dispatch (Finding 2)', () => {
   });
   it('routes completed (and anything else) to the completed wording', () => {
     expect(reverseConfirmMessage('completed')).toBe(reverseCompletedConfirmMessage());
+  });
+});
+
+describe('friendlyAutoReason — every reason the system writes has words', () => {
+  // The promoted pitfall: a guard and the copy that narrates it are one change.
+  // An unmapped reason falls through to the raw key, so the log shows a staffer
+  // something like "contact_answered_by_outbound", which reads as a fault.
+  it('explains the forwarded-lead clear', () => {
+    const words = friendlyAutoReason('lead_forward_answered_by_outbound');
+    expect(words).toBe('we called or texted this lead');
+    expect(words).not.toContain('_');
+  });
+
+  it('explains the wider contact clear', () => {
+    const words = friendlyAutoReason('contact_answered_by_outbound');
+    expect(words).toBe('we reached this customer elsewhere');
+    expect(words).not.toContain('_');
+  });
+
+  it('still falls back to the raw key for a reason nothing has mapped yet', () => {
+    // Deliberate: an unknown reason should look wrong rather than be hidden.
+    expect(friendlyAutoReason('something_new')).toBe('something_new');
   });
 });

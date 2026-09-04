@@ -55,6 +55,20 @@ export function friendlyAction(action: string): string {
 // without jsdom (mirrors friendlyAction/isPermanentReverseRefusal).
 const AUTO_REASON_LABEL: Record<string, string> = {
   quote_terminal: 'quote booked/declined/abandoned',
+  // Naldo 2026-09-02: the sweep that marks a row followed because staff PHONED
+  // the customer. Without a label here the row reads "Followed up . System"
+  // and a staffer cannot tell a call from any other automated action.
+  phone_call: 'we phoned them',
+  // Naldo 2026-09-02 (#1168). Missing until 2026-09-03, so this reason had been
+  // rendering as the raw key since the day it shipped: a staffer reading the
+  // log saw "lead_forward_answered_by_outbound", which explains nothing and
+  // looks like a fault. Caught while adding its sibling below.
+  lead_forward_answered_by_outbound: 'we called or texted this lead',
+  // Naldo 2026-09-03. The wider contact-level clear: we reached this customer
+  // somewhere else, so their open rows closed. Worded to say WHY the row moved
+  // without claiming which channel, because that is exactly what this rule does
+  // not know.
+  contact_answered_by_outbound: 'we reached this customer elsewhere',
 };
 
 export function friendlyAutoReason(reason: string): string {

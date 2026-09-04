@@ -229,6 +229,39 @@ the FIRST editor for office shifts, not a mirror of an existing one; the phase 1
 **Phase 4 — the staff self-view.** Same detail page, own data only, edit and approve controls
 absent (not merely hidden), clock in/out buttons. Office staff only.
 
+**Done 2026-09-03 (Jason's S60):** `/my-hours`, reached from the account menu by a row that is
+NOT admin-only. It is not the same page: it shares the day/shift ROW RENDERER with the admin
+record (`src/components/time/HoursDayList.tsx`, extracted from PersonHoursSections for this) and
+nothing else, because the two pages talk to different people about the same rows — the admin
+page says "ask them what time they stopped", this one is talking to the person who stopped.
+Identity is `getOfficeClockCaller` on the session's `auth_user_id`, and there is NO id segment
+and no accepted query id, so there is nowhere to put a request for someone else's hours. Each
+refusal (crew login, advertising login, unlinked, inactive, unconfigured) gets its own named
+state; an unlinked login never falls through to an empty table. Controls and money are absent
+rather than hidden: `controls="none"` renders no edit/remove/pay markup at all, and the page
+passes `withSettlements: false` so no pay figure is read.
+
+**Scope grew once, deliberately (Jason, 2026-09-03):** *"yes let the staff see which hours are
+already approved and unapproved so they have an idea of what they're owed"*. The page now reads
+the settlement STATE and splits the range into hours already paid and hours not paid yet, with a
+`Paid` mark on the settled rows. It stays HOURS on both sides and shows no figure: the tool
+records payments rather than computing them, overtime is unruled (row 285), and one real week in
+this data is 50h 55m, so a dollar amount here would be a number nobody has agreed is owed. The
+word on screen is **paid**, not *approved* — a settlement records a payment that was made, and
+calling it an approval would describe something the record does not say.
+
+That reversed the earlier `withSettlements: false` decision and the option was DELETED rather
+than left with no caller: both pages want the read now, and the loader's failure message was
+reworded so it is true on both (an admin-voiced sentence about what "can be paid from this page"
+is false on the staff page). When that read fails, the self-view says nothing about payment at
+all rather than falling back to "unpaid" — telling someone they are owed for hours already paid
+is the wrong way to be wrong.
+
+**The clock buttons this phase asked for already existed** and were deliberately NOT added
+again: Naldo moved `ClockCard` into the header on every operator page on 2026-09-01, desktop and
+mobile, so this page carries the clock in its own nav bar. A second clock would be two controls
+for one state.
+
 **Phase 5 (optional) — warehouse grouping and anything money-facing**, if §4.1/4.4 said yes.
 
 ---

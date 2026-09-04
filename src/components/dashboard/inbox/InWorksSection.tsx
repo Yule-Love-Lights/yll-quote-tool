@@ -1,10 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import { parseLeadForwardDisplay } from '@/lib/dashboard/inbox/leadForward';
 import { useRouter } from 'next/navigation';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { isStale } from '@/lib/dashboard/inbox/lifecycle';
+import { followBackingLabel } from '@/lib/dashboard/inbox/followBacking';
 import { ReplyComposer, type ReplySentOutcome } from './ReplyComposer';
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -24,6 +26,63 @@ const SOURCE_LABEL: Record<string, string> = {
 // unit-testable without jsdom or a mocked fetch. withRowFlagCleared fully
 // removes the key rather than setting it false, and a no-op clear returns
 // the SAME object reference.
+/**
+ * The "I followed up" button for a row, per bucket. PURE and exported because
+ * this file has no jsdom coverage (see this component's test header) — a static
+ * render cannot drive a click, so the decision that click encodes is lifted out
+ * where it can be pinned directly.
+ *
+ * The two buckets need genuinely different buttons, which is the whole reason
+ * this exists:
+ *   • handled  — the row has never been followed up. A plain first stamp.
+ *   • awaiting — the row is ALREADY followed and has gone quiet again (every
+ *     row carrying the amber "Nd quiet" / blue "Follow-up due" tags). A plain
+ *     stamp here is a silent no-op: markItemFollowed refuses a second one and
+ *     the route reports success anyway, so the row would never move. It has to
+ *     ask for the restamp explicitly, and it has to SAY "again", because on an
+ *     already-followed row a bare "Followed" claims nothing new.
+ */
+/**
+ * Optimistically mark ONE row as just-followed: restart its quiet counter and
+ * drop the follow-up-due marker the click has now answered.
+ *
+ * "Followed again" acts on a row already in the awaiting bucket, so
+ * moveGroup(id, 'awaiting', 'awaiting') returns immediately (`if (from === to)
+ * return`) and changes nothing. router.refresh() does not rescue it either:
+ * this component seeds its lists with useState(awaiting) and never syncs the
+ * props again, so fresh server data does not reach these rows. Without this
+ * the click was invisible — the amber "45d quiet" tag still read 45d, which
+ * reads as a broken button. Found by the pre-merge staff lens.
+ *
+ * Returns the SAME array when the id is absent, so an unrelated row's action
+ * never forces a re-render (the withRowFlagCleared / omitKey convention above).
+ */
+export function withRowFollowedNow(
+  items: InWorksItem[],
+  itemId: string,
+  nowIso: string,
+): InWorksItem[] {
+  if (!items.some((i) => i.id === itemId)) return items;
+  return items.map((i) =>
+    i.id === itemId ? { ...i, lastActivityAt: nowIso, needsLookReason: null } : i,
+  );
+}
+
+export function followedButtonFor(group: 'awaiting' | 'handled'): {
+  label: string;
+  title: string;
+  body?: Record<string, unknown>;
+} {
+  if (group === 'awaiting') {
+    return {
+      label: 'Followed again',
+      title: 'I chased them again — restart the quiet counter',
+      body: { again: true },
+    };
+  }
+  return { label: 'Followed', title: 'I followed up — snooze until they reply' };
+}
+
 export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
   return { ...map, [id]: true };
 }
@@ -182,6 +241,59 @@ export function combinedCompleteConfirmMessage(item: Pick<InWorksItem, 'needsLoo
   );
 }
 
+/**
+ * Whether an awaiting row is asking for something TODAY (Naldo, 2026-09-03).
+ *
+ * "In the works" rendered all 71 awaiting rows flat, and Naldo's complaint was
+ * that the page looks full of work when most of it needs nothing yet. A row
+ * earns its place by carrying one of the two tags a staffer already reads: the
+ * amber quiet tag, or the blue reason tag.
+ *
+ * MEASURED BEFORE BUILDING, and the number is worth keeping here because it
+ * sets the expectation: with followUpDays at 3, fifty of those seventy-one rows
+ * are ALREADY stale, so this hides about twenty-one. Naldo was shown that and
+ * chose to keep the 3 day threshold rather than raise it, so the list gets
+ * shorter without the tag changing meaning. If the page still reads as full,
+ * the threshold is the lever, not this function.
+ *
+ * The handled bucket needs no equivalent: its settled half has sat behind a
+ * "Show Handled" toggle since #307, which is exactly this pattern already.
+ */
+export function awaitingNeedsAttention(
+  item: Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason' | 'isColorRequest'>,
+  followUpDays: number,
+  nowMs: number,
+): boolean {
+  if (item.needsLookReason != null) return true;
+  // Row 321's badge is the third signal a row can carry, and it means a
+  // customer is waiting on a colour decision. Parking a fresh one would bury
+  // exactly what that badge was added to stop being buried, so it keeps the
+  // row on screen regardless of how recently anyone touched it. Found by
+  // reading every badge renderRow can draw rather than only the two Naldo
+  // named; the two he named are the two he SEES most, which is not the same
+  // list.
+  if (item.isColorRequest) return true;
+  return isStale(item.lastActivityAt, followUpDays, new Date(nowMs));
+}
+
+/** Split awaiting rows into what to show and what to park. PURE, order kept.
+ *
+ *  Note what is deliberately NOT a reason to show: row 502's "no call or
+ *  text on record" marker. That is information about a stamp already made,
+ *  not a job waiting to be done, and most stamps are manual, so treating it
+ *  as an ask would park almost nothing and undo the point of this split. */
+export function splitAwaitingByAttention<
+  T extends Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason' | 'isColorRequest'>,
+>(items: T[], followUpDays: number, nowMs: number): { attention: T[]; parked: T[] } {
+  const attention: T[] = [];
+  const parked: T[] = [];
+  for (const item of items) {
+    (awaitingNeedsAttention(item, followUpDays, nowMs) ? attention : parked).push(item);
+  }
+  // Nothing is ever dropped: every row lands in exactly one of the two.
+  return { attention, parked };
+}
+
 export function InWorksSection({
   awaiting,
   handled,
@@ -242,6 +354,9 @@ export function InWorksSection({
   // so act()/moveGroup/removeFromGroup keep working unchanged regardless of
   // which subsection a row currently renders in.
   const [handledExpanded, setHandledExpanded] = useState(false);
+  // Row 502 sibling: the same expander idiom as handled, for awaiting rows
+  // that carry neither tag. Collapsed by default, which is the whole ask.
+  const [parkedExpanded, setParkedExpanded] = useState(false);
 
   if (awaitingItems.length === 0 && handledItems.length === 0) return null;
 
@@ -300,6 +415,7 @@ export function InWorksSection({
     path: string,
     outcome: 'awaiting' | 'handled' | 'remove',
     label: string,
+    extraBody?: Record<string, unknown>,
   ) {
     setBusyIds((prev) => withRowFlagSet(prev, item.id));
     // Row 291 fix: clear only THIS row's own error, never every row's — the
@@ -312,11 +428,18 @@ export function InWorksSection({
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ itemId: item.id }),
+        body: JSON.stringify({ itemId: item.id, ...extraBody }),
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (data?.ok) {
-        if (outcome === 'remove') {
+        if (outcome === group) {
+          // Same-bucket action (the awaiting row's "Followed again"): moveGroup
+          // is a no-op here, so update the row in place or the click shows
+          // nothing. See withRowFollowedNow.
+          const nowIso = new Date().toISOString();
+          if (group === 'awaiting') setAwaitingItems((prev) => withRowFollowedNow(prev, item.id, nowIso));
+          else setHandledItems((prev) => withRowFollowedNow(prev, item.id, nowIso));
+        } else if (outcome === 'remove') {
           removeFromGroup(item.id, group);
         } else {
           moveGroup(item.id, group, outcome);
@@ -438,6 +561,21 @@ export function InWorksSection({
                   {item.needsLookReason}
                 </span>
               )}
+              {/* Row 502: says what is true of the RECORD, never what the
+                  staffer did. A call from a personal phone looks identical from
+                  here, so this must never read as an accusation. Shown only for
+                  a stamp explicitly recorded as manual: a row stamped before the
+                  column existed carries null and stays silent, because claiming
+                  it was unbacked would invent a fact. */}
+              {followBackingLabel(item.followedVia) && (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded"
+                  style={{ background: 'var(--op-bg)', color: 'var(--op-text-2)' }}
+                  title="The follow-up was marked by hand. Nothing in the system records a call or a message, which is also what a call from a personal phone looks like."
+                >
+                  {followBackingLabel(item.followedVia)}
+                </span>
+              )}
               {/* Row 321: so the row is visually distinct before Mark
                   completed can silently bury a still-pending colour request. */}
               {item.isColorRequest && (
@@ -481,26 +619,44 @@ export function InWorksSection({
           </div>
           <div className="flex shrink-0 gap-2 flex-wrap justify-end">
             {item.source === 'gmail' ? (
-              // #268 fix round (sibling-guard check against InboxList.tsx's
-              // matching fix), UPDATED round 3: InboxList's real fix is a
-              // "call/text directly" affordance driven by
-              // parseLeadForwardDisplay(subject, preview) — deliberately
-              // MESSAGE-level, not contact-level (round 2's contact.phone
-              // gate was a false-positive HIGH: dashboard_contacts.
-              // primary_phone is a cross-channel MERGED field, so a
-              // returning customer's ordinary reply could carry a phone from
-              // an earlier quote). NOT done here — `InWorksItem` (store.ts,
-              // embargoed for this fix round) only selects
-              // `dashboard_contacts.display_name` via IN_WORKS_SELECT; it has
-              // `preview` but NOT `subject`, and parseLeadForwardDisplay
-              // needs both (subject carries the platform marker, preview
-              // carries the phone/email). Fixing this needs a store.ts
-              // change (add `subject` to IN_WORKS_SELECT + InWorksItem)
-              // that's out of scope here — tracked as a follow-up, not
-              // silently left both broken AND undocumented.
-              <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
-                Reply in Gmail
-              </span>
+              // #268 fix round's documented follow-up, done 2026-09-02.
+              // InboxList shows a "call or text them directly" affordance for
+              // a forwarded lead, driven by parseLeadForwardDisplay(subject,
+              // preview) -- deliberately MESSAGE-level, not contact-level
+              // (round 2's contact.phone gate was a false-positive HIGH:
+              // dashboard_contacts.primary_phone is a cross-channel MERGED
+              // field, so a returning customer's ordinary reply could carry a
+              // phone from an earlier quote). This section could not do the
+              // same because IN_WORKS_SELECT never selected `subject`, which
+              // the parser needs alongside `preview`; it does now.
+              //
+              // It matters more here than it looks: an outbound touch can
+              // auto-clear a forwarded lead into this very section, so this is
+              // where staff meet the row after the system moved it, and
+              // "Reply in Gmail" is the one instruction guaranteed to reach
+              // nobody -- the thread's addressable party is the platform's
+              // no-reply relay.
+              (() => {
+                const forwarded = parseLeadForwardDisplay(item.subject, item.preview);
+                if (!forwarded) {
+                  return (
+                    <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
+                      Reply in Gmail
+                    </span>
+                  );
+                }
+                return (
+                  <span
+                    className="px-3 py-1.5 text-sm text-right max-w-[220px]"
+                    style={{ color: 'var(--op-text-2)' }}
+                  >
+                    Forwarded lead — call or text the customer directly:{' '}
+                    {forwarded.phone && <span style={{ color: 'var(--op-text)' }}>{forwarded.phone}</span>}
+                    {forwarded.phone && forwarded.email ? ' · ' : null}
+                    {forwarded.email && <span style={{ color: 'var(--op-text)' }}>{forwarded.email}</span>}
+                  </span>
+                );
+              })()
             ) : (
               // Fix round 2 delta-verify LOW (decided, not fixed): after an
               // 'error' outcome (onSent below) this button stays live and
@@ -529,18 +685,38 @@ export function InWorksSection({
                 {composerFor === item.id ? 'Cancel' : 'Reply'}
               </button>
             )}
-            {group === 'handled' && (
-              <button
-                type="button"
-                disabled={!!busyIds[item.id] || lockedOut('Followed')}
-                onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting', 'Followed')}
-                title={lockedOut('Followed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'I followed up — snooze until they reply'}
-                className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
-                style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
-              >
-                Followed
-              </button>
-            )}
+            {/* Naldo 2026-09-02: this used to render for the 'handled' group
+                only, so every row in "Awaiting their reply" — the ones carrying
+                the amber "Nd quiet" and blue "Follow-up due" tags — offered no
+                way to say "I chased them again". A staffer who rang somebody had
+                to either reply by text or mark the whole conversation completed.
+
+                The awaiting row is ALREADY followed, so a plain click is a no-op
+                (the store refuses a second stamp and the route reports success),
+                which is why it passes `again` — the explicit restamp opt-in. The
+                label says "again" for the same reason: on a row that is already
+                followed, a bare "Followed" claims nothing new. */}
+            {(() => {
+              const fb = followedButtonFor(group);
+              return (
+                <button
+                  type="button"
+                  disabled={!!busyIds[item.id] || lockedOut(fb.label)}
+                  onClick={() =>
+                    act(item, group, '/api/dashboard/followed', 'awaiting', fb.label, fb.body)
+                  }
+                  title={
+                    lockedOut(fb.label)
+                      ? `Locked until the ${lockedTo} attempt is confirmed`
+                      : fb.title
+                  }
+                  className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
+                  style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
+                >
+                  {fb.label}
+                </button>
+              );
+            })()}
             <button
               type="button"
               disabled={!!busyIds[item.id] || lockedOut('Mark completed')}
@@ -593,6 +769,14 @@ export function InWorksSection({
 
   // #307: a rendering-only split of the SAME handledItems state array (see
   // that state's own comment above) — no third bucket/state slice exists.
+  // Row 502 sibling: the awaiting list gets the same treatment the handled
+  // list has had since #307 — only rows asking for something render, the
+  // rest sit behind a count. A rendering-only split of the SAME state array.
+  const { attention: awaitingAttention, parked: awaitingParked } = splitAwaitingByAttention(
+    awaitingItems,
+    followUpDays,
+    nowMs,
+  );
   const needsLookItems = handledItems.filter((item) => item.needsLookReason != null);
   const settledHandledItems = handledItems.filter((item) => item.needsLookReason == null);
 
@@ -629,13 +813,41 @@ export function InWorksSection({
               "Follow-ups due today" strip's signal lives on these rows as a
               "Follow-up due" pill — a flat "nothing to do" would contradict a
               pill sitting two lines below it. */}
+          {/* Row 502 sibling: this sentence described a list that showed
+              EVERY followed row. It now shows only the rows carrying a tag, so
+              the old wording ("nothing to do until they write back") would be
+              exactly backwards about what is on screen. A guard and the copy
+              that narrates it are one change. */}
           <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            You’ve followed up on these — nothing to do until they write back, unless a row is
-            flagged “Follow-up due”.
+            These have gone quiet or are flagged, so they want a chase. The rest are parked
+            below and come back on their own when they need you.
           </p>
           <ul className="space-y-2">
-            {awaitingItems.map((item) => renderRow(item, 'awaiting'))}
+            {awaitingAttention.map((item) => renderRow(item, 'awaiting'))}
           </ul>
+          {awaitingParked.length > 0 && (
+            <div className="mt-3">
+              {/* Same expander idiom as "Show Handled" below, deliberately: one
+                  learned control, not two. Nothing is hidden permanently and
+                  the count is always visible, so the page can be quiet without
+                  the parked rows becoming unreachable. */}
+              <button
+                type="button"
+                onClick={() => setParkedExpanded((v) => !v)}
+                className="text-xs font-medium underline"
+                style={{ color: 'var(--op-text-2)' }}
+              >
+                {parkedExpanded
+                  ? `Hide ${awaitingParked.length} not needing anything yet`
+                  : `Show ${awaitingParked.length} not needing anything yet`}
+              </button>
+              {parkedExpanded && (
+                <ul className="space-y-2 mt-2">
+                  {awaitingParked.map((item) => renderRow(item, 'awaiting'))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       )}
 

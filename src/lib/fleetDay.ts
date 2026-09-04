@@ -20,6 +20,7 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 import { MIN_DWELL_MINUTES, STALE_POSITION_MINUTES } from '@/lib/integrations/vehicleProximity';
 import { etMidnightAfter, addDays } from '@/lib/opsMidnightClose';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { settledShiftIds } from '@/lib/shiftSettlements';
 
 /** Shared ET time formatter for the fleet pages, so the two never drift. */
 export function fmtFleetTime(iso: string | null): string {
@@ -82,6 +83,20 @@ export type FleetShift = {
    * corrected also carries a stamp, so the stamp alone would offer a Remove
    * button the server always refuses (row 458). */
   officeEntry: boolean;
+  /** True when this shift sits on a LIVE settlement — somebody has been paid
+   * against these hours, so `shifts.ts` refuses to rewrite or remove it
+   * (ledger row 459).
+   *
+   * This page is a SIBLING surface to the person page, and the guard shipped
+   * with its copy wired only into the newer one, so a paid shift still showed
+   * live-looking Edit and Remove links here and the lock was discovered by
+   * clicking and reading a 409 (S59 wrap integration lens — a seam no
+   * per-PR review could see, because this file was in none of their diffs).
+   * Fails SAFE: when the settlement read errors this stays false and the
+   * controls render, because the server refuses the write unconditionally
+   * anyway, and hiding a working control on a read error would be the worse
+   * failure on the page staff use to fix a forgotten punch. */
+  paidAndLocked: boolean;
 };
 
 export type FleetDay = {
@@ -242,6 +257,20 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
       if (c.is_office) officeIds.add(c.id);
     }
   }
+  // Which of these shifts have already been paid, so a row can say so rather
+  // than offer controls the server refuses (row 459). Fails SAFE to an empty
+  // map: the write guard is unconditional either way, and hiding a working
+  // control on a transient read error is the worse failure on the page staff
+  // use to fix a forgotten punch.
+  let paidShiftIds = new Map<string, string>();
+  try {
+    paidShiftIds = await settledShiftIds(shiftRows.map((s) => s.id));
+  } catch (settlementError) {
+    out.errors.push(
+      `settlements: ${settlementError instanceof Error ? settlementError.message : 'read failed'} — a paid shift may still show Edit here; the server refuses the write regardless`,
+    );
+  }
+
   for (const s of shiftRows) {
     // Field group only (Naldo, 2026-08-28): this page is about the people in
     // the vans; office staff use the same clock but do not belong here. Only a
@@ -256,6 +285,7 @@ export async function loadFleetDay(date: string): Promise<FleetDay> {
       clockOutAt: s.clock_out_at,
       manualBy: s.manual_by ?? null,
       officeEntry: s.source === 'office' && Boolean(s.manual_by),
+      paidAndLocked: paidShiftIds.has(s.id),
     });
   }
 

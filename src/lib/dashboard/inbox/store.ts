@@ -25,10 +25,18 @@ import type {
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
 import { isUuid } from './validate';
+import {
+  planCallFollowUps,
+  MIN_CALL_SECONDS,
+  type CallFollowUpItem,
+  type CallFollowUpStamp,
+  type ContactCall,
+} from './callFollowUp';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { leadForwardsAnsweredBy } from './leadForward';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
+import { rowsClearedByOutbound } from './outboundClearsContact';
 import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
@@ -599,6 +607,79 @@ async function clearLeadForwardsAnsweredBy(
 }
 
 /**
+ * Reaching a customer clears their OTHER open rows (Naldo, 2026-09-03).
+ *
+ * Sibling of clearLeadForwardsAnsweredBy above, and deliberately WIDER: that
+ * one matches an outbound against the phone or email the ROW ITSELF names,
+ * because a merged contact's stray phone once false-triggered it. This one
+ * matches on the contact, which is what Naldo chose after being shown that
+ * exact tradeoff, because the case it exists for is a customer answered on a
+ * completely different row.
+ *
+ * The rule is pure and lives in outboundClearsContact.ts. Everything here is
+ * the database around it, and it copies the sibling's shape on purpose: read
+ * the candidates, decide with the pure rule, write with the open status
+ * re-asserted in the WHERE clause so a person's decision in the gap wins, and
+ * report only the rows the write actually changed.
+ */
+async function clearContactRowsAnsweredBy(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  contactId: string,
+  touch: NormalizedTouch,
+  originItemId: string | null,
+  now: Date,
+): Promise<{ id: string; from: { status: string; wasFollowed: boolean } }[]> {
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('id, status, last_message_at, last_inbound_at, followed_up_at')
+    .eq('contact_id', contactId)
+    .eq('status', 'unresponded');
+  if (error || !data) {
+    // Say so, for the reason the sibling says so: a swallowed failure here
+    // makes the whole feature permanently inert with no signal anywhere.
+    console.error('[inbox] outbound contact clear: candidate read failed:', error?.message);
+    return [];
+  }
+
+  const raw = data as {
+    id: string;
+    status: string;
+    last_message_at: string | null;
+    last_inbound_at: string | null;
+    followed_up_at: string | null;
+  }[];
+  const ids = rowsClearedByOutbound(
+    raw.map((r) => ({
+      id: r.id,
+      status: r.status,
+      lastMessageAt: r.last_message_at ? new Date(r.last_message_at) : null,
+      lastInboundAt: r.last_inbound_at ? new Date(r.last_inbound_at) : null,
+    })),
+    { at: touch.lastMessageAt, originItemId },
+  );
+  if (ids.length === 0) return [];
+
+  const priorById = new Map(
+    raw.filter((r) => ids.includes(r.id)).map((r) => [r.id, { status: r.status, wasFollowed: !!r.followed_up_at }]),
+  );
+
+  const { data: updated, error: updErr } = await sb
+    .from('inbox_items')
+    .update({ status: 'handled', handled_by: null, handled_at: now.toISOString(), updated_at: now.toISOString() })
+    .in('id', ids)
+    .eq('status', 'unresponded')
+    .select('id');
+  if (updErr) {
+    console.error('[inbox] outbound contact clear: update failed:', updErr.message);
+    return [];
+  }
+  return ((updated ?? []) as { id: string }[]).map((r) => ({
+    id: r.id,
+    from: priorById.get(r.id) ?? { status: 'unresponded', wasFollowed: false },
+  }));
+}
+
+/**
  * Ingest one normalized touch: resolve identity, upsert the contact + item
  * idempotently (UNIQUE(source, external_id)), and log activity. Returns the
  * notifyLevel so the caller can fire an escalation email if a level was crossed.
@@ -697,7 +778,19 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   // touch's own write, so a failure here cannot cost us the touch.
   if (isAnsweredByDirection(touch.direction)) {
     const cleared = await clearLeadForwardsAnsweredBy(sb, touch, now);
-    for (const { id: clearedId, from } of cleared) {
+    // 4b. Naldo, 2026-09-03: and every OTHER open row for this same customer.
+    // Wider than 4 on purpose (contact rather than message), because the case
+    // it exists for is a customer answered on a different row entirely: an
+    // email replied to in a new thread, a colour change actioned on a quotetool
+    // row. See clearContactRowsAnsweredBy for the tradeoff he was shown and
+    // accepted, and outboundClearsContact.ts for the guard that keeps it safe.
+    //
+    // Runs only when we know WHICH customer, and after the touch's own write,
+    // so a failure here can never cost us the touch.
+    const contactCleared = contactId
+      ? await clearContactRowsAnsweredBy(sb, contactId, touch, itemId, now)
+      : [];
+    for (const { id: clearedId, from } of [...cleared, ...contactCleared]) {
       if (clearedId === itemId) continue; // never log the row we just wrote twice
       await sb.from('dashboard_activity').insert({
         actor: 'system',
@@ -711,7 +804,18 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
         // state the row came out of. The first cut used `autoResolved` and no
         // `from`, so the explanation was write-only and a Reverse would have
         // guessed (premerge staff lens, 2026-09-02).
-        detail: { auto: true, reason: 'lead_forward_answered_by_outbound', from, outboundSource: touch.source },
+        detail: {
+          auto: true,
+          // Which rule fired, not a blanket label: a Reverse and any later
+          // audit need to tell the message-level forwarded-lead clear apart
+          // from the wider contact-level one, because they have different
+          // false-positive shapes.
+          reason: cleared.some((c) => c.id === clearedId)
+            ? 'lead_forward_answered_by_outbound'
+            : 'contact_answered_by_outbound',
+          from,
+          outboundSource: touch.source,
+        },
       });
     }
   }
@@ -1217,6 +1321,22 @@ async function recordActionFailed(
   }
 }
 
+/** How a follow-up was recorded. 'call' is written by the automatic sweep that
+ *  reads outbound calls (callFollowUp.ts); the manual button and a sent reply
+ *  pass nothing and keep their original audit shape.
+ *
+ *  It rides the SAME `detail.auto` + `detail.reason` channel the terminal-quote
+ *  auto-complete already uses (row 317 FIX 4), because that channel is the one
+ *  ActivityLog actually renders — see AUTO_REASON_LABEL there. A bespoke key
+ *  would have been written and read by nobody, which the pre-merge staff lens
+ *  caught it being in the first cut of this change. */
+export type { FollowedVia } from './followBacking';
+import { DEFAULT_FOLLOWED_VIA, type FollowedVia } from './followBacking';
+
+/** The `detail.reason` value a call-driven follow-up carries. Must stay in step
+ *  with AUTO_REASON_LABEL in ActivityLog.tsx, which turns it into words. */
+export const FOLLOWED_VIA_CALL_REASON = 'phone_call';
+
 export type HandledTarget = {
   source: InboxSource;
   externalId: string;
@@ -1498,7 +1618,7 @@ export async function markItemFollowed(
   itemId: string,
   operatorId: string,
   now: Date,
-  opts?: { allowRestamp?: boolean },
+  opts?: { allowRestamp?: boolean; via?: FollowedVia; requireNoInboundAfter?: Date },
 ): Promise<{ ok: true } | { ok: false; error: string; alreadyFollowed?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1506,11 +1626,32 @@ export async function markItemFollowed(
   const from = await priorStateOf(sb, itemId);
   let query = sb
     .from('inbox_items')
-    .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
+    .update({
+      followed_up_at: now.toISOString(),
+      // Row 502: record WHAT backed this stamp, so the row itself can say
+      // whether anything corroborates it. A caller passing nothing records
+      // 'manual', the honest reading and the one that fails closed: a future
+      // path that forgets to say cannot arrive looking backed.
+      followed_via: (opts?.via ?? DEFAULT_FOLLOWED_VIA) satisfies FollowedVia,
+      updated_at: now.toISOString(),
+    })
     .eq('id', itemId)
     .in('status', ['unresponded', 'handled']);
   if (!allowRestamp) {
     query = query.is('followed_up_at', null);
+  }
+  // Enforce the caller's anchor AT THE WRITE, not only at the read that chose
+  // this row. The automatic call sweep reads a snapshot of eligible items and
+  // then writes them one by one, so a customer reply landing through the
+  // ingest webhook in that gap would be overwritten: planIngest clears
+  // followed_up_at on any newer inbound, and a stale stamp written afterwards
+  // would push that unanswered customer back into "awaiting their reply" and
+  // hide them from the list whose job is to surface them. Found by the
+  // pre-merge technical lens. This makes the update itself refuse when a newer
+  // inbound has arrived, which check-then-act cannot do.
+  if (opts?.requireNoInboundAfter) {
+    const iso = opts.requireNoInboundAfter.toISOString();
+    query = query.or(`last_inbound_at.is.null,last_inbound_at.lte.${iso}`);
   }
   const { data, error } = await query.select('id').maybeSingle();
   if (error) {
@@ -1547,7 +1688,17 @@ export async function markItemFollowed(
     await recordActionFailed(itemId, operatorId, 'followed', msg);
     return { ok: false, error: msg };
   }
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
+  // `via` records HOW this follow-up happened, so the activity log can tell a
+  // phone call apart from a text. Omitted by the two original callers (the
+  // manual button and a sent reply), which keeps their audit rows the shape
+  // they already were. Written as auto/reason because that is the pair
+  // listActivity maps into ActivityRow.autoReason and ActivityLog renders.
+  await sb.from('dashboard_activity').insert({
+    actor: operatorId,
+    action: 'followed',
+    inbox_item_id: itemId,
+    detail: { from, ...(opts?.via === 'call' ? { auto: true, reason: FOLLOWED_VIA_CALL_REASON } : {}) },
+  });
   // PR #1005 (premerge STAFF lens, HIGH): "I followed up" is the answer to
   // "you should follow up", so it retires this item's due nag. Before this,
   // the ONLY staff-initiated way to close a quote_sent_no_reply follow-up was
@@ -2698,6 +2849,122 @@ export function findViewOnlyFollowUpItems(
  * match. Fails open (closes nothing) on a lookup error rather than guessing.
  * Returns how many follow-ups were closed.
  */
+/**
+ * Mark inbox items followed when staff have PHONED that person, using the
+ * calls already recorded in `call_recordings`. Naldo's ask, 2026-09-02: the
+ * /inbox "In the works" list kept nagging about people staff had rung, because
+ * nothing but a text or a button click ever cleared a row.
+ *
+ * The rule lives in callFollowUp.ts and is pure; this function is the thin
+ * database wrapper around it. See planCallFollowUps for why it stamps at the
+ * CALL's time (that is what makes re-running this a no-op) and callQualifies
+ * for the outbound / 30-second / after-the-anchor clauses.
+ *
+ * SCOPE is deliberately the "In the works" section and nothing else, matching
+ * what was asked for: the two buckets that section renders (see
+ * applyBucketFilter in lifecycle.ts) are
+ *   • awaiting  — followed_up_at set, status not completed/dismissed
+ *   • handled   — status 'handled', followed_up_at null
+ * The needs-reply list at the TOP of /inbox (status 'unresponded' with no
+ * follow-up stamp) is EXCLUDED on purpose. Those are people waiting on US, and
+ * snoozing one because somebody phoned would hide a live unanswered customer
+ * from the list whose entire job is to show them.
+ *
+ * `dryRun` returns the plan without writing, which is how the one-off backfill
+ * over historical calls was reviewed before it ran.
+ *
+ * Best-effort per row, like the other sweeps here: one failed stamp is counted
+ * and skipped rather than aborting the tick.
+ */
+export async function sweepCallFollowUps(
+  opts: { dryRun?: boolean; limit?: number } = {},
+): Promise<{ ok: true; planned: CallFollowUpStamp[]; stamped: number; failed: number } | { ok: false; error: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const limit = opts.limit ?? 5000;
+
+  // Both "In the works" buckets in one read: anything not terminal that either
+  // carries a follow-up stamp or is sitting handled. The `.or` mirrors
+  // applyBucketFilter's two predicates rather than re-deriving them loosely —
+  // a row must be in one of those two buckets to be eligible.
+  const { data: itemRows, error: itemErr } = await sb
+    .from('inbox_items')
+    .select('id, status, followed_up_at, last_inbound_at, last_message_at, contact_id, dashboard_contacts(ghl_contact_id)')
+    .not('status', 'in', '(completed,dismissed)')
+    .or('followed_up_at.not.is.null,status.eq.handled')
+    .limit(limit);
+  if (itemErr) return { ok: false, error: itemErr.message };
+
+  const items: CallFollowUpItem[] = (itemRows ?? []).map((raw) => {
+    const row = raw as unknown as Record<string, unknown>;
+    const contact = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
+    return {
+      id: String(row.id),
+      ghlContactId: (contact?.ghl_contact_id as string | null) ?? null,
+      followedUpAt: row.followed_up_at ? new Date(String(row.followed_up_at)) : null,
+      lastInboundAt: row.last_inbound_at ? new Date(String(row.last_inbound_at)) : null,
+      lastMessageAt: row.last_message_at ? new Date(String(row.last_message_at)) : null,
+    };
+  });
+
+  const contactIds = [...new Set(items.map((i) => i.ghlContactId).filter((id): id is string => !!id))];
+  if (contactIds.length === 0) return { ok: true, planned: [], stamped: 0, failed: 0 };
+
+  // Filter on the qualifying clauses in the QUERY as well as in the pure rule.
+  // The rule is still the authority (callQualifies re-checks every clause); this
+  // just avoids dragging every ring-out across the wire.
+  const { data: callRows, error: callErr } = await sb
+    .from('call_recordings')
+    .select('ghl_contact_id, direction, called_at, duration_seconds, is_test, skip_reason')
+    .in('ghl_contact_id', contactIds)
+    .eq('direction', 'outbound')
+    .gte('duration_seconds', MIN_CALL_SECONDS)
+    // Newest first, so that if the cap ever bites it drops the OLDEST calls —
+    // the ones least likely to be the latest qualifying call for any row.
+    // Without an order the surviving set past the cap is non-deterministic, and
+    // so is which call the planner picks as "latest" (pre-merge admin lens).
+    .order('called_at', { ascending: false })
+    .limit(limit);
+  if (callErr) return { ok: false, error: callErr.message };
+
+  const calls: ContactCall[] = (callRows ?? []).map((raw) => {
+    const row = raw as unknown as Record<string, unknown>;
+    return {
+      ghlContactId: (row.ghl_contact_id as string | null) ?? null,
+      direction: (row.direction as string | null) ?? null,
+      durationSeconds: typeof row.duration_seconds === 'number' ? row.duration_seconds : null,
+      calledAt: new Date(String(row.called_at)),
+      isTest: row.is_test === true,
+      junkReason: (row.skip_reason as string | null) ?? null,
+    };
+  });
+
+  const planned = planCallFollowUps({ items, calls });
+  if (opts.dryRun) return { ok: true, planned, stamped: 0, failed: 0 };
+
+  let stamped = 0;
+  let failed = 0;
+  for (const stamp of planned) {
+    // allowRestamp: this is the re-chase case by design. A row already marked
+    // followed that has gone quiet again SHOULD have its clock reset by a real
+    // phone call — that is the behaviour Naldo chose, and the reason the manual
+    // button refuses to restamp (a duplicate click must not move the customer's
+    // waiting clock) does not apply to a genuine new conversation.
+    const res = await markItemFollowed(stamp.itemId, 'system', stamp.calledAt, {
+      allowRestamp: true,
+      via: 'call',
+      // The same instant the plan was built against. If the customer has
+      // written since this snapshot was read, the UPDATE matches nothing and
+      // their row correctly stays in the needs-reply state the webhook put it
+      // in, instead of being snoozed by a call that predates their reply.
+      requireNoInboundAfter: stamp.calledAt,
+    });
+    if (res.ok) stamped += 1;
+    else failed += 1;
+  }
+  return { ok: true, planned, stamped, failed };
+}
+
 export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
@@ -3181,6 +3448,10 @@ export type InWorksItem = {
   source: InboxSource;
   channel: string | null;
   preview: string | null;
+  /** Needed with `preview` to recognise a forwarded lead. See IN_WORKS_SELECT.
+   *  Optional so the existing fixtures that omit it keep compiling, the same
+   *  concession isColorRequest makes just below. */
+  subject?: string | null;
   customerName: string | null;
   lastActivityAt: string | null;
   // #307: null for every 'awaiting' row (the rule set below only evaluates the
@@ -3188,6 +3459,9 @@ export type InWorksItem = {
   // fire. Non-null is the single displayed reason — see needsLookReason's own
   // doc comment for why only one shows when a row trips more than one rule.
   needsLookReason: string | null;
+  /** What backed the follow-up stamp: call, reply, manual, or null for a
+   *  stamp written before the column existed. See followBacking.ts. */
+  followedVia?: string | null;
   /** Row 321: true when this item both LOOKS like a colour request (a
    *  `quotetool` item whose external_id carries the `:color-request` suffix)
    *  AND its backing quote still carries a LIVE
@@ -3222,8 +3496,14 @@ export type InWorksResult =
 // Handled -> Followed/snooze path) read isColorRequest:false unconditionally
 // no matter what, because the column was never fetched at all. That earlier
 // scoping call is overruled here; every InWorksItem now carries external_id.
+// `subject` (2026-09-02): parseLeadForwardDisplay needs BOTH subject and
+// preview -- the subject carries the platform marker, the preview carries the
+// phone and email -- so without it InWorksSection could only ever show
+// "Reply in Gmail" on a forwarded lead, which is the one thing replying will
+// not do. #268's fix round found that and deliberately left it, documented, as
+// a follow-up needing this change. This is that follow-up.
 const IN_WORKS_SELECT =
-  'id, source, external_id, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+  'id, source, external_id, channel, subject, preview, followed_up_at, followed_via, handled_at, status, dashboard_contacts ( display_name )';
 
 // #307: the 'handled' bucket alone also needs direction (rule b) to compute
 // "Needs a look" — the 'awaiting' bucket's query stays on the narrower
@@ -3247,8 +3527,10 @@ function mapInWorksRow(
       source: row.source as InboxSource,
       channel: (row.channel as string | null) ?? null,
       preview: (row.preview as string | null) ?? null,
+      subject: (row.subject as string | null) ?? null,
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
+      followedVia: (row.followed_via as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
       // Row 321 fix-round FIX 1: shape AND liveness, for BOTH buckets now
       // that external_id is selected on both — see isLiveColorRequestItem's

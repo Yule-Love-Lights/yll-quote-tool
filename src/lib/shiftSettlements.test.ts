@@ -66,8 +66,18 @@ describe('parseAmountCents', () => {
 });
 
 describe('isSettlementMethod', () => {
-  it('accepts exactly the four ways money moves here', () => {
-    expect([...SETTLEMENT_METHODS]).toEqual(['cash', 'venmo', 'check', 'other']);
+  it('accepts exactly the ways money moves here, and nothing else', () => {
+    // wise and moneygram joined 2026-09-03 — how this company actually pays
+    // its office staff. The list is pinned rather than counted, so adding one
+    // is a deliberate edit here and not a silent widening.
+    expect([...SETTLEMENT_METHODS]).toEqual([
+      'cash',
+      'venmo',
+      'check',
+      'wise',
+      'moneygram',
+      'other',
+    ]);
     for (const m of SETTLEMENT_METHODS) expect(isSettlementMethod(m)).toBe(true);
     for (const junk of ['Cash', 'zelle', '', null, undefined, 1]) {
       expect(isSettlementMethod(junk)).toBe(false);

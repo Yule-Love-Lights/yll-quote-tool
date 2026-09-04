@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   attributeAuditRows,
+  splitPaidHours,
   groupPersonDays,
   isRangeKey,
   rangeFromDay,
@@ -458,5 +459,90 @@ describe('attributeAuditRows', () => {
       [],
     );
     expect(out.entries).toHaveLength(0);
+  });
+});
+
+describe('splitPaidHours', () => {
+  const row = (over: Partial<{ id: string; clockOutAt: string | null; settledSeconds: number; paidSeconds: number }>) => ({
+    id: 'x',
+    clockInAt: '2026-09-01T13:00:00.000Z',
+    clockOutAt: '2026-09-01T21:00:00.000Z' as string | null,
+    source: 'office',
+    closeSource: 'office',
+    manualBy: null,
+    paidSeconds: 8 * H,
+    breakSeconds: 0,
+    removable: false,
+    settlementId: null as string | null,
+    settledSeconds: 0,
+    ...over,
+  });
+
+  it('separates settled hours from hours nobody has paid for yet', () => {
+    const split = splitPaidHours([
+      {
+        day: '2026-09-01',
+        paidSeconds: 13 * H,
+        shifts: [row({ id: 'a', settledSeconds: 8 * H }), row({ id: 'b', paidSeconds: 5 * H })],
+      },
+    ]);
+    expect(split.paidSeconds).toBe(8 * H);
+    expect(split.paidCount).toBe(1);
+    expect(split.unpaidSeconds).toBe(5 * H);
+    expect(split.unpaidCount).toBe(1);
+    expect(split.openSeconds).toBe(0);
+  });
+
+  it('splits a PART-paid shift across both sides, and counts it in both', () => {
+    // The rollover case: $180 covered 3h 48m of a 4h 22m shift, so the same
+    // shift is both money already received and time still owed. Counting it
+    // on one side only would make one of the two totals a lie.
+    const split = splitPaidHours([
+      { day: '2026-09-01', paidSeconds: 8 * H, shifts: [row({ settledSeconds: 3 * H })] },
+    ]);
+    expect(split.paidSeconds).toBe(3 * H);
+    expect(split.unpaidSeconds).toBe(5 * H);
+    expect(split.paidCount).toBe(1);
+    expect(split.unpaidCount).toBe(1);
+  });
+
+  it('never lets a settled figure exceed the shift it belongs to', () => {
+    // The database refuses lines that sum past a shift's hours, so this can
+    // only be a broken read — and it must not render as negative time owed.
+    const split = splitPaidHours([
+      { day: '2026-09-01', paidSeconds: 4 * H, shifts: [row({ paidSeconds: 4 * H, settledSeconds: 9 * H })] },
+    ]);
+    expect(split.paidSeconds).toBe(4 * H);
+    expect(split.unpaidSeconds).toBe(0);
+  });
+
+  it('puts a shift that is still running in NEITHER bucket', () => {
+    // Calling time you are still working "unpaid" invites it to be expected
+    // in this week's payment; it cannot have been paid either.
+    const split = splitPaidHours([
+      { day: '2026-09-01', paidSeconds: 2 * H, shifts: [row({ clockOutAt: null, paidSeconds: 2 * H })] },
+    ]);
+    expect(split.openSeconds).toBe(2 * H);
+    expect(split.unpaidSeconds).toBe(0);
+    expect(split.paidSeconds).toBe(0);
+    expect(split.unpaidCount).toBe(0);
+  });
+
+  it('adds up across days, and returns zeroes for an empty range', () => {
+    const day = (id: string, settledSeconds: number) => ({
+      day: '2026-09-0' + id,
+      paidSeconds: 8 * H,
+      shifts: [row({ id, settledSeconds })],
+    });
+    const split = splitPaidHours([day('1', 8 * H), day('2', 0), day('3', 0)]);
+    expect(split.paidSeconds).toBe(8 * H);
+    expect(split.unpaidSeconds).toBe(16 * H);
+    expect(splitPaidHours([])).toEqual({
+      paidSeconds: 0,
+      paidCount: 0,
+      unpaidSeconds: 0,
+      unpaidCount: 0,
+      openSeconds: 0,
+    });
   });
 });

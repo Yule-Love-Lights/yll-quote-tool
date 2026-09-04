@@ -23,7 +23,7 @@ import { paidSecondsForShift, breakSecondsForShift } from '@/lib/shiftBreaks';
 import { resolveNowMs } from '@/lib/timeSpans';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { addDays } from '@/lib/opsMidnightClose';
-import { settledShiftIds } from '@/lib/shiftSettlements';
+import { settledSecondsByShift } from '@/lib/shiftSettlements';
 
 /** Rolling windows, in ET days counted back from today INCLUSIVE. Same
  * vocabulary as the summary table: no "this week" or "this month", because a
@@ -58,10 +58,16 @@ export type PersonShift = {
    * shift carrying a break or job segment, which is not mirrored here.
    * ALSO false once the shift is paid — see settlementId. */
   removable: boolean;
-  /** The live settlement this shift sits on, or null. A paid shift can be
-   * neither edited nor removed (ledger row 459, guarded in shifts.ts), so the
-   * page shows the reason instead of controls the server would refuse. */
+  /** A live settlement this shift sits on, or null. A shift with ANY live
+   * payment against it can be neither edited nor removed (ledger row 459,
+   * guarded in shifts.ts), so the page shows the reason instead of controls
+   * the server would refuse. Half paid still counts as paid for that. */
   settlementId: string | null;
+  /** How many of this shift's paid seconds a live payment has covered.
+   * Since 2026-09-03 a payment can land mid-shift, so this is a number and
+   * not a yes/no: 0 means nothing, `paidSeconds` means the whole shift, and
+   * anything between is a part payment with the rest rolled over. */
+  settledSeconds: number;
 };
 
 export type PersonDay = {
@@ -105,8 +111,11 @@ export type PersonTime = {
    * totals, flagged, same rule as the summary table. */
   autoClosed: { count: number; seconds: number };
   audit: ShiftAuditEntry[];
-  /** False when the settlement read FAILED. The page hides the pay panel
-   * rather than showing shifts as payable that may already be paid. */
+  /** False when the settlement read FAILED. BOTH pages that read this must
+   * then say nothing about payment at all rather than fall back to "unpaid":
+   * the admin pay panel hides, and the staff self-view drops its paid
+   * markers and its unpaid total. Telling someone they are owed for hours
+   * they have already been paid for is the wrong way to be wrong. */
   settlementsReadable: boolean;
   /** True when the audit list could be scoped only by this person's KNOWN
    * shift ids — see readAudit. Nothing is hidden that we could have found;
@@ -140,9 +149,10 @@ export function groupPersonDays(
   breaks: ReadonlyArray<{ shiftId: string } & BreakInterval>,
   fromDay: string | null,
   nowIso?: string,
-  /** shiftId to the live settlement that paid it. Empty until somebody is
-   * actually paid, which is every case before phase 3 is used. */
-  settledByShiftId: ReadonlyMap<string, string> = new Map(),
+  /** shiftId to what a live payment has covered on it: the seconds, and one
+   * settlement id for the lock message. Empty until somebody is actually
+   * paid. */
+  settledByShiftId: ReadonlyMap<string, { seconds: number; settlementId: string }> = new Map(),
 ): { days: PersonDay[]; totalSeconds: number; shiftCount: number; openShift: PersonTime['openShift']; autoClosed: { count: number; seconds: number } } {
   const nowMs = resolveNowMs(nowIso);
   const now = new Date(nowMs).toISOString();
@@ -193,7 +203,12 @@ export function groupPersonDays(
       paidSeconds,
       breakSeconds,
       removable: s.source === 'office' && Boolean(s.manualBy) && settledOn === undefined,
-      settlementId: settledOn ?? null,
+      settlementId: settledOn?.settlementId ?? null,
+      // Capped at the shift's own hours. The database refuses lines that sum
+      // past them, so a larger number here would mean the cap had failed;
+      // clamping keeps a broken read from rendering as "over paid" on
+      // somebody's own hours page.
+      settledSeconds: Math.min(settledOn?.seconds ?? 0, paidSeconds),
     };
 
     const bucket = byDay.get(day);
@@ -225,6 +240,58 @@ export function groupPersonDays(
 }
 
 /** The oldest ET day a range includes, or null for all time. PURE. */
+/**
+ * PURE. Splits the hours on screen into the ones a payment has been recorded
+ * against and the ones that are still waiting — Jason's ask 2026-09-03, so a
+ * staff member reading their own hours can see what is still outstanding.
+ *
+ * HOURS, NEVER A FIGURE. This deliberately returns seconds and counts and no
+ * money at all. The tool RECORDS payments and does not calculate them (S59:
+ * overtime has no agreed formula, ledger row 285, and one real week in this
+ * data is 50h 55m), so multiplying unpaid hours by a rate would put a number
+ * on screen that nobody has agreed is owed. "You have 12h nobody has paid you
+ * for yet" is true; "you are owed $X" is not something this data supports.
+ *
+ * An OPEN shift is in neither bucket. It cannot have been paid, and calling
+ * time that is still running "unpaid" would invite someone to expect it in
+ * this week's payment. It is reported separately so the page can say so.
+ *
+ * The caller must not call this at all when `settlementsReadable` is false —
+ * every shift would land in `unpaid` and the page would tell someone they are
+ * owed for hours they have already been paid for.
+ */
+export function splitPaidHours(days: ReadonlyArray<PersonDay>): {
+  paidSeconds: number;
+  paidCount: number;
+  unpaidSeconds: number;
+  unpaidCount: number;
+  openSeconds: number;
+} {
+  const out = { paidSeconds: 0, paidCount: 0, unpaidSeconds: 0, unpaidCount: 0, openSeconds: 0 };
+  for (const day of days) {
+    for (const shift of day.shifts) {
+      if (shift.clockOutAt === null) {
+        out.openSeconds += shift.paidSeconds;
+        continue;
+      }
+      // Both sides of one shift, because a payment can stop half way through
+      // it. A part-paid shift counts in BOTH counts on purpose: it is a shift
+      // you have had money for and a shift you are still owed on.
+      const settled = Math.min(shift.settledSeconds, shift.paidSeconds);
+      const owing = shift.paidSeconds - settled;
+      if (settled > 0) {
+        out.paidSeconds += settled;
+        out.paidCount += 1;
+      }
+      if (owing > 0) {
+        out.unpaidSeconds += owing;
+        out.unpaidCount += 1;
+      }
+    }
+  }
+  return out;
+}
+
 export function rangeFromDay(range: RangeKey, nowIso?: string): string | null {
   if (range === 'all') return null;
   const today = etDayKey(new Date(resolveNowMs(nowIso)));
@@ -502,9 +569,9 @@ export async function loadPersonTime(
     // paid": that would offer Edit and Remove on rows the server refuses, and
     // list an already-paid shift as payable a second time. Null means unknown,
     // and the page hides the pay panel on it.
-    settledShiftIds(shiftIds).catch((e: unknown) => {
+    settledSecondsByShift(shiftIds).catch((e: unknown) => {
       errors.push(
-        `${e instanceof Error ? e.message : 'settlement read failed'} — payments could not be read, so nothing can be paid or corrected from this page until that works`,
+        `${e instanceof Error ? e.message : 'settlement read failed'} — which hours have already been paid could not be read, so nothing here says paid or unpaid`,
       );
       return null;
     }),

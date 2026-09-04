@@ -14,6 +14,60 @@ const SECURITY_HEADERS = [
   { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains' },
 ];
 
+// The printed-QR subdomain. link.yulelovelights.com used to be a GoHighLevel
+// link host run by a former agency; it now points at this app so the QR codes on
+// the van decal and the business cards resolve again (src/app/qr).
+//
+// Only /qr is ours. Every OTHER path on that host is a link from the GoHighLevel
+// era - a booking confirmation, a review request - that may still be sitting in a
+// customer's texts or inbox. Before the domain moved, those returned a plain 404.
+// Pointed at this app they hit the operator gate instead, which answers a
+// signed-out request with the STAFF LOGIN PAGE: a homeowner following an old link
+// gets an "Operator / Password" form on a Yule Love Lights subdomain, which reads
+// as a phishing page and is strictly worse than the 404 it replaced. Found by the
+// close review's customer lens, measured, 2026-09-03.
+//
+// So everything on that host except /qr goes to the marketing site. Temporary, not
+// permanent: the same reasoning as the /qr route's own 302 - a permanent redirect
+// is cached by browsers effectively forever and would freeze a decision we may
+// want to revisit if any of those legacy paths turns out to be worth serving
+// properly. Note `permanent: false` emits a 307 here, not a 302; Next's
+// getRedirectStatus maps it that way. Both are uncacheable by default, which is
+// the property that matters, but the numbers are not the same and this comment
+// said 302 until the pre-merge technical lens read the mapping.
+const QR_LINK_HOST = 'link.yulelovelights.com';
+
+// Tagged, so the legacy traffic is countable instead of blending into ordinary
+// homepage visits. Without this nobody could ever answer "is anyone still
+// following the old GoHighLevel links, and can we let that subdomain go?" - the
+// question the sweep itself raises. Raised by the pre-merge admin lens.
+//
+// The ORIGIN AND PATH here must stay identical to QR_DESTINATION in
+// src/lib/qrRedirect.ts. They are deliberately two literals rather than one
+// import, because pulling app code into the build config coupled the two for a
+// value that changes about never - but a test asserts they agree, so a drift
+// fails the suite loudly instead of silently splitting the marketing site into
+// two destinations. See src/lib/qrLinkHost.test.ts.
+const MARKETING_SITE = 'https://yulelovelights.com/?utm_source=legacy_link&utm_medium=redirect';
+
+// Exported so a test can compile these patterns with the SAME path-to-regexp Next
+// uses, rather than asserting the config's shape and hoping the regex is right.
+// The negative lookahead is the whole risk here: get it wrong and this rule eats
+// the QR scans it exists to protect. See src/lib/qrLinkHost.test.ts.
+//
+// One rule is enough: the pattern matches the bare root of the host too. That
+// was NOT obvious - the first draft carried a separate rule for '/' on the
+// assumption it would not, and the test compiled the real regex and said
+// otherwise. Kept as one rule rather than two that agree.
+export const QR_LINK_HOST_REDIRECTS = [
+  {
+    source: '/:path((?!qr$|qr/).*)',
+    has: [{ type: 'host' as const, value: QR_LINK_HOST }],
+    destination: MARKETING_SITE,
+    permanent: false,
+  },
+];
+
 const nextConfig: NextConfig = {
   // Pin the workspace root to THIS checkout. Without it, Turbopack sees the
   // parent repo's package-lock.json from inside a .claude/worktrees/* copy and
@@ -21,6 +75,9 @@ const nextConfig: NextConfig = {
   // while you edit the worktree — routes 404 with no error anywhere.
   turbopack: { root: __dirname },
   allowedDevOrigins: ['127.0.0.1'],
+  async redirects() {
+    return QR_LINK_HOST_REDIRECTS;
+  },
   async headers() {
     return [
       { source: '/:path*', headers: SECURITY_HEADERS },

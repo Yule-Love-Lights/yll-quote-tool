@@ -1283,6 +1283,9 @@ create table if not exists public.inbox_items (
   -- 2026-06-30 snooze/"Followed": followed items hide from the open list and
   -- reappear only on a genuinely-newer message. Orthogonal to status.
   followed_up_at       timestamptz,
+  -- What backed that stamp: call, reply, or manual. Null for a stamp written
+  -- before 2026-09-03, deliberately not backfilled. See followBacking.ts.
+  followed_via         text,
   -- 2026-06-30 triage v1: 'lead' | 'automated' (NULL = unclassified, treated
   -- as 'lead') + the quote $ total for quotetool items (NULL elsewhere).
   lead_kind            text,
@@ -3888,6 +3891,11 @@ create unique index if not exists call_recordings_ghl_message_id_key
 create index if not exists call_recordings_status_created_idx
   on public.call_recordings (status, created_at);
 
+-- 2026-09-02: the inbox call follow-up sweep (sweepCallFollowUps) filters by
+-- contact on every reconcile tick, roughly every five minutes, forever.
+create index if not exists call_recordings_ghl_contact_id_idx
+  on public.call_recordings (ghl_contact_id);
+
 alter table public.call_recordings enable row level security;
 
 create table if not exists public.recording_sync_state (
@@ -5121,10 +5129,11 @@ create table if not exists public.shift_settlements (
   -- The amount ACTUALLY handed over, typed by an admin. Positive: a
   -- settlement recording nothing is not a payment, it is a mistake.
   total_cents     integer not null check (total_cents > 0),
-  -- Same fixed vocabulary as advertising settlements, so "how much did we
-  -- pay in cash this month" stays answerable across both. Anything else goes
-  -- in the note.
-  method          text not null check (method in ('cash', 'venmo', 'check', 'other')),
+  -- Started as the same vocabulary as advertising settlements and diverged
+  -- 2026-09-03: `wise` and `moneygram` are how this company actually pays its
+  -- office staff, and payroll answering "how much went out by Wise" matters
+  -- more than the two lists staying identical. Anything else goes in the note.
+  method          text not null check (method in ('cash', 'venmo', 'check', 'wise', 'moneygram', 'other')),
   note            text,
   paid_at         timestamptz not null default now(),
   -- TEXT, not a uuid into auth.users, matching `shifts.manual_by`: every
@@ -5157,9 +5166,19 @@ create table if not exists public.shift_settlement_lines (
   -- nearest cent. It is NOT asserted to equal the settlement total, because
   -- the whole point is that the two can differ: overtime, a rounded-up cash
   -- payment, an advance, a deduction agreed off-system.
-  paid_seconds         integer not null check (paid_seconds >= 0),
+  paid_seconds         integer not null,
   rate_cents_per_hour  integer not null check (rate_cents_per_hour >= 0),
   reference_cents      integer not null check (reference_cents >= 0),
+  -- The whole shift, carried on the line so a PART payment is legible on its
+  -- own ("3h 48m of a 4h 22m shift") and so the trigger below can cap the
+  -- sum without recomputing hours from clock times and breaks. That maths
+  -- lives in TypeScript (paidSecondsForShift); a second copy in SQL would be
+  -- free to drift. Safe to carry because a shift with any live payment is
+  -- refused for edit and removal, so its length is frozen from the first
+  -- payment onward. Added 2026-09-03.
+  shift_total_seconds  integer not null,
+  constraint shift_settlement_lines_total_check
+    check (shift_total_seconds >= paid_seconds and paid_seconds > 0),
   -- Mirrors the settlement's stamp, written in the same call. A partial
   -- index cannot reference another table, so the void marker has to live
   -- here for the index below to release a voided payment's shifts.
@@ -5167,11 +5186,76 @@ create table if not exists public.shift_settlement_lines (
   created_at           timestamptz not null default now()
 );
 
--- A shift is paid at most once. THIS INDEX IS THE GUARANTEE — not the
--- application check, which is a read that can go stale between two admins.
--- Narrowed to LIVE lines so voiding a payment makes its shifts payable again.
-create unique index if not exists shift_settlement_lines_shift_key
+-- A shift's live lines may not sum past its hours.
+--
+-- This REPLACED a unique index on (shift_id) where not voided on 2026-09-03.
+-- That index said "a shift is paid at most once", which a payment landing in
+-- the middle of a shift cannot satisfy -- and partial payment is the whole
+-- point of the rollover rule (Jason: a $180.00 payment covering 20h of a
+-- 20h 34m week must leave the 34 minutes owing, not write them off).
+--
+-- The guarantee is therefore weaker than an index and held by a trigger. It
+-- locks the SHIFT row first, so two admins paying the same person serialise
+-- here rather than both reading a sum that is about to change; without that
+-- lock each transaction would see the other's rows as absent and both would
+-- pass. It raises check_violation (23514), which the application maps to the
+-- same "somebody else paid these hours" refusal the old 23505 produced.
+create index if not exists shift_settlement_lines_shift_live_idx
   on public.shift_settlement_lines (shift_id) where voided_at is null;
+
+create or replace function public.assert_shift_not_overpaid()
+returns trigger
+language plpgsql
+as $$
+declare
+  live_total   integer;
+  shift_total  integer;
+  distinct_totals integer;
+begin
+  -- Voiding a line only ever REDUCES the live sum, so it needs no check and
+  -- must not take a lock it does not need.
+  if tg_op = 'UPDATE' and new.voided_at is not null then
+    return new;
+  end if;
+
+  perform 1 from public.shifts where id = new.shift_id for update;
+
+  select coalesce(sum(paid_seconds), 0),
+         max(shift_total_seconds),
+         count(distinct shift_total_seconds)
+    into live_total, shift_total, distinct_totals
+    from public.shift_settlement_lines
+   where shift_id = new.shift_id and voided_at is null;
+
+  -- Every live line for one shift must agree on how long that shift is. A
+  -- disagreement means a shift was edited under a live payment, which the
+  -- application refuses -- so if it is ever seen here, stop rather than pick
+  -- one of the two answers.
+  if distinct_totals > 1 then
+    raise exception
+      'shift % has live settlement lines disagreeing on its length (% distinct totals)',
+      new.shift_id, distinct_totals
+      using errcode = 'check_violation';
+  end if;
+
+  if live_total > shift_total then
+    raise exception
+      'shift % would be paid % seconds of its % (over by %)',
+      new.shift_id, live_total, shift_total, live_total - shift_total
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists shift_settlement_lines_not_overpaid on public.shift_settlement_lines;
+
+create trigger shift_settlement_lines_not_overpaid
+  after insert or update of paid_seconds, voided_at, shift_total_seconds
+  on public.shift_settlement_lines
+  for each row
+  execute function public.assert_shift_not_overpaid();
 
 create index if not exists shift_settlement_lines_settlement_idx
   on public.shift_settlement_lines (settlement_id);
