@@ -1,5 +1,5 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
-import { logAdvertisingActivity } from '@/lib/advertising/activity';
+import { logAdvertisingActivity, logAdvertisingActivityOrThrow } from '@/lib/advertising/activity';
 
 // Campaign rate config is MONEY: rate_cents is the CURRENT
 // per-accepted-PHOTO rate (default 250 = $2.50; per-photo basis is Naldo's
@@ -121,6 +121,29 @@ export class CampaignRateConflictError extends Error {
 }
 
 /**
+ * How many placements point at a campaign, counting EVERYTHING: test rows,
+ * voided rows, every status. The delete guard and the screen that decides
+ * whether to offer deleting both read this one function, because when they
+ * counted different things the button appeared for campaigns the server
+ * would always refuse (staff lens HIGH, PR #1185).
+ */
+export async function countCampaignPlacements(campaignId: string): Promise<number> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const { count, error } = await db
+    .from('advertising_placements')
+    .select('id', { count: 'exact', head: true })
+    .eq('campaign_id', campaignId.trim());
+  if (error) throw new Error(`countCampaignPlacements: ${error.message}`);
+  // A null count means the question was not answered, which is not the same
+  // as the answer being zero.
+  if (count === null || count === undefined) {
+    throw new Error('countCampaignPlacements: could not count the photos on this campaign');
+  }
+  return count;
+}
+
+/**
  * Patch a campaign. `actor` is REQUIRED — the auth user id of whoever is
  * editing (or 'system' for an automated write): a rate change decides what
  * every FUTURE acceptance pays, and it must never happen without a trace
@@ -133,7 +156,15 @@ export class CampaignRateConflictError extends Error {
  */
 export async function updateAdvertisingCampaign(
   id: string,
-  patch: { name?: string; notes?: string | null; rateCents?: number; active?: boolean },
+  patch: {
+    name?: string;
+    notes?: string | null;
+    rateCents?: number;
+    /** REQUIRED alongside rateCents: the rate the caller was looking at. */
+    expectedRateCents?: number;
+    active?: boolean;
+    kind?: 'yard_sign' | 'door_hanger';
+  },
   actor: string,
 ): Promise<AdvertisingCampaign | null> {
   const db = getSupabaseServiceClient();
@@ -148,9 +179,23 @@ export async function updateAdvertisingCampaign(
   if (patch.notes !== undefined) payload.notes = patch.notes?.trim() || null;
   if (patch.rateCents !== undefined) {
     assertValidRateCents(patch.rateCents);
+    // A rate change has to say what rate it believes it is replacing. Without
+    // it the compare-and-swap below reads the prior rate from the server
+    // moments earlier and swaps against that, which always matches itself, so
+    // a browser showing a stale rate silently overwrites a newer one. The
+    // pre-merge technical lens reverted 300 back to 250 through a pure rename
+    // that way (PR #1185).
+    if (patch.expectedRateCents === undefined) {
+      throw new Error('updateAdvertisingCampaign: a rate change must pass expectedRateCents');
+    }
+    assertValidRateCents(patch.expectedRateCents);
     payload.rate_cents = patch.rateCents;
   }
   if (patch.active !== undefined) payload.active = patch.active;
+  // The type decides what every FUTURE placement is stamped as. Rows already
+  // taken keep the type they were taken under, the same way they keep their
+  // rate.
+  if (patch.kind !== undefined) payload.kind = patch.kind;
 
   // Read the prior row BEFORE the write, so the audit rows can say what each
   // field moved FROM — and CAS on the rate below, so what that one says is
@@ -160,13 +205,23 @@ export async function updateAdvertisingCampaign(
   const changingRate = payload.rate_cents !== undefined;
   const changingName = payload.name !== undefined;
   const changingNotes = payload.notes !== undefined;
-  const changingText = changingName || changingNotes;
+  const changingKind = payload.kind !== undefined;
+  const changingActive = payload.active !== undefined;
+  const changingText = changingName || changingNotes || changingKind || changingActive;
   let prior: AdvertisingCampaign | null = null;
   if (changingRate || changingText) prior = await getAdvertisingCampaign(id);
   if (changingRate && !prior) {
     throw new Error(`updateAdvertisingCampaign: no campaign found for id ${id.trim()}`);
   }
   const priorRateCents: number | null = changingRate ? (prior as AdvertisingCampaign).rateCents : null;
+
+  // Refuse BEFORE the write when the stored rate is not the one the caller
+  // was looking at. The swap below still guards the gap between this read and
+  // the write; this guards the far bigger gap between the caller loading the
+  // screen and pressing save.
+  if (changingRate && priorRateCents !== patch.expectedRateCents) {
+    throw new CampaignRateConflictError();
+  }
 
   let query = db.from('advertising_campaigns').update(payload).eq('id', id.trim());
   if (changingRate) query = query.eq('rate_cents', priorRateCents);
@@ -197,6 +252,16 @@ export async function updateAdvertisingCampaign(
       detail.priorNotes = prior.notes;
       detail.newNotes = updated.notes;
     }
+    if (changingKind && prior.kind !== updated.kind) {
+      detail.priorKind = prior.kind;
+      detail.newKind = updated.kind;
+    }
+    // Closing a campaign decides whether the crew can see it or add photos at
+    // all, and it left no trace until the admin lens said so (PR #1185).
+    if (changingActive && prior.active !== updated.active) {
+      detail.priorActive = prior.active;
+      detail.newActive = updated.active;
+    }
     if (Object.keys(detail).length > 1) {
       await logAdvertisingActivity({ actor, action: 'campaign_edited', detail });
     }
@@ -216,4 +281,64 @@ export async function updateAdvertisingCampaign(
   }
 
   return updated;
+}
+
+/** Thrown when a delete is refused because photos point at the campaign.
+ * Those photos are somebody's paid work; the campaign is closed, not
+ * deleted. */
+export class CampaignHasPhotosError extends Error {
+  constructor(public readonly photoCount: number) {
+    super(
+      `This campaign has ${photoCount} photo${photoCount === 1 ? '' : 's'} on it. Close it instead: closing keeps every photo and every payment, and can be undone.`,
+    );
+    this.name = 'CampaignHasPhotosError';
+  }
+}
+
+/**
+ * Delete a campaign that nothing points at.
+ *
+ * Two guards, in this order, and the order is the point. The photo check
+ * comes first because a campaign holding paid work must never be deletable
+ * at all. Then the record of the deletion is written BEFORE the row goes: it
+ * is the only thing that will survive, and a best-effort append after the
+ * fact is how a destroyed row ends up with no trace of who destroyed it.
+ */
+export async function deleteAdvertisingCampaign(id: string, actor: string): Promise<void> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+  const campaignId = id.trim();
+
+  const prior = await getAdvertisingCampaign(campaignId);
+  if (!prior) throw new Error(`deleteAdvertisingCampaign: no campaign found for id ${campaignId}`);
+
+  const count = await countCampaignPlacements(campaignId);
+  if (count > 0) throw new CampaignHasPhotosError(count);
+
+  // Throws if the trail cannot be written, and the campaign then stays.
+  await logAdvertisingActivityOrThrow({
+    actor,
+    action: 'campaign_deleted',
+    detail: {
+      campaignId: prior.id,
+      name: prior.name,
+      kind: prior.kind,
+      rateCents: prior.rateCents,
+      notes: prior.notes,
+      createdAt: prior.createdAt,
+    },
+  });
+
+  const { error } = await db.from('advertising_campaigns').delete().eq('id', campaignId);
+  if (error) {
+    // The record of the deletion is already written and the campaign is still
+    // here, so the trail currently says something that is not true. Say so in
+    // the trail rather than leaving it to be read as a real deletion.
+    await logAdvertisingActivity({
+      actor,
+      action: 'campaign_delete_failed',
+      detail: { campaignId: prior.id, name: prior.name, reason: error.message },
+    });
+    throw new Error(`deleteAdvertisingCampaign: ${error.message}`);
+  }
 }

@@ -13,6 +13,14 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       rows: [] as AnyRow[],
       inserted: [] as AnyRow[],
       activity: [] as AnyRow[],
+      // How many photos point at a campaign, keyed by campaign id. The
+      // delete guard reads this.
+      placementCounts: new Map<string, number>(),
+      // When true, the audit insert fails the way a refused write really
+      // does: supabase-js returns { error } rather than throwing.
+      activityInsertFails: false,
+      // When set, the campaign delete returns this error message.
+      deleteFails: null as string | null,
       // When set, the NEXT single-row select returns this snapshot instead
       // of the live row, then clears — models a stale read racing a
       // concurrent writer.
@@ -31,8 +39,24 @@ function makeDb() {
       if (table === 'advertising_activity') {
         return {
           insert(payload: AnyRow) {
+            if (stateRef.current.activityInsertFails) {
+              return Promise.resolve({ data: null, error: { message: 'row-level security refused this insert' } });
+            }
             stateRef.current.activity.push(payload);
             return Promise.resolve({ data: null, error: null });
+          },
+        };
+      }
+      if (table === 'advertising_placements') {
+        return {
+          select(_cols?: string, _opts?: { count?: string; head?: boolean }) {
+            const b = {
+              eq(_col: string, val: unknown) {
+                const count = stateRef.current.placementCounts.get(String(val)) ?? 0;
+                return Promise.resolve({ data: null, error: null, count });
+              },
+            };
+            return b;
           },
         };
       }
@@ -78,6 +102,23 @@ function makeDb() {
             select: () => ({ maybeSingle: () => Promise.resolve({ data: row, error: null }) }),
           };
         },
+        delete() {
+          const filters: Array<(r: AnyRow) => boolean> = [];
+          const db = {
+            eq(col: string, val: unknown) {
+              filters.push((r) => r[col] === val);
+              return db;
+            },
+            then(onOk: (v: { error: { message: string } | null }) => unknown) {
+              if (stateRef.current.deleteFails) {
+                return Promise.resolve({ error: { message: stateRef.current.deleteFails } }).then(onOk);
+              }
+              stateRef.current.rows = stateRef.current.rows.filter((r) => !filters.every((f) => f(r)));
+              return Promise.resolve({ error: null }).then(onOk);
+            },
+          };
+          return db;
+        },
         update(payload: AnyRow) {
           const filters: Array<(r: AnyRow) => boolean> = [];
           const ub = {
@@ -108,6 +149,9 @@ beforeEach(() => {
   stateRef.current.inserted = [];
   stateRef.current.activity = [];
   stateRef.current.staleReadOnce = null;
+  stateRef.current.placementCounts = new Map();
+  stateRef.current.activityInsertFails = false;
+  stateRef.current.deleteFails = null;
   dbRef.current = makeDb();
 });
 
@@ -131,11 +175,15 @@ describe('updateAdvertisingCampaign', () => {
     const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
 
-    const updated = await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+    const updated = await updateAdvertisingCampaign(
+      campaign.id,
+      { rateCents: 300, expectedRateCents: 250 },
+      'admin-user-1',
+    );
     expect(updated?.rateCents).toBe(300);
 
     await expect(
-      updateAdvertisingCampaign(campaign.id, { rateCents: 1.5 }, 'admin-user-1'),
+      updateAdvertisingCampaign(campaign.id, { rateCents: 1.5, expectedRateCents: 250 }, 'admin-user-1'),
     ).rejects.toThrow(/rate/i);
   });
 
@@ -151,7 +199,7 @@ describe('updateAdvertisingCampaign', () => {
     stateRef.current.activity = [];
 
     await expect(
-      updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1'),
+      updateAdvertisingCampaign(campaign.id, { rateCents: 300, expectedRateCents: 250 }, 'admin-user-1'),
     ).rejects.toThrow(CampaignRateConflictError);
 
     expect(stateRef.current.rows[0].rate_cents).toBe(260); // the other admin's rate survives
@@ -163,7 +211,7 @@ describe('updateAdvertisingCampaign', () => {
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
     stateRef.current.activity = [];
 
-    await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 300, expectedRateCents: 250 }, 'admin-user-1');
 
     const audit = stateRef.current.activity.filter((a) => a.action === 'rate_changed');
     expect(audit).toHaveLength(1);
@@ -180,7 +228,7 @@ describe('updateAdvertisingCampaign', () => {
 
     await updateAdvertisingCampaign(campaign.id, { notes: 'east side routes' }, 'admin-user-1');
     // Same-value rate patch is also not a change.
-    await updateAdvertisingCampaign(campaign.id, { rateCents: 250 }, 'admin-user-1');
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 250, expectedRateCents: 250 }, 'admin-user-1');
 
     expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
   });
@@ -236,7 +284,7 @@ describe('updateAdvertisingCampaign — the name and description trail', () => {
     const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
     stateRef.current.activity = [];
 
-    await updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1');
+    await updateAdvertisingCampaign(campaign.id, { rateCents: 300, expectedRateCents: 250 }, 'admin-user-1');
 
     expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(1);
     expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
@@ -281,5 +329,202 @@ describe('updateAdvertisingCampaign — an edit row only claims the fields it wa
     expect(detail.newNotes).toBe('east side routes');
     expect('priorName' in detail).toBe(false);
     expect('newName' in detail).toBe(false);
+  });
+});
+
+// Deleting a campaign, and the two things that make it safe: it is refused
+// while any photo points at it, and the record of the deletion is written
+// BEFORE the row goes, never after (the void-then-record ordering that cost
+// a payroll row in an earlier session).
+describe('deleteAdvertisingCampaign', () => {
+  it('refuses while any photo points at the campaign, and deletes nothing', async () => {
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign, CampaignHasPhotosError } =
+      await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall signs' });
+    stateRef.current.placementCounts.set(campaign.id, 3);
+
+    await expect(deleteAdvertisingCampaign(campaign.id, 'admin-user-1')).rejects.toThrow(
+      CampaignHasPhotosError,
+    );
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('deletes a campaign with no photos and records who did it', async () => {
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Typo', rateCents: 300 });
+    stateRef.current.activity = [];
+
+    await deleteAdvertisingCampaign(campaign.id, 'admin-user-1');
+
+    expect(stateRef.current.rows).toHaveLength(0);
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_deleted');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('admin-user-1');
+    const detail = audit[0].detail as { name: string; rateCents: number };
+    expect(detail.name).toBe('Typo');
+    expect(detail.rateCents).toBe(300);
+  });
+
+  it('refuses to delete when the record of the deletion cannot be written', async () => {
+    // The audit row is the only thing that will survive the campaign. If it
+    // cannot be written the campaign stays, because a row that still exists
+    // is the recoverable half of that pair.
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Typo' });
+    stateRef.current.activityInsertFails = true;
+
+    await expect(deleteAdvertisingCampaign(campaign.id, 'admin-user-1')).rejects.toThrow();
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+
+  it('refuses a campaign that does not exist rather than reporting success', async () => {
+    const { deleteAdvertisingCampaign } = await import('./campaigns');
+    await expect(deleteAdvertisingCampaign('nope', 'admin-user-1')).rejects.toThrow(/no campaign/i);
+  });
+});
+
+describe('updateAdvertisingCampaign — the campaign type', () => {
+  it('changes the type and records the move', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', kind: 'yard_sign' });
+    stateRef.current.activity = [];
+
+    const updated = await updateAdvertisingCampaign(campaign.id, { kind: 'door_hanger' }, 'admin-user-1');
+
+    expect(updated?.kind).toBe('door_hanger');
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    const detail = audit[0].detail as { priorKind?: string; newKind?: string };
+    expect(detail.priorKind).toBe('yard_sign');
+    expect(detail.newKind).toBe('door_hanger');
+  });
+
+  it('re-saving the same type records nothing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', kind: 'yard_sign' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { kind: 'yard_sign' }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
+  });
+});
+
+// A rate change must say what rate it believes it is replacing. The old
+// compare-and-swap read the prior rate from the SERVER moments earlier and
+// swapped against that, so it always matched itself: a browser showing a
+// stale rate could overwrite a newer one with no error at all. The
+// pre-merge technical lens proved it by reverting 300 back to 250 through a
+// pure rename.
+describe('updateAdvertisingCampaign — a rate change names what it replaces', () => {
+  it('goes through when the stored rate is the one the caller was looking at', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+
+    const updated = await updateAdvertisingCampaign(
+      campaign.id,
+      { rateCents: 300, expectedRateCents: 250 },
+      'admin-user-1',
+    );
+
+    expect(updated?.rateCents).toBe(300);
+  });
+
+  it('refuses when the stored rate has moved since the caller read it', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign, CampaignRateConflictError } =
+      await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+    // Another admin moved it to 300 while this caller's screen still showed 250.
+    stateRef.current.rows[0].rate_cents = 300;
+    stateRef.current.activity = [];
+
+    await expect(
+      updateAdvertisingCampaign(campaign.id, { rateCents: 250, expectedRateCents: 250 }, 'admin-user-1'),
+    ).rejects.toThrow(CampaignRateConflictError);
+
+    expect(stateRef.current.rows[0].rate_cents).toBe(300);
+    expect(stateRef.current.activity.filter((a) => a.action === 'rate_changed')).toHaveLength(0);
+  });
+
+  it('refuses a rate change that does not say what it is replacing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+
+    await expect(
+      updateAdvertisingCampaign(campaign.id, { rateCents: 300 }, 'admin-user-1'),
+    ).rejects.toThrow(/expectedRateCents/);
+  });
+
+  it('a name-only patch neither needs nor touches the rate', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall', rateCents: 250 });
+    stateRef.current.rows[0].rate_cents = 300;
+
+    const updated = await updateAdvertisingCampaign(campaign.id, { name: 'Renamed' }, 'admin-user-1');
+
+    expect(updated?.name).toBe('Renamed');
+    expect(stateRef.current.rows[0].rate_cents).toBe(300);
+  });
+});
+
+// Closing a campaign decides whether the crew can see it and add photos at
+// all. Every other write in this module leaves a trail; this one left none
+// (admin lens HIGH).
+describe('updateAdvertisingCampaign — closing and reopening leave a trail', () => {
+  it('closing records who closed it and what it moved from', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { active: false }, 'admin-user-1');
+
+    const audit = stateRef.current.activity.filter((a) => a.action === 'campaign_edited');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('admin-user-1');
+    const detail = audit[0].detail as { priorActive?: boolean; newActive?: boolean };
+    expect(detail.priorActive).toBe(true);
+    expect(detail.newActive).toBe(false);
+  });
+
+  it('re-saving the same open/closed state records nothing', async () => {
+    const { createAdvertisingCampaign, updateAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Fall' });
+    stateRef.current.activity = [];
+
+    await updateAdvertisingCampaign(campaign.id, { active: true }, 'admin-user-1');
+
+    expect(stateRef.current.activity.filter((a) => a.action === 'campaign_edited')).toHaveLength(0);
+  });
+});
+
+describe('countCampaignPlacements — the one number the delete gate and the guard both read', () => {
+  it('counts every row, including the ones the display count hides', async () => {
+    const { countCampaignPlacements } = await import('./campaigns');
+    stateRef.current.placementCounts.set('campaign-x', 4);
+    expect(await countCampaignPlacements('campaign-x')).toBe(4);
+  });
+
+  it('a campaign nothing points at counts zero', async () => {
+    const { countCampaignPlacements } = await import('./campaigns');
+    expect(await countCampaignPlacements('campaign-x')).toBe(0);
+  });
+});
+
+describe('deleteAdvertisingCampaign — when the deletion itself fails', () => {
+  it('records that the deletion did not happen, so the trail is not left lying', async () => {
+    // The record of the deletion is written first, on purpose. If the delete
+    // then fails, that record describes something that did not happen, and
+    // the trail has to say so (delta-verify on the fix round).
+    const { createAdvertisingCampaign, deleteAdvertisingCampaign } = await import('./campaigns');
+    const campaign = await createAdvertisingCampaign({ name: 'Typo' });
+    stateRef.current.activity = [];
+    stateRef.current.deleteFails = 'the row is still referenced';
+
+    await expect(deleteAdvertisingCampaign(campaign.id, 'admin-user-1')).rejects.toThrow(/still referenced/);
+
+    expect(stateRef.current.rows).toHaveLength(1);
+    const actions = stateRef.current.activity.map((a) => a.action);
+    expect(actions).toContain('campaign_deleted');
+    expect(actions).toContain('campaign_delete_failed');
   });
 });

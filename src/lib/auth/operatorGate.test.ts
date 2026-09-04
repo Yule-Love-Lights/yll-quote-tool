@@ -455,8 +455,26 @@ describe('the printed-QR door', () => {
   // The entry is a PREFIX, unlike /estimate next to it, because the whole
   // point is answering slugs nobody can enumerate. That makes the negative
   // space worth pinning: a prefix is one typo away from opening a neighbour.
+  // Next's router matches routes case-insensitively and next.config.ts's
+  // link-host sweep is compiled with `sensitive: false`, so both treat these as
+  // the QR route and leave them alone. This gate used a case-sensitive compare
+  // and was the only layer that disagreed, so /QR/<slug> fell through to the
+  // login route: before PR #1191 that ended on the operator login form, and
+  // today it is two hops to the marketing site with the scan's attribution lost
+  // (reported as legacy_link rather than a van or card scan). The printed codes
+  // are lowercase; a retyped URL or a phone keyboard's auto-capital is what
+  // reaches this.
+  it.each(['/QR', '/QR/hbJhlsQLHpFv', '/Qr/DjzJS9mzhTOm', '/qR/anything'])(
+    'lets the case variant %s through, because every other layer already does',
+    (p) => {
+      expect(isPublicPath(p)).toBe(true);
+    },
+  );
+
   it('does not open anything that merely starts with the same letters', () => {
     expect(isPublicPath('/qrcode')).toBe(false);
+    expect(isPublicPath('/QRCODE')).toBe(false);
+    expect(isPublicPath('/QR-CODE')).toBe(false);
     expect(isPublicPath('/qr-code')).toBe(false);
     expect(isPublicPath('/qrx/abc')).toBe(false);
     expect(isPublicPath('/api/qr/abc')).toBe(false);

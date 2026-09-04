@@ -8,14 +8,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-const { requireAdmin, createAdvertisingCampaign, updateAdvertisingCampaign, listAdvertisingCampaigns, logAdvertisingActivity } =
-  vi.hoisted(() => ({
-    requireAdmin: vi.fn(),
-    createAdvertisingCampaign: vi.fn(),
-    updateAdvertisingCampaign: vi.fn(),
-    listAdvertisingCampaigns: vi.fn(),
-    logAdvertisingActivity: vi.fn(),
-  }));
+const {
+  requireAdmin,
+  createAdvertisingCampaign,
+  updateAdvertisingCampaign,
+  deleteAdvertisingCampaign,
+  listAdvertisingCampaigns,
+  logAdvertisingActivity,
+} = vi.hoisted(() => ({
+  requireAdmin: vi.fn(),
+  createAdvertisingCampaign: vi.fn(),
+  updateAdvertisingCampaign: vi.fn(),
+  deleteAdvertisingCampaign: vi.fn(),
+  listAdvertisingCampaigns: vi.fn(),
+  logAdvertisingActivity: vi.fn(),
+}));
 
 vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/auth/supabaseServer')>();
@@ -23,11 +30,17 @@ vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
 });
 vi.mock('@/lib/advertising/campaigns', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/advertising/campaigns')>();
-  return { ...actual, createAdvertisingCampaign, updateAdvertisingCampaign, listAdvertisingCampaigns };
+  return {
+    ...actual,
+    createAdvertisingCampaign,
+    updateAdvertisingCampaign,
+    deleteAdvertisingCampaign,
+    listAdvertisingCampaigns,
+  };
 });
 vi.mock('@/lib/advertising/activity', () => ({ logAdvertisingActivity }));
 
-import { PATCH, POST } from './route';
+import { DELETE, PATCH, POST } from './route';
 
 const ADMIN = { operator: { id: 'admin-1', email: 'n@x.com', role: 'admin', name: 'Naldo' } };
 const CAMPAIGN = {
@@ -50,6 +63,7 @@ beforeEach(() => {
   requireAdmin.mockResolvedValue(ADMIN);
   createAdvertisingCampaign.mockResolvedValue(CAMPAIGN);
   updateAdvertisingCampaign.mockResolvedValue({ ...CAMPAIGN, rateCents: 300 });
+  deleteAdvertisingCampaign.mockResolvedValue(undefined);
   listAdvertisingCampaigns.mockResolvedValue([CAMPAIGN]);
 });
 
@@ -172,5 +186,86 @@ describe('no patch field is silently dropped', () => {
     const res = await PATCH(makeReq({ campaignId: 'campaign-1', notes: null }));
     expect(res.status).toBe(200);
     expect(updateAdvertisingCampaign).toHaveBeenCalledWith('campaign-1', { notes: null }, 'admin-1');
+  });
+});
+
+describe('the campaign type', () => {
+  it('accepts the two real types', async () => {
+    for (const kind of ['yard_sign', 'door_hanger']) {
+      updateAdvertisingCampaign.mockResolvedValue({ ...CAMPAIGN, kind });
+      const res = await PATCH(makeReq({ campaignId: 'campaign-1', kind }));
+      expect(res.status).toBe(200);
+    }
+    expect(updateAdvertisingCampaign).toHaveBeenCalledWith(
+      'campaign-1',
+      expect.objectContaining({ kind: 'door_hanger' }),
+      'admin-1',
+    );
+  });
+
+  it('400s anything else instead of dropping it', async () => {
+    // Sent alongside a valid name so the patch is not empty: on its own it
+    // would hit the "Nothing to update" guard and pass for the wrong reason.
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', name: 'Fall', kind: 'billboard' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/yard sign|door hanger/i);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleting a campaign', () => {
+  it('non-admins are refused before anything is read', async () => {
+    requireAdmin.mockResolvedValue({
+      response: NextResponse.json({ error: 'Admin access required' }, { status: 403 }),
+    });
+    const res = await DELETE(makeReq({ campaignId: 'campaign-1' }));
+    expect(res.status).toBe(403);
+    expect(deleteAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+
+  it('deletes and reports it plainly', async () => {
+    deleteAdvertisingCampaign.mockResolvedValue(undefined);
+    const res = await DELETE(makeReq({ campaignId: 'campaign-1' }));
+    expect(res.status).toBe(200);
+    expect(deleteAdvertisingCampaign).toHaveBeenCalledWith('campaign-1', 'admin-1');
+  });
+
+  it('409s a campaign that still has photos, with the count in the message', async () => {
+    const { CampaignHasPhotosError } = await import('@/lib/advertising/campaigns');
+    deleteAdvertisingCampaign.mockRejectedValue(new CampaignHasPhotosError(48));
+    const res = await DELETE(makeReq({ campaignId: 'campaign-1' }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/48 photos/);
+  });
+
+  it('400s without a campaign id', async () => {
+    const res = await DELETE(makeReq({}));
+    expect(res.status).toBe(400);
+    expect(deleteAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+});
+
+describe('a rate change has to say what it replaces', () => {
+  it('400s a rate change with no expected rate, rather than obeying a stale screen', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', rateCents: 300 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/reload/i);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
+  });
+
+  it('passes both figures through when the expected rate is given', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', rateCents: 300, expectedRateCents: 250 }));
+    expect(res.status).toBe(200);
+    expect(updateAdvertisingCampaign).toHaveBeenCalledWith(
+      'campaign-1',
+      expect.objectContaining({ rateCents: 300, expectedRateCents: 250 }),
+      'admin-1',
+    );
+  });
+
+  it('400s a malformed expected rate the same way as a malformed rate', async () => {
+    const res = await PATCH(makeReq({ campaignId: 'campaign-1', rateCents: 300, expectedRateCents: '250' }));
+    expect(res.status).toBe(400);
+    expect(updateAdvertisingCampaign).not.toHaveBeenCalled();
   });
 });
