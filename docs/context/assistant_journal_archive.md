@@ -699,3 +699,15 @@
 - **THE INCIDENT:** GHL's own record settled it — `dndSettings.Email = active`, code 105, "User clicked on the unsubscribe link", contact modified 2026-08-31 11:11:56Z, last accepted app email 02:29:51 that morning. Five hypotheses died on measurements first (see the S58 fragment). Alerts re-sent internal-only; row 497 holds the ~13 siblings.
 - MISTAKES: see the scorecard.
 - Full detail: `docs/context/journal/S58-jason.md`. Master at close: `fbd9c7a2`; gates in the close PR body.
+
+## Archived at S61 (Jason) 2026-09-04 - the S60 session block, moved byte-verbatim off CLAUDE.md on the standing close cadence. Naldo's S88/S89 blocks were left in place deliberately: he has close PRs open against that same file and moving his content would hand him a conflict. S60 is also preserved whole in docs/context/journal/S60-jason.md.
+
+### S60 (Jason), 2026-09-03 to 09-04: the staff self-view shipped, then the FIRST REAL PAYMENT broke the model that had shipped the day before, and it was rebuilt. 2 PRs merged, a schema guarantee deliberately weakened, proven end to end on real money. Close PR jason/s60-close
+
+- **NUMBER:** S60, checked against Jason's fragments, the machine-local `feedback_self_assessment.md`, `gh pr list --limit 200` and every remote branch. Naldo ran S87→S91 alongside; numbers are PER DEV.
+- **#1187** `/my-hours` — the first reduced-own-view page in the app. Identity from the session, no id in the URL, five named refusal states, controls absent rather than hidden. The clock buttons the plan asked for already existed on every page, so they were deliberately not added again.
+- **#1190** a payment buys HOURS oldest-first and the remainder ROLLS OVER, after the first real settlement wrote off 34 minutes Khaye was never paid for. A shift can be PART paid. The unique index that guaranteed "a shift is paid at most once" was replaced by a trigger — a real weakening, taken deliberately, proven in a throwaway schema on six checks and negative-controlled on prod data before anything relied on it.
+- **PROVEN LIVE, closing what S59 left open:** Jason recorded $1.00 to himself and undid it. 225 seconds of a 29,340-second shift ($1.00 at $16.00/h = 3m 45s, to the second), on his OLDEST shift, released cleanly to exactly 57,192s unpaid. Part payment, oldest-first, rate conversion and undo — all in production, not a fixture.
+- **REVIEW:** #1187 four lenses (0 HIGH). #1190 four lenses (4 HIGH) + delta-verify (2 MED). All fixed. Two lenses converged independently on the range-scoped preview; the delta-verify caught a "0m of your time goes back to unpaid" message my own fix introduced.
+- **CAPTURED, NOT BUILT (506/507):** pay rates change and every conversion assumes they never have — already wrong in prod. Plus the spreadsheet import that must wait for it.
+- Gates: tsc 0 · lint 0 errors (23 warnings) · vitest **10539 / 605 files**. Master `964c199f`. Full detail: `docs/context/journal/S60-jason.md`.

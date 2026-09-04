@@ -45,6 +45,22 @@ const SOURCE_LABEL: Record<string, string> = {
 
 export const sourceLabel = (s: string) => SOURCE_LABEL[s] ?? s;
 
+/** The `manual_by` stamp the row-507 timesheet import writes on every shift
+ * it creates. Matched as a prefix so the stamp can gain detail later. */
+const IMPORT_STAMP_PREFIX = 'imported from';
+
+/** True when this row's clock times are a PLACEHOLDER rather than a punch.
+ *
+ * The row-507 import had a date and a duration and no start time, so every
+ * imported shift is anchored at a fixed hour. Those rows are `source: office`,
+ * which SOURCE_LABEL renders as "web clock" — so without this they read as
+ * ordinary punches with precise times, and 142 of Jason's do. The day and the
+ * duration are real; the clock times are not, and the row now says so (admin
+ * lens, S61 session review). */
+export function hasPlaceholderTimes(manualBy: string | null): boolean {
+  return manualBy !== null && manualBy.startsWith(IMPORT_STAMP_PREFIX);
+}
+
 /**
  * Who typed a manual correction, as the reader of THIS page should see them.
  *
@@ -144,9 +160,20 @@ function ShiftRow({
           </span>
         )}
         <span className="text-xs text-gray-400 whitespace-nowrap">
-          in: {sourceLabel(shift.source)}
-          {shift.closeSource ? ` · out: ${sourceLabel(shift.closeSource)}` : ''}
+          {hasPlaceholderTimes(shift.manualBy) ? (
+            'imported from a timesheet'
+          ) : (
+            <>
+              in: {sourceLabel(shift.source)}
+              {shift.closeSource ? ` · out: ${sourceLabel(shift.closeSource)}` : ''}
+            </>
+          )}
         </span>
+        {hasPlaceholderTimes(shift.manualBy) && (
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+            start time approximate
+          </span>
+        )}
         {open && (
           <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-800 whitespace-nowrap">
             Clocked in now

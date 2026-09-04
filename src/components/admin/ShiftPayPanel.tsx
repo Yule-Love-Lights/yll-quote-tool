@@ -251,7 +251,8 @@ export function ShiftPayPanel({
   if (payable.length === 0) {
     return (
       <p className="text-sm text-gray-500">
-        Nothing to pay in this range. Only closed shifts with time still owing appear here.
+        Nothing to pay. Only closed shifts with time still owing appear here, from any date —
+        the range above changes the hours table, not this.
       </p>
     );
   }
