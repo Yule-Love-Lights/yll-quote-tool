@@ -17,6 +17,15 @@ import { getAdvertisingWorker } from '@/lib/advertising/workers';
 // garage), floored at zero because that count is hand-set and can be stale.
 // Both movements ride one audit row.
 
+/** What was handed over. The ledger covers both since 2026-09-04; every row
+ * written before that was a yard-sign hand-out. */
+export type IssuanceKind = 'yard_sign' | 'door_hanger';
+export const ISSUANCE_KINDS = ['yard_sign', 'door_hanger'] as const;
+
+export function isIssuanceKind(value: unknown): value is IssuanceKind {
+  return value === 'yard_sign' || value === 'door_hanger';
+}
+
 export type SignIssuance = {
   id: string;
   workerId: string;
@@ -24,16 +33,19 @@ export type SignIssuance = {
   issuedBy: string;
   note: string | null;
   createdAt: string;
+  kind: IssuanceKind;
 };
 
 export type WorkerSignBalance = {
   workerId: string;
+  kind: IssuanceKind;
   issuedTotal: number;
+  /** Photos of this kind taken, which is what draws the allotment down. */
   signsUsed: number;
   remaining: number;
 };
 
-const SELECT = 'id, worker_id, qty, issued_by, note, created_at, request_id';
+const SELECT = 'id, worker_id, qty, issued_by, note, created_at, request_id, kind';
 const PAGE = 1000;
 
 type Row = {
@@ -44,6 +56,7 @@ type Row = {
   note: string | null;
   created_at: string;
   request_id: string | null;
+  kind: string;
 };
 
 function toIssuance(row: Row): SignIssuance {
@@ -54,6 +67,7 @@ function toIssuance(row: Row): SignIssuance {
     issuedBy: row.issued_by,
     note: row.note,
     createdAt: row.created_at,
+    kind: isIssuanceKind(row.kind) ? row.kind : 'yard_sign',
   };
 }
 
@@ -79,10 +93,15 @@ export async function issueSigns(
    * window below could never tell apart. Optional: a caller that sends none
    * keeps the old window as its only guard. */
   requestId?: string,
+  /** What is being handed over. Defaults to signs, which is what every
+   * hand-out before 2026-09-04 was. */
+  kind: IssuanceKind = 'yard_sign',
 ): Promise<{ issuance: SignIssuance; issuedQty: number }> {
   if (!Number.isInteger(qty) || qty <= 0) {
     throw new Error(`Invalid quantity: ${qty} — issue a whole number of signs, 1 or more`);
   }
+  if (!isIssuanceKind(kind)) throw new Error(`issueSigns: unknown kind ${String(kind)}`);
+
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
@@ -116,6 +135,7 @@ export async function issueSigns(
         .from('advertising_sign_issuances')
         .select(SELECT)
         .eq('worker_id', worker.id)
+        .eq('kind', kind)
         .order('created_at', { ascending: false })
         .range(0, 0);
   const latest = ((latestRows ?? []) as Row[])[0];
@@ -140,6 +160,7 @@ export async function issueSigns(
       issued_by: issuedBy,
       note: note?.trim() || null,
       request_id: requestId ?? null,
+      kind,
     })
     .select(SELECT)
     .maybeSingle();
@@ -172,7 +193,10 @@ export async function issueSigns(
   let warehousePrior: number | null = null;
   let warehouseNew: number | null = null;
   let warehouseUpdated = false;
-  if (!worker.isTest) {
+  // SIGNS ONLY. inventory_on_hand tracks the yard-sign SKU; door hangers
+  // have no SKU, so a hanger hand-out is recorded without touching stock
+  // rather than silently drawing down a pile of the wrong thing.
+  if (!worker.isTest && kind === 'yard_sign') {
     for (let attempt = 0; attempt < 3 && !warehouseUpdated; attempt++) {
       const { data: onHand } = await db
         .from('inventory_on_hand')
@@ -203,6 +227,7 @@ export async function issueSigns(
 
   const detail: Record<string, unknown> = {
     qty,
+    kind,
     note: issuance.note,
     warehouseUpdated,
   };
@@ -223,13 +248,15 @@ export async function issueSigns(
 }
 
 /** Every issuance for one worker, newest first (bounded display read). */
-export async function listIssuances(workerId: string): Promise<SignIssuance[]> {
+export async function listIssuances(workerId: string, kind?: IssuanceKind): Promise<SignIssuance[]> {
   const db = getSupabaseServiceClient();
   if (!db) return [];
-  const { data, error } = await db
+  let query = db
     .from('advertising_sign_issuances')
     .select(SELECT)
-    .eq('worker_id', workerId.trim())
+    .eq('worker_id', workerId.trim());
+  if (kind) query = query.eq('kind', kind);
+  const { data, error } = await query
     .order('created_at', { ascending: false })
     .range(0, PAGE - 1);
   if (error) {
@@ -239,7 +266,7 @@ export async function listIssuances(workerId: string): Promise<SignIssuance[]> {
   return ((data ?? []) as Row[]).map(toIssuance);
 }
 
-async function issuedTotal(workerId: string): Promise<number> {
+async function issuedTotal(workerId: string, kind: IssuanceKind): Promise<number> {
   const db = getSupabaseServiceClient();
   if (!db) return 0;
   // Sum via paged reads (money-adjacent count; never trust an unranged read).
@@ -247,8 +274,9 @@ async function issuedTotal(workerId: string): Promise<number> {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await db
       .from('advertising_sign_issuances')
-      .select('id, worker_id, qty, issued_by, note, created_at')
+      .select(SELECT)
       .eq('worker_id', workerId)
+      .eq('kind', kind)
       .order('created_at', { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) {
@@ -265,12 +293,15 @@ async function issuedTotal(workerId: string): Promise<number> {
 /** The worker's running sign balance: issued minus yard-sign photos taken
  * (any status), clamped at zero for display sanity when history predates
  * tracking. */
-export async function getWorkerSignBalance(workerId: string): Promise<WorkerSignBalance> {
+export async function getWorkerSignBalance(
+  workerId: string,
+  kind: IssuanceKind = 'yard_sign',
+): Promise<WorkerSignBalance> {
   const db = getSupabaseServiceClient();
   const id = workerId.trim();
-  if (!db) return { workerId: id, issuedTotal: 0, signsUsed: 0, remaining: 0 };
+  if (!db) return { workerId: id, kind, issuedTotal: 0, signsUsed: 0, remaining: 0 };
 
-  const issued = await issuedTotal(id);
+  const issued = await issuedTotal(id, kind);
   // NO is_test filter here, deliberately, and this is the one counter in the
   // subsystem without one: every sibling counts ACROSS workers and must keep
   // test rows out of a real total, while this one is already scoped to a
@@ -283,7 +314,7 @@ export async function getWorkerSignBalance(workerId: string): Promise<WorkerSign
     .from('advertising_placements')
     .select('id', { count: 'exact', head: true })
     .eq('worker_id', id)
-    .eq('kind', 'yard_sign');
+    .eq('kind', kind);
   // NO voided_at filter, deliberately (Naldo's ruling 2026-08-31, ledger row
   // 479): a placed sign is a USED sign. Voiding is about the photo and the
   // pay; the plastic is still in the ground either way, so a voided
@@ -298,6 +329,7 @@ export async function getWorkerSignBalance(workerId: string): Promise<WorkerSign
 
   return {
     workerId: id,
+    kind,
     issuedTotal: issued,
     signsUsed,
     remaining: Math.max(0, issued - signsUsed),

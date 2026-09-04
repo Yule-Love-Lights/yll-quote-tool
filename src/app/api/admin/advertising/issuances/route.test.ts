@@ -15,7 +15,14 @@ vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/auth/supabaseServer')>();
   return { ...actual, requireAdmin };
 });
-vi.mock('@/lib/advertising/signIssuances', () => ({ issueSigns, getWorkerSignBalance, listIssuances }));
+// Spread the REAL module rather than replacing it: this mock listed three
+// exports, so the moment the module grew an isIssuanceKind the route called
+// undefined and every POST here became a 500. Stub what the test drives,
+// keep everything else real.
+vi.mock('@/lib/advertising/signIssuances', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/advertising/signIssuances')>();
+  return { ...actual, issueSigns, getWorkerSignBalance, listIssuances };
+});
 vi.mock('@/lib/advertising/workers', () => ({ listAdvertisingWorkers }));
 
 import { GET, POST } from './route';
@@ -57,7 +64,7 @@ describe('issuances route', () => {
     const res = await POST(makeReq({ workerId: 'worker-1', qty: 50, issuedBy: 'someone-else' }));
     expect(res.status).toBe(201);
     // Fifth argument is the idempotency key (row 480); this caller sends none.
-    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, undefined);
+    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, undefined, 'yard_sign');
   });
 
   it('POST refuses zero, negative, fractional and string quantities', async () => {
@@ -77,7 +84,7 @@ describe('issuances route', () => {
     const one = await GET(makeGetReq({ workerId: 'worker-1' }));
     const body = await one.json();
     expect(body.balance).toEqual(BALANCE);
-    expect(listIssuances).toHaveBeenCalledWith('worker-1');
+    expect(listIssuances).toHaveBeenCalledWith('worker-1', 'yard_sign');
   });
 });
 
@@ -87,7 +94,7 @@ describe('POST idempotency key (ledger row 480)', () => {
   it('passes a valid request id through to the data layer', async () => {
     const res = await POST(makeReq({ workerId: 'worker-1', qty: 50, requestId: ID }));
     expect(res.status).toBe(201);
-    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, ID);
+    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, ID, 'yard_sign');
   });
 
   it('refuses a malformed id instead of storing a key that guards nothing', async () => {
@@ -99,6 +106,6 @@ describe('POST idempotency key (ledger row 480)', () => {
   it('still works with no id at all', async () => {
     const res = await POST(makeReq({ workerId: 'worker-1', qty: 50 }));
     expect(res.status).toBe(201);
-    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, undefined);
+    expect(issueSigns).toHaveBeenCalledWith('worker-1', 50, 'admin-1', undefined, undefined, 'yard_sign');
   });
 });
