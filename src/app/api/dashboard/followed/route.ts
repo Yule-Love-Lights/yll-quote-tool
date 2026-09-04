@@ -45,6 +45,12 @@ export async function POST(req: NextRequest) {
   // one is a stale retry landing days later and wiping a real wait).
   const res = await markItemFollowed(itemId, operator?.id ?? 'system', new Date(), {
     allowRestamp: again === true,
+    // Row 502: this is the bare button. A person asserted they chased the
+    // customer and nothing in the system records a call or a message, which
+    // is exactly what 'manual' means. It is NOT an accusation: ringing from a
+    // personal phone looks identical from here, and the row's marker says
+    // what is true of the RECORD rather than what the staffer did.
+    via: 'manual',
   });
   if (!res.ok) {
     // The operator's goal (this item is snoozed) is already the current
