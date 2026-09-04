@@ -32,6 +32,14 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import {
+  Pill,
+  btnPrimary,
+  btnPrimaryStyle,
+  btnTextDanger,
+  inputClass,
+  labelClass,
+} from '@/components/time/timeUi';
 import { distinctRates } from '@/lib/crewMemberRates';
 import { formatHours } from '@/lib/hoursSummary';
 import {
@@ -258,39 +266,44 @@ export function ShiftPayPanel({
   }
 
   return (
-    <div className="rounded-md border border-gray-200">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 bg-gray-50 px-3 py-2">
+    <div className="overflow-hidden rounded-lg border" style={{ borderColor: 'var(--op-border)' }}>
+      <div
+        className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-3"
+        style={{ background: 'var(--op-bg)' }}
+      >
         <span className="text-sm text-gray-700">
-          <span className="font-semibold tabular-nums">{formatHours(owedSeconds)}</span> unpaid
-          across {payable.length} {payable.length === 1 ? 'shift' : 'shifts'}
+          <span className="text-lg font-semibold tabular-nums text-gray-900">
+            {formatHours(owedSeconds)}
+          </span>{' '}
+          unpaid across {payable.length} {payable.length === 1 ? 'shift' : 'shifts'}
         </span>
         <span className="text-sm tabular-nums text-gray-500">
           worth {dollars(maxCents)} {atRate}
         </span>
       </div>
 
-      <div className="border-b border-gray-200 px-3 py-3">
+      <div className="border-b px-4 py-4" style={{ borderColor: 'var(--op-border)' }}>
         <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs text-gray-600">
+          <label className={labelClass}>
             Amount actually paid
-            <span className="block mt-1">
+            <span className="mt-1 block">
               <input
                 type="text"
                 inputMode="decimal"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 placeholder="180.00"
-                className="rounded border border-gray-300 px-2 py-1 text-sm w-32"
+                className={`${inputClass} w-32`}
               />
             </span>
           </label>
-          <label className="text-xs text-gray-600">
+          <label className={labelClass}>
             How
-            <span className="block mt-1">
+            <span className="mt-1 block">
               <select
                 value={method}
                 onChange={(e) => setMethod(e.target.value as SettlementMethod)}
-                className="rounded border border-gray-300 px-2 py-1 text-sm"
+                className={inputClass}
               >
                 {SETTLEMENT_METHODS.map((m) => (
                   <option key={m} value={m}>
@@ -300,15 +313,15 @@ export function ShiftPayPanel({
               </select>
             </span>
           </label>
-          <label className="text-xs text-gray-600 flex-1 min-w-[12rem]">
+          <label className={`${labelClass} min-w-[12rem] flex-1`}>
             Note (optional)
-            <span className="block mt-1">
+            <span className="mt-1 block">
               <input
                 type="text"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 placeholder="anything worth remembering about this payment"
-                className="rounded border border-gray-300 px-2 py-1 text-sm w-full"
+                className={`${inputClass} w-full`}
               />
             </span>
           </label>
@@ -316,8 +329,8 @@ export function ShiftPayPanel({
             type="button"
             onClick={submit}
             disabled={busy || !preview || preview.lines.length === 0}
-            className="rounded px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-            style={{ background: 'var(--brand-evergreen-3)' }}
+            className={btnPrimary}
+            style={btnPrimaryStyle}
           >
             {busy ? 'Recording…' : 'Record payment'}
           </button>
@@ -357,7 +370,7 @@ export function ShiftPayPanel({
       </div>
 
       {/* What the money will actually land on, before it is recorded. */}
-      <ul className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+      <ul className="max-h-72 divide-y divide-gray-100 overflow-y-auto">
         {payable.map((s) => {
           const line = preview?.lines.find((l) => l.shiftId === s.id);
           const covers = line?.paidSeconds ?? 0;
@@ -365,18 +378,20 @@ export function ShiftPayPanel({
           return (
             <li
               key={s.id}
-              className={`flex flex-wrap items-baseline gap-3 px-3 py-2 text-sm ${covers > 0 ? '' : 'text-gray-400'}`}
+              className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm ${covers > 0 ? '' : 'text-gray-400'}`}
             >
-              <span className="tabular-nums">{fmtDay(s.clockInAt)}</span>
+              <span className={`tabular-nums ${covers > 0 ? 'font-medium text-gray-900' : ''}`}>
+                {fmtDay(s.clockInAt)}
+              </span>
               {s.needsReview && (
-                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                <Pill tone="amber" nowrap>
                   times not verified
-                </span>
+                </Pill>
               )}
               {s.rateCentsPerHour <= 0 && (
-                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                <Pill tone="amber" nowrap>
                   no rate for this day
-                </span>
+                </Pill>
               )}
               {/* The per-day rate, shown ONLY when the payment spans more than
                   one. With a single rate it is already in the header and the
@@ -389,11 +404,9 @@ export function ShiftPayPanel({
                 </span>
               )}
               {covers > 0 && (
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${whole ? 'bg-green-50 text-green-800' : 'bg-blue-50 text-blue-800'}`}
-                >
+                <Pill tone={whole ? 'green' : 'blue'} nowrap>
                   {whole ? 'this pays it off' : `${formatHours(covers)} of it`}
-                </span>
+                </Pill>
               )}
               <span className="ml-auto tabular-nums text-gray-700">
                 {formatHours(s.unpaidSeconds)} owing
@@ -461,12 +474,7 @@ export function VoidSettlementButton({
 
   return (
     <span className="inline-flex items-center gap-1 text-xs">
-      <button
-        type="button"
-        onClick={submit}
-        disabled={busy}
-        className="underline text-red-700 disabled:opacity-50"
-      >
+      <button type="button" onClick={submit} disabled={busy} className={btnTextDanger}>
         {busy ? 'Undoing…' : 'Undo'}
       </button>
       {error && <span className="text-red-700">{error}</span>}

@@ -44,6 +44,7 @@ import { redirect } from 'next/navigation';
 
 import { OperatorShell } from '@/components/OperatorShell';
 import { MyHoursSection } from '@/components/time/MyHoursSection';
+import { PageHeader } from '@/components/time/timeUi';
 import { getOfficeClockCaller, type OfficeLookup } from '@/lib/auth/officeClock';
 import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
 
@@ -93,16 +94,13 @@ const DENIAL: Record<
 function DenialPage({ title, body }: { title: string; body: string }) {
   return (
     <OperatorShell active="time">
-      <main className="max-w-4xl mx-auto">
-        <div className="mb-6">
-          <h1 className="text-xl font-semibold text-gray-900">{title}</h1>
-          <p className="text-sm text-gray-500 mt-1">{body}</p>
-          <p className="text-sm mt-3">
-            <Link href="/" className="underline">
-              Back to the dashboard
-            </Link>
-          </p>
-        </div>
+      <main className="max-w-5xl mx-auto">
+        <PageHeader title={title} subtitle={body} />
+        <p className="text-sm">
+          <Link href="/" className="underline">
+            Back to the dashboard
+          </Link>
+        </p>
       </main>
     </OperatorShell>
   );
@@ -148,19 +146,11 @@ export default async function MyHoursPage({
 
   return (
     <OperatorShell active="time">
-      <main className="max-w-4xl mx-auto">
-        <div className="mb-6">
-          <p
-            className="text-xs font-semibold uppercase tracking-widest mb-1"
-            style={{ color: 'var(--brand-evergreen-3)' }}
-          >
-            Yule Love Lights
-          </p>
-          <h1 className="text-xl font-semibold text-gray-900">My hours</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {time.person.displayName} · times are Eastern · only you and an admin see this.
-          </p>
-        </div>
+      <main className="max-w-5xl mx-auto">
+        <PageHeader
+          title="My hours"
+          subtitle={`${time.person.displayName} · times are Eastern · only you and an admin see this.`}
+        />
 
         <MyHoursSection
           days={time.days}

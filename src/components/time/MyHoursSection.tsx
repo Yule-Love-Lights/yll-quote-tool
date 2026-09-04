@@ -22,17 +22,18 @@
 // at all rather than falling back to "unpaid" — telling someone they are owed
 // for hours already paid is the wrong way to be wrong.
 
-import Link from 'next/link';
-
 import { HoursDayList, fmtTime, sourceLabel } from '@/components/time/HoursDayList';
-import { formatHours } from '@/lib/hoursSummary';
 import {
-  RANGE_KEYS,
-  rangeLabel,
-  splitPaidHours,
-  type PersonDay,
-  type RangeKey,
-} from '@/lib/personHours';
+  Card,
+  EmptyState,
+  ErrorNote,
+  RangeTabs,
+  StatStrip,
+  StatTile,
+  WarnNote,
+} from '@/components/time/timeUi';
+import { formatHours } from '@/lib/hoursSummary';
+import { rangeLabel, splitPaidHours, type PersonDay, type RangeKey } from '@/lib/personHours';
 
 export function MyHoursSection({
   days,
@@ -69,129 +70,123 @@ export function MyHoursSection({
   const uncorrectedSweeps = days
     .flatMap((d) => d.shifts)
     .filter((s) => s.closeSource === 'system' && s.manualBy === null).length;
+  const notices = errors.length > 0 || openShift !== null || autoClosed.count > 0;
+  const showPaidSplit = days.length > 0 && settlementsReadable;
+
   return (
-    <section className="mb-10">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-        <h2 className="text-lg font-semibold text-gray-900">Hours</h2>
-        <nav className="flex flex-wrap gap-1 text-xs">
-          {RANGE_KEYS.map((key) => (
-            <Link
-              key={key}
-              href={`${basePath}?range=${key}`}
-              aria-current={key === range ? 'page' : undefined}
-              className={
-                key === range
-                  ? 'rounded-full bg-gray-900 px-3 py-1 font-medium text-white'
-                  : 'rounded-full border border-gray-300 px-3 py-1 text-gray-600'
-              }
-            >
-              {rangeLabel(key)}
-            </Link>
-          ))}
-        </nav>
-      </div>
-
-      <p className="text-sm text-gray-500 mb-4">
-        Your clocked time, day by day. A shift counts on the day it started (New York time), so a
-        shift that ran past midnight shows in full on the day it began. This is a record of hours,
-        not a payslip: it does not say what you have been paid.
-      </p>
-
-      {errors.length > 0 && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          <p className="font-medium">Some of your record could not be read, so it is incomplete.</p>
-          <ul className="list-disc pl-5 mt-1">
-            {errors.map((e, i) => (
-              <li key={i}>{e}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-        <span className="text-sm text-gray-700">
-          <span className="font-semibold tabular-nums">{formatHours(totalSeconds)}</span> over{' '}
-          {rangeLabel(range).toLowerCase()}
-        </span>
-        <span className="text-sm text-gray-500 tabular-nums">
-          {shiftCount} {shiftCount === 1 ? 'shift' : 'shifts'}
-        </span>
-        {openShift && (
-          <span className="text-sm text-green-800">
-            Clocked in since {fmtTime(openShift.clockInAt)} ({sourceLabel(openShift.source)}), still
-            counting
-          </span>
-        )}
-        {/* Same fact as the admin page's amber count, said to the person it
-            happened to. 5 of 27 real shifts were closed this way, so this is
-            an everyday state, not an edge case. */}
-        {autoClosed.count > 0 && (
-          <span className="text-sm text-amber-800">
-            {autoClosed.count} closed by the midnight sweep, {formatHours(autoClosed.seconds)} of
-            this total
-            {uncorrectedSweeps > 0 ? ' — tell the office what time you really stopped' : ''}
-          </span>
-        )}
-      </div>
-
+    <>
       {/* What has been paid for and what has not (Jason, 2026-09-03), in
           HOURS. Never a figure: the tool records payments and does not work
           them out, overtime has no agreed formula (ledger row 285), and a
           real week in this data is 50h 55m — so "12h nobody has paid you for
           yet" is true where "you are owed $X" would be invented. */}
-      {days.length > 0 &&
-        (settlementsReadable ? (
-          <div className="mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-md border border-gray-200 px-3 py-2">
-            <span className="text-sm text-gray-700">
-              <span className="font-semibold tabular-nums">
-                {formatHours(split.unpaidSeconds)}
-              </span>{' '}
-              not paid yet
-              {split.unpaidCount > 0 && (
-                <span className="text-gray-500">
-                  {' '}
-                  ({split.unpaidCount} {split.unpaidCount === 1 ? 'shift' : 'shifts'})
-                </span>
-              )}
-            </span>
-            <span className="text-sm text-gray-500 tabular-nums">
-              {formatHours(split.paidSeconds)} already paid
-            </span>
-            {/* Time still running is in neither total. Calling a shift you are
-                standing in "unpaid" invites it to be expected in this week's
-                payment. */}
-            {split.openSeconds > 0 && (
-              <span className="text-sm text-gray-500">
-                the shift you are in now is counted in neither
-              </span>
-            )}
-          </div>
-        ) : (
-          <div className="mb-4 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-            Which of these hours have already been paid could not be read just now, so nothing
-            below is marked either way. The hours themselves are correct.
-          </div>
-        ))}
-
-      {days.length === 0 ? (
-        <p className="text-sm text-gray-500">No shifts in this range.</p>
-      ) : (
-        // Field crew have no second record of their own to send them to, and
-        // the admin page's evidence link points at /admin/fleet/clocks, which
-        // redirects anyone who is not an admin. Never offered here.
-        <HoursDayList
-          days={days}
-          crewName="you"
-          controls="none"
-          evidenceFor={() => null}
-          // A failed settlement read must not read as "none of these are
-          // paid": the markers come off entirely.
-          showPaidMarks={settlementsReadable}
+      <StatStrip>
+        <StatTile
+          label="Hours"
+          value={formatHours(totalSeconds)}
+          sub={`${shiftCount} ${shiftCount === 1 ? 'shift' : 'shifts'} · ${rangeLabel(range).toLowerCase()}`}
         />
+        {showPaidSplit && (
+          <>
+            <StatTile
+              label="Hours not paid yet"
+              value={formatHours(split.unpaidSeconds)}
+              tone={split.unpaidSeconds > 0 ? 'warn' : 'muted'}
+              sub={
+                split.unpaidCount > 0
+                  ? `${split.unpaidCount} ${split.unpaidCount === 1 ? 'shift' : 'shifts'} in this range`
+                  : 'nothing outstanding in this range'
+              }
+            />
+            <StatTile
+              label="Hours already paid"
+              value={formatHours(split.paidSeconds)}
+              tone="good"
+              sub="in this range"
+            />
+          </>
+        )}
+      </StatStrip>
+
+      {/* Time still running is in neither total. Calling a shift you are
+          standing in "unpaid" invites it to be expected in this week's
+          payment. */}
+      {showPaidSplit && split.openSeconds > 0 && (
+        <p className="-mt-3 mb-6 text-xs" style={{ color: 'var(--op-text-dim)' }}>
+          The shift you are in now is counted in neither.
+        </p>
       )}
 
+      {days.length > 0 && !settlementsReadable && (
+        <div className="mb-6">
+          <WarnNote>
+            Which of these hours have already been paid could not be read just now, so nothing
+            below is marked either way. The hours themselves are correct.
+          </WarnNote>
+        </div>
+      )}
+
+      <Card
+        title="Shifts"
+        subtitle="Your clocked time, day by day. This is a record of hours, not a payslip: it does not say what you have been paid."
+        aside={<RangeTabs basePath={basePath} range={range} />}
+        help={
+          <p>
+            A shift counts on the day it started (New York time), so a shift that ran past midnight
+            shows in full on the day it began.
+          </p>
+        }
+        flush
+      >
+        {notices && (
+          <div className="space-y-2 px-4 py-4 sm:px-5">
+            {errors.length > 0 && (
+              <ErrorNote
+                title="Some of your record could not be read, so it is incomplete."
+                items={errors}
+              />
+            )}
+            {openShift && (
+              <p className="text-sm text-green-800">
+                Clocked in since {fmtTime(openShift.clockInAt)} ({sourceLabel(openShift.source)}),
+                still counting
+              </p>
+            )}
+            {/* Same fact as the admin page's amber count, said to the person
+                it happened to. 5 of 27 real shifts were closed this way, so
+                this is an everyday state, not an edge case. */}
+            {autoClosed.count > 0 && (
+              <WarnNote>
+                {autoClosed.count} closed by the midnight sweep, {formatHours(autoClosed.seconds)}{' '}
+                of this total
+                {uncorrectedSweeps > 0 ? ' — tell the office what time you really stopped' : ''}
+              </WarnNote>
+            )}
+          </div>
+        )}
+
+        {days.length === 0 ? (
+          <div className="p-4 sm:p-5">
+            <EmptyState>No shifts in this range.</EmptyState>
+          </div>
+        ) : (
+          // Field crew have no second record of their own to send them to, and
+          // the admin page's evidence link points at /admin/fleet/clocks, which
+          // redirects anyone who is not an admin. Never offered here.
+          <HoursDayList
+            days={days}
+            crewName="you"
+            controls="none"
+            evidenceFor={() => null}
+            // A failed settlement read must not read as "none of these are
+            // paid": the markers come off entirely.
+            showPaidMarks={settlementsReadable}
+          />
+        )}
+      </Card>
+
       {days.length > 0 && settlementsReadable && (
-        <p className="text-xs text-gray-500 mt-4">
+        <p className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
           A shift marked <span className="font-medium text-gray-700">Paid</span> is one the office
           has recorded a payment against. Anything unmarked has not been paid yet. This page does
           not work out what you are owed — the office records what was actually paid, which is not
@@ -199,10 +194,10 @@ export function MyHoursSection({
         </p>
       )}
 
-      <p className="text-xs text-gray-500 mt-4">
+      <p className="mt-3 text-xs" style={{ color: 'var(--op-text-dim)' }}>
         Something wrong? Ask the office to correct it — a time can only be changed by an admin, and
         the change is recorded against your shift with their name on it.
       </p>
-    </section>
+    </>
   );
 }

@@ -34,11 +34,18 @@ import {
   ShiftPaySection,
 } from '@/components/admin/PersonHoursSections';
 import { RateHistorySection } from '@/components/admin/RateHistorySection';
+import { PageHeader, Pill, StatStrip, StatTile } from '@/components/time/timeUi';
 import { getSessionRole } from '@/lib/auth/sessionRole';
-import { listRates } from '@/lib/crewMemberRates';
+import { listRates, rateForDay } from '@/lib/crewMemberRates';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
-import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
-import { listSettlements, summarize, unpaidRemainders } from '@/lib/shiftSettlements';
+import { formatHours } from '@/lib/hoursSummary';
+import { isRangeKey, loadPersonTime, rangeLabel, type RangeKey } from '@/lib/personHours';
+import {
+  dollars,
+  listSettlements,
+  summarize,
+  unpaidRemainders,
+} from '@/lib/shiftSettlements';
 
 export const dynamic = 'force-dynamic';
 
@@ -103,23 +110,24 @@ export default async function PersonTimePage({
   if (!time.person) {
     return (
       <OperatorShell active="time">
-        <main className="max-w-4xl mx-auto">
-          <div className="mb-6">
-            <h1 className="text-xl font-semibold text-gray-900">Nobody by that id</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              {time.errors.length > 0
+        <main className="max-w-5xl mx-auto">
+          <PageHeader
+            back={{ href: '/admin/time-tracking', label: "Everyone's hours" }}
+            title="Nobody by that id"
+            subtitle={
+              time.errors.length > 0
                 ? // A read FAILURE and a genuinely missing person must not
                   // look the same: one is worth retrying, the other is a bad
                   // link.
                   `This person's record could not be read: ${time.errors.join('; ')}`
-                : 'No staff member has this id. They may have been deleted.'}
-            </p>
-            <p className="text-sm mt-3">
-              <Link href="/admin/time-tracking" className="underline">
-                Back to everyone&apos;s hours
-              </Link>
-            </p>
-          </div>
+                : 'No staff member has this id. They may have been deleted.'
+            }
+          />
+          <p className="text-sm">
+            <Link href="/admin/time-tracking" className="underline">
+              Back to everyone&apos;s hours
+            </Link>
+          </p>
         </main>
       </OperatorShell>
     );
@@ -127,26 +135,73 @@ export default async function PersonTimePage({
 
   const { person } = time;
 
+  // The strip is the same data the sections below render, summed once here
+  // so the tile and the section cannot disagree. Each money figure is
+  // present only when its own read worked: a failed read shows a dash and
+  // says so, never a zero, because "$0.00 paid" and "could not be read" are
+  // different facts and only one of them is true.
+  const unpaidSeconds = remainders ? remainders.reduce((s, r) => s + r.unpaidSeconds, 0) : null;
+  const unpaidShifts = remainders ? remainders.filter((r) => r.unpaidSeconds > 0).length : null;
+  // Resolved by the same function the money maths uses, so a raise entered
+  // ahead of time does not read as today's rate (three lenses on PR #1214).
+  const rateTodayCents = rates ? rateForDay(rates, todayEt) : null;
+
   return (
     <OperatorShell active="time">
-      <main className="max-w-4xl mx-auto">
-        <div className="mb-6">
-          <p className="text-xs mb-1">
-            <Link href="/admin/time-tracking" className="text-gray-500 underline">
-              ← Everyone&apos;s hours
-            </Link>
-          </p>
-          <h1 className="text-xl font-semibold text-gray-900">
-            {person.displayName}
-            {!person.active && (
-              <span className="ml-2 text-sm font-normal text-gray-400">(inactive)</span>
-            )}
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {person.isOffice ? 'Office' : 'Field crew'} · times are Eastern · only admins see this
-            page.
-          </p>
-        </div>
+      <main className="max-w-5xl mx-auto">
+        <PageHeader
+          back={{ href: '/admin/time-tracking', label: "Everyone's hours" }}
+          title={person.displayName}
+          badges={
+            <>
+              <Pill tone={person.isOffice ? 'gold' : 'neutral'} nowrap>
+                {person.isOffice ? 'Office' : 'Field crew'}
+              </Pill>
+              {!person.active && (
+                <Pill tone="red" nowrap>
+                  inactive
+                </Pill>
+              )}
+            </>
+          }
+          subtitle="Times are Eastern · only admins see this page."
+        />
+
+        <StatStrip>
+          <StatTile
+            label={rangeLabel(range)}
+            value={formatHours(time.totalSeconds)}
+            sub={`${time.shiftCount} ${time.shiftCount === 1 ? 'shift' : 'shifts'} clocked`}
+          />
+          <StatTile
+            label="Unpaid hours"
+            value={unpaidSeconds === null ? '—' : formatHours(unpaidSeconds)}
+            tone={unpaidSeconds === null ? 'muted' : unpaidSeconds > 0 ? 'warn' : 'good'}
+            sub={
+              unpaidSeconds === null
+                ? 'could not be read'
+                : `${unpaidShifts} closed ${unpaidShifts === 1 ? 'shift' : 'shifts'}, all time`
+            }
+          />
+          <StatTile
+            label="Recorded as paid"
+            value={settlements === null ? '—' : dollars(settlementSummary.settledCents)}
+            tone={settlements === null ? 'muted' : 'default'}
+            sub={settlements === null ? 'could not be read' : 'all time, live payments only'}
+          />
+          <StatTile
+            label="Rate today"
+            value={
+              rateTodayCents === null
+                ? '—'
+                : rateTodayCents > 0
+                  ? `${dollars(rateTodayCents)}/hr`
+                  : 'none set'
+            }
+            tone={rateTodayCents === null ? 'muted' : rateTodayCents > 0 ? 'default' : 'warn'}
+            sub={rateTodayCents === null ? 'could not be read' : 'from the rate history below'}
+          />
+        </StatStrip>
 
         <PersonHoursSection
           crewMemberId={person.id}
