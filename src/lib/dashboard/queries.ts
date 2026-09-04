@@ -47,7 +47,29 @@ const DASHBOARD_QUOTES_SELECT =
   // #181: YLL Neighbor migrated-rebook flag, additive only — the inbox adapter
   // (quotetool.ts) reads it to suppress unsent Neighbor drafts as inbox noise.
   // NOT filtered here: KPIs/insights/etc. deliberately still count these quotes.
-  'legacy_rebook';
+  'legacy_rebook, ' +
+  // 2026-09-03 backlog-send marker: quotes built weeks earlier and held for a
+  // send wave. computeKpis drops them from the turnaround average only.
+  'backlog_send_at, ' +
+  // The customer's YLL Neighbor tag (#198), joined through quotes.customer_id.
+  // Flattened onto the row below so metrics reads one flat shape. Null when a
+  // quote has no customer row yet, which reads as "not a neighbor".
+  'customers(is_yll_neighbor)';
+
+/**
+ * PostgREST returns an embedded one-to-many-shaped resource for the customers
+ * join. Flatten `customers.is_yll_neighbor` up onto the quote so every metric
+ * reads one flat row shape, and tolerate both object and single-element-array
+ * forms of the embed. A quote with no customer row keeps the field null, which
+ * isNeighbor reads as "not a neighbor".
+ */
+function flattenNeighborTag(row: unknown): DashboardQuote {
+  const { customers, ...rest } = row as Record<string, unknown> & {
+    customers?: { is_yll_neighbor?: boolean | null } | Array<{ is_yll_neighbor?: boolean | null }> | null;
+  };
+  const joined = Array.isArray(customers) ? customers[0] : customers;
+  return { ...rest, is_yll_neighbor: joined?.is_yll_neighbor ?? null } as unknown as DashboardQuote;
+}
 
 /**
  * Fetch quotes for the dashboard, returning a discriminated result so callers
@@ -77,7 +99,7 @@ export async function listQuotesForDashboardResult(limit = 500): Promise<Dashboa
     console.error('listQuotesForDashboard error:', error);
     return { ok: false, error: error.message };
   }
-  const rows = (data ?? []) as unknown as DashboardQuote[];
+  const rows = (data ?? []).map(flattenNeighborTag);
   // capped = hit the row cap, so lifetime aggregates are over only the newest
   // `limit` quotes. Interim caveat until aggregates are computed server-side.
   return { ok: true, rows, capped: rows.length === limit, limit };

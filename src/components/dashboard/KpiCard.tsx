@@ -3,15 +3,22 @@ export function KpiCard({
   value,
   sub,
   prominent = false,
+  wideBelowXl = false,
 }: {
   label: string;
   value: string;
   sub?: string;
   prominent?: boolean;
+  /** Takes two columns below xl and one at xl. The KPI strip is 4 columns
+   *  below xl and 7 at xl, and its two prominent cards already take two each;
+   *  one card has to widen below xl for the total to divide evenly, or the
+   *  last row is left one column short and reads as a missing card. */
+  wideBelowXl?: boolean;
 }) {
+  const span = prominent ? 'md:col-span-2' : wideBelowXl ? 'md:col-span-2 xl:col-span-1' : '';
   return (
     <div
-      className={`rounded-lg border p-4 ${prominent ? 'md:col-span-2' : ''}`}
+      className={`rounded-lg border p-4 ${span}`}
       style={{
         background: 'var(--op-bg-raised)',
         borderColor: prominent ? 'var(--brand-gold)' : 'var(--op-border)',

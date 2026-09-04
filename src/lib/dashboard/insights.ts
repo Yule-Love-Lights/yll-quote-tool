@@ -1,7 +1,7 @@
 import type { DashboardQuote, ServiceType } from './types';
 import { SERVICE_TYPES } from './types';
 import { serviceTypeOf, isTerminalStatus } from './serviceMetrics';
-import { reached } from './metrics';
+import { reached, settled } from './metrics';
 
 const MS_PER_DAY = 86_400_000;
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -69,9 +69,12 @@ export type InsightStats = {
   totalBooked: number;
 };
 
-export function computeInsightStats(quotes: DashboardQuote[]): InsightStats {
+/** `now` is a parameter so the cooling window is testable; it defaults so
+ *  existing callers keep working unchanged. */
+export function computeInsightStats(quotes: DashboardQuote[], now: Date = new Date()): InsightStats {
   let reachedCount = 0;
-  let approved = 0;
+  let approved = 0; // settled approvals — the closeRatio numerator
+  let approvedForAverages = 0; // every approval — money and time-to-close
   let approvedTotalSum = 0;
   let allTotalSum = 0;
   let ttcSum = 0;
@@ -85,20 +88,29 @@ export function computeInsightStats(quotes: DashboardQuote[]): InsightStats {
     // `reached()` helper (WT-48) below, so closeRatio agrees with the
     // homepage KPI strip's conversionRate for the exact same quotes.
     const isApproved = !!q.customer_approved_at && !isTerminalStatus(q);
-    if (reached(q)) reachedCount += 1;
+    // The close ratio counts SETTLED quotes only, the same cohort the homepage
+    // KPI strip uses (`settled` in metrics.ts). Sharing this rule is the same
+    // reason `reached()` is shared: two screens showing one ratio must not
+    // disagree about which quotes it covers.
+    const isSettled = settled(q, now);
+    if (reached(q) && isSettled) reachedCount += 1;
     if (isApproved) {
-      approved += 1;
+      // Money and time-to-close count every approval immediately. Only the
+      // RATIO waits for the cohort, because a ratio needs a denominator that
+      // has had the same chance to answer.
+      if (isSettled) approved += 1;
       approvedTotalSum += q.total ?? 0;
       totalBooked += q.total ?? 0;
+      approvedForAverages += 1;
       ttcSum += (new Date(q.customer_approved_at as string).getTime() - new Date(q.created_at).getTime()) / MS_PER_DAY;
     }
   }
 
   return {
     closeRatio: reachedCount > 0 ? approved / reachedCount : null,
-    avgJobValue: approved > 0 ? approvedTotalSum / approved : null,
+    avgJobValue: approvedForAverages > 0 ? approvedTotalSum / approvedForAverages : null,
     avgQuoteValue: quotes.length > 0 ? allTotalSum / quotes.length : null,
-    timeToCloseDays: approved > 0 ? ttcSum / approved : null,
+    timeToCloseDays: approvedForAverages > 0 ? ttcSum / approvedForAverages : null,
     totalBooked,
   };
 }

@@ -103,6 +103,74 @@ describe('listQuotesForDashboardResult', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.capped).toBe(false);
   });
+
+  // The YLL Neighbor tag lives on the CUSTOMER row and arrives as a PostgREST
+  // embedded resource. It has to land flat on the quote, because isNeighbor
+  // reads one flat shape and a missed flatten reads every returning customer
+  // as a cold lead without failing anything.
+  describe('the neighbor tag from the customers join', () => {
+    it('flattens the embedded object onto the quote', async () => {
+      client = makeClient({
+        data: [{ id: 'a', customers: { is_yll_neighbor: true } }],
+        error: null,
+      });
+      const result = await listQuotesForDashboardResult(500);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.rows[0].is_yll_neighbor).toBe(true);
+    });
+
+    // PostgREST has returned a to-one embed as a single-element array in some
+    // versions. Tolerated rather than assumed away, because getting it wrong
+    // silently produces "not a neighbor" for everyone.
+    it('flattens a single-element array embed the same way', async () => {
+      client = makeClient({
+        data: [{ id: 'a', customers: [{ is_yll_neighbor: true }] }],
+        error: null,
+      });
+      const result = await listQuotesForDashboardResult(500);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.rows[0].is_yll_neighbor).toBe(true);
+    });
+
+    it('reads a quote with no customer row as not a neighbor', async () => {
+      client = makeClient({ data: [{ id: 'a', customers: null }], error: null });
+      const result = await listQuotesForDashboardResult(500);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.rows[0].is_yll_neighbor).toBeNull();
+    });
+
+    it('drops the nested customers object rather than leaving it on the row', async () => {
+      client = makeClient({
+        data: [{ id: 'a', customers: { is_yll_neighbor: false } }],
+        error: null,
+      });
+      const result = await listQuotesForDashboardResult(500);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect('customers' in result.rows[0]).toBe(false);
+    });
+
+    it('keeps every other column on the row untouched', async () => {
+      client = makeClient({
+        data: [
+          {
+            id: 'a',
+            quote_number: 1234,
+            legacy_rebook: true,
+            backlog_send_at: '2026-09-03T20:00:00Z',
+            customers: { is_yll_neighbor: false },
+          },
+        ],
+        error: null,
+      });
+      const result = await listQuotesForDashboardResult(500);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.rows[0].quote_number).toBe(1234);
+        expect(result.rows[0].legacy_rebook).toBe(true);
+        expect(result.rows[0].backlog_send_at).toBe('2026-09-03T20:00:00Z');
+      }
+    });
+  });
 });
 
 describe('listQuotesForDashboard (backward-compatible wrapper)', () => {

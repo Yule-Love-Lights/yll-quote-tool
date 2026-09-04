@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeKpis, reached, customerKey } from './metrics';
+import { computeKpis, reached, customerKey, isNeighbor, settled } from './metrics';
 import type { DashboardQuote } from './types';
 import { DASHBOARD_CONFIG } from './config';
 
@@ -313,5 +313,296 @@ describe('reached — shared conversion-denominator rule (WT-48)', () => {
 
   it('false when neither sent nor approved', () => {
     expect(reached(makeQuote())).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Backlog sends (2026-09-03) — a quote built weeks ago and held, then sent as
+// part of a season-open wave. The created→sent gap is a scheduling decision,
+// not a response time, so it is left out of the turnaround average and nothing
+// else. See migrations/2026-09-03-quote-backlog-send.sql.
+// ---------------------------------------------------------------------------
+describe('computeKpis — backlog sends and the turnaround average', () => {
+  const ONE_DAY_SEND = {
+    created_at: '2026-06-20T12:00:00Z',
+    quote_sent_at: '2026-06-21T12:00:00Z',
+  };
+  const FORTY_DAY_SEND = {
+    created_at: '2026-05-12T12:00:00Z',
+    quote_sent_at: '2026-06-21T12:00:00Z',
+  };
+
+  it('leaves a backlog-marked send out of the turnaround average', () => {
+    const kpis = computeKpis(
+      [
+        makeQuote(ONE_DAY_SEND),
+        makeQuote({ ...FORTY_DAY_SEND, backlog_send_at: '2026-06-21T12:00:00Z' }),
+      ],
+      NOW,
+    );
+    // Without the exclusion this averages to 20.5 days.
+    expect(kpis.avgTurnaroundDays).toBe(1);
+  });
+
+  it('reports how many sends it excluded, so the card can say so', () => {
+    const kpis = computeKpis(
+      [
+        makeQuote(ONE_DAY_SEND),
+        makeQuote({ ...FORTY_DAY_SEND, backlog_send_at: '2026-06-21T12:00:00Z' }),
+        makeQuote({ ...FORTY_DAY_SEND, backlog_send_at: '2026-06-21T12:00:00Z' }),
+      ],
+      NOW,
+    );
+    expect(kpis.turnaroundExcluded).toBe(2);
+  });
+
+  it('reports zero excluded when nothing is marked', () => {
+    expect(computeKpis([makeQuote(ONE_DAY_SEND)], NOW).turnaroundExcluded).toBe(0);
+  });
+
+  it('returns a null turnaround, not zero, when every send is backlog-marked', () => {
+    const kpis = computeKpis(
+      [makeQuote({ ...FORTY_DAY_SEND, backlog_send_at: '2026-06-21T12:00:00Z' })],
+      NOW,
+    );
+    expect(kpis.avgTurnaroundDays).toBeNull();
+    expect(kpis.turnaroundExcluded).toBe(1);
+  });
+
+  // The exclusion is scoped to turnaround. A backlog send is a real quote to a
+  // real customer: it still counts as reached, as booked revenue when approved,
+  // and as an active quote while it waits.
+  it('still counts a backlog send in conversion, revenue and active quotes', () => {
+    // 10 days old: past the conversion cooling window, still inside the
+    // 60-day active-quote window, so this test measures the backlog
+    // exclusion rather than either window's edge.
+    const recentSend = new Date(NOW.getTime() - 10 * 86_400_000).toISOString();
+    const kpis = computeKpis(
+      [
+        makeQuote({
+          created_at: '2026-05-12T12:00:00Z',
+          quote_sent_at: recentSend,
+          backlog_send_at: recentSend,
+          total: 5000,
+        }),
+        makeQuote({
+          created_at: '2026-05-12T12:00:00Z',
+          quote_sent_at: recentSend,
+          backlog_send_at: recentSend,
+          customer_approved_at: recentSend,
+          total: 4000,
+        }),
+      ],
+      NOW,
+    );
+    expect(kpis.bookedRevenue).toBe(4000);
+    expect(kpis.activeQuotes).toBe(1);
+    expect(kpis.conversionRate).toBe(0.5);
+    expect(kpis.avgTurnaroundDays).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Neighbor split (2026-09-03) — Naldo's rule: either flag counts. The customer
+// tag (customers.is_yll_neighbor, #198) follows the person; legacy_rebook
+// (#155/#181) is frozen on the quote from last season's migration. Many older
+// neighbors carry only the second one.
+// ---------------------------------------------------------------------------
+describe('isNeighbor — either flag counts', () => {
+  it('counts the customer tag on its own', () => {
+    expect(isNeighbor(makeQuote({ is_yll_neighbor: true, legacy_rebook: false }))).toBe(true);
+  });
+
+  it('counts the quote flag on its own', () => {
+    expect(isNeighbor(makeQuote({ is_yll_neighbor: false, legacy_rebook: true }))).toBe(true);
+  });
+
+  it('counts a quote carrying both once', () => {
+    expect(isNeighbor(makeQuote({ is_yll_neighbor: true, legacy_rebook: true }))).toBe(true);
+  });
+
+  it('is regular when neither flag is set', () => {
+    expect(isNeighbor(makeQuote({ is_yll_neighbor: false, legacy_rebook: false }))).toBe(false);
+  });
+
+  // A quote with no customer row selected leaves is_yll_neighbor undefined
+  // rather than false. Undefined must read as "not a neighbor", never crash.
+  it('treats missing flags as regular', () => {
+    expect(isNeighbor(makeQuote())).toBe(false);
+  });
+});
+
+describe('computeKpis — conversion split by neighbor', () => {
+  // Comfortably outside the cooling window (NOW is 2026-06-24), so these
+  // tests measure the SPLIT and not the window. The window has its own tests.
+  const SENT = '2026-06-01T12:00:00Z';
+  const APPROVED = '2026-06-03T12:00:00Z';
+
+  function population(): DashboardQuote[] {
+    return [
+      // 2 neighbors reached, 1 approved
+      makeQuote({ quote_sent_at: SENT, legacy_rebook: true, customer_approved_at: APPROVED }),
+      makeQuote({ quote_sent_at: SENT, is_yll_neighbor: true }),
+      // 3 regular reached, 2 approved
+      makeQuote({ quote_sent_at: SENT, customer_approved_at: APPROVED }),
+      makeQuote({ quote_sent_at: SENT, customer_approved_at: APPROVED }),
+      makeQuote({ quote_sent_at: SENT }),
+      // never reached — belongs to neither split
+      makeQuote(),
+    ];
+  }
+
+  it('splits conversion into neighbor and regular, with counts', () => {
+    const kpis = computeKpis(population(), NOW);
+    expect(kpis.conversionNeighbor).toEqual({ reached: 2, approved: 1, rate: 0.5 });
+    expect(kpis.conversionRegular).toEqual({ reached: 3, approved: 2, rate: 2 / 3 });
+  });
+
+  it('keeps the overall rate exactly as it was', () => {
+    const kpis = computeKpis(population(), NOW);
+    expect(kpis.conversionRate).toBe(3 / 5);
+  });
+
+  it('reconciles: the two splits sum to the overall numerator and denominator', () => {
+    const kpis = computeKpis(population(), NOW);
+    const reachedSum = kpis.conversionNeighbor.reached + kpis.conversionRegular.reached;
+    const approvedSum = kpis.conversionNeighbor.approved + kpis.conversionRegular.approved;
+    expect(approvedSum / reachedSum).toBe(kpis.conversionRate);
+  });
+
+  it('gives a null rate, not zero, for a split nobody has reached', () => {
+    const kpis = computeKpis([makeQuote({ quote_sent_at: SENT })], NOW);
+    expect(kpis.conversionNeighbor).toEqual({ reached: 0, approved: 0, rate: null });
+    expect(kpis.conversionRegular.rate).toBe(0);
+  });
+
+  // A quote approved then cancelled is not a conversion on either side of the
+  // split, exactly as it is not one overall (the B7 terminal-status rule).
+  it('does not count a terminal quote as an approval in its split', () => {
+    const kpis = computeKpis(
+      [
+        makeQuote({
+          quote_sent_at: SENT,
+          customer_approved_at: APPROVED,
+          status: 'cancelled',
+          legacy_rebook: true,
+        }),
+      ],
+      NOW,
+    );
+    expect(kpis.conversionNeighbor).toEqual({ reached: 1, approved: 0, rate: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The conversion cooling window (2026-09-04). A quote sent yesterday has no
+// outcome yet. Counting it as a loss made a 51-quote send wave read as
+// "Neighbors convert at 27%" when the settled figure was 71%.
+// ---------------------------------------------------------------------------
+describe('settled — has this quote had time to be answered?', () => {
+  const days = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+  it('is false for a quote sent inside the window', () => {
+    expect(settled(makeQuote({ quote_sent_at: days(1) }), NOW)).toBe(false);
+  });
+
+  it('is true once the quote is older than the window', () => {
+    expect(settled(makeQuote({ quote_sent_at: days(8) }), NOW)).toBe(true);
+  });
+
+  it('treats the window edge as settled', () => {
+    expect(settled(makeQuote({ quote_sent_at: days(DASHBOARD_CONFIG.conversionCoolingDays) }), NOW)).toBe(true);
+  });
+
+  // An offline close was decided before it was ever recorded, so it has
+  // nothing to wait for.
+  it('counts an approved quote with no send date immediately', () => {
+    expect(settled(makeQuote({ quote_sent_at: null, customer_approved_at: days(0) }), NOW)).toBe(true);
+  });
+});
+
+describe('computeKpis — the cooling window applies to every conversion number alike', () => {
+  const days = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+  function wave(): DashboardQuote[] {
+    return [
+      // settled: 1 neighbor won, 1 neighbor lost, 1 regular won
+      makeQuote({ quote_sent_at: days(30), customer_approved_at: days(28), legacy_rebook: true }),
+      makeQuote({ quote_sent_at: days(30), legacy_rebook: true }),
+      makeQuote({ quote_sent_at: days(30), customer_approved_at: days(28) }),
+      // a wave sent yesterday, all neighbors, none answered yet
+      makeQuote({ quote_sent_at: days(1), legacy_rebook: true }),
+      makeQuote({ quote_sent_at: days(1), legacy_rebook: true }),
+      makeQuote({ quote_sent_at: days(1), legacy_rebook: true }),
+    ];
+  }
+
+  it('keeps a fresh send out of every rate rather than counting it as a loss', () => {
+    const k = computeKpis(wave(), NOW);
+    // Without the window the neighbor rate would be 1/5 = 20%.
+    expect(k.conversionNeighbor).toEqual({ reached: 2, approved: 1, rate: 0.5 });
+    expect(k.conversionRegular).toEqual({ reached: 1, approved: 1, rate: 1 });
+    expect(k.conversionRate).toBe(2 / 3);
+  });
+
+  it('counts the fresh sends separately so nothing disappears quietly', () => {
+    expect(computeKpis(wave(), NOW).conversionPendingRecent).toBe(3);
+  });
+
+  it('reports no pending when every quote has had its time', () => {
+    const k = computeKpis([makeQuote({ quote_sent_at: days(30) })], NOW);
+    expect(k.conversionPendingRecent).toBe(0);
+  });
+
+  // The cohort counts what happened, win or lose. Ignoring recent losses while
+  // keeping recent wins would quietly flatter the rate.
+  it('does NOT count a win that is still inside the window', () => {
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: days(30) }),
+        makeQuote({ quote_sent_at: days(1), customer_approved_at: days(0) }),
+      ],
+      NOW,
+    );
+    expect(k.conversionRate).toBe(0);
+    expect(k.conversionPendingRecent).toBe(1);
+  });
+
+  // Money is not a rate. A deposit taken yesterday is real revenue today.
+  it('still books revenue for an approval inside the window', () => {
+    const k = computeKpis(
+      [makeQuote({ quote_sent_at: days(1), customer_approved_at: days(0), total: 4200 })],
+      NOW,
+    );
+    expect(k.bookedRevenue).toBe(4200);
+    expect(k.conversionRate).toBeNull();
+  });
+
+  // A quote cancelled two days after it was sent is decided, but it waits for
+  // its own cohort exactly as a recent WIN does. Counting the loss now while
+  // holding the win back would tilt the rate downwards.
+  it('holds a loss inside the window back too, not just a win', () => {
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: days(30), customer_approved_at: days(28) }),
+        makeQuote({ quote_sent_at: days(2), status: 'declined' }),
+      ],
+      NOW,
+    );
+    expect(k.conversionRate).toBe(1);
+    expect(k.conversionPendingRecent).toBe(1);
+  });
+
+  it('applies the window to neighbors and regular by the same rule', () => {
+    const k = computeKpis(
+      [
+        makeQuote({ quote_sent_at: days(1), legacy_rebook: true }),
+        makeQuote({ quote_sent_at: days(1) }),
+      ],
+      NOW,
+    );
+    expect(k.conversionNeighbor.reached).toBe(0);
+    expect(k.conversionRegular.reached).toBe(0);
+    expect(k.conversionPendingRecent).toBe(2);
   });
 });
