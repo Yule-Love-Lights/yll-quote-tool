@@ -93,3 +93,44 @@ describe('KpiStrip — quotes too recent to count are named, not hidden', () => 
     expect(html).not.toContain('still out');
   });
 });
+
+// The strip is a grid whose spans have to divide into its column count. When
+// they do not, the last row stops short and reads as a missing card. That was
+// measured on the real compiled CSS: a 7-unit strip over 4 columns left a whole
+// empty column, 239px of blank background at 1024px.
+//
+// Counted from the rendered markup rather than asserted by eye, so adding a
+// sixth card without redoing the arithmetic fails here instead of shipping a
+// gap nobody notices.
+function kpiStripColumnUnits(html: string): { belowXl: number; atXl: number } {
+  const cards = html.match(/<div class="rounded-lg border p-4[^"]*"/g) ?? [];
+  let belowXl = 0;
+  let atXl = 0;
+  for (const card of cards) {
+    const wideBelow = card.includes('md:col-span-2');
+    const narrowAtXl = card.includes('xl:col-span-1');
+    belowXl += wideBelow ? 2 : 1;
+    atXl += wideBelow && !narrowAtXl ? 2 : 1;
+  }
+  return { belowXl, atXl };
+}
+
+describe('KpiStrip — the grid arithmetic leaves no empty column', () => {
+  it('renders all five cards', () => {
+    const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis()} />);
+    const cards = html.match(/<div class="rounded-lg border p-4/g) ?? [];
+    expect(cards).toHaveLength(5);
+  });
+
+  it('fills whole rows below xl, where the grid is 4 columns', () => {
+    const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis()} />);
+    expect(html).toContain('md:grid-cols-4');
+    expect(kpiStripColumnUnits(html).belowXl % 4).toBe(0);
+  });
+
+  it('fills the single row at xl, where the grid is 7 columns', () => {
+    const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis()} />);
+    expect(html).toContain('xl:grid-cols-7');
+    expect(kpiStripColumnUnits(html).atXl).toBe(7);
+  });
+});

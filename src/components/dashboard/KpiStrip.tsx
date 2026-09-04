@@ -32,6 +32,12 @@ function turnaroundSub(excluded: number): string {
  * at 39px over at 768px and 3px at 1024px. Four columns there wraps the strip
  * to two rows instead, which is the trade: a taller strip beats a number
  * printed over the page background.
+ *
+ * The spans have to divide into the column count or the last row is short and
+ * reads as a missing card. Below xl: 2 + 1 + 1 + 2 + 2 = 8 over 4 columns,
+ * two full rows. At xl: 2 + 1 + 1 + 1 + 2 = 7 over 7 columns, one row.
+ * `kpiStripColumnUnits` in the tests asserts exactly that, so adding a sixth
+ * card without doing the arithmetic fails instead of shipping a gap.
  */
 export function KpiStrip({ kpis }: { kpis: Kpis }) {
   return (
@@ -44,7 +50,12 @@ export function KpiStrip({ kpis }: { kpis: Kpis }) {
       />
       <KpiCard label="Booked (30 days)" value={fmtMoney(kpis.bookedRevenueRecent)} sub="trailing 30 days" />
       <KpiCard label="Booked (lifetime)" value={fmtMoney(kpis.bookedRevenue)} />
-      <KpiCard label="Active quotes" value={kpis.activeQuotes.toString()} sub="sent · awaiting customer" />
+      <KpiCard
+        label="Active quotes"
+        value={kpis.activeQuotes.toString()}
+        sub="sent · awaiting customer"
+        wideBelowXl
+      />
       <ConversionSplitCard
         neighbor={kpis.conversionNeighbor}
         regular={kpis.conversionRegular}
