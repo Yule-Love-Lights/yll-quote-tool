@@ -55,11 +55,16 @@ const { dbRef, stateRef, sendTelegramMock } = vi.hoisted(() => ({
   stateRef: {
     current: {
       crew: [] as { id: string; display_name: string; base_rate_cents: number; telegram_user_id: string | null }[],
+      // The rate history (ledger row 506). A payment is converted at the rate
+      // in force on each shift's own ET day, so `unpaidRemainders` reads this
+      // and the fixtures below decide what every hour here is worth.
+      rates: [] as { id: string; crew_member_id: string; rate_cents_per_hour: number; effective_from: string; created_at: string; created_by: string | null }[],
       shifts: [] as ShiftRow[],
       breaks: [] as { shift_id: string; started_at: string; ended_at: string | null }[],
       settlements: [] as SettlementRow[],
       lines: [] as LineRow[],
       breakReadError: null as DbError | null,
+      rateReadError: null as DbError | null,
       lineInsertError: null as DbError | null,
       settlementDeleteError: null as DbError | null,
       lineUpdateError: null as DbError | null,
@@ -86,6 +91,25 @@ function makeDb() {
             return b;
           },
           maybeSingle: () => Promise.resolve({ data: list[0] ? { ...list[0] } : null, error: null }),
+        };
+        return b as never;
+      }
+
+      if (table === 'crew_member_rates') {
+        let list = [...stateRef.current.rates];
+        const b = {
+          select: () => b,
+          eq: (col: string, val: unknown) => {
+            list = list.filter((r) => (r as unknown as Record<string, unknown>)[col] === val);
+            return b;
+          },
+          order: () =>
+            Promise.resolve({
+              data: [...list]
+                .sort((x, y) => (x.effective_from < y.effective_from ? -1 : 1))
+                .map((r) => ({ ...r })),
+              error: stateRef.current.rateReadError,
+            }),
         };
         return b as never;
       }
@@ -380,6 +404,14 @@ beforeEach(() => {
       { id: 'crew-1', display_name: 'Khaye', base_rate_cents: 900, telegram_user_id: '555' },
       { id: 'crew-2', display_name: 'Naldo', base_rate_cents: 2500, telegram_user_id: null },
     ],
+    // One rate each, from far enough back to cover every fixture shift —
+    // exactly what the row-506 migration seeds — so these tests keep asking
+    // the questions they were written to ask rather than becoming rate tests.
+    rates: [
+      { id: 'rate-1', crew_member_id: 'crew-1', rate_cents_per_hour: 900, effective_from: '2000-01-01', created_at: '2000-01-01T00:00:00.000Z', created_by: null },
+      { id: 'rate-2', crew_member_id: 'crew-2', rate_cents_per_hour: 2500, effective_from: '2000-01-01', created_at: '2000-01-01T00:00:00.000Z', created_by: null },
+    ],
+    rateReadError: null,
     shifts: [CLOSED, CLOSED_2, OPEN, OTHERS],
     breaks: [],
     settlements: [],
@@ -521,10 +553,56 @@ describe('recordShiftSettlement — the money buys hours, oldest first', () => {
   });
 
   it('REFUSES when the person has no rate, rather than inventing one', async () => {
-    stateRef.current.crew[0]!.base_rate_cents = 0;
+    // The rate comes from the HISTORY now, not from crew_members (ledger row
+    // 506), so this empties the history. `base_rate_cents` is deliberately
+    // left at $9.00 to prove the refusal is not reading it: if the old
+    // single-rate path were still live, this payment would go through.
+    stateRef.current.rates = [];
     const { recordShiftSettlement } = await import('./shiftSettlements');
     await expect(recordShiftSettlement(base)).rejects.toMatchObject({ code: 'no-rate' });
     expect(stateRef.current.settlements).toHaveLength(0);
+  });
+
+  it('pays each shift at the rate in force on ITS day, never the rate today', async () => {
+    // A raise on 1 Sep. CLOSED_2 (31 Aug, 3h) is August work; CLOSED (1 Sep,
+    // 4h) is September work. This is Jason's own situation, and the defect
+    // row 506 exists to fix: one rate for both would mark off the wrong
+    // hours on whichever side of the raise it guessed.
+    stateRef.current.rates = [
+      { id: 'r-old', crew_member_id: 'crew-1', rate_cents_per_hour: 900, effective_from: '2000-01-01', created_at: '2000-01-01T00:00:00.000Z', created_by: null },
+      { id: 'r-new', crew_member_id: 'crew-1', rate_cents_per_hour: 1300, effective_from: '2026-09-01', created_at: '2026-09-01T00:00:00.000Z', created_by: null },
+    ];
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    // 3h at $9.00 is $27.00 and 4h at $13.00 is $52.00: $79.00 buys both
+    // whole. At one rate it would buy neither set correctly.
+    const out = await recordShiftSettlement({ ...base, totalCents: 7900 });
+
+    const byShift = new Map(out.lines.map((l) => [l.shiftId, l]));
+    expect(byShift.get('shift-2')?.rateCentsPerHour).toBe(900);
+    expect(byShift.get('shift-2')?.paidSeconds).toBe(3 * H);
+    expect(byShift.get('shift-2')?.referenceCents).toBe(2700);
+    expect(byShift.get('shift-1')?.rateCentsPerHour).toBe(1300);
+    expect(byShift.get('shift-1')?.paidSeconds).toBe(4 * H);
+    expect(byShift.get('shift-1')?.referenceCents).toBe(5200);
+    // Every hour marked off, nothing left owing.
+    expect(out.coveredSeconds).toBe(7 * H);
+  });
+
+  it('leaves a day with no rate on record UNPAID rather than using a neighbouring rate', async () => {
+    // The history starts on 1 Sep, so 31 Aug has no rate at all. The money
+    // is enough for both shifts and must still reach only the one it can
+    // legitimately convert.
+    stateRef.current.rates = [
+      { id: 'r-new', crew_member_id: 'crew-1', rate_cents_per_hour: 900, effective_from: '2026-09-01', created_at: '2026-09-01T00:00:00.000Z', created_by: null },
+    ];
+    const { recordShiftSettlement } = await import('./shiftSettlements');
+    const out = await recordShiftSettlement({ ...base, totalCents: 10000 });
+
+    expect(out.lines.map((l) => l.shiftId)).toEqual(['shift-1']);
+    expect(out.coveredSeconds).toBe(4 * H);
+    // The August shift is untouched and still owing, so entering its rate
+    // later lets a second payment pick it up.
+    expect(stateRef.current.lines.some((l) => l.shift_id === 'shift-2')).toBe(false);
   });
 
   it('REFUSES when there is nothing unpaid to put the money against', async () => {

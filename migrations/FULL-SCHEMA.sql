@@ -2060,6 +2060,46 @@ create trigger crew_members_updated_at
   for each row execute function public.crew_members_set_updated_at();
 
 -- ---------------------------------------------------------------------
+-- crew_member_rates (2026-09-04, migrations/2026-09-04-crew-member-rates.sql)
+-- — what each person is paid per hour, and FROM WHEN. Ledger row 506.
+--
+-- `crew_members.base_rate_cents` is the rate NOW and about forty consumers
+-- read it, nearly all to display a figure. THIS table is what the money
+-- maths resolves against: the rate for a shift is the row with the greatest
+-- `effective_from` at or before the ET day the shift STARTED. Before it
+-- existed, a payment was divided by the person's CURRENT rate, so every hour
+-- worked before their last raise was marked off at the wrong value.
+--
+-- The two are kept in step by construction, not by discipline: every write
+-- goes through `setRateFrom` in src/lib/crewMemberRates.ts, which writes the
+-- history row and then recomputes the column as the rate in force today.
+-- Nothing else may write `base_rate_cents`.
+--
+-- NOT the record of what anybody was PAID — that is
+-- `shift_settlement_lines.rate_cents_per_hour`, stamped at payment time, so
+-- editing this history changes future conversions only.
+--
+-- RLS ENABLED, ZERO POLICIES — service-role only, same stance as `shifts`.
+-- ---------------------------------------------------------------------
+create table if not exists public.crew_member_rates (
+  id                  uuid        primary key default gen_random_uuid(),
+  crew_member_id      uuid        not null references public.crew_members(id) on delete cascade,
+  rate_cents_per_hour integer     not null check (rate_cents_per_hour > 0),
+  -- An ET CALENDAR DAY, inclusive. A date and not a timestamp on purpose: a
+  -- rate changes on a day, not at an instant.
+  effective_from      date        not null,
+  created_at          timestamptz not null default now(),
+  created_by          text,
+  -- One rate per person per day, or "the rate in force" is ambiguous.
+  unique (crew_member_id, effective_from)
+);
+
+create index if not exists crew_member_rates_person_day_idx
+  on public.crew_member_rates (crew_member_id, effective_from desc);
+
+alter table public.crew_member_rates enable row level security;
+
+-- ---------------------------------------------------------------------
 -- shifts (2026-08-07, migrations/2026-08-07-shifts.sql) — the canonical
 -- day-level clock ledger for Operations Hub Flow B. `source` records how the
 -- shift was opened; `close_source` how it was closed (nullable — null while

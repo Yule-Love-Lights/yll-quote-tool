@@ -99,6 +99,14 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
       blockedDeleteIds: [] as string[],
+      // The rate history (ledger row 506). Creating a staff member and
+      // setting a rate BOTH write here now, so the mock has to model it or
+      // every creation test dies on an unknown table — which is how these
+      // tests proved the write is genuinely reached on both paths.
+      rates: [] as Record<string, unknown>[],
+      // Fails the rate write ALONE, so the half-created-staff-member path can
+      // be exercised without also breaking the crew_members insert.
+      rateUpsertError: null as { message: string } | null,
     },
   },
 }));
@@ -156,6 +164,47 @@ function normalizeDisplayName(value: string): string {
 function makeDb() {
   return {
     from(table: string) {
+      // The rate history, modelled just enough for setRateFrom: upsert a row,
+      // list a person's rows oldest first. Deliberately NOT a second copy of
+      // the resolver — crewMemberRates.test.ts owns that arithmetic; this
+      // only has to let the writes through so the crew_members assertions
+      // below still mean what they say.
+      if (table === 'crew_member_rates') {
+        const rateBuilder = {
+          upsert: (payload: Record<string, unknown>) => {
+            if (stateRef.current.rateUpsertError) {
+              return Promise.resolve({ error: stateRef.current.rateUpsertError });
+            }
+            const i = stateRef.current.rates.findIndex(
+              (r) =>
+                r.crew_member_id === payload.crew_member_id &&
+                r.effective_from === payload.effective_from,
+            );
+            if (i >= 0) stateRef.current.rates[i] = { ...stateRef.current.rates[i], ...payload };
+            else
+              stateRef.current.rates.push({
+                id: `rate-${stateRef.current.rates.length + 1}`,
+                created_at: '2026-09-04T00:00:00.000Z',
+                ...payload,
+              });
+            return Promise.resolve({ error: stateRef.current.error });
+          },
+          select: () => rateBuilder,
+          eq: (col: string, val: unknown) => {
+            rateFiltered = rateFiltered.filter((r) => r[col] === val);
+            return rateBuilder;
+          },
+          order: () =>
+            Promise.resolve({
+              data: [...rateFiltered].sort((a, b) =>
+                String(a.effective_from) < String(b.effective_from) ? -1 : 1,
+              ),
+              error: stateRef.current.error,
+            }),
+        };
+        let rateFiltered = [...stateRef.current.rates];
+        return rateBuilder;
+      }
       if (table !== 'crew_members') {
         throw new Error(`crewMembers.test.ts: unexpected table ${table}`);
       }
@@ -331,11 +380,14 @@ beforeEach(() => {
     inserted: [],
     updated: [],
     blockedDeleteIds: [],
+    rates: [],
+    rateUpsertError: null,
   };
   dbRef.current = makeDb();
 });
 
 import {
+  createFieldCrewMember,
   ensureCrewSessionEpoch,
   getCrewMember,
   getCrewMemberByTelegramUserId,
@@ -663,17 +715,49 @@ describe('updateCrewMember', () => {
     });
 
     // The mock merges the JS payload into the seed row; this proves field mapping, not Postgres partial-update semantics.
+    //
+    // TWO writes now, not one, and the split is the point (ledger row 506).
+    // A rate no longer rides in this payload: it goes into crew_member_rates,
+    // and `syncCurrentRate` writes base_rate_cents back from the history. So
+    // the column is derived rather than set, and the two can never name
+    // different numbers.
+    //
+    // The ORDER is deliberate: the ordinary column write goes FIRST, then the
+    // rate. Either order can leave a partial write, and this is the one where
+    // the likeliest failure — a display-name collision — fails cleanly with
+    // nothing written and the rate untouched. Rate-first meant a name
+    // collision threw an error reading as total failure while the rate change
+    // had already landed (delta-verify on PR #1214).
     expect(stateRef.current.updated).toEqual([
       {
         hub_employee_id: null,
         telegram_user_id: '333',
         display_name: 'Little James',
-        base_rate_cents: 1700,
         in_p4p_pool: true,
         pay_mode: 'shadow',
         language: 'en',
         active: true,
       },
+      { base_rate_cents: 1700, updated_at: expect.any(String) },
+    ]);
+    // ...and the history really is where it came from.
+    expect(stateRef.current.rates).toEqual([
+      expect.objectContaining({ crew_member_id: 'crew-2', rate_cents_per_hour: 1700 }),
+    ]);
+  });
+
+  it('saves a rate-only update through the history, without an empty column write', async () => {
+    // An update carrying ONLY a rate leaves the column payload empty, and a
+    // postgrest update with no columns is an error rather than a no-op. The
+    // rate is already stored by then, so the person is re-read instead.
+    const out = await updateCrewMember('crew-2', { baseRateCents: 2100 } as never);
+    expect(out.baseRateCents).toBe(2100);
+    expect(stateRef.current.rates).toEqual([
+      expect.objectContaining({ crew_member_id: 'crew-2', rate_cents_per_hour: 2100 }),
+    ]);
+    // Exactly one column write, and it is the derived one.
+    expect(stateRef.current.updated).toEqual([
+      { base_rate_cents: 2100, updated_at: expect.any(String) },
     ]);
   });
 
@@ -737,6 +821,52 @@ describe('listLinkedAuthUserIds', () => {
     const ids = await listLinkedAuthUserIds();
     expect(ids.has('op-kelly')).toBe(true);
     expect(ids.size).toBe(1);
+  });
+});
+
+// Ledger row 506: a person's rate now lives in a HISTORY, and their
+// crew_members.base_rate_cents is derived from it. A staff member created
+// without a history row would have a rate on their row and no rate on any
+// DAY, so every hour they work would be unpayable — the feature dead for
+// exactly the people it was set up for.
+describe('seeding the rate history when a staff member is created', () => {
+  it('gives a new office staff member a first rate row, from far enough back to cover any shift', async () => {
+    await linkOfficeStaff({ authUserId: 'op-new', displayName: 'Fresh', baseRateCents: 2500 });
+    const seeded = stateRef.current.rates.filter((r) => r.rate_cents_per_hour === 2500);
+    expect(seeded).toHaveLength(1);
+    // A far-past day on purpose: a first row anchored to "when they were
+    // added" would leave any backdated or imported shift with no rate at all.
+    expect(seeded[0]!.effective_from).toBe('2000-01-01');
+  });
+
+  it('gives one to a row created through insertCrewMember as well', async () => {
+    // The OTHER creation door. It writes base_rate_cents directly, so before
+    // this it produced people with a rate on their row and no rate on any
+    // day — the exact landmine row 507's historical import would have hit
+    // (technical lens on PR #1214).
+    await insertCrewMember({
+      displayName: 'Bot Made',
+      baseRateCents: 1500,
+      inP4pPool: false,
+      payMode: 'hourly',
+    });
+    expect(stateRef.current.rates.filter((r) => r.rate_cents_per_hour === 1500)).toHaveLength(1);
+  });
+
+  it('gives a new FIELD crew member one too — they clock in through the bot and still get paid', async () => {
+    await createFieldCrewMember({ displayName: 'Fresh Field', baseRateCents: 1800 });
+    expect(stateRef.current.rates.filter((r) => r.rate_cents_per_hour === 1800)).toHaveLength(1);
+  });
+
+  it('says the person WAS added when only the rate seed fails, and names where to finish it', async () => {
+    // The raw error would read as "adding them failed", so the office would
+    // try again and hit a duplicate name. Half-done has to say so.
+    stateRef.current.rateUpsertError = { message: 'connection reset' };
+    await expect(
+      createFieldCrewMember({ displayName: 'Half Done', baseRateCents: 1800 }),
+    ).rejects.toThrow(/Half Done was added, but their hourly rate could not be saved/);
+    // The person really is there, which is what makes that message true.
+    expect(stateRef.current.rows.some((r) => r.display_name === 'Half Done')).toBe(true);
   });
 });
 

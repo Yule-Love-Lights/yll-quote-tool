@@ -17,20 +17,30 @@
 // against a fresh read and remains the authority.
 //
 // The conversion inherits the overtime limit in the other direction: it is
-// exact only while every hour is worth the base rate. That is why the panel
-// still shows the rate it is converting at, rather than hiding the sum.
+// exact only while every hour is worth that day's straight rate. That is why
+// the panel still shows the rate it is converting at, rather than hiding the
+// sum.
+//
+// WHAT CHANGED 2026-09-04 (ledger row 506). Each shift now carries the rate
+// in force on the day it was WORKED, not the person's rate today, so a
+// payment reaching back across a raise buys the right amount of time on both
+// sides of it. The panel therefore no longer takes a single rate: it reads
+// the rates off the shifts, and when they differ it stops naming one figure,
+// because "worked out at $16.00/hr" is a false sentence the moment half the
+// hours were earned at $13.00.
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { distinctRates } from '@/lib/crewMemberRates';
 import { formatHours } from '@/lib/hoursSummary';
 import {
   allocatePayment,
   dollars,
   excessOverHours,
   parseAmountCents,
-  referenceCentsFor,
   SETTLEMENT_METHODS,
+  valueOfHours,
   type SettlementMethod,
 } from '@/lib/shiftSettlements';
 
@@ -52,6 +62,13 @@ export type PayableShift = {
    * did not. Live today: 5 of 27 real shifts are sweep-closed, averaging 14h
    * against a normal day of about 4h 40m. */
   needsReview: boolean;
+  /** The rate in force on the ET day this shift STARTED, from the person's
+   * rate history — not their rate today (ledger row 506).
+   *
+   * Zero means no rate is on record for that day. Such a shift cannot be
+   * converted at all, so it is left unpaid and SAID SO in the list rather
+   * than quietly bought at a neighbouring day's rate. */
+  rateCentsPerHour: number;
 };
 
 const fmtDay = (iso: string) =>
@@ -67,16 +84,14 @@ const fmtDay = (iso: string) =>
 export function ShiftPayPanel({
   crewMemberId,
   crewName,
-  rateCentsPerHour,
   payable,
 }: {
   crewMemberId: string;
   crewName: string;
-  /** The person's rate. Since 2026-09-03 this is not decoration: it is what
-   * the amount is CONVERTED at, so a wrong rate here buys the wrong hours. */
-  rateCentsPerHour: number;
   /** Closed shifts with time still owing on them, OLDEST FIRST — the order a
-   * payment is spent in. */
+   * payment is spent in. Each carries its OWN rate; there is deliberately no
+   * single rate prop any more, so the panel cannot be handed a rate that
+   * disagrees with the one the shifts will actually be converted at. */
   payable: PayableShift[];
 }) {
   const router = useRouter();
@@ -88,24 +103,49 @@ export function ShiftPayPanel({
 
   const typedCents = parseAmountCents(amount);
   const owedSeconds = payable.reduce((sum, s) => sum + s.unpaidSeconds, 0);
-  const maxCents = referenceCentsFor(owedSeconds, rateCentsPerHour);
+
+  // Shifts on a day with no rate on record cannot be converted, so they are
+  // not part of what the money can reach. Counted and named separately below
+  // rather than folded into the total, where they would inflate the hours a
+  // payment appears able to cover.
+  const rateless = payable.filter((s) => s.rateCentsPerHour <= 0 && s.unpaidSeconds > 0);
+  const ratelessSeconds = rateless.reduce((sum, s) => sum + s.unpaidSeconds, 0);
+  const payableSeconds = owedSeconds - ratelessSeconds;
+
+  // A SUM over shifts at their own rates, not `seconds × oneRate`.
+  const maxCents = valueOfHours(
+    payable.map((s) => ({ unpaidSeconds: s.unpaidSeconds, rateCentsPerHour: s.rateCentsPerHour })),
+  );
+  // How many different rates these hours span. One means the old sentence is
+  // still true and can name the figure; more than one means it is not.
+  const rates = useMemo(() => distinctRates(payable), [payable]);
+  const oneRate = rates.length === 1 ? rates[0] : null;
+  // Three cases, not two. With NO rate anywhere, "at each day's own rate"
+  // implies per-day rates exist when none do, over a $0.00 figure — so it
+  // says the true thing instead (staff lens on PR #1214).
+  const atRate =
+    rates.length === 0
+      ? 'with no hourly rate on record'
+      : oneRate === null
+        ? 'at each day’s own rate'
+        : `at ${dollars(oneRate)}/hr`;
 
   // The SAME function the server spends the money with, run here only to show
   // what will happen before it happens. The server re-runs it against a fresh
   // read and is the authority; this is a preview, never the decision.
   const preview = useMemo(() => {
-    if (typedCents === null || rateCentsPerHour <= 0) return null;
+    if (typedCents === null) return null;
     return allocatePayment(
       payable.map((s) => ({
         shiftId: s.id,
         clockInAt: s.clockInAt,
         totalSeconds: s.paidSeconds,
         unpaidSeconds: s.unpaidSeconds,
+        rateCentsPerHour: s.rateCentsPerHour,
       })),
       typedCents,
-      rateCentsPerHour,
     );
-  }, [payable, typedCents, rateCentsPerHour]);
+  }, [payable, typedCents]);
 
   const excessCents = excessOverHours(typedCents, maxCents);
   const tooMuch = excessCents > 0;
@@ -119,8 +159,10 @@ export function ShiftPayPanel({
       setError('Enter the amount actually paid, like 1350.00.');
       return;
     }
-    if (rateCentsPerHour <= 0) {
-      setError(`${crewName} has no hourly rate set, so there is no way to work out which hours this covers.`);
+    if (rates.length === 0) {
+      setError(
+        `None of ${crewName}'s unpaid hours fall on a day with an hourly rate on record, so there is no way to work out which hours this covers. Set their rate first.`,
+      );
       return;
     }
     if (!preview || preview.lines.length === 0) {
@@ -149,7 +191,17 @@ export function ShiftPayPanel({
     if (tooMuch) {
       lines.push(
         '',
-        `That is ${dollars(excessCents)} MORE than those hours come to at ${dollars(rateCentsPerHour)}/hr. Fine if it is overtime, a bonus or an advance — but check the amount if it is not.`,
+        `That is ${dollars(excessCents)} MORE than those hours come to ${atRate}. Fine if it is overtime, a bonus or an advance — but check the amount if it is not.`,
+      );
+    }
+    // Named BEFORE the write, for the same reason the sweep-closed warning is:
+    // these hours look payable on the screen above and this payment cannot
+    // touch them, so an admin who does not hear it here discovers it as a
+    // rollover they cannot explain.
+    if (rateless.length > 0) {
+      lines.push(
+        '',
+        `${formatHours(ratelessSeconds)} of their unpaid time falls on ${rateless.length === 1 ? 'a day' : 'days'} with no hourly rate on record, so this payment cannot be applied to ${rateless.length === 1 ? 'it' : 'them'}. That time stays unpaid until the rate for ${rateless.length === 1 ? 'that day' : 'those days'} is entered.`,
       );
     }
     // Named BEFORE the lock, not discovered after it (admin lens on PR #1179).
@@ -212,7 +264,7 @@ export function ShiftPayPanel({
           across {payable.length} {payable.length === 1 ? 'shift' : 'shifts'}
         </span>
         <span className="text-sm tabular-nums text-gray-500">
-          worth {dollars(maxCents)} at {dollars(rateCentsPerHour)}/hr
+          worth {dollars(maxCents)} {atRate}
         </span>
       </div>
 
@@ -275,16 +327,30 @@ export function ShiftPayPanel({
             is — but the admin should see the figure before confirming. */}
         {tooMuch && (
           <p className="mt-2 text-xs text-amber-800">
-            {dollars(excessCents)} more than those {formatHours(owedSeconds)} come to at{' '}
-            {dollars(rateCentsPerHour)}/hr. That is fine for overtime, a bonus or an advance — the
-            extra is recorded as paid, and no hours beyond the ones listed are marked off.
+            {dollars(excessCents)} more than those {formatHours(payableSeconds)} come to {atRate}.
+            That is fine for overtime, a bonus or an advance — the extra is recorded as paid, and no
+            hours beyond the ones listed are marked off.
+          </p>
+        )}
+
+        {/* Hours the money provably cannot reach, said on the screen and not
+            only in the confirm dialog. Without this the panel shows them in
+            the list below as unpaid time and gives no reason a payment large
+            enough to cover everything still leaves them owing. */}
+        {rateless.length > 0 && (
+          <p className="mt-2 text-xs text-amber-800">
+            {formatHours(ratelessSeconds)} of this falls on{' '}
+            {rateless.length === 1 ? 'a day' : `${rateless.length} days`} with no hourly rate on
+            record, so no payment can be applied to {rateless.length === 1 ? 'it' : 'them'} yet. Add
+            the rate for {rateless.length === 1 ? 'that day' : 'those days'} under Rate history.
           </p>
         )}
 
         <p className="mt-2 text-xs text-gray-400">
-          Type what you actually handed over. The hours it covers are worked out from it at{' '}
-          {dollars(rateCentsPerHour)}/hr and marked off oldest first; whatever it does not reach
-          stays unpaid and carries over. The tool never decides what to pay.
+          Type what you actually handed over. The hours it covers are worked out from it {atRate} —
+          the rate in force on the day each shift was worked, not today’s — and marked off oldest
+          first; whatever it does not reach stays unpaid and carries over. The tool never decides
+          what to pay.
         </p>
         {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
       </div>
@@ -304,6 +370,21 @@ export function ShiftPayPanel({
               {s.needsReview && (
                 <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
                   times not verified
+                </span>
+              )}
+              {s.rateCentsPerHour <= 0 && (
+                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                  no rate for this day
+                </span>
+              )}
+              {/* The per-day rate, shown ONLY when the payment spans more than
+                  one. With a single rate it is already in the header and the
+                  helper text, and repeating it on every row is noise; with
+                  several it is the only place an admin can see WHICH hours
+                  are worth what. */}
+              {oneRate === null && s.rateCentsPerHour > 0 && (
+                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs tabular-nums text-gray-600">
+                  {dollars(s.rateCentsPerHour)}/hr
                 </span>
               )}
               {covers > 0 && (

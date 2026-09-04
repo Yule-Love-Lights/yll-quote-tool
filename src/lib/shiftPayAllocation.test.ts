@@ -5,13 +5,18 @@
 // paid to Khaye at $9.00/h for the five weekdays 24–28 Aug, which come to
 // 20h 34m. The money buys exactly 20h, so 34 minutes must be left owing
 // rather than written off by a payment that did not cover it.
+//
+// EACH SHIFT CARRIES ITS OWN RATE since 2026-09-04 (ledger row 506), because
+// a payment reaching back across a raise buys different amounts of time on
+// either side of it. The `spans a raise` block below is the whole reason that
+// change exists, and it is Jason's own live data.
 
 import { describe, expect, it } from 'vitest';
 
 import {
   allocatePayment,
   excessOverHours,
-  secondsBoughtBy,
+  valueOfHours,
   type PayableRemainder,
 } from './shiftSettlements';
 
@@ -26,29 +31,9 @@ function shifts(...secs: number[]): PayableRemainder[] {
     totalSeconds: s,
     unpaidSeconds: s,
     needsReview: false,
+    rateCentsPerHour: RATE,
   }));
 }
-
-describe('secondsBoughtBy', () => {
-  it('turns money into seconds at the rate', () => {
-    expect(secondsBoughtBy(18000, RATE)).toBe(20 * H); // $180.00 at $9/h
-    expect(secondsBoughtBy(900, RATE)).toBe(H);
-    expect(secondsBoughtBy(450, RATE)).toBe(H / 2);
-  });
-
-  it('refuses to divide by nothing rather than returning Infinity', () => {
-    expect(secondsBoughtBy(18000, 0)).toBe(0);
-    expect(secondsBoughtBy(0, RATE)).toBe(0);
-    expect(secondsBoughtBy(-100, RATE)).toBe(0);
-    expect(secondsBoughtBy(Number.NaN, RATE)).toBe(0);
-  });
-
-  it('is the inverse of referenceCentsFor to the nearest second', () => {
-    // A cent buys 4 seconds at $9/h, so the rounding is worth well under a
-    // cent and only decides where a shift boundary falls.
-    expect(secondsBoughtBy(1, RATE)).toBe(4);
-  });
-});
 
 describe('allocatePayment — the real case', () => {
   // 24 Aug 4h00, 25 Aug 4h05.6, 26 Aug 4h05.6, 27 Aug 4h00, 28 Aug 4h22.9
@@ -56,10 +41,10 @@ describe('allocatePayment — the real case', () => {
   const TOTAL = 4 * H + 14736 + 14738 + 4 * H + 15777; // 20h 34m 11s
 
   it('covers exactly what the money bought and leaves the rest owing', () => {
-    const out = allocatePayment(KHAYE, 18000, RATE);
+    const out = allocatePayment(KHAYE, 18000);
 
     expect(out.secondsCovered).toBe(20 * H);
-    expect(out.unusedSeconds).toBe(0);
+    expect(out.unusedCents).toBe(0);
     // Four whole days, and the fifth part paid.
     expect(out.lines).toHaveLength(5);
     expect(out.lines.slice(0, 4).map((l) => l.paidSeconds)).toEqual([4 * H, 14736, 14738, 4 * H]);
@@ -72,26 +57,48 @@ describe('allocatePayment — the real case', () => {
     expect(last.totalSeconds - last.paidSeconds).toBe(2051);
   });
 
+  it('stamps the rate and the reference on every line', () => {
+    const out = allocatePayment(KHAYE, 18000);
+    expect(out.lines.every((l) => l.rateCentsPerHour === RATE)).toBe(true);
+    expect(out.spentCents).toBe(out.lines.reduce((n, l) => n + l.referenceCents, 0));
+
+    // ONE CENT OVER the $180.00 paid, and that is correct rather than a bug
+    // to chase. Each line's `reference_cents` is its own seconds rounded to
+    // the nearest cent, and five independent roundings do not sum to the
+    // rounding of the sum. Verified against the real settlement in
+    // production on 2026-09-04, which predates this change: its five lines
+    // are 3432 + 3600 + 3600 + 3684 + 3685 = 18001 against $180.00.
+    //
+    // Nothing depends on the two being equal. `total_cents` is the record of
+    // what was handed over; this is what the hours came to; phase 3 made
+    // them deliberately independent and the rollover kept it that way.
+    expect(out.spentCents).toBe(18001);
+
+    // The SECONDS, by contrast, are exact — 20h to the second — which is the
+    // property that actually decides how much of somebody's week is marked
+    // off, and the one the cent-second arithmetic exists to protect.
+    expect(out.secondsCovered).toBe(20 * H);
+  });
+
   it('a second payment picks up exactly where the first stopped', () => {
-    const first = allocatePayment(KHAYE, 18000, RATE);
+    const first = allocatePayment(KHAYE, 18000);
     const paidByShift = new Map(first.lines.map((l) => [l.shiftId, l.paidSeconds]));
     const after = KHAYE.map((s) => ({
       ...s,
       unpaidSeconds: s.totalSeconds - (paidByShift.get(s.shiftId) ?? 0),
     }));
 
-    // 2051 seconds are owing, which is worth 512.75 cents — so NO whole
-    // amount buys it exactly. $5.13 buys 2052s and $5.12 buys 2048s. This is
-    // why the over-payment refusal is measured in CENTS against the rounded
-    // value of the unpaid hours, not in seconds: refusing every amount that
-    // overshoots by less than a cent would make the last remainder of a week
-    // literally unpayable.
-    const second = allocatePayment(after, 513, RATE);
+    // 2051 seconds are owing, which is worth 512.75 cents, so no whole
+    // amount buys it exactly. $5.13 is the rounded value of those hours, and
+    // walking in MONEY rather than in seconds is what lets it finish the
+    // shift cleanly: the whole remaining shift costs 513 cents and the
+    // payment has 513 cents, so it buys all of it.
+    const second = allocatePayment(after, 513);
     expect(second.lines).toHaveLength(1);
     expect(second.lines[0].shiftId).toBe('shift-5');
     // It takes what is OWED, never what the money technically bought.
     expect(second.lines[0].paidSeconds).toBe(2051);
-    expect(second.unusedSeconds).toBe(1); // sub-cent: 1 second is 0.25c
+    expect(second.unusedCents).toBe(0);
 
     // And the shift is then whole: nothing left to roll over.
     const paidNow = second.lines[0].paidSeconds;
@@ -99,9 +106,100 @@ describe('allocatePayment — the real case', () => {
   });
 });
 
+describe('allocatePayment — a payment that spans a raise', () => {
+  // Jason's own history, and the reason ledger row 506 exists:
+  //   ... to 11 Aug   $10.00/h
+  //   12 Aug – 31 Aug $13.00/h
+  //    1 Sep onward   $16.00/h
+  const AUG = 1300;
+  const SEP = 1600;
+
+  /** One 4-hour shift in August, one in September. */
+  const ACROSS: PayableRemainder[] = [
+    {
+      shiftId: 'aug-21',
+      clockInAt: '2026-08-21T13:00:00.000Z',
+      totalSeconds: 4 * H,
+      unpaidSeconds: 4 * H,
+      needsReview: false,
+      rateCentsPerHour: AUG,
+    },
+    {
+      shiftId: 'sep-02',
+      clockInAt: '2026-09-02T13:00:00.000Z',
+      totalSeconds: 4 * H,
+      unpaidSeconds: 4 * H,
+      needsReview: false,
+      rateCentsPerHour: SEP,
+    },
+  ];
+
+  it('buys each shift at its OWN rate, so 8 hours costs $116.00 and not $128.00', () => {
+    // 4h at $13.00 is $52.00; 4h at $16.00 is $64.00.
+    expect(valueOfHours(ACROSS)).toBe(5200 + 6400);
+
+    const out = allocatePayment(ACROSS, 11600);
+    expect(out.lines.map((l) => [l.shiftId, l.paidSeconds, l.rateCentsPerHour])).toEqual([
+      ['aug-21', 4 * H, AUG],
+      ['sep-02', 4 * H, SEP],
+    ]);
+    expect(out.secondsCovered).toBe(8 * H);
+    expect(out.unusedCents).toBe(0);
+  });
+
+  it('is the DEFECT this row exists to fix: one rate marks off the wrong hours', () => {
+    // $52.00 is exactly the August shift at the August rate, and it clears
+    // it whole.
+    const correct = allocatePayment([ACROSS[0]], 5200);
+    expect(correct.secondsCovered).toBe(4 * H);
+    expect(correct.unusedCents).toBe(0);
+
+    // The old behaviour, reproduced by pretending that August shift was
+    // worth today's rate: the same $52.00 now buys only 3h 15m, so 45
+    // minutes Jason actually earned stay marked unpaid. 18.75% fewer hours,
+    // which is the ~19% named in the ledger row.
+    const wrong = allocatePayment([{ ...ACROSS[0], rateCentsPerHour: SEP }], 5200);
+    expect(wrong.secondsCovered).toBe(3 * H + 900);
+    expect(4 * H - wrong.secondsCovered).toBe(2700);
+  });
+
+  it('stops mid-August rather than paying September at August prices', () => {
+    // $26.00 is 2h at the August rate and reaches nothing later.
+    const out = allocatePayment(ACROSS, 2600);
+    expect(out.lines.map((l) => l.shiftId)).toEqual(['aug-21']);
+    expect(out.lines[0].paidSeconds).toBe(2 * H);
+    expect(out.lines[0].rateCentsPerHour).toBe(AUG);
+  });
+
+  it('leaves a shift with NO rate on record unpaid rather than guessing one', () => {
+    // A day earlier than anybody's first rate row resolves to 0. Buying it
+    // at a neighbour's rate would be inventing payroll, and buying it for
+    // nothing would mark it paid for free — so it is skipped, stays visible,
+    // and the money moves on to the next shift that does have a rate.
+    const withGap: PayableRemainder[] = [
+      { ...ACROSS[0], shiftId: 'no-rate', rateCentsPerHour: 0 },
+      ACROSS[1],
+    ];
+    const out = allocatePayment(withGap, 6400);
+    expect(out.lines.map((l) => l.shiftId)).toEqual(['sep-02']);
+    expect(out.lines[0].paidSeconds).toBe(4 * H);
+    // And it is not counted as money the hours could not absorb, because it
+    // was spent — on the shift that could take it.
+    expect(out.unusedCents).toBe(0);
+  });
+
+  it('values a rateless shift at nothing, so it never inflates the ceiling', () => {
+    const withGap = [
+      { unpaidSeconds: 4 * H, rateCentsPerHour: 0 },
+      { unpaidSeconds: 4 * H, rateCentsPerHour: SEP },
+    ];
+    expect(valueOfHours(withGap)).toBe(6400);
+  });
+});
+
 describe('allocatePayment — the rules', () => {
   it('spends the OLDEST hours first', () => {
-    const out = allocatePayment(shifts(4 * H, 4 * H, 4 * H), 900 * 5, RATE);
+    const out = allocatePayment(shifts(4 * H, 4 * H, 4 * H), 900 * 5);
     // $45.00 = 5h: all of the first shift, an hour of the second, none of
     // the third.
     expect(out.lines.map((l) => [l.shiftId, l.paidSeconds])).toEqual([
@@ -111,18 +209,19 @@ describe('allocatePayment — the rules', () => {
   });
 
   it('reports money that no unpaid hour could absorb, and covers what it can', () => {
-    // $45.00 against 2h of work: 3h of it lands nowhere.
-    const out = allocatePayment(shifts(2 * H), 900 * 5, RATE);
+    // $45.00 against 2h of work: $27.00 of it lands nowhere.
+    const out = allocatePayment(shifts(2 * H), 900 * 5);
     expect(out.secondsCovered).toBe(2 * H);
-    expect(out.unusedSeconds).toBe(3 * H);
+    expect(out.unusedCents).toBe(2700);
+    expect(out.spentCents).toBe(1800);
   });
 
   it('skips a shift that is already fully paid rather than writing a zero line', () => {
     const partly: PayableRemainder[] = [
-      { shiftId: 'done', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 0, needsReview: false },
-      { shiftId: 'owing', clockInAt: '2026-08-25T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 4 * H, needsReview: false },
+      { shiftId: 'done', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 0, needsReview: false, rateCentsPerHour: RATE },
+      { shiftId: 'owing', clockInAt: '2026-08-25T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: 4 * H, needsReview: false, rateCentsPerHour: RATE },
     ];
-    const out = allocatePayment(partly, 900, RATE);
+    const out = allocatePayment(partly, 900);
     // A line covering no time is not a record of anything, and it would make
     // the payment look like it touched a shift it did not pay for.
     expect(out.lines.map((l) => l.shiftId)).toEqual(['owing']);
@@ -131,18 +230,29 @@ describe('allocatePayment — the rules', () => {
 
   it('takes only what is LEFT on a part-paid shift, not its whole length', () => {
     const partly: PayableRemainder[] = [
-      { shiftId: 'half', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: H, needsReview: false },
+      { shiftId: 'half', clockInAt: '2026-08-24T13:00:00.000Z', totalSeconds: 4 * H, unpaidSeconds: H, needsReview: false, rateCentsPerHour: RATE },
     ];
-    const out = allocatePayment(partly, 900 * 4, RATE);
+    const out = allocatePayment(partly, 900 * 4);
     expect(out.lines[0].paidSeconds).toBe(H);
-    expect(out.unusedSeconds).toBe(3 * H);
+    // The line covers one hour, so it costs $9.00 and $27.00 is left over —
+    // measured against the UNPAID hour, never the whole 4-hour shift.
+    expect(out.lines[0].referenceCents).toBe(900);
+    expect(out.unusedCents).toBe(2700);
   });
 
-  it('records nothing at all for an unusable rate, rather than dividing by zero', () => {
-    const out = allocatePayment(shifts(4 * H), 18000, 0);
+  it('records nothing at all when no shift has a usable rate', () => {
+    const out = allocatePayment(
+      shifts(4 * H).map((s) => ({ ...s, rateCentsPerHour: 0 })),
+      18000,
+    );
     expect(out.lines).toEqual([]);
     expect(out.secondsCovered).toBe(0);
-    expect(out.unusedSeconds).toBe(0);
+    expect(out.spentCents).toBe(0);
+    // The whole amount is unspent, which is exactly what it is. The callers
+    // refuse before reaching this — `recordShiftSettlement` with `no-rate`,
+    // the panel with the same message — so nobody sees this as a $180.00
+    // bonus; it is here so the function's own answer stays honest.
+    expect(out.unusedCents).toBe(18000);
   });
 
   it('does not re-sort what it is given — order is the caller\'s to decide', () => {
@@ -150,8 +260,36 @@ describe('allocatePayment — the rules', () => {
     // the oldest-first rule lives in one place (the reader) and is visible
     // in its tests rather than hidden in two.
     const newestFirst = [...shifts(4 * H, 4 * H)].reverse();
-    const out = allocatePayment(newestFirst, 900, RATE);
+    const out = allocatePayment(newestFirst, 900);
     expect(out.lines[0].shiftId).toBe('shift-2');
+  });
+
+  it('never writes a line longer than the shift, however the rounding falls', () => {
+    // One cent short of the whole 4-hour shift at $9.00/h. The partial take
+    // rounds to the NEAREST second, and at a rate where a cent buys 4 seconds
+    // that boundary can round either way, so the cap against unpaidSeconds is
+    // what makes this safe rather than lucky. The database trigger would
+    // refuse an over-long line; a refusal is a worse answer than the right
+    // number.
+    const out = allocatePayment(shifts(4 * H), 3599);
+    expect(out.lines[0].paidSeconds).toBeLessThanOrEqual(4 * H);
+    expect(out.lines[0].paidSeconds).toBe(14396);
+  });
+});
+
+describe('valueOfHours', () => {
+  it('sums each shift at its own rate rather than multiplying by one', () => {
+    expect(
+      valueOfHours([
+        { unpaidSeconds: 4 * H, rateCentsPerHour: 1300 },
+        { unpaidSeconds: 4 * H, rateCentsPerHour: 1600 },
+      ]),
+    ).toBe(11600);
+  });
+
+  it('is zero for nothing owing', () => {
+    expect(valueOfHours([])).toBe(0);
+    expect(valueOfHours([{ unpaidSeconds: 0, rateCentsPerHour: 1600 }])).toBe(0);
   });
 });
 

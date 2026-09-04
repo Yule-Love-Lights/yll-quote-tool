@@ -29,7 +29,10 @@ import {
   ShiftAuditSection,
   ShiftPaySection,
 } from '@/components/admin/PersonHoursSections';
+import { RateHistorySection } from '@/components/admin/RateHistorySection';
 import { getSessionRole } from '@/lib/auth/sessionRole';
+import { listRates } from '@/lib/crewMemberRates';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
 import { listSettlements, summarize, unpaidRemainders } from '@/lib/shiftSettlements';
 
@@ -73,6 +76,18 @@ export default async function PersonTimePage({
   const remainders = time.person
     ? await unpaidRemainders(time.person.id).catch((e: unknown) => {
         console.error('[time-tracking] unpaid remainders read failed:', e);
+        return null;
+      })
+    : null;
+  // The rate history, read separately for the same reason the settlements
+  // are: a failure here must not empty the hours table above it. The section
+  // hides itself instead of rendering an empty history, which would read as
+  // "this person has never had a rate" — the one answer that is certainly
+  // wrong, since every existing person was seeded a row by the row-506
+  // migration.
+  const rates = time.person
+    ? await listRates(time.person.id).catch((e: unknown) => {
+        console.error('[time-tracking] rate history read failed:', e);
         return null;
       })
     : null;
@@ -142,7 +157,6 @@ export default async function PersonTimePage({
         <ShiftPaySection
           crewMemberId={person.id}
           crewName={person.displayName}
-          rateCentsPerHour={person.baseRateCents}
           remainders={remainders ?? []}
           settlements={settlements ?? []}
           settledCents={settlementSummary.settledCents}
@@ -154,6 +168,16 @@ export default async function PersonTimePage({
           // panel cannot say what is unpaid, so it must hide rather than
           // show a shorter list than the truth.
           settlementsReadable={time.settlementsReadable && settlements !== null && remainders !== null}
+        />
+
+        <RateHistorySection
+          crewMemberId={person.id}
+          crewName={person.displayName}
+          rates={rates ?? []}
+          // Resolved HERE, with the same helper the rate maths uses, so the
+          // server render and the browser cannot land on different days.
+          todayEt={etDayKey(new Date())}
+          readable={rates !== null}
         />
 
         <ShiftAuditSection entries={time.audit} partial={time.auditPartial} />

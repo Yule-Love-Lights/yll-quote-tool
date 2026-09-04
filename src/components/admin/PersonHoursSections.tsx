@@ -164,7 +164,6 @@ export function PersonHoursSection({
 export function ShiftPaySection({
   crewMemberId,
   crewName,
-  rateCentsPerHour,
   remainders,
   settlements,
   settledCents,
@@ -173,7 +172,6 @@ export function ShiftPaySection({
 }: {
   crewMemberId: string;
   crewName: string;
-  rateCentsPerHour: number;
   /** Every closed shift with time still owing, oldest first, across ALL
    * time — not the range on screen. The server spends a payment globally
    * oldest-first, so a range-scoped list would preview the wrong shifts. */
@@ -198,6 +196,11 @@ export function ShiftPaySection({
       // Carried through so the warning reaches the panel where paying LOCKS
       // these hours, not only the list above it.
       needsReview: r.needsReview,
+      // The rate in force on the day this shift was WORKED, resolved server
+      // side in unpaidRemainders (ledger row 506). Passed per shift rather
+      // than one rate for the person, so the preview converts each shift at
+      // the same rate the write will.
+      rateCentsPerHour: r.rateCentsPerHour,
     }));
 
   return (
@@ -248,7 +251,6 @@ export function ShiftPaySection({
           <ShiftPayPanel
             crewMemberId={crewMemberId}
             crewName={crewName}
-            rateCentsPerHour={rateCentsPerHour}
             payable={payable}
           />
           <p className="mt-2 text-xs text-gray-500">
@@ -290,7 +292,20 @@ export function ShiftPaySection({
                             line is the most rounding can account for. */}
                         {Math.abs(st.referenceCents - st.totalCents) > liveLines.length &&
                           !st.voidedAt && (
-                            <> · {dollars(st.referenceCents)} at the stamped rate</>
+                            <>
+                              {' '}
+                              · {dollars(st.referenceCents)} at the{' '}
+                              {/* SINGULAR only when it really was one rate. A
+                                  payment can now span a raise, and "the
+                                  stamped rate" then names a rate that half
+                                  these hours were never paid at (staff lens
+                                  on PR #1214). The line rates are what the
+                                  settlement actually carries, so read them
+                                  rather than assuming one. */}
+                              {new Set(liveLines.map((l) => l.rateCentsPerHour)).size > 1
+                                ? 'stamped rates'
+                                : 'stamped rate'}
+                            </>
                           )}
                       </span>
                       {st.voidedAt ? (

@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { RATE_HISTORY_EPOCH, setRateFrom } from '@/lib/crewMemberRates';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { resolveNowMs } from '@/lib/timeSpans';
 
 export type CrewPayMode = 'hourly' | 'shadow' | 'p4p';
 
@@ -143,7 +146,18 @@ function buildCrewMemberUpdatePayload(patch: Partial<CrewMemberUpsertFields>): R
   const payload: Record<string, unknown> = {};
 
   if (patch.displayName !== undefined) payload.display_name = patch.displayName.trim();
-  if (patch.baseRateCents !== undefined) payload.base_rate_cents = patch.baseRateCents;
+  // `base_rate_cents` is deliberately ABSENT from this payload. The column is
+  // derived from crew_member_rates (ledger row 506), so writing it directly
+  // here would set the displayed rate to one number while every hour still
+  // converted at another — the exact drift the rate history exists to remove.
+  // `updateCrewMember` still ACCEPTS a rate: it routes it through
+  // `setRateFrom` first, which writes the history and recomputes the column.
+  // See the call site below.
+  //
+  // Caught by the technical lens on PR #1214, which found this module's own
+  // comment claiming nothing else wrote the column while this function and
+  // `insertCrewMember` both did. No caller passes a rate today; row 507's
+  // historical import is exactly the caller that would.
   if (patch.inP4pPool !== undefined) payload.in_p4p_pool = patch.inP4pPool;
   if (patch.payMode !== undefined) payload.pay_mode = patch.payMode;
   if (patch.language !== undefined) payload.language = patch.language.trim() || 'en';
@@ -246,6 +260,13 @@ export async function listActiveFieldCrew(): Promise<CrewMember[] | null> {
 // model — two concurrent no-id insert calls for the same person — is only
 // closed HERE, by catching that specific unique-violation and re-fetching the
 // winner, mirroring shifts.ts's clockIn (same session, same race shape).
+/**
+ * NOTE ON THE RATE (ledger row 506). This writes `base_rate_cents` directly
+ * and then seeds the rate history from it, exactly as `insertStaffRow` does.
+ * It has to: a person with a rate on their row and no rate on any DAY cannot
+ * be paid for a single hour, and row 507's historical import is precisely
+ * the kind of caller that would create people this way.
+ */
 export async function insertCrewMember(input: NewCrewMemberInput): Promise<CrewMember> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
@@ -265,7 +286,47 @@ export async function insertCrewMember(input: NewCrewMemberInput): Promise<CrewM
     throw new Error(`insertCrewMember: ${error.message}`);
   }
   if (!data) throw new Error('insertCrewMember: no row returned');
-  return toCrewMember(data as Row);
+  const created = toCrewMember(data as Row);
+  // Seed the rate history, same as insertStaffRow. NOT on the race-recovery
+  // path above: that returns somebody ELSE's freshly created row, and the
+  // caller that won the race seeds it.
+  await seedRateHistory(created.id, created.displayName, created.baseRateCents);
+  return created;
+}
+
+/**
+ * Give a newly created person their first rate row (ledger row 506).
+ *
+ * Shared by both creation paths so neither can drift from the other. A person
+ * with a rate on their row and no rate on any DAY cannot be paid for a single
+ * hour, and that is invisible until somebody tries to pay them.
+ *
+ * The person EXISTS by the time this runs, so a failure here is half-done
+ * rather than failed. Rethrown as a message that says so: the raw error reads
+ * as "adding them failed", the office tries again, and hits a duplicate name.
+ * Deliberately not unwound by deleting the person — they may already be
+ * referenced, and a real staff member who needs a rate is a state every rate
+ * screen already renders and explains.
+ */
+async function seedRateHistory(
+  id: string,
+  displayName: string,
+  baseRateCents: number,
+): Promise<void> {
+  if (baseRateCents <= 0) return;
+  try {
+    await setRateFrom({
+      crewMemberId: id,
+      rateCentsPerHour: baseRateCents,
+      effectiveFrom: RATE_HISTORY_EPOCH,
+      createdBy: 'staff row created',
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${displayName} was added, but their hourly rate could not be saved (${detail}). Open their time page and set the rate under Rate history — their hours cannot be paid until you do.`,
+    );
+  }
 }
 
 export async function updateCrewMember(
@@ -278,6 +339,58 @@ export async function updateCrewMember(
   const crewMemberId = id.trim();
   const payload = buildCrewMemberUpdatePayload(patch);
 
+  // A rate patch goes through the HISTORY, not into the payload above, so the
+  // column stays derived (ledger row 506).
+  //
+  // ORDER MATTERS and this is the deliberate one: the ordinary column update
+  // runs FIRST, then the rate. Either order can leave a partial write, but
+  // the failure this one has to survive is a display-name collision, which is
+  // both the likeliest failure here and the one that fails cleanly — nothing
+  // is written and the rate was never touched. Doing the rate first meant a
+  // name collision threw an error reading as total failure while the rate
+  // change had already landed (delta-verify on PR #1214).
+  //
+  // An update with ONLY a rate in it leaves the payload empty by now, and a
+  // postgrest update with no columns is not a no-op — it is an error. So the
+  // column write is skipped entirely in that case.
+  let updated: CrewMember | null = null;
+  if (Object.keys(payload).length > 0) {
+    updated = await applyCrewMemberPatch(db, crewMemberId, payload);
+  }
+
+  if (patch.baseRateCents !== undefined) {
+    try {
+      await setRateFrom({
+        crewMemberId,
+        rateCentsPerHour: patch.baseRateCents,
+        effectiveFrom: etDayKey(new Date(resolveNowMs())),
+        createdBy: 'crew member updated',
+      });
+    } catch (err) {
+      // Say what LANDED. By here the other fields are already saved, and a
+      // bare error would read as though none of it had been.
+      const detail = err instanceof Error ? err.message : String(err);
+      const also = updated ? 'The other changes were saved. ' : '';
+      throw new Error(`updateCrewMember: the hourly rate could not be saved (${detail}). ${also}`.trim());
+    }
+    // Re-read: setRateFrom moved base_rate_cents, so anything captured above
+    // is already stale.
+    const after = await getCrewMember(crewMemberId);
+    if (!after) throw new Error(`updateCrewMember: no row found for id ${crewMemberId}`);
+    return after;
+  }
+
+  if (!updated) throw new Error(`updateCrewMember: nothing to update for id ${crewMemberId}`);
+  return updated;
+}
+
+/** The column write, lifted out so `updateCrewMember` can skip it entirely
+ * when a patch carries nothing but a rate. Error mapping is unchanged. */
+async function applyCrewMemberPatch(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  crewMemberId: string,
+  payload: Record<string, unknown>,
+): Promise<CrewMember> {
   const { data, error } = await db.from('crew_members').update(payload).eq('id', crewMemberId).select(SELECT).maybeSingle();
   if (error) {
     // Unlike insertCrewMember's race, a rename-to-duplicate collision here is
@@ -469,7 +582,18 @@ async function insertStaffRow(input: {
     throw new Error(`insertStaffRow: ${error.message}`);
   }
   if (!data) throw new Error('insertStaffRow: no row returned');
-  return toStaffMember(data as StaffRow);
+  const staff = toStaffMember(data as StaffRow);
+
+  // Seed the rate history in the same breath as the person (ledger row 506).
+  // Without this a newly added staff member has a rate on their row and no
+  // rate on any DAY, so every shift they work resolves to nothing and no
+  // payment to them can be recorded at all — a feature that is dead for
+  // exactly the people it was set up for. Anchored at RATE_HISTORY_EPOCH for
+  // the same reason the migration's backfill is: no shift, including one
+  // backdated by the office or imported later, may fall before their first
+  // rate.
+  await seedRateHistory(staff.id, staff.displayName, staff.baseRateCents);
+  return staff;
 }
 
 /**
@@ -534,9 +658,33 @@ export async function setStaffTelegram(
   return patchStaffRow(id, { telegram_user_id: telegramUserId, session_epoch: randomUUID() });
 }
 
-/** Correct or raise any staff member's hourly rate, in integer cents. */
-export async function setStaffRate(id: string, baseRateCents: number): Promise<StaffMember | null> {
-  return patchStaffRow(id, { base_rate_cents: baseRateCents });
+/**
+ * Correct or raise any staff member's hourly rate, in integer cents.
+ *
+ * Writes the RATE HISTORY, from today's ET day onward, and lets
+ * `setRateFrom` bring `base_rate_cents` back into step (ledger row 506).
+ * That ordering is the point: the column is now derived from the history on
+ * every write, so the two cannot drift, and a raise entered here stops
+ * silently re-valuing every hour the person worked BEFORE it — which is the
+ * defect this row exists to close.
+ *
+ * To correct a rate that started on some earlier day — entering a real
+ * history rather than a raise taking effect now — call `setRateFrom`
+ * directly with that day. Nothing else may write `base_rate_cents`.
+ */
+export async function setStaffRate(
+  id: string,
+  baseRateCents: number,
+  opts?: { createdBy?: string | null; nowIso?: string },
+): Promise<StaffMember | null> {
+  await setRateFrom({
+    crewMemberId: id,
+    rateCentsPerHour: baseRateCents,
+    effectiveFrom: etDayKey(new Date(resolveNowMs(opts?.nowIso))),
+    createdBy: opts?.createdBy ?? null,
+    nowIso: opts?.nowIso,
+  });
+  return getStaffMember(id);
 }
 
 /**

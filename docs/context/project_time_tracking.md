@@ -535,10 +535,13 @@ same visits — do not try to derive one from the other.
 
 ---
 
-# Part 3 — pay rates CHANGE over time (Jason, 2026-09-04). NOT BUILT.
+# Part 3 — pay rates CHANGE over time (Jason, 2026-09-04). BUILT S61.
 
-Captured at the end of Jason's S60 with no code written. Read this before
-touching anything that converts money to hours.
+Captured at the end of Jason's S60 with no code written; BUILT the next day in
+S61 (PR #1214, ledger row 506). Sections 16-18 below are the spec as written
+BEFORE the build and are left unedited, because what they got right and wrong
+is the useful record. Section 20 says what actually shipped and where it
+differs. Read this before touching anything that converts money to hours.
 
 ## 16. The problem, and it is live TODAY
 
@@ -646,4 +649,72 @@ Open questions for the import, to settle BEFORE writing it:
 5. It must land AFTER §17, or every imported hour is valued at $16.00.
 
 **Ordering: rate history first, import second.** Doing the import first would
-bake today's single rate into a year of history.
+bake today's single rate into a year of history. **The rate history shipped in
+S61, so this is now unblocked** — and Jason's own three rates are already
+entered, which is exactly what the import needs to value his pre-tool history
+correctly.
+
+---
+
+# 20. What actually shipped (S61, 2026-09-04, PR #1214)
+
+Follows §17's sketch closely. The differences, and the things §18 did not see:
+
+- **`crew_member_rates`** as sketched: `(crew_member_id, rate_cents_per_hour,
+  effective_from date, created_at, created_by)`, unique on
+  `(crew_member_id, effective_from)`, RLS on with zero policies. The resolver
+  is `rateForDay` / `rateForShiftStart` in `src/lib/crewMemberRates.ts`.
+- **`base_rate_cents` stayed, and is now DERIVED rather than kept in step by
+  discipline.** §17 left that open; the answer is that `setRateFrom` writes
+  the history and then recomputes the column, reading the row back to confirm
+  it moved. `setStaffRate`, `insertCrewMember` and `updateCrewMember` all
+  route through it, so there is one writer. A review caught that the last two
+  had been writing the column directly, which no caller did today but row
+  507's import certainly would have.
+- **`allocatePayment` walks in CENT-SECONDS, not cents.** §18 correctly said
+  it stops being a single division. What it did not see: subtracting each
+  shift's cost ROUNDED TO WHOLE CENTS accumulates an error per shift, and on
+  Khaye's real five-shift $180.00 payment that cost 2 seconds against the
+  single division it replaced. The running balance is held in `cents x 3600`,
+  so whole-shift takes are exact and only the final partial boundary rounds.
+- **`secondsBoughtBy` was DELETED**, not made per-shift. It became orphaned,
+  and a "turn money into seconds at THE rate" helper is the single-rate
+  thinking this whole row removes. `excessOverHours` survives unchanged and is
+  fed by the new `valueOfHours`, which sums shifts at their own rates.
+- **A day with NO rate is skipped, not guessed at.** §17 did not name this
+  case. Such a shift stays unpaid and visible, the pay panel names those hours
+  before anyone confirms, and `recordShiftSettlement` refuses only when NO
+  unpaid hour has a rate — a partial gap is not a refusal.
+- **Editing history that predates a payment WARNS rather than refuses**, the
+  open question in §18. It is provably safe: every settlement line carries its
+  own stamped rate, so a history edit cannot move money already recorded. The
+  screen says so in those words.
+- **`deleteRate` refuses two things**, and the second was not foreseen:
+  removing the last row, and removing the row that covers TODAY (reachable
+  whenever a future-dated raise is on file — it passes the count test and
+  uncovers the present, which would leave `base_rate_cents` supported by
+  nothing). Checked before the delete AND again after it against fresh rows,
+  restoring the row if the second check fails, because the first check alone
+  is check-then-act.
+- **The admin screen** is `RateHistorySection`, on the person's time page
+  beside Pay, with `/api/admin/crew-rates` behind `requireAdmin`. "Current"
+  resolves through `rateForDay` against a day supplied by the SERVER, so a
+  scheduled raise is badged "starts later" rather than "current" and the
+  server render cannot disagree with hydration.
+- **The backfill** seeded every person at their CURRENT rate from
+  `2000-01-01` — far past rather than each person's first shift, precisely so
+  row 507's imported history cannot land before anybody's first rate row.
+  Verified behaviour-preserving on prod: 33 closed shifts, 0 unresolvable,
+  0 whose value changed on the day it shipped.
+
+**Jason's own history was entered the same day** with his go, via
+`scripts/seed-jason-rate-history.ts` (newest-first, so the derived column
+never dips): $10.00 from the beginning, $13.00 from 12 Aug 2026, $16.00 from
+1 Sep 2026. Measured effect on his real unpaid hours: they are worth **$229.74**
+rather than the **$254.19** the single-rate maths showed, and that money now
+clears all 15h 53m instead of leaving **1h 32m** of real work unpaid.
+
+**Still not built, and still parked:** overtime has no formula here (row 285).
+This decides which hours a payment covered at each day's straight rate; the
+rate is stamped per line so a later overtime rule can find and re-judge these
+rows rather than inherit them silently.
