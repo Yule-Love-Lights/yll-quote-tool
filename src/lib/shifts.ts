@@ -403,8 +403,19 @@ export async function adminCreateShift(input: {
 
   // Gate at the WRITE, not just the dropdown (the repo's promoted pitfall,
   // caught recurring here by the PR #1062 admin lens): the target must be a
-  // real, ACTIVE, FIELD crew member. An office row would also be invisible on
-  // the review page afterward, which is what made this worth refusing.
+  // real, ACTIVE crew member. Office was refused here too, for a reason that
+  // has since EXPIRED: an office row created this way "would also be
+  // invisible on the review page afterward" — true when this guard was
+  // written, false since /admin/time-tracking/[crewMemberId] shipped (S60),
+  // which shows office shifts with the same edit/void controls and the same
+  // manual-write audit trail as field shifts. Ann (office) not clocking in on
+  // 2026-08-24 is what surfaced this: there was no way to record her hours at
+  // all. Lifting it here is enough — nothing downstream (the review page, the
+  // pay math, the audit trail) has ever branched on is_office. The one
+  // condition still worth refusing is INACTIVE, which is unrelated to
+  // visibility: it means the roster no longer carries this person, and typing
+  // payroll for someone off the roster is a mistake regardless of office or
+  // field.
   const { data: crewData, error: crewError } = await db
     .from('crew_members')
     .select('id, active, is_office')
@@ -412,10 +423,10 @@ export async function adminCreateShift(input: {
     .maybeSingle();
   if (crewError) throw new Error(`adminCreateShift: crew lookup: ${crewError.message}`);
   const crew = crewData as { id: string; active: boolean; is_office: boolean } | null;
-  if (!crew || !crew.active || crew.is_office) {
+  if (!crew || !crew.active) {
     throw new ManualShiftRefusedError(
       'not-field-crew',
-      'Manual shifts can only be created for active field crew.',
+      'Manual shifts can only be created for an active crew member.',
     );
   }
 

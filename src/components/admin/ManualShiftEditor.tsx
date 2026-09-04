@@ -3,10 +3,13 @@
 // Manual payroll entry (2026-08-29, Naldo's ruling): an admin reconstructs a
 // forgotten shift by reading the GPS timeline BESIDE this form and typing the
 // times. Nothing here reads GPS data — that separation is the point. The
-// server refuses overlaps, backwards times, office staffers, stale edits, and
-// a clock-out earlier than a running break, each with a plain reason. Every
-// save is stamped, logged to the activity trail, and the crew member gets a
-// Telegram note when their account is linked.
+// server refuses overlaps, backwards times, an inactive crew member, stale
+// edits, and a clock-out earlier than a running break, each with a plain
+// reason. (Office staffers were refused here too, until S61: the one-person
+// review page now shows office shifts exactly like field ones, so the reason
+// to refuse them expired.) Every save is stamped, logged to the activity
+// trail, and the crew member gets a Telegram note when their account is
+// linked.
 //
 // All times are ET regardless of the device's timezone (etClock), because
 // payroll means Eastern time even when an admin is traveling.
@@ -121,6 +124,99 @@ export function AddShiftForm({ crew, defaultDate }: { crew: CrewOption[]; defaul
       <p className="text-xs text-gray-400 mt-2">
         Times are Eastern. Read the GPS timeline on the right, then type the times. The entry is
         stamped with your name, logged, and the crew member gets a Telegram note when linked.
+      </p>
+      {error && <p className="text-xs text-red-700 mt-1">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * "Add a shift" on ONE person's own record — /admin/time-tracking/[id]. This
+ * is where an office shift gets typed in: this page's crew member is already
+ * chosen (it's the person the page is about), so there is no dropdown, and
+ * the times come as a date plus two clock faces rather than one combined
+ * datetime-local pair, because that is how an admin reading "Ann didn't
+ * clock in Monday" actually thinks about the gap — one day, a start, an end.
+ * Same confirm-then-POST shape as AddShiftForm above; same route, same
+ * refusals.
+ */
+export function AddPersonShiftForm({
+  crewMemberId,
+  crewName,
+  defaultDate,
+}: {
+  crewMemberId: string;
+  crewName: string;
+  defaultDate: string;
+}) {
+  const router = useRouter();
+  const [date, setDate] = useState(defaultDate);
+  const [startTime, setStartTime] = useState('07:00');
+  const [endTime, setEndTime] = useState('15:00');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (busy) return;
+    if (!date || !startTime || !endTime) {
+      setError('Pick a date and both times.');
+      return;
+    }
+    const clockInAt = etInputToIso(`${date}T${startTime}`);
+    const clockOutAt = etInputToIso(`${date}T${endTime}`);
+    if (!clockInAt || !clockOutAt) {
+      setError('Pick a date and both times.');
+      return;
+    }
+    if (!confirmSanity(clockInAt, clockOutAt)) return;
+    setBusy(true);
+    setError(null);
+    const res = await postManual({ crewMemberId, clockInAt, clockOutAt });
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    router.refresh();
+  }
+
+  return (
+    <div className="mt-4 rounded-lg border border-dashed border-gray-300 p-3 text-sm">
+      <p className="font-medium text-gray-900 mb-2">Add a shift for {crewName}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="rounded border border-gray-300 px-2 py-1"
+        />
+        <input
+          type="time"
+          value={startTime}
+          onChange={(e) => setStartTime(e.target.value)}
+          className="rounded border border-gray-300 px-2 py-1"
+        />
+        <span className="text-gray-400">to</span>
+        <input
+          type="time"
+          value={endTime}
+          onChange={(e) => setEndTime(e.target.value)}
+          className="rounded border border-gray-300 px-2 py-1"
+        />
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy}
+          className="rounded px-3 py-1 font-medium text-white disabled:opacity-50"
+          style={{ background: 'var(--brand-evergreen-3)' }}
+        >
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-400 mt-2">
+        Times are Eastern. Use this for a day nobody clocked in at all — a shift that started but
+        was never corrected has its own Edit control on the row above. The entry is stamped with
+        your name, logged, and {crewName} gets a Telegram note when linked.
       </p>
       {error && <p className="text-xs text-red-700 mt-1">{error}</p>}
     </div>

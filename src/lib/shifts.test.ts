@@ -676,16 +676,58 @@ describe('adminUpdateShiftTimes', () => {
     );
   });
 
-  it("refuses to create for an office staffer (not-field-crew) — gate at the WRITE, not the dropdown", async () => {
+  it('allows a manual shift for an OFFICE staffer — the review page shows office shifts now, so the reason this used to be refused no longer holds', async () => {
     stateRef.current.crewMembers.push({ id: 'crew-office', active: true, is_office: true, telegram_user_id: null });
+    const got = await adminCreateShift({
+      crewMemberId: 'crew-office',
+      clockInAt: '2026-08-10T11:00:00.000Z',
+      clockOutAt: '2026-08-10T13:00:00.000Z',
+      actor: 'Naldo',
+    });
+    expect(got.manualBy).toBe('Naldo');
+    expect(stateRef.current.inserted).toEqual([
+      {
+        crew_member_id: 'crew-office',
+        clock_in_at: '2026-08-10T11:00:00.000Z',
+        clock_out_at: '2026-08-10T13:00:00.000Z',
+        source: 'office',
+        close_source: 'office',
+        manual_by: 'Naldo',
+      },
+    ]);
+  });
+
+  it('refuses to create for an INACTIVE crew member (not-field-crew) — gate at the WRITE, not the dropdown', async () => {
+    stateRef.current.crewMembers.push({ id: 'crew-gone', active: false, is_office: false, telegram_user_id: null });
     await expectRefused(
       adminCreateShift({
-        crewMemberId: 'crew-office',
+        crewMemberId: 'crew-gone',
         clockInAt: '2026-08-10T11:00:00.000Z',
         clockOutAt: '2026-08-10T13:00:00.000Z',
         actor: 'Naldo',
       }),
       'not-field-crew',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('still refuses an overlap for an office staffer — the overlap check does not branch on is_office', async () => {
+    stateRef.current.crewMembers.push({ id: 'crew-office-2', active: true, is_office: true, telegram_user_id: null });
+    stateRef.current.rows.push({
+      ...CLOSED_SHIFT,
+      id: 'shift-office-existing',
+      crew_member_id: 'crew-office-2',
+      clock_in_at: '2026-08-10T10:00:00.000Z',
+      clock_out_at: '2026-08-10T12:00:00.000Z',
+    });
+    await expectRefused(
+      adminCreateShift({
+        crewMemberId: 'crew-office-2',
+        clockInAt: '2026-08-10T11:00:00.000Z',
+        clockOutAt: '2026-08-10T13:00:00.000Z',
+        actor: 'Naldo',
+      }),
+      'overlap',
     );
     expect(stateRef.current.inserted).toEqual([]);
   });

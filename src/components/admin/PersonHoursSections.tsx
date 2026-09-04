@@ -17,6 +17,7 @@
 import Link from 'next/link';
 
 import { HoursDayList, fmtTime, sourceLabel } from '@/components/time/HoursDayList';
+import { AddPersonShiftForm } from '@/components/admin/ManualShiftEditor';
 import { ShiftPayPanel, VoidSettlementButton, type PayableShift } from '@/components/admin/ShiftPayPanel';
 import { dollars, type PayableRemainder, type ShiftSettlement } from '@/lib/shiftSettlements';
 import { formatHours } from '@/lib/hoursSummary';
@@ -50,8 +51,10 @@ function evidenceHrefFor(isOffice: boolean, day: string): string | null {
 }
 
 export function PersonHoursSection({
+  crewMemberId,
   crewName,
   isOffice,
+  active,
   days,
   range,
   totalSeconds,
@@ -60,10 +63,16 @@ export function PersonHoursSection({
   openShift,
   errors,
   basePath,
+  todayEt,
 }: {
+  crewMemberId: string;
   crewName: string;
   /** Decides whether a midnight-closed shift can point at any evidence. */
   isOffice: boolean;
+  /** Hides the Add-a-shift form for someone off the roster: adminCreateShift
+   * refuses an inactive crew member regardless, and offering a form that
+   * always ends in that refusal is worse than not offering it. */
+  active: boolean;
   days: PersonDay[];
   range: RangeKey;
   totalSeconds: number;
@@ -73,6 +82,9 @@ export function PersonHoursSection({
   errors: string[];
   /** The page's own path, for the range links. */
   basePath: string;
+  /** The server's own ET day key, resolved once by the page so this section
+   * and the rate history below it cannot land on different days. */
+  todayEt: string;
 }) {
   return (
     <section className="mb-10">
@@ -144,6 +156,18 @@ export function PersonHoursSection({
           controls="admin"
           evidenceFor={(day) => evidenceHrefFor(isOffice, day)}
         />
+      )}
+
+      {/* For a day nobody clocked in at all — not a shift to correct, one
+          that never got typed. Used to be field crew only (adminCreateShift
+          refused an office row outright); lifted in S61 once this page gave
+          office shifts the same edit/void/audit trail field shifts already
+          had, which was the whole reason the office refusal existed. Hidden
+          for an inactive person: the server refuses that regardless, and a
+          form that can only ever come back with a refusal is worse than no
+          form. */}
+      {active && (
+        <AddPersonShiftForm crewMemberId={crewMemberId} crewName={crewName} defaultDate={todayEt} />
       )}
     </section>
   );

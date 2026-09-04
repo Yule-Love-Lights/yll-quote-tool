@@ -30,10 +30,11 @@
 //    person's own page (phase 2), which serves office and field alike; the
 //    two clocks page also corrects FIELD shifts beside the GPS timeline
 //    (fleetDay.ts lists field shifts only). adminUpdateShiftTimes and
-//    adminVoidShift carry no is_office condition and never did, which is why
-//    the person page needed no guard change; adminCreateShift DOES refuse
-//    office rows by name, so adding an office shift from nothing is still
-//    impossible and is a decision of its own.
+//    adminVoidShift carry no is_office condition and never did.
+//    adminCreateShift USED TO refuse office rows by name, so adding an office
+//    shift from nothing was impossible anywhere in the app; lifted S61 once
+//    the person page gave office shifts the same edit/void/audit trail field
+//    shifts already had, which was the whole reason the refusal existed.
 //  - A shift whose crew id matches no staff row is NOT dropped: it renders
 //    under '(unknown)'. Hiding a payroll row behind a failed lookup is the
 //    silent-empty class this repo keeps getting bitten by (fleetDay.ts has the
