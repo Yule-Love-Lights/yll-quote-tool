@@ -249,8 +249,8 @@ function makeDb() {
         },
         update: (payload: Record<string, unknown>) => {
           stateRef.current.updated.push(payload);
-          // Accumulate every chained .eq() filter, so both the single-filter
-          // update (updateCrewMember: .eq('id')) and the by-construction office
+          // Accumulate every chained .eq() filter, so both a single-filter
+          // update (.eq('id')) and the by-construction office
           // guard (setOfficeStaffActive: .eq('id').eq('is_office', true)) resolve
           // against the SAME code path. The write only happens at maybeSingle().
           const filters: Array<[keyof Row, unknown]> = [];
@@ -356,7 +356,6 @@ import {
   getStaffMember,
   StaffHasRecordsError,
   TelegramUserIdTakenError,
-  updateCrewMember,
 } from './crewMembers';
 
 describe('getCrewMember', () => {
@@ -587,120 +586,6 @@ describe('insertCrewMember', () => {
   });
 });
 
-describe('updateCrewMember', () => {
-  it('rejects a Telegram id that already belongs to another crew member, with a NAMED error', async () => {
-    // CREW_1 (SonSon) already holds '111'. Giving it to crew-2 must not silently
-    // succeed, and must not surface as a generic write failure — the office needs
-    // to know it is a conflict they can resolve.
-    await expect(updateCrewMember('crew-2', { telegramUserId: '111' })).rejects.toBeInstanceOf(
-      TelegramUserIdTakenError,
-    );
-    await expect(updateCrewMember('crew-2', { telegramUserId: '111' })).rejects.toThrow(
-      'Telegram account 111 is already linked to another crew member',
-    );
-  });
-
-  it('links a free Telegram id, and unlinks with null', async () => {
-    await expect(updateCrewMember('crew-2', { telegramUserId: '999' })).resolves.toMatchObject({
-      id: 'crew-2',
-      telegramUserId: '999',
-    });
-    await expect(updateCrewMember('crew-2', { telegramUserId: null })).resolves.toMatchObject({
-      id: 'crew-2',
-      telegramUserId: null,
-    });
-  });
-
-  it('does NOT treat a re-link of the SAME id on the SAME row as a collision', async () => {
-    // The partial index is on the column, so a no-op write of a row's own value
-    // must not be mistaken for someone else's claim.
-    await expect(updateCrewMember('crew-1', { telegramUserId: '111' })).resolves.toMatchObject({
-      id: 'crew-1',
-      telegramUserId: '111',
-    });
-  });
-
-  it('throws when Supabase is not configured', async () => {
-    dbRef.current = null;
-    await expect(
-      updateCrewMember('crew-2', {
-        telegramUserId: ' 333 ',
-        displayName: ' Little James ',
-        baseRateCents: 1700,
-        inP4pPool: true,
-        payMode: 'shadow',
-        language: 'en',
-        active: true,
-      }),
-    ).rejects.toThrow('Supabase service role not configured');
-  });
-
-  it('updates one existing row and returns the mapped result', async () => {
-    await expect(
-      updateCrewMember('crew-2', {
-        hubEmployeeId: null,
-        telegramUserId: ' 333 ',
-        displayName: ' Little James ',
-        baseRateCents: 1700,
-        inP4pPool: true,
-        payMode: 'shadow',
-        language: 'en',
-        active: true,
-      }),
-    ).resolves.toEqual({
-      id: 'crew-2',
-      hubEmployeeId: null,
-      telegramUserId: '333',
-      sessionEpoch: null,
-      displayName: 'Little James',
-      baseRateCents: 1700,
-      inP4pPool: true,
-      payMode: 'shadow',
-      language: 'en',
-      active: true,
-      createdAt: '2026-08-07T00:00:00.000Z',
-      updatedAt: '2026-08-07T00:00:00.000Z',
-    });
-
-    // The mock merges the JS payload into the seed row; this proves field mapping, not Postgres partial-update semantics.
-    expect(stateRef.current.updated).toEqual([
-      {
-        hub_employee_id: null,
-        telegram_user_id: '333',
-        display_name: 'Little James',
-        base_rate_cents: 1700,
-        in_p4p_pool: true,
-        pay_mode: 'shadow',
-        language: 'en',
-        active: true,
-      },
-    ]);
-  });
-
-  it('throws clearly when the target id does not exist', async () => {
-    await expect(
-      updateCrewMember('missing-id', {
-        displayName: 'Missing',
-      }),
-    ).rejects.toThrow('updateCrewMember: no row found for id missing-id');
-  });
-
-  it('rejects a rename to another crew member\'s name with a clear conflict error, never returning their row (S57 fix)', async () => {
-    // Unlike insertCrewMember's race (recover the SAME person's winning row),
-    // a rename collision here is a genuine conflict between two DIFFERENT
-    // people — CREW_1 ("SonSon") tries to rename to CREW_2's ("Big James")
-    // name. Silently "recovering" by returning CREW_2's row would hand back
-    // someone else's pay data as if it were this update's result; the only
-    // safe behavior is a clear, specific rejection.
-    await expect(updateCrewMember('crew-1', { displayName: 'Big James' })).rejects.toThrow(
-      'updateCrewMember: display name "Big James" is already in use by another crew member',
-    );
-
-    // Nothing was mutated by the rejected attempt.
-    const untouched = stateRef.current.rows.find((row) => row.id === 'crew-1');
-    expect(untouched?.display_name).toBe('SonSon');
-  });
-});
 
 describe('listAllStaff', () => {
   it('returns [] when Supabase is not configured', async () => {
@@ -880,7 +765,8 @@ describe('setStaffType', () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
     const member = await setStaffType('crew-1', true);
     expect(member?.isOffice).toBe(true);
-    // listActiveFieldCrew is the flag's only functional reader, so the point of
+    // listActiveFieldCrew is one of the flag's two functional readers (the other
+    // is assignCrewToJob in scheduling.ts, the server-side backstop), so the point of
     // the move is that they stop appearing there.
     const field = await listActiveFieldCrew();
     expect(field?.map((c) => c.id)).not.toContain('crew-1');

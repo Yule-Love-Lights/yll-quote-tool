@@ -12,6 +12,7 @@ import {
   legacyRebookConfirmMessage,
   nceConfirmMessage,
   contactRelinkConfirmMessage,
+  clearAllLinesConfirmMessage,
   clearContactConfirmMessage,
   initialNceDepositProvenance,
   shouldClaimNceDepositProvenance,
@@ -877,6 +878,31 @@ describe('contactRelinkConfirmMessage (#251 builder contact-pick confirm)', () =
 // #839 fix-round (BYPASS 3): clearContactConfirmMessage is the copy behind
 // clearHighLevelContact's new window.confirm — the Clear/"Change" button
 // fired POST .../attach {detach:true} with zero server-side guard.
+// Row 443: the roofline "Clear all" buttons destroyed a trace on one click
+// with no confirm and no undo. These pin the copy, because the message is the
+// whole guard: it has to name the second consequence (billed footage is
+// recomputed over a hand-typed figure), which is the part staff do not expect.
+describe('clearAllLinesConfirmMessage (row 443 Clear-all confirm)', () => {
+  it('names the section and how many lines are about to go', () => {
+    const msg = clearAllLinesConfirmMessage('Front Gutterline', 4);
+    expect(msg).toContain('Front Gutterline');
+    expect(msg).toContain('all 4 traced lines');
+  });
+
+  it('reads as singular for a single line rather than "all 1 traced lines"', () => {
+    const msg = clearAllLinesConfirmMessage('Ridge + Sides', 1);
+    expect(msg).toContain('1 traced line');
+    expect(msg).not.toContain('all 1');
+    expect(msg).not.toContain('traced lines');
+  });
+
+  it('warns that hand-typed footage is overwritten, the consequence staff do not expect', () => {
+    const msg = clearAllLinesConfirmMessage('Front Gutterline', 3);
+    expect(msg).toMatch(/typed by hand/);
+    expect(msg).toMatch(/cannot be undone/);
+  });
+});
+
 describe('clearContactConfirmMessage (#839 builder Clear-contact confirm)', () => {
   it('returns null pre-approval (an everyday draft/sent correction needs no prompt)', () => {
     expect(clearContactConfirmMessage(false)).toBeNull();
