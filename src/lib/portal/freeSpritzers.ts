@@ -23,16 +23,8 @@
 //
 // Nothing here touches money. It reads labels and returns a count for display.
 
-/** How near the word "free" has to sit to a spritzer word for the label to
- *  count as promising free spritzers. Wide enough for "Spritzers - 6 Free For
- *  Staying With Us!" (12 characters apart), tight enough that an unrelated
- *  "for free this year" elsewhere in a long package label does not attach
- *  itself to a paid spritzer line mentioned further along. */
-const PROXIMITY_CHARS = 40;
-
-/** "spritzer" plus the transposed spelling that exists in live data. */
-const SPRITZER_RE = /spr[it]{2}zers?/gi;
-const FREE_RE = /\bfree\b/gi;
+// "spritzer" is matched as `spr[it]{2}zers?` throughout, which also accepts the
+// "sprtizer" transposition that is live on quote #1146.
 
 /** Nobody has ever been given more than 8, and the largest quote in the live
  *  data promises 10 across two addresses. A parsed number above this is not a
@@ -45,8 +37,21 @@ const MAX_PLAUSIBLE_COUNT = 24;
  *  would otherwise report no number at all for a value the code knows exactly. */
 const SIZE = '(?:\\d{1,2}\\s*(?:["”″]|\\s*inch(?:es)?\\b)\\s*)?';
 
-/** The shapes staff actually write: "6 FREE Spritzers!", "FREE Spritzers x4",
- *  and the referral line's `2 Free 16" Spritzers`.
+/** Only a short, quiet separator may sit between the word "spritzers" and a
+ *  count that FOLLOWS it. Keeping digits and the multiplication sign out of it
+ *  is what stops `16" LED Spritzers ×2 · 2 FREE Spritzers!` from reading the
+ *  PAID quantity as the gift. */
+const GAP = '[\\s\\-–—·,:]{0,3}';
+
+/** The three shapes staff actually write:
+ *    "6 FREE Spritzers!"                     the common one
+ *    "FREE Spritzers x4"                     count after, with a multiplier
+ *    `2 Free 16" Spritzers (referral)`       our own referral line
+ *    "Spritzers - 6 Free For Staying With Us!"  count after, no multiplier
+ *
+ *  That last shape is quote #1123, the only live label whose number could not
+ *  be read. It says the number AFTER the item and BEFORE the word free, which
+ *  neither of the first two patterns can reach.
  *
  *  The leading `(?:^|[^\d"”″x×])` is load-bearing and is NOT a lookbehind on
  *  purpose: Safari below 16.4 throws on a lookbehind at regex COMPILE time,
@@ -54,11 +59,38 @@ const SIZE = '(?:\\d{1,2}\\s*(?:["”″]|\\s*inch(?:es)?\\b)\\s*)?';
  *  than degrade. It rejects a number that belongs to something else:
  *    `24" Noble Wreath ×2 Free Spritzers!`  → the 2 is the WREATH's quantity
  *    `October 2026 Free Spritzers Promo`    → 2026 is a year
- *  Both were found by review against real label shapes; both now read as a
- *  promise with no stated number instead of a wrong number. */
+ *  Both were found by review against real label shapes; both read as a promise
+ *  with no stated number instead of a wrong number. */
+/** What may follow the word "free" in the third shape, where the gift noun is
+ *  NOT restated. Everything here reads as the start of a REASON ("6 Free For
+ *  Staying With Us!") or the end of the phrase ("6 Free!"), never as a
+ *  different product.
+ *
+ *  This allowlist is the fix for a real defect the PR #1197 customer lens
+ *  found: with a bare `\b` here, `16" LED Spritzers, 2 Free Wreaths Included`
+ *  read the free WREATHS as two free spritzers. It fails CLOSED — an unfamiliar
+ *  tail yields no number rather than someone else's number. Lookahead, not
+ *  lookbehind, so no Safari compile hazard (see COUNTED_RE below). */
+const REASON_TAIL = `(?=\\s*(?:for|this|with|as|to|on)\\b|\\s*[!.,;:·)]|\\s*$)`;
+
 const COUNTED_RE = new RegExp(
   `(?:^|[^\\d"”″x×])(\\d{1,2})\\s*free\\s+${SIZE}spr[it]{2}zers?` +
-    `|free\\s+${SIZE}spr[it]{2}zers?\\s*[x×]\\s*(\\d{1,2})`,
+    `|free\\s+${SIZE}spr[it]{2}zers?\\s*[x×]\\s*(\\d{1,2})` +
+    `|spr[it]{2}zers?${GAP}(\\d{1,2})\\s*free\\b${REASON_TAIL}`,
+  'gi',
+);
+
+/** Does this label promise free spritzers AT ALL?
+ *
+ *  Association, not proximity. The first version of this module asked only
+ *  whether the word "free" appeared within 40 characters of a spritzer word,
+ *  which reads `16" LED Spritzers, 2 Free Wreaths Included` as a spritzer gift
+ *  — a promise the customer was never given, on a label about wreaths. The
+ *  words now have to actually be about each other: either "free" is followed
+ *  by the spritzers themselves, or the third shape above matched, which carries
+ *  its own reason-tail guard. */
+const PRESENT_RE = new RegExp(
+  `free\\s+${SIZE}spr[it]{2}zers?` + `|spr[it]{2}zers?${GAP}\\d{1,2}\\s*free\\b${REASON_TAIL}`,
   'gi',
 );
 
@@ -72,30 +104,21 @@ export type FreeSpritzerSummary = {
 
 const NONE: FreeSpritzerSummary = { present: false, count: null };
 
-function matchPositions(label: string, re: RegExp): number[] {
-  // matchAll requires a global regex and does not mutate shared lastIndex
-  // state the way a manual scan does, so these module-level regexes stay safe
-  // to reuse across calls.
-  return Array.from(label.matchAll(re), (m) => m.index ?? 0);
-}
-
-/** Does this label promise free spritzers at all? Proximity-based rather than
- *  "contains both words", so a label that happens to mention something else
- *  being free does not turn a paid spritzer line into a gift. */
+/** Does this label promise free spritzers at all? See PRESENT_RE: the two words
+ *  have to be about each other, not merely near each other. */
 export function labelPromisesFreeSpritzers(label: string): boolean {
   if (typeof label !== 'string' || label.length === 0) return false;
-  const spritzers = matchPositions(label, SPRITZER_RE);
-  if (spritzers.length === 0) return false;
-  const frees = matchPositions(label, FREE_RE);
-  if (frees.length === 0) return false;
-  return spritzers.some((s) => frees.some((f) => Math.abs(s - f) <= PROXIMITY_CHARS));
+  // matchAll requires a global regex and does not mutate shared lastIndex state
+  // the way a manual scan does, so this module-level regex is safe to reuse.
+  for (const _ of label.matchAll(PRESENT_RE)) return true;
+  return false;
 }
 
 /** The stated count in one label, or null when it promises without a number. */
 function countInLabel(label: string): number | null {
   let total: number | null = null;
   for (const m of label.matchAll(COUNTED_RE)) {
-    const raw = m[1] ?? m[2];
+    const raw = m[1] ?? m[2] ?? m[3];
     const n = Number.parseInt(raw, 10);
     // A stated zero is staff writing something odd, not a promise of nothing,
     // and an implausible number is the pattern having reached across into some
@@ -150,7 +173,15 @@ export function summarizeFreeSpritzers(labels: readonly string[]): FreeSpritzerS
 export function summarizeSelectedFreeSpritzers(
   lineItems: readonly { id: string; label: string }[],
   selectedItemIds: ReadonlySet<string>,
+  options?: {
+    /** Staff switch (inputs.suppressFreeSpritzerNotice, set from the admin
+     *  quote page): the customer is told nothing about free spritzers on this
+     *  quote, whatever the labels say. Checked FIRST and unconditionally,
+     *  because its whole job is to override a reading staff believe is wrong. */
+    suppressed?: boolean;
+  },
 ): FreeSpritzerSummary {
+  if (options?.suppressed) return NONE;
   if (!Array.isArray(lineItems) || lineItems.length === 0) return NONE;
   return summarizeFreeSpritzers(
     lineItems.filter((li) => selectedItemIds.has(li.id)).map((li) => li.label),

@@ -66,15 +66,31 @@ describe('summarizeFreeSpritzers — the shape prod actually uses', () => {
 });
 
 describe('summarizeFreeSpritzers — refusing to invent a number', () => {
-  it('reports the promise with no count when the number sits before the word free (quote 1123)', () => {
-    // "6 Free For Staying With Us!" states a number the patterns cannot safely
-    // attach to the spritzers, so the portal says free spritzers are included
-    // and states no figure.
+  it('reads the count when the number sits after the item and before the word free (quote 1123)', () => {
+    // "32” LED Spritzers - 6 Free For Staying With Us!" — the only live label
+    // whose number the first two patterns could not reach. Note the SAME label
+    // also charges for 5 spritzers ("×5"), which must not be added to the gift.
     expect(
       summarizeFreeSpritzers([
         '32” LED Spritzers ×5 · 32” LED Spritzers - 6 Free For Staying With Us! · Santa\'s Roofline Display Package · Front Trees · Tree',
       ]),
-    ).toEqual({ present: true, count: null });
+    ).toEqual({ present: true, count: 6 });
+  });
+
+  it('still refuses to guess when a promise carries no number at all', () => {
+    expect(summarizeFreeSpritzers(['Free Spritzers, our gift to you'])).toEqual({
+      present: true,
+      count: null,
+    });
+  });
+
+  it('does not read a PAID spritzer quantity as the gift when both appear', () => {
+    // The ×2 belongs to the charged spritzers; only the "2 FREE Spritzers" counts.
+    expect(
+      summarizeFreeSpritzers([
+        'Santa\'s Roofline Display Package · Bushes · 16" LED Spritzers ×2 · 2 FREE Spritzers!',
+      ]),
+    ).toEqual({ present: true, count: 2 });
   });
 
   it('treats a stated zero as unreadable rather than announcing zero free spritzers', () => {
@@ -115,6 +131,43 @@ describe('summarizeFreeSpritzers — numbers that belong to something else', () 
 
   it('reads a spelled-out size too', () => {
     expect(summarizeFreeSpritzers(['2 Free 16 inch Spritzers'])).toEqual({ present: true, count: 2 });
+  });
+});
+
+describe('summarizeFreeSpritzers — a gift that is NOT spritzers', () => {
+  // Found by the PR #1197 customer lens. Before this, "free" merely appearing
+  // near "spritzer" was enough, so a label about free WREATHS promised free
+  // spritzers, and once the third shape landed it even stated the wreaths'
+  // number as a spritzer count.
+
+  it('does not read free wreaths as free spritzers', () => {
+    expect(summarizeFreeSpritzers(['16" LED Spritzers, 2 Free Wreaths Included'])).toEqual({
+      present: false,
+      count: null,
+    });
+  });
+
+  it('counts only the spritzers when a label gives away wreaths AND spritzers', () => {
+    expect(
+      summarizeFreeSpritzers(['16" LED Spritzers, 2 Free Wreaths Included · 4 FREE Spritzers!']),
+    ).toEqual({ present: true, count: 4 });
+  });
+
+  it('still reads the reason-style promise it was added for', () => {
+    expect(summarizeFreeSpritzers(['Spritzers - 6 Free!'])).toEqual({ present: true, count: 6 });
+    expect(summarizeFreeSpritzers(['Spritzers - 6 Free For Staying With Us!'])).toEqual({
+      present: true,
+      count: 6,
+    });
+  });
+
+  it('fails closed on an unfamiliar tail rather than claiming someone else’s number', () => {
+    // "2 Free Garland" is not a spritzer promise, and the module says nothing
+    // rather than guessing.
+    expect(summarizeFreeSpritzers(['24" Spritzers, 2 Free Garland Runs'])).toEqual({
+      present: false,
+      count: null,
+    });
   });
 });
 
@@ -202,6 +255,21 @@ describe('summarizeSelectedFreeSpritzers — the promise follows the selection',
 
   it('handles an empty item list', () => {
     expect(summarizeSelectedFreeSpritzers([], new Set(['a']))).toEqual({ present: false, count: null });
+  });
+
+  it('says nothing at all when staff have switched the notice off', () => {
+    expect(summarizeSelectedFreeSpritzers(items, new Set(['a', 'b']), { suppressed: true })).toEqual({
+      present: false,
+      count: null,
+    });
+  });
+
+  it('still reads normally when the switch is off or absent', () => {
+    expect(summarizeSelectedFreeSpritzers(items, new Set(['a']), { suppressed: false })).toEqual({
+      present: true,
+      count: 6,
+    });
+    expect(summarizeSelectedFreeSpritzers(items, new Set(['a']), {})).toEqual({ present: true, count: 6 });
   });
 });
 

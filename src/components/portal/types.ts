@@ -418,6 +418,11 @@ export type PortalQuote = {
   // Optional/default false, matching isTest above — every other quote is
   // unaffected.
   legacyRebook?: boolean;
+  // Staff switch: true ⇒ this quote shows NO free-spritzer thank you, whatever
+  // its line-item labels say. Set from the admin quote page when the parsed
+  // promise is wrong or has been withdrawn (POST /api/quotes/[id]/spritzer-
+  // notice). Optional/default false — every other quote is unaffected.
+  suppressFreeSpritzerNotice?: boolean;
   // View-only portal (#176): true ⇒ a staff-flagged browse-only quote — the
   // scene/colours/prices stay fully live, but the sticky bar shows a neutral
   // "just browsing" strip instead of approve/pay/decline/request-changes, and

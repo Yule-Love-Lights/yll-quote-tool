@@ -409,7 +409,7 @@ export default async function PortalPage({
   // or mock data) gets the neutral wording, which is true for everyone.
   const currentYear = new Date().getUTCFullYear();
   const isReturningCustomer =
-    anyLabelPromisesSpritzers && quote.customerId
+    anyLabelPromisesSpritzers && !quote.suppressFreeSpritzerNotice && quote.customerId
       ? (await getCustomerTenure(quote.customerId, null, new Date())).years.some((y) => y < currentYear)
       : false;
 
@@ -459,6 +459,7 @@ export default async function PortalPage({
         // so this only ever comes from a saved browsing pick.
         initialPermanentEffect={quote.browsingSelection?.permanentEffect}
         legacyRebook={quote.legacyRebook === true}
+        suppressFreeSpritzerNotice={quote.suppressFreeSpritzerNotice === true}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={
           quote.serviceType === 'permanent' ||

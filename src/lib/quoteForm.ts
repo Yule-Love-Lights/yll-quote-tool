@@ -70,6 +70,14 @@ export type QuoteFormData = {
   // Staff override (#59): waive the $1,000 portal approval gate for this quote
   // (lets the customer approve a selection under $1,000). Rides the inputs jsonb.
   waiveMinimum: boolean;
+  // Staff switch: hide the portal's free-spritzer thank you on this quote,
+  // whatever the line-item labels say (set from the admin quote page, POST
+  // /api/quotes/[id]/spritzer-notice). Carried here for the SAME reason
+  // waiveMinimum is: buildQuoteInputs below rebuilds the inputs jsonb from
+  // this form and REPLACES the stored object, so a flag the form does not
+  // carry is silently dropped by the next Calculate. There is no builder
+  // control for it — the field exists purely so the round trip preserves it.
+  suppressFreeSpritzerNotice: boolean;
   // Per-quote deposit override (#177): staff-set integer percent (1-100) of the
   // total, due at approval. 0 = blank/unset (the input's placeholder shows 50);
   // only sent to the engine when > 0 (see buildQuoteInputs). Rides inputs jsonb.
@@ -162,6 +170,7 @@ export const initialFormData: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 0,
   waiveMinimum: false,
+  suppressFreeSpritzerNotice: false,
   depositPercent: 0,
   installTiming: 'none',
   lineItemPriceOverrides: {},
@@ -816,6 +825,9 @@ export function buildQuoteInputs(
     rushFee: form.rushFee,
     // Only stored when set (#59) — absent in the inputs jsonb means not waived.
     ...(form.waiveMinimum ? { waiveMinimum: true } : {}),
+    // Only stored when set, same as waiveMinimum above — absent means the
+    // notice shows normally.
+    ...(form.suppressFreeSpritzerNotice ? { suppressFreeSpritzerNotice: true } : {}),
     // #177: only sent when set (blank/0 = use the BUSINESS_RULES default);
     // full 1-100-integer enforcement happens server-side (never trust the client).
     ...(form.depositPercent > 0 ? { depositPercent: form.depositPercent } : {}),
@@ -955,6 +967,7 @@ export function inputsToFormData(
     discountAmount:
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
     waiveMinimum: i.waiveMinimum ?? false,
+    suppressFreeSpritzerNotice: i.suppressFreeSpritzerNotice ?? false,
     depositPercent: i.depositPercent ?? 0,
     installTiming: effectiveInstallTiming,
     // #104: hydrate the per-quote overrides map (legacy quotes → {}).

@@ -358,6 +358,9 @@ export function resolveInitialColorState(
 export type SelectionProviderProps = {
   packages: PortalPackage[];
   lineItems: PortalLineItem[];
+  /** Staff switch: true ⇒ no free-spritzer thank you on this quote, whatever
+   *  the labels say. See POST /api/quotes/[id]/spritzer-notice. */
+  suppressFreeSpritzerNotice?: boolean;
   // The mutually-exclusive roofline group (#17 Phase 2): the line-item ids for
   // Santa's + Gingerbread. Selecting one deselects the other. Undefined for
   // legacy quotes (the single roofline is then a plain toggle).
@@ -431,6 +434,7 @@ export type SelectionProviderProps = {
 export function SelectionProvider({
   packages,
   lineItems,
+  suppressFreeSpritzerNotice = false,
   roofline,
   charges,
   minimumOrderSubtotal,
@@ -616,8 +620,11 @@ export function SelectionProvider({
   // they actually approved. Found by the PR #1192 admin lens; 4 live quotes
   // could reach it, and every future multi-item quote could.
   const freeSpritzers = useMemo(
-    () => summarizeSelectedFreeSpritzers(lineItems, selectedItemIds),
-    [lineItems, selectedItemIds],
+    () =>
+      summarizeSelectedFreeSpritzers(lineItems, selectedItemIds, {
+        suppressed: suppressFreeSpritzerNotice,
+      }),
+    [lineItems, selectedItemIds, suppressFreeSpritzerNotice],
   );
 
   // Price EVERY selection (tier or custom) from the actual selected items via

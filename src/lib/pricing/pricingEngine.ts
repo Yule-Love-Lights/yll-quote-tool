@@ -297,6 +297,18 @@ export interface QuoteInputs {
    *  under $1,000 even on a quote whose items total ≥ $1,000. NOT a pricing
    *  input — the engine ignores it; it rides the stored `inputs` jsonb. */
   waiveMinimum?: boolean;
+  /** Staff override: when true, the portal shows NO free-spritzer thank you on
+   *  this quote, whatever the line-item labels say. Same shape and reasoning as
+   *  waiveMinimum above — NOT a pricing input, the engine ignores it, it rides
+   *  the stored `inputs` jsonb.
+   *
+   *  It exists because the count is read out of staff free text (see
+   *  src/lib/portal/freeSpritzers.ts), and free text can be wrong in ways no
+   *  parser should try to guess at: a promise withdrawn after the label was
+   *  typed, a phrasing that means something else, a gift already handled
+   *  another way. Staff need a way to say "not on this one" that does not
+   *  require rewriting a label the customer may have already read. */
+  suppressFreeSpritzerNotice?: boolean;
   // Early-install promo (#40). When 'september'/'october', a percentage discount
   // (BUSINESS_RULES.earlyInstallDiscounts) comes off the item subtotal and the
   // rush-install fee is suppressed (mutually exclusive). Absent/'none' = no promo.
