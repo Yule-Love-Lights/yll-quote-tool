@@ -92,3 +92,48 @@ describe('crewDayDigestMessage', () => {
     expect(msg).toMatch(/may be incomplete/i);
   });
 });
+
+// Staff lens, PR #1212: grouping by job costs a crew member the ability to find
+// their own name fast, and with crew logins retired this message is how they
+// check their day. The index answers "which are mine" without undoing the
+// per-job blocks Naldo asked for.
+describe('the who-has-what index', () => {
+  const j = (n: number, crew: string[]): CrewDayJob => ({
+    jobNumber: n,
+    customerName: null,
+    address: 'somewhere',
+    status: null,
+    crew,
+  });
+
+  it('stays out of the way on a single-job day', () => {
+    const msg = crewDayDigestMessage('2026-09-04', [j(1069, ['Naldo', 'SonSon'])]);
+    expect(msg).not.toMatch(/Naldo: #/);
+  });
+
+  it('lists each person and their jobs once there is more than one', () => {
+    const msg = crewDayDigestMessage('2026-09-04', [
+      j(1069, ['Naldo', 'SonSon']),
+      j(1082, ['Naldo']),
+    ]);
+    expect(msg).toContain('Naldo: #1069, #1082');
+    expect(msg).toContain('SonSon: #1069');
+  });
+
+  it('puts the index above the job blocks, where it is read first', () => {
+    const msg = crewDayDigestMessage('2026-09-04', [j(1069, ['Naldo']), j(1082, ['Naldo'])]);
+    expect(msg.indexOf('Naldo: #1069')).toBeLessThan(msg.indexOf('#1069 somewhere'));
+  });
+
+  it('names people in the same order every morning', () => {
+    const msg = crewDayDigestMessage('2026-09-04', [j(1069, ['SonSon', 'Little James']), j(1082, ['Naldo'])]);
+    const order = ['Little James:', 'Naldo:', 'SonSon:'].map((n) => msg.indexOf(n));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it('leaves an unassigned job out of the index rather than inventing a person', () => {
+    const msg = crewDayDigestMessage('2026-09-04', [j(1069, []), j(1082, ['Naldo'])]);
+    expect(msg).toContain('Naldo: #1082');
+    expect(msg).toMatch(/[Nn]obody assigned/);
+  });
+});

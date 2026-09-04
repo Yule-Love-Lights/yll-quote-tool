@@ -54,10 +54,32 @@ function headline(job: CrewDayJob): string {
   const flag =
     job.status && CALLED_OFF.has(job.status)
       ? job.status === 'cancelled'
-        ? '  <- CANCELLED, do not go'
-        : '  <- already finished, do not go'
+        ? '  ← CANCELLED, do not go'
+        : '  ← already finished, do not go'
       : '';
   return `${number} ${where}${flag}`;
+}
+
+/**
+ * "Naldo: #1069, #1082" per person, so a crew member can find their own day
+ * without reading every block (staff lens, PR #1212). With crew logins retired,
+ * this message is how they check their day, so scanning matters.
+ *
+ * Only earns its place once there is more than one job: on a one-job day it
+ * would repeat what the single block already says.
+ */
+function whoHasWhat(jobs: CrewDayJob[]): string[] {
+  if (jobs.length < 2) return [];
+  const byPerson = new Map<string, string[]>();
+  for (const job of jobs) {
+    const label = job.jobNumber === null ? 'a job with no number' : `#${job.jobNumber}`;
+    for (const person of job.crew) {
+      byPerson.set(person, [...(byPerson.get(person) ?? []), label]);
+    }
+  }
+  return [...byPerson.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([person, labels]) => `${person}: ${labels.join(', ')}`);
 }
 
 /** Characters the message holds so far, newlines included. */
@@ -96,6 +118,8 @@ export function crewDayDigestMessage(
   const budget = MAX_CHARS - warning.length - FOOTER_RESERVE;
 
   const lines: string[] = [header];
+  const index = whoHasWhat(jobs);
+  if (index.length) lines.push('', ...index);
   let dropped = 0;
 
   for (const job of jobs) {
@@ -109,7 +133,7 @@ export function crewDayDigestMessage(
     lines.push('', ...block);
   }
 
-  if (dropped) lines.push('', `...and ${dropped} more not shown.`);
+  if (dropped) lines.push('', `…and ${dropped} more not shown.`);
 
   return lines.join('\n') + warning;
 }
