@@ -73,3 +73,9 @@ video-transcripts/
 
 # backfill script output — real customer addresses (PII), local only
 scripts/backfill-output/
+
+# Recovery artifacts from scripts/import-timesheet.ts (ledger row 507). These
+# hold real payroll rows that were deleted, so they must never be committed:
+# they are a recovery copy for a person, not source.
+timesheet-import-deleted-shifts.json
+timesheet*.json

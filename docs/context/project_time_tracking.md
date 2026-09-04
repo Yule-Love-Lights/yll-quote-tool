@@ -718,3 +718,64 @@ clears all 15h 53m instead of leaving **1h 32m** of real work unpaid.
 This decides which hours a payment covered at each day's straight rate; the
 rate is stamped per line so a later overtime rule can find and re-judge these
 rows rather than inherit them silently.
+
+# 21. The spreadsheet import (S61, 2026-09-04, PR #1215) — DONE
+
+§19 guessed at the file from a screenshot. The real one is BIGGER, and this
+records what it actually contained.
+
+- **143 dated rows, back to Jan 2026** (plus one stray 8-minute row from Oct
+  2024), not the Jul–Sept window the screenshot suggested. 801h 22m in total.
+- **The colours decoded exactly as §19 said**, which is the part worth having
+  been careful about: green fill on Hours = paid (95 rows), no fill = owed
+  (48), yellow on the Date = a rate boundary (2).
+- **The two yellow days are 12 Aug and 1 Sep 2026** — the same boundaries Jason
+  gave from memory for row 506. Two independent records of one fact agreeing;
+  the import ASSERTS it rather than assuming it.
+- **Ordering was worth $1,643.44.** The unpaid hours come to $4,102.03 at his
+  real rates and would have read $5,745.45 at a flat $16.00.
+
+Answers to §19's five open questions, as built:
+
+1. **`source`** is `office` with `manual_by` = `imported from Time Tracker.xlsx
+   (row 507)`. The CHECK constraint allows only pwa/telegram/office/system and
+   widening it for one migration was not worth a schema change. The stamp is
+   also what `--undo` finds the imported rows by.
+2. **`is_test`** — no. They are real hours; that was always the point.
+3. **"Already paid"** is ONE settlement of $4,422.95 dated 2026-07-06, the last
+   paid day, method `other`, with a note saying the amount is DERIVED from the
+   hours at the rates in force and that the sheet records neither an amount nor
+   a method. It claims nothing it does not know.
+   Its lines are written BY NAME rather than through the amount-driven
+   allocator — a deliberate divergence. The sheet's fact is *these 95 days were
+   paid*; forcing it through an allocator invents a boundary the source data
+   has no opinion about. Measured before writing, it overshot by 6 cent-seconds
+   and would have marked 6 seconds of 7 July, a genuinely unpaid day, as paid.
+4. **Idempotent and undoable.** It refuses outright if imported rows already
+   exist rather than merging, and `--live --undo` removes both the shifts and
+   the settlement it created.
+5. **It ran after §17**, and refuses to run at all without a rate history.
+
+**The 3 shifts already in the tool were deleted first.** Jason ruled them test
+data (2026-09-04): "all my hours on the quote tool so far are from testing...
+From tomorrow I'll start using the quote tool as the source of truth." They
+overlapped the sheet, and 1 Sep disagreed with it by 23 minutes, so leaving
+them would have double-counted. Every deleted row was written to a JSON file
+BEFORE the deletion, and the deletion is refused if that file cannot be
+written. That file holds real payroll rows and is gitignored.
+
+This bypasses `adminVoidShift`, which refuses to remove anything that is not a
+manual office entry. That guard is right and stays — it exists so real clock
+data cannot be deleted from a screen. This was a one-off migration under the
+owner's explicit instruction, not a path anybody can reach by clicking.
+
+**The clock times are placeholders and say so.** The sheet has a date and a
+duration, never a start time, so imported shifts are anchored at 09:00 ET. The
+DAY and the DURATION are real; the times are not. 09:00 because the longest
+duration in the file is 11h 19m, so nothing crosses midnight into the wrong
+day — or, across 12 Aug and 1 Sep, the wrong rate.
+
+**Result, verified in prod by query rather than by the script's own report:**
+142 shifts, 95 fully paid, 47 fully unpaid, **0 part paid**.
+
+---
