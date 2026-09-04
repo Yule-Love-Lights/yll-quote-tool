@@ -22,7 +22,12 @@ export default async function AdminAdvertisingSettingsPage() {
         passwordUrl="/api/account/password"
         logoutUrl="/api/auth/logout"
         paySection={<PayScreen />}
-        extraSection={<SignAllotmentSection />}
+        extraSection={
+          <>
+            <SignAllotmentSection kind="yard_sign" />
+            <SignAllotmentSection kind="door_hanger" />
+          </>
+        }
         extraRows={[
           { label: 'Where to go, where not to (map)', href: '/admin/advertising/map' },
           { label: 'Back to the quote tool', href: '/' },

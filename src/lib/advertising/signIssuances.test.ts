@@ -16,7 +16,10 @@ const { dbRef, stateRef, logAdvertisingActivity, getAdvertisingWorker } = vi.hoi
   stateRef: {
     current: {
       issuances: [] as AnyRow[],
-      placementCounts: {} as Record<string, number>, // workerId -> yard-sign count
+      // Keyed by workerId AND kind: keyed by worker alone, the fixture
+      // could not see the kind filter at all, so a balance that counted the
+      // wrong kind's photos passed every test.
+      placementCounts: {} as Record<string, number>, // `${workerId}:${kind}` -> count
       onHand: { sku: 'YLL-YARD-SIGN', on_hand_qty: 100 } as AnyRow | null,
       // When set, the NEXT on-hand read returns this snapshot then clears —
       // models a stale read racing a concurrent stock writer.
@@ -58,7 +61,14 @@ function makeDb() {
                 }),
               };
             }
-            const row = { id: `iss-${stateRef.current.issuances.length + 1}`, created_at: new Date().toISOString(), ...payload };
+            const row = {
+              id: `iss-${stateRef.current.issuances.length + 1}`,
+              created_at: new Date().toISOString(),
+              // The column default: a row that does not name a kind is a
+              // sign hand-out, which is what every pre-2026-09-04 row was.
+              kind: 'yard_sign',
+              ...payload,
+            };
             stateRef.current.issuances.push(row);
             return {
               select: () => ({ maybeSingle: () => Promise.resolve({ data: row, error: null }) }),
@@ -125,7 +135,12 @@ function makeDb() {
               if (table === 'advertising_placements' && opts?.head) {
                 stateRef.current.lastPlacementFilters = { ...filters };
                 const workerId = String(filters.worker_id ?? '');
-                return Promise.resolve({ count: stateRef.current.placementCounts[workerId] ?? 0, error: null }).then(resolve, reject);
+                const askedKind = String(filters.kind ?? 'yard_sign');
+                const key = `${workerId}:${askedKind}`;
+                return Promise.resolve({
+                  count: stateRef.current.placementCounts[key] ?? 0,
+                  error: null,
+                }).then(resolve, reject);
               }
               if (table === 'advertising_sign_issuances' && opts?.head) {
                 return Promise.resolve({ count: null, error: null }).then(resolve, reject);
@@ -151,6 +166,72 @@ beforeEach(() => {
   getAdvertisingWorker.mockResolvedValue({
     id: 'worker-1', displayName: 'Joe Signs', authUserId: null, active: true, isTest: false,
     createdAt: 'x', updatedAt: 'x',
+  });
+});
+
+describe('door hangers get their own allotment (Naldo 2026-09-04)', () => {
+  it('keeps the two ledgers apart, so hangers never eat the sign balance', async () => {
+    const { issueSigns, getWorkerSignBalance } = await import('./signIssuances');
+    await issueSigns('worker-1', 50, 'admin-1', undefined, undefined, 'yard_sign');
+    await issueSigns('worker-1', 300, 'admin-1', undefined, undefined, 'door_hanger');
+
+    // DIFFERENT counts per kind, so a balance counting the wrong kind's
+    // photos shows up rather than hiding behind one shared number.
+    stateRef.current.placementCounts['worker-1:yard_sign'] = 3;
+    stateRef.current.placementCounts['worker-1:door_hanger'] = 10;
+
+    const signs = await getWorkerSignBalance('worker-1', 'yard_sign');
+    expect(signs.issuedTotal).toBe(50);
+    expect(signs.signsUsed).toBe(3);
+    expect(signs.remaining).toBe(47);
+
+    const hangers = await getWorkerSignBalance('worker-1', 'door_hanger');
+    expect(hangers.issuedTotal).toBe(300);
+    // 10, not 3: a balance that counted the other kind's photos would read 3
+    // here, which is exactly the bug this asserts against.
+    expect(hangers.signsUsed).toBe(10);
+    expect(hangers.remaining).toBe(290);
+  });
+
+  it('defaults to signs, so every hand-out written before today still reads true', async () => {
+    const { issueSigns, getWorkerSignBalance } = await import('./signIssuances');
+    await issueSigns('worker-1', 25, 'admin-1');
+    const balance = await getWorkerSignBalance('worker-1');
+    expect(balance.kind).toBe('yard_sign');
+    expect(balance.issuedTotal).toBe(25);
+    expect((await getWorkerSignBalance('worker-1', 'door_hanger')).issuedTotal).toBe(0);
+  });
+
+  it('does NOT draw the warehouse down for door hangers', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    const before = stateRef.current.onHand?.on_hand_qty;
+
+    await issueSigns('worker-1', 200, 'admin-1', undefined, undefined, 'door_hanger');
+
+    // inventory_on_hand is the yard-sign SKU. Hangers have no SKU, so taking
+    // 200 of them must not remove 200 signs from the garage.
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(before);
+  });
+
+  it('still draws the warehouse down for signs', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    await issueSigns('worker-1', 10, 'admin-1', undefined, undefined, 'yard_sign');
+    expect(stateRef.current.onHand?.on_hand_qty).toBe(90);
+  });
+
+  it('records which kind was handed over in the trail', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    await issueSigns('worker-1', 40, 'admin-1', undefined, undefined, 'door_hanger');
+    expect(logAdvertisingActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'signs_issued', detail: expect.objectContaining({ kind: 'door_hanger', qty: 40 }) }),
+    );
+  });
+
+  it('refuses an unknown kind', async () => {
+    const { issueSigns } = await import('./signIssuances');
+    await expect(
+      issueSigns('worker-1', 10, 'admin-1', undefined, undefined, 'stickers' as never),
+    ).rejects.toThrow(/kind/i);
   });
 });
 
@@ -212,9 +293,9 @@ describe('row 479: a placed sign is a used sign', () => {
   it('does not ask the database to exclude voided rows', async () => {
     const { getWorkerSignBalance } = await import('./signIssuances');
     stateRef.current.issuances = [
-      { id: 'i1', worker_id: 'worker-1', qty: 50, issued_by: 'admin-1', note: null, created_at: 'x' },
+      { id: 'i1', worker_id: 'worker-1', qty: 50, issued_by: 'admin-1', note: null, created_at: 'x', kind: 'yard_sign' },
     ];
-    stateRef.current.placementCounts['worker-1'] = 3;
+    stateRef.current.placementCounts['worker-1:yard_sign'] = 3;
 
     const balance = await getWorkerSignBalance('worker-1');
     expect(balance.signsUsed).toBe(3);
@@ -351,19 +432,21 @@ describe('getWorkerSignBalance', () => {
     const { issueSigns, getWorkerSignBalance } = await import('./signIssuances');
     await issueSigns('worker-1', 50, 'admin-1');
     await issueSigns('worker-1', 20, 'admin-1');
-    stateRef.current.placementCounts['worker-1'] = 12;
+    stateRef.current.placementCounts['worker-1:yard_sign'] = 12;
 
     const balance = await getWorkerSignBalance('worker-1');
-    expect(balance).toEqual({ workerId: 'worker-1', issuedTotal: 70, signsUsed: 12, remaining: 58 });
+    expect(balance).toEqual({ workerId: 'worker-1',
+      kind: 'yard_sign', issuedTotal: 70, signsUsed: 12, remaining: 58 });
   });
 
   it('a worker who was never issued anything reads as zeros, and overuse clamps remaining at 0', async () => {
     const { getWorkerSignBalance, issueSigns } = await import('./signIssuances');
     expect(await getWorkerSignBalance('worker-9')).toEqual({
-      workerId: 'worker-9', issuedTotal: 0, signsUsed: 0, remaining: 0,
+      workerId: 'worker-9',
+      kind: 'yard_sign', issuedTotal: 0, signsUsed: 0, remaining: 0,
     });
     await issueSigns('worker-1', 10, 'admin-1');
-    stateRef.current.placementCounts['worker-1'] = 14; // used more than issued (pre-tracking history)
+    stateRef.current.placementCounts['worker-1:yard_sign'] = 14; // used more than issued (pre-tracking history)
     const balance = await getWorkerSignBalance('worker-1');
     expect(balance.remaining).toBe(0);
     expect(balance.signsUsed).toBe(14);

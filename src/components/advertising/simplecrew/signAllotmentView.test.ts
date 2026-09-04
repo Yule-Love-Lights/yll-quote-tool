@@ -18,7 +18,13 @@ vi.mock('@/lib/auth/supabaseServer', async (importOriginal) => {
   return { ...actual, requireAdmin };
 });
 vi.mock('@/lib/advertising/workers', () => ({ listAdvertisingWorkers }));
-vi.mock('@/lib/advertising/signIssuances', () => ({ getWorkerSignBalance, issueSigns, listIssuances }));
+// Spread the real module: a mock that lists its exports breaks silently the
+// moment the module grows one, which is how this test started 500ing when
+// isIssuanceKind appeared.
+vi.mock('@/lib/advertising/signIssuances', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/advertising/signIssuances')>();
+  return { ...actual, getWorkerSignBalance, issueSigns, listIssuances };
+});
 
 import { GET } from '@/app/api/admin/advertising/issuances/route';
 import { parseAllotments } from './signAllotmentView';
