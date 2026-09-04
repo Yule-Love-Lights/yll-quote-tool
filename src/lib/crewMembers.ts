@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { RATE_HISTORY_EPOCH, setRateFrom } from '@/lib/crewMemberRates';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { resolveNowMs } from '@/lib/timeSpans';
 
 export type CrewPayMode = 'hourly' | 'shadow' | 'p4p';
 
@@ -469,7 +472,25 @@ async function insertStaffRow(input: {
     throw new Error(`insertStaffRow: ${error.message}`);
   }
   if (!data) throw new Error('insertStaffRow: no row returned');
-  return toStaffMember(data as StaffRow);
+  const staff = toStaffMember(data as StaffRow);
+
+  // Seed the rate history in the same breath as the person (ledger row 506).
+  // Without this a newly added staff member has a rate on their row and no
+  // rate on any DAY, so every shift they work resolves to nothing and no
+  // payment to them can be recorded at all — a feature that is dead for
+  // exactly the people it was set up for. Anchored at RATE_HISTORY_EPOCH for
+  // the same reason the migration's backfill is: no shift, including one
+  // backdated by the office or imported later, may fall before their first
+  // rate.
+  if (staff.baseRateCents > 0) {
+    await setRateFrom({
+      crewMemberId: staff.id,
+      rateCentsPerHour: staff.baseRateCents,
+      effectiveFrom: RATE_HISTORY_EPOCH,
+      createdBy: 'staff row created',
+    });
+  }
+  return staff;
 }
 
 /**
@@ -534,9 +555,33 @@ export async function setStaffTelegram(
   return patchStaffRow(id, { telegram_user_id: telegramUserId, session_epoch: randomUUID() });
 }
 
-/** Correct or raise any staff member's hourly rate, in integer cents. */
-export async function setStaffRate(id: string, baseRateCents: number): Promise<StaffMember | null> {
-  return patchStaffRow(id, { base_rate_cents: baseRateCents });
+/**
+ * Correct or raise any staff member's hourly rate, in integer cents.
+ *
+ * Writes the RATE HISTORY, from today's ET day onward, and lets
+ * `setRateFrom` bring `base_rate_cents` back into step (ledger row 506).
+ * That ordering is the point: the column is now derived from the history on
+ * every write, so the two cannot drift, and a raise entered here stops
+ * silently re-valuing every hour the person worked BEFORE it — which is the
+ * defect this row exists to close.
+ *
+ * To correct a rate that started on some earlier day — entering a real
+ * history rather than a raise taking effect now — call `setRateFrom`
+ * directly with that day. Nothing else may write `base_rate_cents`.
+ */
+export async function setStaffRate(
+  id: string,
+  baseRateCents: number,
+  opts?: { createdBy?: string | null; nowIso?: string },
+): Promise<StaffMember | null> {
+  await setRateFrom({
+    crewMemberId: id,
+    rateCentsPerHour: baseRateCents,
+    effectiveFrom: etDayKey(new Date(resolveNowMs(opts?.nowIso))),
+    createdBy: opts?.createdBy ?? null,
+    nowIso: opts?.nowIso,
+  });
+  return getStaffMember(id);
 }
 
 /**

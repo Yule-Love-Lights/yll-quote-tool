@@ -32,6 +32,7 @@
 // it for a caller to reach for instead of the real one.
 
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { listRates, rateForShiftStart } from '@/lib/crewMemberRates';
 import { paidSecondsForShift } from '@/lib/shiftBreaks';
 import { resolveNowMs } from '@/lib/timeSpans';
 import { sendTelegramMessage } from '@/lib/integrations/telegram';
@@ -122,6 +123,10 @@ export type ShiftSettlement = {
  * Rounding half a cent in either direction cannot underpay anybody, so the
  * least surprising rule wins over a protective one.
  */
+/** The scale factor between "cents per hour" and "cents per second", and so
+ * the unit `allocatePayment` keeps its running balance in. */
+const SECONDS_PER_HOUR = 3600;
+
 export function referenceCentsFor(paidSeconds: number, rateCentsPerHour: number): number {
   if (!Number.isFinite(paidSeconds) || !Number.isFinite(rateCentsPerHour)) return 0;
   if (paidSeconds <= 0 || rateCentsPerHour <= 0) return 0;
@@ -161,18 +166,54 @@ export type PayableRemainder = {
   /** What is still unpaid on it: `totalSeconds` minus every live line
    * already written against it. Never negative. */
   unpaidSeconds: number;
+  /** The rate in force on the ET day this shift STARTED — resolved from the
+   * person's rate history, NOT from their rate today (ledger row 506).
+   *
+   * Carried per shift rather than passed once per payment because a payment
+   * can reach across a raise, and an hour worked in August is not worth what
+   * an hour worked in September is. Zero means no rate covers that day, and
+   * every caller refuses to convert rather than guessing one. */
+  rateCentsPerHour: number;
 };
 
 export type PaymentAllocation = {
-  lines: { shiftId: string; paidSeconds: number; totalSeconds: number }[];
-  /** Seconds this payment actually covers — equal to what it bought, unless
-   * it bought more than exists, which the caller refuses. */
+  lines: {
+    shiftId: string;
+    paidSeconds: number;
+    totalSeconds: number;
+    /** The rate this shift's hours were bought at — the rate in force on the
+     * day it started. Stamped straight onto the settlement line, which is
+     * what keeps this payment honest if the rate later moves. */
+    rateCentsPerHour: number;
+    /** What `paidSeconds` came to at that rate. Summed over the lines this
+     * is the money the allocation actually spent. */
+    referenceCents: number;
+  }[];
+  /** Seconds this payment actually covers, across every rate it spanned. */
   secondsCovered: number;
-  /** Seconds the money bought that no unpaid shift could absorb. Non-zero is
-   * NOT an error: it is a payment worth more than the hours it covers, which
-   * is what an overtime premium or a bonus looks like. The panel names the
-   * difference in its confirmation; nothing refuses it. */
-  unusedSeconds: number;
+  /** The sum of the lines' own `referenceCents` — what the hours this payment
+   * bought are worth at the rates they were bought at.
+   *
+   * It can differ from `totalCents` by a cent or two IN EITHER DIRECTION,
+   * and that is not a defect to chase. Each line rounds its own seconds to
+   * the nearest cent, and several independent roundings do not sum to the
+   * rounding of the sum: the one real settlement in production sums to
+   * $180.01 against a $180.00 payment, and did so before this arithmetic
+   * changed. Nothing depends on the two agreeing — `total_cents` is the
+   * record of what was handed over, this is what the hours came to, and
+   * phase 3 made them independent on purpose. */
+  spentCents: number;
+  /** Money no unpaid hour could absorb. Non-zero is NOT an error: it is a
+   * payment worth more than the hours it covers, which is what an overtime
+   * premium, a bonus or back-pay looks like. The panel names the difference
+   * in its confirmation; nothing refuses it.
+   *
+   * CENTS, not seconds, since 2026-09-04. With a rate per shift a leftover
+   * cannot honestly be expressed as time at all: seconds are only a currency
+   * while every hour is worth the same, and the whole point of the rate
+   * history is that they are not. Money is the thing that is actually left
+   * over, so money is what this reports. */
+  unusedCents: number;
 };
 
 /**
@@ -194,25 +235,56 @@ export type PaymentAllocation = {
  * ⚠ THIS IS THE ARITHMETIC PHASE 3 DELIBERATELY AVOIDED, POINTED THE OTHER
  * WAY. Phase 3 refused to compute what to PAY from hours, because overtime
  * has no agreed formula here (ledger row 285). This computes which HOURS a
- * payment covered, which needs the same rate and inherits the same limit: it
- * is exact only while every hour is worth the base rate. The day an hour is
- * worth 1.5x, a payment buys fewer hours than this says. Told to Jason
- * 2026-09-03 and accepted; the rate used is stamped on every line so a later
- * overtime rule can find and re-judge these rows rather than inherit them
- * silently.
+ * payment covered, which needs a rate and inherits the same limit: it is
+ * exact only while every hour is worth that day's straight rate. The day an
+ * hour is worth 1.5x, a payment buys fewer hours than this says. Told to
+ * Jason 2026-09-03 and accepted; the rate used is stamped on every line so a
+ * later overtime rule can find and re-judge these rows rather than inherit
+ * them silently.
+ *
+ * ⚠ EVERY SHIFT CARRIES ITS OWN RATE (2026-09-04, ledger row 506). This
+ * function used to take ONE rate and divide once. It cannot: a payment
+ * reaching back across a raise buys different amounts of time on either side
+ * of it, and dividing the whole amount by today's rate marks off the wrong
+ * hours. Jason's own case is why — his oldest unpaid shift is in his
+ * $13.00/h window while his current rate is $16.00, so a single division
+ * marked off about 19% fewer hours than the money bought.
+ *
+ * So it walks in MONEY rather than in seconds: at each shift, work out what
+ * that shift's remaining hours cost AT ITS OWN RATE, and either buy the
+ * whole thing or buy as much of it as the money left will reach.
+ *
+ * ⚠ AND IT WALKS IN CENT-SECONDS, not in cents. Subtracting each shift's
+ * cost ROUNDED TO WHOLE CENTS accumulates a rounding error per shift, and it
+ * is not theoretical: on Khaye's real five-shift $180.00 payment it marked
+ * off 2 seconds fewer than the same money bought under the single division
+ * this replaced. So the running balance is held in `cents × 3600` — the unit
+ * in which `seconds × rate` is exact — and nothing is rounded until a
+ * boundary actually has to be chosen. Whole-shift takes are then exact, and
+ * the ONE rounding left is the single partial take at the end, which is
+ * where a boundary genuinely has to fall.
  */
 export function allocatePayment(
   /** Unpaid shifts, OLDEST FIRST. Not re-sorted here. Deliberately typed to
-   * the three fields it READS rather than to PayableRemainder, so a caller
+   * the four fields it READS rather than to PayableRemainder, so a caller
    * with its own shape (the panel's preview) needs no adapter and this
    * function cannot start depending on a field it has no business in. */
-  remainders: readonly { shiftId: string; totalSeconds: number; unpaidSeconds: number }[],
+  remainders: readonly {
+    shiftId: string;
+    totalSeconds: number;
+    unpaidSeconds: number;
+    rateCentsPerHour: number;
+  }[],
   totalCents: number,
-  rateCentsPerHour: number,
 ): PaymentAllocation {
   const lines: PaymentAllocation['lines'] = [];
-  let remaining = secondsBoughtBy(totalCents, rateCentsPerHour);
+  // The balance, in cents × 3600. An hour of work at `rate` cents/hour costs
+  // `3600 × rate` in these units and a second costs `rate`, both exactly, so
+  // no whole-shift take ever has to round.
+  let remaining =
+    Number.isFinite(totalCents) && totalCents > 0 ? Math.floor(totalCents) * SECONDS_PER_HOUR : 0;
   let covered = 0;
+  let spent = 0;
 
   for (const shift of remainders) {
     if (remaining <= 0) break;
@@ -221,13 +293,89 @@ export function allocatePayment(
     // anything, and it would make the settlement look like it touched more
     // shifts than it paid for.
     if (shift.unpaidSeconds <= 0) continue;
-    const take = Math.min(remaining, shift.unpaidSeconds);
-    lines.push({ shiftId: shift.shiftId, paidSeconds: take, totalSeconds: shift.totalSeconds });
-    remaining -= take;
-    covered += take;
+    // A shift on a day no rate covers is SKIPPED, not bought at somebody
+    // else's rate and not bought for free. It stays unpaid and stays
+    // visible, which is the honest outcome: the fix is to enter the rate for
+    // that day, and guessing one here would hide the fact that it is missing.
+    if (!Number.isFinite(shift.rateCentsPerHour) || shift.rateCentsPerHour <= 0) continue;
+
+    // Exact, in cent-seconds. `referenceCentsFor` is used only for the LINE's
+    // own stamped figure, which is a whole-cent value an admin reads.
+    const wholeShiftCost = shift.unpaidSeconds * shift.rateCentsPerHour;
+    if (remaining >= wholeShiftCost) {
+      lines.push({
+        shiftId: shift.shiftId,
+        paidSeconds: shift.unpaidSeconds,
+        totalSeconds: shift.totalSeconds,
+        rateCentsPerHour: shift.rateCentsPerHour,
+        referenceCents: referenceCentsFor(shift.unpaidSeconds, shift.rateCentsPerHour),
+      });
+      remaining -= wholeShiftCost;
+      covered += shift.unpaidSeconds;
+      spent += referenceCentsFor(shift.unpaidSeconds, shift.rateCentsPerHour);
+      continue;
+    }
+
+    // Part of a shift. What is left buys fewer seconds than the shift has,
+    // so the money is spent here and the rest of the shift rolls over. This
+    // is the ONLY place a second boundary is rounded, and it happens at most
+    // once per payment.
+    //
+    // The cap is not redundant: rounding to the NEAREST second means an
+    // amount a fraction of a second short of the whole shift can round back
+    // up to its full length. Capping keeps a line from ever claiming more
+    // time than the shift has — which the database trigger would refuse
+    // anyway, but a refusal is a worse answer than the correct number.
+    const take = Math.min(
+      Math.round(remaining / shift.rateCentsPerHour),
+      shift.unpaidSeconds,
+    );
+    if (take > 0) {
+      const takeCents = referenceCentsFor(take, shift.rateCentsPerHour);
+      lines.push({
+        shiftId: shift.shiftId,
+        paidSeconds: take,
+        totalSeconds: shift.totalSeconds,
+        rateCentsPerHour: shift.rateCentsPerHour,
+        referenceCents: takeCents,
+      });
+      covered += take;
+      spent += takeCents;
+    }
+    // Whether or not a whole second could be bought, the money is gone: what
+    // is left is smaller than one second of this shift's time. Counting it as
+    // "unused" would report a bonus that is really a rounding crumb.
+    remaining = 0;
+    break;
   }
 
-  return { lines, secondsCovered: covered, unusedSeconds: Math.max(0, remaining) };
+  return {
+    lines,
+    secondsCovered: covered,
+    spentCents: spent,
+    // Back to whole cents, rounded DOWN. What survives here is money no hour
+    // could absorb, which the panel reads as an overtime premium or a bonus;
+    // a sub-cent remainder rounded UP would announce a one-cent bonus that
+    // nobody paid.
+    unusedCents: Math.max(0, Math.floor(remaining / SECONDS_PER_HOUR)),
+  };
+}
+
+/**
+ * PURE. What a set of unpaid hours comes to, each at its own rate.
+ *
+ * The ceiling the pay panel shows, and the figure `excessOverHours` measures
+ * a typed amount against. A SUM over shifts rather than `seconds × oneRate`
+ * since 2026-09-04: with a rate per day there is no single rate to multiply
+ * by, and using the person's current one overstates the value of every hour
+ * worked before their last raise.
+ */
+export function valueOfHours(
+  rated: readonly { unpaidSeconds: number; rateCentsPerHour: number }[],
+): number {
+  let cents = 0;
+  for (const shift of rated) cents += referenceCentsFor(shift.unpaidSeconds, shift.rateCentsPerHour);
+  return cents;
 }
 
 /**
@@ -614,6 +762,13 @@ export async function unpaidRemainders(
 
   const covered = await settledSecondsByShift(ids);
 
+  // The rate history, read ONCE for the person and resolved per shift below.
+  // A read that fails throws for the same reason the break read does: with no
+  // rate rows every shift resolves to zero, allocatePayment skips every one
+  // of them, and a payment would be refused as covering nothing — which looks
+  // exactly like "this person has no rate set" and is not.
+  const rates = await listRates(crewMemberId);
+
   const out: PayableRemainder[] = [];
   for (const row of shiftRows) {
     const totalSeconds = paidSecondsForShift(
@@ -639,6 +794,10 @@ export async function unpaidRemainders(
       // burying that means burying a real overpayment (technical lens on
       // PR #1190).
       unpaidSeconds: Math.max(0, totalSeconds - paid),
+      // The rate for the ET day this shift STARTED, never the person's rate
+      // today (ledger row 506). Zero when no rate row covers that day, which
+      // allocatePayment skips rather than guesses at.
+      rateCentsPerHour: rateForShiftStart(rates, row.clock_in_at),
     });
   }
   return out;
@@ -699,22 +858,18 @@ export async function recordShiftSettlement(input: {
 
   const crewMemberId = input.crewMemberId.trim();
 
-  // The person, for the rate to spend at and to stamp. Read at the write so
-  // the conversion uses the rate in force when the payment was recorded.
+  // The person, for their name in the refusals. The RATE no longer comes from
+  // here: since 2026-09-04 each shift is converted at the rate in force on
+  // the day it was worked, resolved inside `unpaidRemainders` from the rate
+  // history (ledger row 506).
   const { data: crewData, error: crewError } = await db
     .from('crew_members')
-    .select('id, display_name, base_rate_cents')
+    .select('id, display_name')
     .eq('id', crewMemberId)
     .maybeSingle();
   if (crewError) throw new Error(`recordShiftSettlement: crew lookup: ${crewError.message}`);
-  const crew = crewData as { id: string; display_name: string; base_rate_cents: number } | null;
+  const crew = crewData as { id: string; display_name: string } | null;
   if (!crew) throw new SettlementRefusedError('not-found', 'No staff member with that id.');
-  if (!Number.isFinite(crew.base_rate_cents) || crew.base_rate_cents <= 0) {
-    throw new SettlementRefusedError(
-      'no-rate',
-      `${crew.display_name} has no hourly rate set, so there is no way to work out which hours this payment covers. Set their rate first.`,
-    );
-  }
 
   const remainders = await unpaidRemainders(crewMemberId, input.nowIso);
   const owedSeconds = remainders.reduce((sum, r) => sum + r.unpaidSeconds, 0);
@@ -722,6 +877,23 @@ export async function recordShiftSettlement(input: {
     throw new SettlementRefusedError(
       'no-shifts',
       `${crew.display_name} has no unpaid hours to put this against. Every closed shift is already paid for.`,
+    );
+  }
+
+  // `no-rate` still exists, but it now asks a per-DAY question rather than a
+  // per-person one: are any of these unpaid hours on a day this person has a
+  // rate for? None at all is the old "no rate set" case and refuses. SOME is
+  // not refused — the payment covers the days that do have a rate, and the
+  // rest stay unpaid and visible rather than being bought at a guessed rate
+  // or silently written off. The panel names any such days before anyone
+  // confirms.
+  const payableAtSomeRate = remainders.filter(
+    (r) => r.unpaidSeconds > 0 && r.rateCentsPerHour > 0,
+  );
+  if (payableAtSomeRate.length === 0) {
+    throw new SettlementRefusedError(
+      'no-rate',
+      `None of ${crew.display_name}'s unpaid hours fall on a day with an hourly rate on record, so there is no way to work out which hours this payment covers. Set their rate first.`,
     );
   }
 
@@ -745,7 +917,7 @@ export async function recordShiftSettlement(input: {
   // The confirmation lives in the panel, where a person can see the figure
   // before agreeing to it. This function does not second-guess a number an
   // admin has confirmed.
-  const allocation = allocatePayment(remainders, input.totalCents, crew.base_rate_cents);
+  const allocation = allocatePayment(remainders, input.totalCents);
   if (allocation.lines.length === 0) {
     throw new SettlementRefusedError(
       'no-shifts',
@@ -754,12 +926,16 @@ export async function recordShiftSettlement(input: {
   }
 
   const nowIso = new Date(resolveNowMs(input.nowIso)).toISOString();
+  // The rate and the reference come off the LINE, which carried the rate in
+  // force on that shift's own day through the allocation. This is the stamp
+  // ledger row 506 says must not change shape: it is what keeps this payment
+  // honest if the rate history is later corrected.
   const linePayloads = allocation.lines.map((line) => ({
     shift_id: line.shiftId,
     paid_seconds: line.paidSeconds,
     shift_total_seconds: line.totalSeconds,
-    rate_cents_per_hour: crew.base_rate_cents,
-    reference_cents: referenceCentsFor(line.paidSeconds, crew.base_rate_cents),
+    rate_cents_per_hour: line.rateCentsPerHour,
+    reference_cents: line.referenceCents,
   }));
 
   const { data: created, error: createError } = await db

@@ -99,6 +99,11 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
       blockedDeleteIds: [] as string[],
+      // The rate history (ledger row 506). Creating a staff member and
+      // setting a rate BOTH write here now, so the mock has to model it or
+      // every creation test dies on an unknown table — which is how these
+      // tests proved the write is genuinely reached on both paths.
+      rates: [] as Record<string, unknown>[],
     },
   },
 }));
@@ -156,6 +161,44 @@ function normalizeDisplayName(value: string): string {
 function makeDb() {
   return {
     from(table: string) {
+      // The rate history, modelled just enough for setRateFrom: upsert a row,
+      // list a person's rows oldest first. Deliberately NOT a second copy of
+      // the resolver — crewMemberRates.test.ts owns that arithmetic; this
+      // only has to let the writes through so the crew_members assertions
+      // below still mean what they say.
+      if (table === 'crew_member_rates') {
+        const rateBuilder = {
+          upsert: (payload: Record<string, unknown>) => {
+            const i = stateRef.current.rates.findIndex(
+              (r) =>
+                r.crew_member_id === payload.crew_member_id &&
+                r.effective_from === payload.effective_from,
+            );
+            if (i >= 0) stateRef.current.rates[i] = { ...stateRef.current.rates[i], ...payload };
+            else
+              stateRef.current.rates.push({
+                id: `rate-${stateRef.current.rates.length + 1}`,
+                created_at: '2026-09-04T00:00:00.000Z',
+                ...payload,
+              });
+            return Promise.resolve({ error: stateRef.current.error });
+          },
+          select: () => rateBuilder,
+          eq: (col: string, val: unknown) => {
+            rateFiltered = rateFiltered.filter((r) => r[col] === val);
+            return rateBuilder;
+          },
+          order: () =>
+            Promise.resolve({
+              data: [...rateFiltered].sort((a, b) =>
+                String(a.effective_from) < String(b.effective_from) ? -1 : 1,
+              ),
+              error: stateRef.current.error,
+            }),
+        };
+        let rateFiltered = [...stateRef.current.rates];
+        return rateBuilder;
+      }
       if (table !== 'crew_members') {
         throw new Error(`crewMembers.test.ts: unexpected table ${table}`);
       }
@@ -331,6 +374,7 @@ beforeEach(() => {
     inserted: [],
     updated: [],
     blockedDeleteIds: [],
+    rates: [],
   };
   dbRef.current = makeDb();
 });
