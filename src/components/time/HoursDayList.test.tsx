@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-import { HoursDayList, actorLabel } from './HoursDayList';
+import { HoursDayList, actorLabel, hasPlaceholderTimes } from './HoursDayList';
 import type { PersonDay, PersonShift } from '@/lib/personHours';
 
 function shift(over: Partial<PersonShift> = {}): PersonShift {
@@ -182,5 +182,42 @@ describe('HoursDayList — the Paid mark', () => {
     const admin = render('admin', WHOLE, true);
     expect(admin).not.toContain('>Paid<');
     expect(admin).toContain('undo the payment below');
+  });
+});
+
+describe('a shift whose clock times are a PLACEHOLDER', () => {
+  // The row-507 import had a date and a duration and no start time, so its
+  // shifts are anchored at a fixed hour. They are `source: office`, which
+  // renders as "web clock" — so before this they read as ordinary punches
+  // with precise times, and 142 of Jason's real rows do (S61 admin lens).
+  const IMPORTED = { manualBy: 'imported from Time Tracker.xlsx (row 507)' };
+
+  it('is recognised by its import stamp, and an ordinary manual edit is NOT', () => {
+    expect(hasPlaceholderTimes('imported from Time Tracker.xlsx (row 507)')).toBe(true);
+    expect(hasPlaceholderTimes('Jason Balroop (jason@yulelovelights.com)')).toBe(false);
+    expect(hasPlaceholderTimes(null)).toBe(false);
+  });
+
+  it('says it came from a timesheet instead of claiming to be a web clock punch', () => {
+    const out = render('admin', IMPORTED);
+    expect(out).toContain('imported from a timesheet');
+    expect(out).not.toContain('web clock');
+  });
+
+  it('flags the start time as approximate, so a precise-looking time is not read as real', () => {
+    expect(render('admin', IMPORTED)).toContain('start time approximate');
+  });
+
+  it('leaves a REAL punch alone — it still names how they clocked in', () => {
+    const out = render('admin');
+    expect(out).toContain('web clock');
+    expect(out).not.toContain('start time approximate');
+    expect(out).not.toContain('imported from a timesheet');
+  });
+
+  it('says the same thing on the staff self-view, which reads the same rows', () => {
+    const out = render('none', IMPORTED);
+    expect(out).toContain('imported from a timesheet');
+    expect(out).toContain('start time approximate');
   });
 });

@@ -87,6 +87,10 @@ export type ShiftAuditEntry = {
   after: { clockInAt: string | null; clockOutAt: string | null } | null;
   /** Set on an aborted void: why the removal was called off. */
   reason: string | null;
+  /** Free text explaining an entry a SCRIPT wrote — a one-off migration that
+   * deleted payroll rows outside `adminVoidShift` has no other way to say why,
+   * and this entry is the only surviving record of the shift. */
+  note: string | null;
 };
 
 export type PersonTime = {
@@ -343,6 +347,11 @@ export function toAuditEntry(row: ActivityRow): ShiftAuditEntry | null {
     before: timesFrom(detail.before),
     after: timesFrom(detail.after),
     reason: typeof detail.reason === 'string' ? detail.reason : null,
+    // Carried because a script that deletes payroll rows OUTSIDE adminVoidShift
+    // has no other way to explain itself, and the entry it leaves is the only
+    // surviving record of the shift. Written by the row-507 import; invisible
+    // until now, which the S61 admin lens caught.
+    note: typeof detail.note === 'string' ? detail.note : null,
   };
 }
 

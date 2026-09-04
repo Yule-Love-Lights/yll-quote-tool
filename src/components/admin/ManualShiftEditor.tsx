@@ -144,10 +144,14 @@ export function AddPersonShiftForm({
   crewMemberId,
   crewName,
   defaultDate,
+  visibleFromDay,
 }: {
   crewMemberId: string;
   crewName: string;
   defaultDate: string;
+  /** Earliest ET day the list above is showing, or null for "All time". Used
+   * only to say when a saved shift landed OUTSIDE the range on screen. */
+  visibleFromDay: string | null;
 }) {
   const router = useRouter();
   const [date, setDate] = useState(defaultDate);
@@ -155,6 +159,7 @@ export function AddPersonShiftForm({
   const [endTime, setEndTime] = useState('15:00');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<{ day: string; visible: boolean } | null>(null);
 
   async function submit() {
     if (busy) return;
@@ -171,12 +176,19 @@ export function AddPersonShiftForm({
     if (!confirmSanity(clockInAt, clockOutAt)) return;
     setBusy(true);
     setError(null);
+    setSaved(null);
     const res = await postManual({ crewMemberId, clockInAt, clockOutAt });
     setBusy(false);
     if (!res.ok) {
       setError(res.message);
       return;
     }
+    // SAY SO. Without this the only signal a save worked is spotting the new
+    // row in the list above — and that list is scoped to the range on screen,
+    // so backfilling an older day showed nothing anywhere and invited a
+    // well-meaning retry with slightly different times: a duplicate shift on
+    // somebody's payroll. Both halves found by the S61 staff lens.
+    setSaved({ day: date, visible: visibleFromDay === null || date >= visibleFromDay });
     router.refresh();
   }
 
@@ -219,8 +231,26 @@ export function AddPersonShiftForm({
         your name, logged, and {crewName} gets a Telegram note when linked.
       </p>
       {error && <p className="text-xs text-red-700 mt-1">{error}</p>}
+      {saved && (
+        <p className="text-xs mt-1 text-green-800">
+          Saved {fmtDay(saved.day)}.{' '}
+          {saved.visible
+            ? 'It is in the list above.'
+            : 'It is OUTSIDE the range shown above — switch to All time to see it.'}
+        </p>
+      )}
     </div>
   );
+}
+
+/** `2026-08-24` the way a person reads it. The string is already an ET
+ * calendar day, so it is split rather than parsed: building a Date from it and
+ * formatting that back is free to move it a day. */
+function fmtDay(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  if (!y || !m || !d) return day;
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${d} ${months[m - 1]} ${y}`;
 }
 
 /** Inline time editor on one shift row, admins only. An OPEN shift can have

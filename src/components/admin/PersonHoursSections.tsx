@@ -23,6 +23,7 @@ import { dollars, type PayableRemainder, type ShiftSettlement } from '@/lib/shif
 import { formatHours } from '@/lib/hoursSummary';
 import {
   RANGE_KEYS,
+  rangeFromDay,
   rangeLabel,
   type PersonDay,
   type RangeKey,
@@ -167,7 +168,12 @@ export function PersonHoursSection({
           form that can only ever come back with a refusal is worse than no
           form. */}
       {active && (
-        <AddPersonShiftForm crewMemberId={crewMemberId} crewName={crewName} defaultDate={todayEt} />
+        <AddPersonShiftForm
+          crewMemberId={crewMemberId}
+          crewName={crewName}
+          defaultDate={todayEt}
+          visibleFromDay={rangeFromDay(range)}
+        />
       )}
     </section>
   );
@@ -431,6 +437,15 @@ export function ShiftAuditSection({
                   {e.before && e.after && <span className="text-gray-400"> · </span>}
                   {e.after ? <>now {timePair(e.after)}</> : e.before ? <>now removed</> : null}
                 </p>
+              )}
+              {/* Written only by a script that removed payroll rows outside
+                  the ordinary path. This section promises the entry is the
+                  only surviving record of the shift, and until now the one
+                  field carrying that explanation was never rendered — so the
+                  promise was false for exactly the rows that needed it most
+                  (admin lens, S61 session review). */}
+              {e.note && (
+                <p className="text-xs text-gray-500 mt-1">{e.note}</p>
               )}
             </li>
           ))}
