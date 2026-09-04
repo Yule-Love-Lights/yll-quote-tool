@@ -9,6 +9,7 @@ import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytic
 import { QuoteBuildTiming } from '@/components/dashboard/QuoteBuildTiming';
 import { listQuoteBuildTimingStats } from '@/lib/quoteBuildTiming';
 import { getOperator } from '@/lib/auth/supabaseServer';
+import { DASHBOARD_CONFIG } from '@/lib/dashboard/config';
 
 export const dynamic = 'force-dynamic';
 
@@ -96,7 +97,11 @@ export default async function InsightsPage() {
         </header>
 
         <section aria-label="Headline metrics" className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-          <KpiCard label="Close ratio" value={pct(stats.closeRatio)} sub="approved / reached" />
+          <KpiCard
+            label="Close ratio"
+            value={pct(stats.closeRatio)}
+            sub={`approved / reached · sent ${DASHBOARD_CONFIG.conversionCoolingDays}+ days ago`}
+          />
           <KpiCard label="Avg job value" value={money(stats.avgJobValue)} sub="approved quotes" />
           <KpiCard label="Avg quote value" value={money(stats.avgQuoteValue)} sub="all quotes" />
           <KpiCard label="Time to close" value={days(stats.timeToCloseDays)} sub="created → approved" />

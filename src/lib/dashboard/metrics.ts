@@ -73,6 +73,30 @@ function split(reachedN: number, approvedN: number): ConversionSplit {
   return { reached: reachedN, approved: approvedN, rate: reachedN > 0 ? approvedN / reachedN : null };
 }
 
+/**
+ * Has this quote had long enough to be answered? Conversion counts outcomes,
+ * and a quote sent yesterday has no outcome yet: it is undecided, not lost.
+ * Counting it as a miss makes every send wave depress whichever group was
+ * just mailed, which is a clock rather than a signal.
+ *
+ * The window is a COHORT: a quote enters conversion once it was sent at least
+ * DASHBOARD_CONFIG.conversionCoolingDays ago, and then whatever happened to it
+ * counts, win or lose. Deliberately not "count recent wins, ignore recent
+ * losses", which would quietly flatter the rate.
+ *
+ * A quote approved with no send date is an offline close. It is already
+ * decided, so it counts immediately.
+ *
+ * Shared with computeInsightStats' closeRatio (insights.ts) for the same
+ * reason `reached()` is shared: two screens showing the same ratio must not
+ * disagree about which quotes it covers (WT-48).
+ */
+export function settled(q: DashboardQuote, now: Date): boolean {
+  if (!q.quote_sent_at) return true;
+  const ageMs = now.getTime() - new Date(q.quote_sent_at).getTime();
+  return ageMs >= DASHBOARD_CONFIG.conversionCoolingDays * MS_PER_DAY;
+}
+
 export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
   const nowMs = now.getTime();
   const recentCutoff = nowMs - DASHBOARD_CONFIG.recentlyBookedWindowDays * MS_PER_DAY;
@@ -88,6 +112,7 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
   let turnaroundExcluded = 0; // sent, but marked a backlog send — see isNeighbor's sibling note below
   let reachedNeighbor = 0;
   let approvedNeighbor = 0;
+  let pendingRecent = 0; // reached, but too recently sent to have an outcome yet
   const activeCustomerKeys = new Set<string>();
 
   for (const q of quotes) {
@@ -104,14 +129,23 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
       bookedRevenue += total;
       const approvedMs = new Date(approvedAt).getTime();
       if (approvedMs >= recentCutoff) bookedRevenueRecent += total;
-      approvedCount += 1;
-      if (isNeighbor(q)) approvedNeighbor += 1;
+      // Conversion counts only settled quotes, so an approval inside the
+      // cooling window waits with its own cohort rather than being counted
+      // while its unanswered siblings are not.
+      if (settled(q, now)) {
+        approvedCount += 1;
+        if (isNeighbor(q)) approvedNeighbor += 1;
+      }
     }
 
     // A quote "reached the customer" — shared rule (WT-48), see `reached()` above.
     if (reached(q)) {
-      reachedCount += 1;
-      if (isNeighbor(q)) reachedNeighbor += 1;
+      if (settled(q, now)) {
+        reachedCount += 1;
+        if (isNeighbor(q)) reachedNeighbor += 1;
+      } else {
+        pendingRecent += 1;
+      }
     }
 
     if (sentAt) {
@@ -145,6 +179,7 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     avgTurnaroundDays: turnaroundN > 0 ? turnaroundSum / turnaroundN : null,
     conversionRate: reachedCount > 0 ? approvedCount / reachedCount : null,
     turnaroundExcluded,
+    conversionPendingRecent: pendingRecent,
     conversionNeighbor: split(reachedNeighbor, approvedNeighbor),
     conversionRegular: split(reachedCount - reachedNeighbor, approvedCount - approvedNeighbor),
   };

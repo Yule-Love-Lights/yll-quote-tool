@@ -8,6 +8,14 @@ export const DASHBOARD_CONFIG = {
   recentlyBookedWindowDays: 30,
   /** Drafted-not-sent surfaces in worklist after this many days idle. */
   draftStaleDays: 1,
+  /** How long a quote gets to be answered before it counts in conversion.
+   *  A quote sent yesterday is not a loss, it is undecided, and counting it
+   *  as one means every send wave makes whichever group was mailed look bad
+   *  for a week. Measured live 2026-09-04: a 51-quote wave pushed the
+   *  Neighbors rate to 27% while the settled figure was 71%, which is the
+   *  opposite conclusion. Applies identically to Neighbors, Regular and the
+   *  overall rate, and to Insights' close ratio, which shares the rule. */
+  conversionCoolingDays: 7,
   /** Sent-no-reply surfaces in worklist after this many days idle. */
   sentNoReplyStaleDays: 3,
   /** Cap how many worklist rows we render (newest-first). */

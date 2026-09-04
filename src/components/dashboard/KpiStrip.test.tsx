@@ -19,6 +19,7 @@ function makeKpis(over: Partial<Kpis> = {}): Kpis {
     turnaroundExcluded: 0,
     conversionNeighbor: { reached: 79, approved: 21, rate: 21 / 79 },
     conversionRegular: { reached: 71, approved: 28, rate: 28 / 71 },
+    conversionPendingRecent: 0,
     ...over,
   };
 }
@@ -71,5 +72,17 @@ describe('KpiStrip — conversion split', () => {
     );
     expect(html).toContain('—');
     expect(html).toContain('0/0');
+  });
+});
+
+describe('KpiStrip — quotes too recent to count are named, not hidden', () => {
+  it('says how many are still out', () => {
+    const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis({ conversionPendingRecent: 51 })} />);
+    expect(html).toContain('51 still out');
+  });
+
+  it('says nothing when none are pending', () => {
+    const html = renderToStaticMarkup(<KpiStrip kpis={makeKpis({ conversionPendingRecent: 0 })} />);
+    expect(html).not.toContain('still out');
   });
 });

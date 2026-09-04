@@ -72,14 +72,24 @@ export type Kpis = {
   activeCustomers: number;
   /** Average days between created_at and quote_sent_at across all sent quotes; null if no sent quotes. */
   avgTurnaroundDays: number | null;
-  /** Conversion = approved ÷ (quotes that reached a customer = sent OR approved),
-   *  all-time. Always in [0,1]; null if no quote has reached a customer. Counting
-   *  approved-but-never-sent quotes in the denominator avoids a >100% rate. */
+  /** Conversion = approved ÷ (quotes that reached a customer = sent OR approved).
+   *  Always in [0,1]; null if no quote qualifies. Counting approved-but-never-sent
+   *  quotes in the denominator avoids a >100% rate.
+   *
+   *  Covers SETTLED quotes only: those sent at least
+   *  DASHBOARD_CONFIG.conversionCoolingDays ago, plus offline closes that were
+   *  approved without a send date. A quote sent yesterday is undecided, not
+   *  lost. See `settled` in metrics.ts. */
   conversionRate: number | null;
   /** How many sent quotes the turnaround average left out because they were
    *  marked as backlog sends. Shown on the KPI card so the average is never
    *  quietly narrower than the population it claims to describe. */
   turnaroundExcluded: number;
+  /** Quotes that reached a customer too recently to have an outcome yet, so
+   *  they are in none of the three rates above. Shown on the card, because a
+   *  rate that silently ignores part of the pipeline invites the same misread
+   *  it was built to prevent. */
+  conversionPendingRecent: number;
   /** Conversion for quotes belonging to YLL Neighbors (isNeighbor). */
   conversionNeighbor: ConversionSplit;
   /** Conversion for everyone else. Neighbor + regular reconcile exactly to

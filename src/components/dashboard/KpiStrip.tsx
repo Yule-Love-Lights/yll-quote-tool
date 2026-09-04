@@ -27,7 +27,7 @@ function turnaroundSub(excluded: number): string {
 
 export function KpiStrip({ kpis }: { kpis: Kpis }) {
   return (
-    <section aria-label="Key metrics" className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-8">
+    <section aria-label="Key metrics" className="grid grid-cols-2 md:grid-cols-7 gap-3 mb-8">
       <KpiCard
         label="Quote turnaround"
         value={fmtDays(kpis.avgTurnaroundDays)}
@@ -41,6 +41,7 @@ export function KpiStrip({ kpis }: { kpis: Kpis }) {
         neighbor={kpis.conversionNeighbor}
         regular={kpis.conversionRegular}
         overall={kpis.conversionRate}
+        pendingRecent={kpis.conversionPendingRecent}
       />
     </section>
   );
