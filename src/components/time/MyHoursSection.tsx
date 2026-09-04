@@ -134,6 +134,10 @@ export function MyHoursSection({
       <Card
         title="Shifts"
         aside={<RangeTabs basePath={basePath} range={range} />}
+        // Named for the question a staffer actually brings here (staff lens
+        // on PR #1219): nobody looks under "how this is counted" for who
+        // fixes a wrong time.
+        helpLabel="How this works, and who fixes a wrong time"
         help={
           <>
             <p>
