@@ -717,12 +717,18 @@ describe('updateCrewMember', () => {
     // The mock merges the JS payload into the seed row; this proves field mapping, not Postgres partial-update semantics.
     //
     // TWO writes now, not one, and the split is the point (ledger row 506).
-    // A rate no longer rides in this payload: it goes into crew_member_rates
-    // first, and `syncCurrentRate` writes base_rate_cents back from the
-    // history. So the column is derived rather than set, and the two can
-    // never name different numbers.
+    // A rate no longer rides in this payload: it goes into crew_member_rates,
+    // and `syncCurrentRate` writes base_rate_cents back from the history. So
+    // the column is derived rather than set, and the two can never name
+    // different numbers.
+    //
+    // The ORDER is deliberate: the ordinary column write goes FIRST, then the
+    // rate. Either order can leave a partial write, and this is the one where
+    // the likeliest failure — a display-name collision — fails cleanly with
+    // nothing written and the rate untouched. Rate-first meant a name
+    // collision threw an error reading as total failure while the rate change
+    // had already landed (delta-verify on PR #1214).
     expect(stateRef.current.updated).toEqual([
-      { base_rate_cents: 1700, updated_at: expect.any(String) },
       {
         hub_employee_id: null,
         telegram_user_id: '333',
@@ -732,6 +738,7 @@ describe('updateCrewMember', () => {
         language: 'en',
         active: true,
       },
+      { base_rate_cents: 1700, updated_at: expect.any(String) },
     ]);
     // ...and the history really is where it came from.
     expect(stateRef.current.rates).toEqual([

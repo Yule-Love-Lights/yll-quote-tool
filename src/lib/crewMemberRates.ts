@@ -278,8 +278,11 @@ export async function setRateFrom(input: {
  * `base_rate_cents`, so it keeps its old value while no rate in the history
  * supports it, and the forty-odd screens that read it go on displaying a
  * figure that has silently stopped being true (admin lens on PR #1214).
- * Refusing here keeps "the column is the rate in force today" an invariant
- * rather than something that holds until somebody deletes the wrong row.
+ *
+ * That refusal is checked TWICE — once before the delete, and again after it
+ * against fresh rows, restoring the row if the second check fails. The first
+ * check alone is check-then-act and two racing removals can slip past it
+ * together.
  */
 export async function deleteRate(input: {
   crewMemberId: string;
@@ -298,21 +301,57 @@ export async function deleteRate(input: {
     );
   }
   const today = etDayKey(new Date(resolveNowMs(input.nowIso)));
-  const remaining = existing.filter((r) => r.id !== input.rateId);
-  if (rateForDay(remaining, today) <= 0) {
-    throw new RateRefusedError(
-      'uncovers-today',
-      'Removing this would leave today with no hourly rate at all, so nothing could be paid and the rate shown everywhere else would stop being true. Add the rate that should apply from now first, then remove this one.',
-    );
+  const doomed = existing.find((r) => r.id === input.rateId)!;
+  const uncoversToday = (rows: readonly CrewMemberRate[]) => rateForDay(rows, today) <= 0;
+
+  // The cheap check first, so the ordinary refusal costs no write at all.
+  if (uncoversToday(existing.filter((r) => r.id !== input.rateId))) {
+    throw new RateRefusedError('uncovers-today', UNCOVERS_TODAY_MESSAGE);
   }
+
   const { error } = await db
     .from('crew_member_rates')
     .delete()
     .eq('id', input.rateId)
     .eq('crew_member_id', input.crewMemberId);
   if (error) throw new Error(`deleteRate: ${error.message}`);
+
+  // AND AGAIN, AFTER THE DELETE. The check above reads a snapshot taken at
+  // the top of this function, so two removals racing each other can each pass
+  // their own snapshot and jointly uncover today — the check-then-act shape
+  // this repo keeps getting bitten by, which is why the rule is to gate at
+  // the STATE CHANGE rather than at a prior read (delta-verify on PR #1214,
+  // which also caught that the comment here claimed an invariant the guard
+  // did not actually hold under concurrency).
+  //
+  // postgrest cannot express a conditional delete, so this restores instead:
+  // put the row back and refuse. The restored row carries a NEW id, which is
+  // internal and referenced by nothing — the rate, the day and who set it are
+  // what the record means, and all three survive.
+  const after = await listRates(input.crewMemberId);
+  if (uncoversToday(after)) {
+    const { error: restoreError } = await db.from('crew_member_rates').insert({
+      crew_member_id: doomed.crewMemberId,
+      rate_cents_per_hour: doomed.rateCentsPerHour,
+      effective_from: doomed.effectiveFrom,
+      created_by: doomed.createdBy,
+    });
+    if (restoreError) {
+      // Both the delete and the restore are done with. Say exactly that
+      // rather than a generic failure: somebody has to put this rate back by
+      // hand, and until they do nobody can be paid for today.
+      throw new Error(
+        `deleteRate: the ${doomed.rateCentsPerHour}c/hr rate from ${doomed.effectiveFrom} was removed, today is now left with no rate, and putting it back FAILED (${restoreError.message}). Re-enter it under Rate history before recording any payment.`,
+      );
+    }
+    throw new RateRefusedError('uncovers-today', `${UNCOVERS_TODAY_MESSAGE} (Somebody changed this person's rates at the same moment, so nothing was removed.)`);
+  }
+
   return syncCurrentRate(input.crewMemberId, input.nowIso);
 }
+
+const UNCOVERS_TODAY_MESSAGE =
+  'Removing this would leave today with no hourly rate at all, so nothing could be paid and the rate shown everywhere else would stop being true. Add the rate that should apply from now first, then remove this one.';
 
 /**
  * Recompute `crew_members.base_rate_cents` as the rate in force TODAY.

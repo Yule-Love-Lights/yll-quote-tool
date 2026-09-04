@@ -32,6 +32,7 @@ import {
 import { RateHistorySection } from '@/components/admin/RateHistorySection';
 import { getSessionRole } from '@/lib/auth/sessionRole';
 import { listRates } from '@/lib/crewMemberRates';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { isRangeKey, loadPersonTime, type RangeKey } from '@/lib/personHours';
 import { listSettlements, summarize, unpaidRemainders } from '@/lib/shiftSettlements';
 
@@ -173,6 +174,9 @@ export default async function PersonTimePage({
           crewMemberId={person.id}
           crewName={person.displayName}
           rates={rates ?? []}
+          // Resolved HERE, with the same helper the rate maths uses, so the
+          // server render and the browser cannot land on different days.
+          todayEt={etDayKey(new Date())}
           readable={rates !== null}
         />
 

@@ -7,9 +7,10 @@
 //   1. `crew_members.base_rate_cents` is DERIVED. Every write recomputes it
 //      from the history, so the number ~40 screens display and the number the
 //      money maths resolves against can never name different figures.
-//   2. No edit may leave TODAY without a rate. That is what makes (1) an
-//      invariant instead of something that holds until somebody deletes the
-//      wrong row.
+//   2. No edit may leave TODAY without a rate — checked before the delete AND
+//      again after it against fresh rows, restoring the row if the second
+//      check fails, because the first check alone is check-then-act and two
+//      racing removals slip past it together.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +30,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       rates: [] as RateRow[],
       crew: [] as { id: string; base_rate_cents: number }[],
       seq: 0,
+      onDelete: null as (() => void) | null,
     },
   },
 }));
@@ -67,6 +69,18 @@ function makeDb() {
             }
             return Promise.resolve({ error: null });
           },
+          insert: (payload: Record<string, unknown>) => {
+            stateRef.current.seq += 1;
+            stateRef.current.rates.push({
+              id: `rate-${stateRef.current.seq}`,
+              crew_member_id: String(payload.crew_member_id),
+              rate_cents_per_hour: Number(payload.rate_cents_per_hour),
+              effective_from: String(payload.effective_from),
+              created_at: '2026-09-04T00:00:00.000Z',
+              created_by: (payload.created_by as string | null) ?? null,
+            });
+            return Promise.resolve({ error: null });
+          },
           delete: () => {
             const filters: [string, unknown][] = [];
             const d = {
@@ -76,6 +90,9 @@ function makeDb() {
                   stateRef.current.rates = stateRef.current.rates.filter(
                     (r) => !filters.every(([c, v]) => (r as unknown as Record<string, unknown>)[c] === v),
                   );
+                  // A hook for modelling a CONCURRENT change landing in the
+                  // gap between the pre-check and the post-check.
+                  stateRef.current.onDelete?.();
                   return Promise.resolve({ error: null });
                 }
                 return d;
@@ -147,6 +164,7 @@ beforeEach(() => {
     ],
     crew: [{ id: 'crew-1', base_rate_cents: 1600 }],
     seq: 0,
+    onDelete: null,
   };
   dbRef.current = makeDb();
 });
@@ -251,6 +269,38 @@ describe('deleteRate will not leave a day uncovered', () => {
     await deleteRate({ crewMemberId: 'crew-1', rateId: 'seed', nowIso: NOW });
     expect(stateRef.current.rates.map((r) => r.id)).toEqual([added.id]);
     expect(stateRef.current.crew[0]!.base_rate_cents).toBe(1300);
+  });
+
+  it('puts the row BACK when a concurrent change uncovers today under it', async () => {
+    // The check-then-act window made real: the pre-check passes against the
+    // snapshot, and the rows move before the post-check. Modelled by removing
+    // the covering row from underneath the delete, exactly as a second admin
+    // deleting it at the same moment would.
+    await setRateFrom({
+      crewMemberId: 'crew-1',
+      rateCentsPerHour: 1300,
+      effectiveFrom: '2026-08-12',
+      nowIso: NOW,
+    });
+    const covering = stateRef.current.rates.find((r) => r.effective_from === '2026-08-12')!;
+    stateRef.current.onDelete = () => {
+      // The other admin's delete lands in the gap.
+      stateRef.current.rates = stateRef.current.rates.filter((r) => r.id !== covering.id);
+      stateRef.current.onDelete = null;
+    };
+
+    await expect(
+      deleteRate({ crewMemberId: 'crew-1', rateId: 'seed', nowIso: NOW }),
+    ).rejects.toMatchObject({ reason: 'uncovers-today' });
+
+    // The seed rate is BACK — a new id, same rate, same day, same author,
+    // which is everything the record actually means.
+    const restored = stateRef.current.rates.find((r) => r.effective_from === '2000-01-01');
+    expect(restored).toBeDefined();
+    expect(restored!.rate_cents_per_hour).toBe(1600);
+    expect(restored!.created_by).toBe('backfill');
+    // ...so today still has a rate, which is the whole point.
+    expect(stateRef.current.rates.some((r) => r.effective_from <= '2026-09-04')).toBe(true);
   });
 
   it('refuses a rate that belongs to somebody else', async () => {

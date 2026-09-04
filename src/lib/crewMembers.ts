@@ -340,28 +340,57 @@ export async function updateCrewMember(
   const payload = buildCrewMemberUpdatePayload(patch);
 
   // A rate patch goes through the HISTORY, not into the payload above, so the
-  // column stays derived (ledger row 506). Done FIRST and awaited: if the
-  // history write fails the whole update fails, rather than leaving the other
-  // fields changed and the rate silently not.
-  if (patch.baseRateCents !== undefined) {
-    await setRateFrom({
-      crewMemberId,
-      rateCentsPerHour: patch.baseRateCents,
-      effectiveFrom: etDayKey(new Date(resolveNowMs())),
-      createdBy: 'crew member updated',
-    });
+  // column stays derived (ledger row 506).
+  //
+  // ORDER MATTERS and this is the deliberate one: the ordinary column update
+  // runs FIRST, then the rate. Either order can leave a partial write, but
+  // the failure this one has to survive is a display-name collision, which is
+  // both the likeliest failure here and the one that fails cleanly — nothing
+  // is written and the rate was never touched. Doing the rate first meant a
+  // name collision threw an error reading as total failure while the rate
+  // change had already landed (delta-verify on PR #1214).
+  //
+  // An update with ONLY a rate in it leaves the payload empty by now, and a
+  // postgrest update with no columns is not a no-op — it is an error. So the
+  // column write is skipped entirely in that case.
+  let updated: CrewMember | null = null;
+  if (Object.keys(payload).length > 0) {
+    updated = await applyCrewMemberPatch(db, crewMemberId, payload);
   }
 
-  // An update with ONLY a rate in it has an empty payload by now, and a
-  // postgrest update with no columns is not a no-op — it is an error. The
-  // rate is already saved at this point, so return the person as they now
-  // stand rather than sending an empty write.
-  if (Object.keys(payload).length === 0) {
+  if (patch.baseRateCents !== undefined) {
+    try {
+      await setRateFrom({
+        crewMemberId,
+        rateCentsPerHour: patch.baseRateCents,
+        effectiveFrom: etDayKey(new Date(resolveNowMs())),
+        createdBy: 'crew member updated',
+      });
+    } catch (err) {
+      // Say what LANDED. By here the other fields are already saved, and a
+      // bare error would read as though none of it had been.
+      const detail = err instanceof Error ? err.message : String(err);
+      const also = updated ? 'The other changes were saved. ' : '';
+      throw new Error(`updateCrewMember: the hourly rate could not be saved (${detail}). ${also}`.trim());
+    }
+    // Re-read: setRateFrom moved base_rate_cents, so anything captured above
+    // is already stale.
     const after = await getCrewMember(crewMemberId);
     if (!after) throw new Error(`updateCrewMember: no row found for id ${crewMemberId}`);
     return after;
   }
 
+  if (!updated) throw new Error(`updateCrewMember: nothing to update for id ${crewMemberId}`);
+  return updated;
+}
+
+/** The column write, lifted out so `updateCrewMember` can skip it entirely
+ * when a patch carries nothing but a rate. Error mapping is unchanged. */
+async function applyCrewMemberPatch(
+  db: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  crewMemberId: string,
+  payload: Record<string, unknown>,
+): Promise<CrewMember> {
   const { data, error } = await db.from('crew_members').update(payload).eq('id', crewMemberId).select(SELECT).maybeSingle();
   if (error) {
     // Unlike insertCrewMember's race, a rename-to-duplicate collision here is

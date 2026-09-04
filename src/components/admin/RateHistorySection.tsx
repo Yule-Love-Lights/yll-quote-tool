@@ -39,12 +39,18 @@ export function RateHistorySection({
   crewMemberId,
   crewName,
   rates,
+  todayEt,
   readable,
 }: {
   crewMemberId: string;
   crewName: string;
   /** Every rate row for this person, OLDEST FIRST. */
   rates: CrewMemberRate[];
+  /** Today's ET calendar day, `YYYY-MM-DD`, resolved on the SERVER. Passed in
+   * rather than computed here so the server render and the client hydration
+   * cannot disagree, and so there is one implementation of "what ET day is
+   * it" rather than two. */
+  todayEt: string;
   /** False when the read FAILED. The panel then says nothing about rates at
    * all rather than showing an empty history, which would read as "this
    * person has never had a rate" — the one thing that is certainly wrong,
@@ -91,10 +97,13 @@ export function RateHistorySection({
   // about what somebody is paid. Found independently by three review lenses
   // on PR #1214, which is what makes it a class rather than a nit.
   //
-  // Computed from the browser's clock, so a viewer in another timezone can be
-  // a few hours out on the day a rate changes. That is display only; every
-  // figure that decides money is resolved server-side against ET.
-  const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  // `todayEt` arrives as a PROP, computed on the server with the same
+  // `etDayKey` the money maths uses. Deriving it here from the browser clock
+  // meant this component rendered once on the server and again on hydration
+  // from two different clocks, which can disagree across ET midnight and
+  // produce a hydration mismatch (delta-verify on PR #1214) — and it was a
+  // second, private implementation of "what ET day is it" sitting beside the
+  // repo's own.
   const currentCents = rateForDay(rates, todayEt);
   // The row that supplies it: the newest one that has already started.
   const currentRow =

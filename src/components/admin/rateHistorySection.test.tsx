@@ -26,12 +26,17 @@ function rate(over: Partial<CrewMemberRate> & { id: string }): CrewMemberRate {
   };
 }
 
+/** Fixed, so "current" does not depend on the day the suite happens to run.
+ * The component takes this from the server rather than reading a clock. */
+const TODAY = '2026-09-04';
+
 function render(rates: CrewMemberRate[], readable = true): string {
   return renderToStaticMarkup(
     <RateHistorySection
       crewMemberId="crew-1"
       crewName="Jason"
       rates={rates}
+      todayEt={TODAY}
       readable={readable}
     />,
   );
@@ -97,6 +102,33 @@ describe('the history it shows', () => {
     expect(text(html)).toContain('starts later');
     // The resolved figure is stated out loud, so an entry-order mistake shows.
     expect(text(html)).toContain('Paid $16.00/hr today');
+  });
+
+  it('takes "today" from the SERVER, so the badge follows the day it is given', () => {
+    // Rendered as if it were 15 Aug 2026: the rate in force is the $13.00 one
+    // that started on the 12th, NOT the $16.00 September rate and not
+    // whatever day the machine running this happens to think it is.
+    //
+    // This is what proves the prop is load-bearing. The reason it EXISTS —
+    // that a component reading its own clock renders one day on the server
+    // and possibly another on hydration — is not reachable from a static
+    // render, and no test here can stand in for it; the type requiring the
+    // prop is what makes reading a clock impossible.
+    const rows = renderToStaticMarkup(
+      <RateHistorySection
+        crewMemberId="crew-1"
+        crewName="Jason"
+        rates={JASON}
+        todayEt="2026-08-15"
+        readable
+      />,
+    );
+    const list = rows.slice(rows.indexOf('<ul'), rows.indexOf('</ul>'));
+    expect(list.indexOf('current')).toBeGreaterThan(list.indexOf('$13.00/hr'));
+    expect(list.indexOf('current')).toBeLessThan(list.indexOf('$10.00/hr'));
+    // September has not started yet on that day.
+    expect(text(rows)).toContain('starts later');
+    expect(text(rows)).toContain('Paid $13.00/hr today');
   });
 
   it('formats the day WITHOUT dragging it through a timezone', () => {
