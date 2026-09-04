@@ -532,3 +532,118 @@ So the complete automatic rule, superseding all earlier partial statements:
 The continuous-window rule makes this cheap: it is two timestamps per crew member per date, not
 a sum of intervals. The per-visit detail (§13b, the job page) is a separate computation over the
 same visits — do not try to derive one from the other.
+
+---
+
+# Part 3 — pay rates CHANGE over time (Jason, 2026-09-04). NOT BUILT.
+
+Captured at the end of Jason's S60 with no code written. Read this before
+touching anything that converts money to hours.
+
+## 16. The problem, and it is live TODAY
+
+`crew_members.base_rate_cents` is ONE number: the person's rate *right now*.
+Every conversion the rollover does — money to hours, hours to a reference
+figure, the panel's ceiling — uses that single value. Rates are not one
+number. Jason's own history:
+
+| From | To | Rate |
+|---|---|---|
+| (beginning) | 11 Aug 2026 | $10.00/h |
+| 12 Aug 2026 | 31 Aug 2026 | $13.00/h |
+| 1 Sept 2026 | today | $16.00/h |
+
+**This is already wrong in prod, not hypothetically.** His oldest unpaid
+shift in the tool is 21 Aug 2026, which sits in the $13.00 window, and his
+`base_rate_cents` is 1600. Paying him today would convert the money at
+$16.00/h and mark off FEWER hours than the money actually bought — about 19%
+fewer on every hour earned before September. Nothing warns about it. The same
+applies to anyone who has ever had a raise.
+
+Scope of the change: **44 non-test references** to `base_rate_cents` /
+`baseRateCents` in `src/` (measured 2026-09-04).
+
+## 17. What it needs
+
+A rate HISTORY, and every conversion resolving the rate **in force on the
+shift's own ET day** rather than the person's current one.
+
+Sketch, not a decision:
+
+    crew_member_rates
+      crew_member_id   uuid    not null references crew_members(id)
+      rate_cents_per_hour integer not null check (> 0)
+      effective_from   date    not null    -- ET calendar day, inclusive
+      created_at / created_by                -- who set it, same stamp style
+      unique (crew_member_id, effective_from)
+
+The rate for a shift = the row with the greatest `effective_from` that is
+`<= ` the shift's ET day. `crew_members.base_rate_cents` stays as the current
+rate (44 consumers, most of them display), seeded into the history as the
+first row, and the two must not be allowed to drift — decide whether the
+column becomes derived or is kept in step deliberately.
+
+## 18. The parts that get harder, so nobody discovers them mid-build
+
+- **`allocatePayment` currently takes ONE rate and divides once.** With a rate
+  per shift that stops being a single division: it has to walk oldest first
+  and spend the money at EACH shift's own rate until it runs out. A payment
+  spanning a raise buys different amounts of time on either side of it.
+- **`secondsBoughtBy` becomes per-shift**, not per-payment.
+- **The ceiling / `excessOverHours`** ("what are these hours worth") becomes a
+  SUM over shifts at their own rates, not `owedSeconds × oneRate`.
+- **`referenceCentsFor` per line already stamps `rate_cents_per_hour`** at
+  payment time. That part is right and should not change: it is what keeps a
+  historical payment honest when a rate later moves.
+- **A shift that spans midnight** takes the rate of the day it STARTED, the
+  same rule the day bucketing already uses. Say it out loud in code.
+- **Editing rate history AFTER payments exist** must not rewrite what was
+  already paid. The stamped line is the record; a history edit changes future
+  conversions only. Decide whether to refuse an `effective_from` that predates
+  a live settlement, or to warn.
+- **The admin needs a screen for it** — add/end a rate, see the history. There
+  is nowhere to enter this today.
+- **Backfill**: one row per person from their current `base_rate_cents`, with
+  an `effective_from` early enough to cover every existing shift, so nothing
+  changes on the day it ships. Then Jason's two earlier rates are entered by
+  hand.
+
+## 19. Jason's spreadsheet, to be imported (S60, not started)
+
+Jason has tracked his own time in a spreadsheet since before this tool and
+wants it loaded in, so his real history lives here and he can settle it with
+the software on his next real payday.
+
+What the sheet looks like (from the screenshot, to be confirmed against the
+actual file):
+
+- Tab **Time Log**: `Date` (e.g. "Sat, Jul 4, 2026") · `Duration` (`8:15:50`)
+  · `Hours` (decimal, `8.26`). Rows run well past the visible window; the
+  screenshot showed 4 Jul 2026 through 4 Sept 2026 on rows 97-146.
+- A **Weekly Totals** block beside it, and a second tab **Monthly Chart**.
+- **Cell colour carries meaning, and it is the only place some of it lives:**
+  - **green** = hours already PAID
+  - **white** = not yet paid
+  - **yellow date** = the first day of a new pay rate (Aug 12 and Sept 1 in
+    the screenshot, matching §16)
+
+**Read the colours, not just the values** — a CSV export would silently drop
+the paid/unpaid state and the rate boundaries. Take the `.xlsx`.
+
+Open questions for the import, to settle BEFORE writing it:
+
+1. What `source` do imported shifts carry? They were never clocked. A new
+   value, or `office` with a `manual_by` stamp saying imported?
+2. Are they `is_test`? No — they are real hours, and that is the point.
+3. How is "already paid" represented? Creating settlements needs an AMOUNT
+   and a method, which the sheet does not record. Options: one settlement per
+   rate period at the computed value, or a single "historical, pre-tool"
+   settlement per person. Either way it must not pretend to know a payment
+   method it does not.
+4. Does it run once, idempotently, and can it be undone if the mapping is
+   wrong? A re-runnable import with an assertable row count, per the repo's
+   own migration habits.
+5. It must land AFTER §17, or every imported hour is valued at $16.00.
+
+**Ordering: rate history first, import second.** Doing the import first would
+bake today's single rate into a year of history.
