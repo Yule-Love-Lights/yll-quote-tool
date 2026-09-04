@@ -792,7 +792,12 @@ export function InWorksSection({
       {awaitingItems.length > 0 && (
         <div className="mb-4">
           <p className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color: 'var(--op-text-2)' }}>
-            Awaiting their reply ({awaitingItems.length})
+            {/* Row 502 sibling follow-up: this counted EVERY awaiting row while
+                the list below renders only the ones wanting a chase, so the
+                heading read 71 above about 50 rows. A count has to describe
+                what is on screen; the parked rows carry their own count on
+                the expander below. */}
+            Awaiting their reply ({awaitingAttention.length})
             {typeof followUpsDue === 'number' && followUpsDue > 0 && (
               <span style={{ color: 'var(--op-text-2)' }}>
                 {' · '}
@@ -818,13 +823,25 @@ export function InWorksSection({
               the old wording ("nothing to do until they write back") would be
               exactly backwards about what is on screen. A guard and the copy
               that narrates it are one change. */}
-          <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            These have gone quiet or are flagged, so they want a chase. The rest are parked
-            below and come back on their own when they need you.
-          </p>
-          <ul className="space-y-2">
-            {awaitingAttention.map((item) => renderRow(item, 'awaiting'))}
-          </ul>
+          {/* Both are suppressed when nothing needs a chase, or the screen
+              says "these have gone quiet" above an empty list. Found while
+              writing the explainer: the heading-count fix turned that state
+              from invisible into reachable. */}
+          {awaitingAttention.length > 0 ? (
+            <>
+              <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
+                These have gone quiet or are flagged, so they want a chase. The rest are parked
+                below and come back on their own when they need you.
+              </p>
+              <ul className="space-y-2">
+                {awaitingAttention.map((item) => renderRow(item, 'awaiting'))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
+              Nobody here needs chasing today.
+            </p>
+          )}
           {awaitingParked.length > 0 && (
             <div className="mt-3">
               {/* Same expander idiom as "Show Handled" below, deliberately: one
