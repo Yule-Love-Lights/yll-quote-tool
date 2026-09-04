@@ -715,17 +715,42 @@ describe('updateCrewMember', () => {
     });
 
     // The mock merges the JS payload into the seed row; this proves field mapping, not Postgres partial-update semantics.
+    //
+    // TWO writes now, not one, and the split is the point (ledger row 506).
+    // A rate no longer rides in this payload: it goes into crew_member_rates
+    // first, and `syncCurrentRate` writes base_rate_cents back from the
+    // history. So the column is derived rather than set, and the two can
+    // never name different numbers.
     expect(stateRef.current.updated).toEqual([
+      { base_rate_cents: 1700, updated_at: expect.any(String) },
       {
         hub_employee_id: null,
         telegram_user_id: '333',
         display_name: 'Little James',
-        base_rate_cents: 1700,
         in_p4p_pool: true,
         pay_mode: 'shadow',
         language: 'en',
         active: true,
       },
+    ]);
+    // ...and the history really is where it came from.
+    expect(stateRef.current.rates).toEqual([
+      expect.objectContaining({ crew_member_id: 'crew-2', rate_cents_per_hour: 1700 }),
+    ]);
+  });
+
+  it('saves a rate-only update through the history, without an empty column write', async () => {
+    // An update carrying ONLY a rate leaves the column payload empty, and a
+    // postgrest update with no columns is an error rather than a no-op. The
+    // rate is already stored by then, so the person is re-read instead.
+    const out = await updateCrewMember('crew-2', { baseRateCents: 2100 } as never);
+    expect(out.baseRateCents).toBe(2100);
+    expect(stateRef.current.rates).toEqual([
+      expect.objectContaining({ crew_member_id: 'crew-2', rate_cents_per_hour: 2100 }),
+    ]);
+    // Exactly one column write, and it is the derived one.
+    expect(stateRef.current.updated).toEqual([
+      { base_rate_cents: 2100, updated_at: expect.any(String) },
     ]);
   });
 
@@ -805,6 +830,20 @@ describe('seeding the rate history when a staff member is created', () => {
     // A far-past day on purpose: a first row anchored to "when they were
     // added" would leave any backdated or imported shift with no rate at all.
     expect(seeded[0]!.effective_from).toBe('2000-01-01');
+  });
+
+  it('gives one to a row created through insertCrewMember as well', async () => {
+    // The OTHER creation door. It writes base_rate_cents directly, so before
+    // this it produced people with a rate on their row and no rate on any
+    // day — the exact landmine row 507's historical import would have hit
+    // (technical lens on PR #1214).
+    await insertCrewMember({
+      displayName: 'Bot Made',
+      baseRateCents: 1500,
+      inP4pPool: false,
+      payMode: 'hourly',
+    });
+    expect(stateRef.current.rates.filter((r) => r.rate_cents_per_hour === 1500)).toHaveLength(1);
   });
 
   it('gives a new FIELD crew member one too — they clock in through the bot and still get paid', async () => {

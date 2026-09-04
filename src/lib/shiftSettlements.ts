@@ -133,23 +133,6 @@ export function referenceCentsFor(paidSeconds: number, rateCentsPerHour: number)
   return Math.round((paidSeconds * rateCentsPerHour) / 3600);
 }
 
-/**
- * PURE. How many SECONDS of work an amount of money buys at a rate.
- *
- * The inverse of `referenceCentsFor`, and the one place this feature turns
- * money into hours. Read the warning in `allocatePayment` before using it:
- * this arithmetic is only true while every hour is worth the base rate.
- *
- * Rounded to the nearest second. A cent buys four seconds at $9/hour, so the
- * rounding here is worth well under a cent and cannot move anybody's pay; it
- * only decides where the boundary between two shifts falls.
- */
-export function secondsBoughtBy(totalCents: number, rateCentsPerHour: number): number {
-  if (!Number.isFinite(totalCents) || !Number.isFinite(rateCentsPerHour)) return 0;
-  if (totalCents <= 0 || rateCentsPerHour <= 0) return 0;
-  return Math.round((totalCents * 3600) / rateCentsPerHour);
-}
-
 /** One shift a payment could be applied to, with what is left owing on it. */
 export type PayableRemainder = {
   shiftId: string;

@@ -19,7 +19,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import type { CrewMemberRate } from '@/lib/crewMemberRates';
+import { rateForDay, type CrewMemberRate } from '@/lib/crewMemberRates';
 import { dollars } from '@/lib/shiftSettlements';
 
 /** `2026-08-12` as a person reads it, without dragging it through a
@@ -83,7 +83,25 @@ export function RateHistorySection({
     }
   }
 
-  const newest = rates.length > 0 ? rates[rates.length - 1] : null;
+  // "Current" means the rate IN FORCE TODAY, resolved by the same function
+  // the money maths uses — NOT simply the newest row. Nothing stops a raise
+  // being entered ahead of time, and taking the last row would then badge a
+  // future rate as current while `base_rate_cents` and the pay panel both
+  // correctly still used the old one: two panels on one page disagreeing
+  // about what somebody is paid. Found independently by three review lenses
+  // on PR #1214, which is what makes it a class rather than a nit.
+  //
+  // Computed from the browser's clock, so a viewer in another timezone can be
+  // a few hours out on the day a rate changes. That is display only; every
+  // figure that decides money is resolved server-side against ET.
+  const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const currentCents = rateForDay(rates, todayEt);
+  // The row that supplies it: the newest one that has already started.
+  const currentRow =
+    [...rates]
+      .filter((r) => r.effectiveFrom <= todayEt)
+      .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1))
+      .pop() ?? null;
 
   return (
     <section className="mb-10">
@@ -152,6 +170,14 @@ export function RateHistorySection({
               </span>
             </div>
 
+            {currentCents > 0 && (
+              <p className="border-b border-gray-200 px-3 py-2 text-xs text-gray-500">
+                Paid <span className="font-semibold tabular-nums">{dollars(currentCents)}/hr</span>{' '}
+                today. Entering a history oldest-first will move this figure as you go — it is
+                whichever rate has started and is newest, so add the later ones before relying on
+                it.
+              </p>
+            )}
             {rates.length === 0 ? (
               <p className="px-3 py-3 text-sm text-gray-500">
                 No rate on record, so none of {crewName}&apos;s hours can be paid yet. Add one.
@@ -162,9 +188,18 @@ export function RateHistorySection({
                   <li key={r.id} className="flex flex-wrap items-baseline gap-3 px-3 py-2 text-sm">
                     <span className="font-medium tabular-nums">{dollars(r.rateCentsPerHour)}/hr</span>
                     <span className="text-gray-500">from {fmtDay(r.effectiveFrom)}</span>
-                    {newest && r.id === newest.id && (
+                    {currentRow && r.id === currentRow.id && (
                       <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-800">
                         current
+                      </span>
+                    )}
+                    {/* A rate that has not started yet. Without this it looks
+                        identical to a past rate, and the only way to tell
+                        them apart is to read the date and do the comparison
+                        yourself. */}
+                    {r.effectiveFrom > todayEt && (
+                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-800">
+                        starts later
                       </span>
                     )}
                     {r.createdBy && (

@@ -292,7 +292,20 @@ export function ShiftPaySection({
                             line is the most rounding can account for. */}
                         {Math.abs(st.referenceCents - st.totalCents) > liveLines.length &&
                           !st.voidedAt && (
-                            <> · {dollars(st.referenceCents)} at the stamped rate</>
+                            <>
+                              {' '}
+                              · {dollars(st.referenceCents)} at the{' '}
+                              {/* SINGULAR only when it really was one rate. A
+                                  payment can now span a raise, and "the
+                                  stamped rate" then names a rate that half
+                                  these hours were never paid at (staff lens
+                                  on PR #1214). The line rates are what the
+                                  settlement actually carries, so read them
+                                  rather than assuming one. */}
+                              {new Set(liveLines.map((l) => l.rateCentsPerHour)).size > 1
+                                ? 'stamped rates'
+                                : 'stamped rate'}
+                            </>
                           )}
                       </span>
                       {st.voidedAt ? (

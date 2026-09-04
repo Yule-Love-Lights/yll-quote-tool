@@ -206,6 +206,16 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/** Name plus email — the same stamp `shifts.manual_by`, `shift_settlements`
+ * `paid_by` and the crew-rates route all use, so every identity on a payroll
+ * screen reads alike and survives a rename. */
+function rateActor(operator: { name: string | null; email: string | null }): string {
+  const name = operator.name?.trim();
+  const email = operator.email?.trim();
+  if (name && email) return `${name} (${email})`;
+  return name || email || 'admin';
+}
+
 export async function PATCH(req: NextRequest) {
   const auth = await requireAdmin();
   if ('response' in auth) return auth.response;
@@ -277,7 +287,13 @@ export async function PATCH(req: NextRequest) {
           { status: 400 },
         );
       }
-      member = await setStaffRate(crewMemberId, baseRateCents);
+      // Stamp WHO changed it. This is the everyday raise path — far more
+      // used than the Rate history panel — and without the actor most real
+      // rate rows would carry no attribution at all, on the one table that
+      // decides what everybody's hours are worth (admin lens on PR #1214).
+      member = await setStaffRate(crewMemberId, baseRateCents, {
+        createdBy: rateActor(auth.operator),
+      });
     } else if (hasTelegram) {
       const parsed = parseTelegramUserId(body?.telegramUserId);
       if (!parsed.ok) {

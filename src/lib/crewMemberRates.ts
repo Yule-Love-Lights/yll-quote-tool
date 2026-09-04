@@ -185,7 +185,7 @@ export async function listRatesFor(
 }
 
 export class RateRefusedError extends Error {
-  readonly reason: 'invalid-rate' | 'invalid-date' | 'not-found' | 'last-rate';
+  readonly reason: 'invalid-rate' | 'invalid-date' | 'not-found' | 'last-rate' | 'uncovers-today';
   constructor(reason: RateRefusedError['reason'], message: string) {
     super(message);
     this.name = 'RateRefusedError';
@@ -269,6 +269,17 @@ export async function setRateFrom(input: {
  * message about a rate that is not set — true, but arriving at it by
  * deleting the only row is a trap rather than a decision. Change the figure
  * instead.
+ *
+ * Refuses, for the same reason, any removal that would leave TODAY with no
+ * rate — which is not the same check, and is reachable: with a future-dated
+ * raise on file, deleting the row that covers today leaves two rows, passes
+ * the count test, and uncovers the present. That state is worse than it
+ * looks. `syncCurrentRate` cannot then recompute `crew_members`
+ * `base_rate_cents`, so it keeps its old value while no rate in the history
+ * supports it, and the forty-odd screens that read it go on displaying a
+ * figure that has silently stopped being true (admin lens on PR #1214).
+ * Refusing here keeps "the column is the rate in force today" an invariant
+ * rather than something that holds until somebody deletes the wrong row.
  */
 export async function deleteRate(input: {
   crewMemberId: string;
@@ -284,6 +295,14 @@ export async function deleteRate(input: {
     throw new RateRefusedError(
       'last-rate',
       'This is the only rate on record. Change the figure rather than removing it, or no day has a rate at all.',
+    );
+  }
+  const today = etDayKey(new Date(resolveNowMs(input.nowIso)));
+  const remaining = existing.filter((r) => r.id !== input.rateId);
+  if (rateForDay(remaining, today) <= 0) {
+    throw new RateRefusedError(
+      'uncovers-today',
+      'Removing this would leave today with no hourly rate at all, so nothing could be paid and the rate shown everywhere else would stop being true. Add the rate that should apply from now first, then remove this one.',
     );
   }
   const { error } = await db
@@ -309,6 +328,20 @@ async function syncCurrentRate(crewMemberId: string, nowIso?: string): Promise<C
   const rates = await listRates(crewMemberId);
   const today = etDayKey(new Date(resolveNowMs(nowIso)));
   const current = rateForDay(rates, today);
+  // Zero means the history covers no rate for TODAY. Both writers now refuse
+  // to create that state — `setRateFrom` only ever adds cover and
+  // `deleteRate` refuses a removal that uncovers today — so reaching here
+  // means something outside this module wrote the table. Leave the column
+  // alone rather than zeroing it: zero is how "no rate" is spelt everywhere
+  // else, and writing it as a side effect would refuse somebody's next
+  // payment for a reason nobody typed. Say so in the log, because a column
+  // that has stopped matching the history is not a state to discover from a
+  // wrong number on a screen.
+  if (current <= 0) {
+    console.error(
+      `syncCurrentRate: ${crewMemberId} has no rate covering ${today}, so crew_members.base_rate_cents was left as it was and no longer matches the history`,
+    );
+  }
   if (current > 0) {
     // Read the row BACK rather than trusting an error-free response. An
     // `.eq()` that matches nothing is not an error in postgrest, so without

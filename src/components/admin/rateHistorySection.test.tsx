@@ -73,6 +73,32 @@ describe('the history it shows', () => {
     expect(html.indexOf('current')).toBeLessThan(html.indexOf('12 Aug 2026'));
   });
 
+  it('badges the rate in force TODAY, not simply the newest row', () => {
+    // A raise scheduled ahead of time. Taking the last row would badge the
+    // FUTURE rate as current, while base_rate_cents and the pay panel both
+    // correctly still used the old one — two panels on one page disagreeing
+    // about what somebody is paid. Found independently by three review
+    // lenses on PR #1214.
+    const future = [
+      rate({ id: 'now', rateCentsPerHour: 1600, effectiveFrom: '2026-09-01' }),
+      rate({ id: 'later', rateCentsPerHour: 2000, effectiveFrom: '2099-01-01' }),
+    ];
+    const html = render(future);
+    // Scoped to the ROW LIST. Against the whole markup this passed for the
+    // wrong reason: "$16.00/hr" also appears in the "Paid ... today" line
+    // ABOVE the list, so the comparison was against that and was trivially
+    // true whichever row carried the badge. A mutation probe caught it.
+    const rows = html.slice(html.indexOf('<ul'), html.indexOf('</ul>'));
+    // Rows run newest first, so $20.00 comes before $16.00; the badge has to
+    // sit on the $16.00 one, which is the rate actually in force today.
+    expect(rows.indexOf('$20.00/hr')).toBeLessThan(rows.indexOf('$16.00/hr'));
+    expect(rows.indexOf('current')).toBeGreaterThan(rows.indexOf('$16.00/hr'));
+    // ...and the future row says so for itself rather than looking like history.
+    expect(text(html)).toContain('starts later');
+    // The resolved figure is stated out loud, so an entry-order mistake shows.
+    expect(text(html)).toContain('Paid $16.00/hr today');
+  });
+
   it('formats the day WITHOUT dragging it through a timezone', () => {
     // effective_from is already an ET calendar day. Parsing it into a Date
     // and formatting that back is free to move it a day, which on a rate

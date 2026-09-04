@@ -16,7 +16,6 @@ import { describe, expect, it } from 'vitest';
 import {
   allocatePayment,
   excessOverHours,
-  secondsBoughtBy,
   valueOfHours,
   type PayableRemainder,
 } from './shiftSettlements';
@@ -35,27 +34,6 @@ function shifts(...secs: number[]): PayableRemainder[] {
     rateCentsPerHour: RATE,
   }));
 }
-
-describe('secondsBoughtBy', () => {
-  it('turns money into seconds at the rate', () => {
-    expect(secondsBoughtBy(18000, RATE)).toBe(20 * H); // $180.00 at $9/h
-    expect(secondsBoughtBy(900, RATE)).toBe(H);
-    expect(secondsBoughtBy(450, RATE)).toBe(H / 2);
-  });
-
-  it('refuses to divide by nothing rather than returning Infinity', () => {
-    expect(secondsBoughtBy(18000, 0)).toBe(0);
-    expect(secondsBoughtBy(0, RATE)).toBe(0);
-    expect(secondsBoughtBy(-100, RATE)).toBe(0);
-    expect(secondsBoughtBy(Number.NaN, RATE)).toBe(0);
-  });
-
-  it('is the inverse of referenceCentsFor to the nearest second', () => {
-    // A cent buys 4 seconds at $9/h, so the rounding is worth well under a
-    // cent and only decides where a shift boundary falls.
-    expect(secondsBoughtBy(1, RATE)).toBe(4);
-  });
-});
 
 describe('allocatePayment — the real case', () => {
   // 24 Aug 4h00, 25 Aug 4h05.6, 26 Aug 4h05.6, 27 Aug 4h00, 28 Aug 4h22.9
@@ -287,12 +265,12 @@ describe('allocatePayment — the rules', () => {
   });
 
   it('never writes a line longer than the shift, however the rounding falls', () => {
-    // One cent short of the whole 4-hour shift at $9.00/h. secondsBoughtBy
-    // rounds 14396 cents back up to 14396s... which is under 4h, but at a
-    // rate where a cent buys 4 seconds the boundary can round the other way,
-    // so the cap is what makes this safe rather than lucky. The database
-    // trigger would refuse an over-long line; a refusal is a worse answer
-    // than the right number.
+    // One cent short of the whole 4-hour shift at $9.00/h. The partial take
+    // rounds to the NEAREST second, and at a rate where a cent buys 4 seconds
+    // that boundary can round either way, so the cap against unpaidSeconds is
+    // what makes this safe rather than lucky. The database trigger would
+    // refuse an over-long line; a refusal is a worse answer than the right
+    // number.
     const out = allocatePayment(shifts(4 * H), 3599);
     expect(out.lines[0].paidSeconds).toBeLessThanOrEqual(4 * H);
     expect(out.lines[0].paidSeconds).toBe(14396);

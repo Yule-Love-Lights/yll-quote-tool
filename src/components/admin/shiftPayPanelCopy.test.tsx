@@ -128,6 +128,17 @@ describe('a day with no rate on record', () => {
     expect(text(render(withGap))).toContain('8h 00m unpaid across 2 shifts');
   });
 
+  it('does not imply per-day rates exist when NONE do', () => {
+    // Every shift rateless. "worth $0.00 at each day's own rate" names a
+    // per-day rate over a zero figure, when the truth is that no rate is on
+    // record at all (staff lens on PR #1214).
+    const out = text(
+      render([shift({ id: 'a', rateCentsPerHour: 0 }), shift({ id: 'b', rateCentsPerHour: 0 })]),
+    );
+    expect(out).toContain('worth $0.00 with no hourly rate on record');
+    expect(out).not.toContain('each day’s own rate');
+  });
+
   it('pluralises when several days have no rate', () => {
     const out = text(
       render([

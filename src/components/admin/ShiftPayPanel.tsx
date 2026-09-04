@@ -120,7 +120,15 @@ export function ShiftPayPanel({
   // still true and can name the figure; more than one means it is not.
   const rates = useMemo(() => distinctRates(payable), [payable]);
   const oneRate = rates.length === 1 ? rates[0] : null;
-  const atRate = oneRate === null ? 'at each day’s own rate' : `at ${dollars(oneRate)}/hr`;
+  // Three cases, not two. With NO rate anywhere, "at each day's own rate"
+  // implies per-day rates exist when none do, over a $0.00 figure — so it
+  // says the true thing instead (staff lens on PR #1214).
+  const atRate =
+    rates.length === 0
+      ? 'with no hourly rate on record'
+      : oneRate === null
+        ? 'at each day’s own rate'
+        : `at ${dollars(oneRate)}/hr`;
 
   // The SAME function the server spends the money with, run here only to show
   // what will happen before it happens. The server re-runs it against a fresh

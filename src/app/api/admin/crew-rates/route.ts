@@ -28,8 +28,10 @@ const REFUSAL_STATUS: Record<RateRefusedError['reason'], number> = {
   'invalid-date': 400,
   'not-found': 404,
   // Well-formed, and refused because of what the record currently is: the
-  // only rate on file cannot be the one you remove.
+  // only rate on file cannot be the one you remove, and neither can the one
+  // that covers today while a later-dated raise is already on file.
   'last-rate': 409,
+  'uncovers-today': 409,
 };
 
 /** Name plus email, the same stamp `shifts.manual_by` and `paid_by` carry, so

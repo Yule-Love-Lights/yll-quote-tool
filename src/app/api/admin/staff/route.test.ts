@@ -312,7 +312,12 @@ describe('PATCH /api/admin/staff', () => {
     expect(setStaffActive).toHaveBeenCalledWith('crew-office', false);
 
     expect((await PATCH(patch({ crewMemberId: 'crew-office', hourlyRate: '30' }))).status).toBe(200);
-    expect(setStaffRate).toHaveBeenCalledWith('crew-office', 3000);
+    // The ACTOR is stamped now (ledger row 506). This is the everyday raise
+    // path, so without it most real rate rows would carry no attribution at
+    // all on the table that decides what everybody's hours are worth.
+    expect(setStaffRate).toHaveBeenCalledWith('crew-office', 3000, {
+      createdBy: expect.any(String),
+    });
 
     expect((await PATCH(patch({ crewMemberId: 'crew-office', telegramUserId: '987654321' }))).status).toBe(200);
     expect(setStaffTelegram).toHaveBeenCalledWith('crew-office', '987654321');
@@ -322,7 +327,7 @@ describe('PATCH /api/admin/staff', () => {
     setStaffRate.mockResolvedValueOnce({ ...FIELD, baseRateCents: 1800 });
     const res = await PATCH(patch({ crewMemberId: 'crew-1', hourlyRate: '18' }));
     expect(res.status).toBe(200);
-    expect(setStaffRate).toHaveBeenCalledWith('crew-1', 1800);
+    expect(setStaffRate).toHaveBeenCalledWith('crew-1', 1800, { createdBy: expect.any(String) });
   });
 
   it('treats telegramUserId null as UNLINK, and refuses an @handle', async () => {
