@@ -221,3 +221,48 @@ describe('a shift whose clock times are a PLACEHOLDER', () => {
     expect(out).toContain('start time approximate');
   });
 });
+
+describe('the green row: a shift a payment has covered in full', () => {
+  // Jason's ask from his own device round (S62): the tint is the paid/unpaid
+  // split read down the list. It must agree with the WORD beside it on both
+  // pages, so each case here checks the class AND the text together.
+  const WHOLE = { settlementId: 'st-1', settledSeconds: 8 * 3600 };
+  const HALF = { settlementId: 'st-1', settledSeconds: 3 * 3600 };
+  const rowClass = (html: string) => html.match(/<li class="([^"]*)"/)?.[1] ?? '';
+
+  it('tints the admin row that is locked as Paid', () => {
+    const html = render('admin', WHOLE);
+    expect(rowClass(html)).toContain('bg-green-50');
+    expect(html).toContain('Paid — undo');
+  });
+
+  it('leaves the admin row white when the payment stopped part way, and says how much', () => {
+    const html = render('admin', HALF);
+    expect(rowClass(html)).not.toContain('bg-green-50');
+    expect(html).toContain('3h 00m of this is paid');
+  });
+
+  it('leaves an unpaid admin row white', () => {
+    expect(rowClass(render('admin'))).not.toContain('bg-green-50');
+  });
+
+  it('tints the staff row that carries the Paid pill', () => {
+    const html = render('none', WHOLE, true);
+    expect(rowClass(html)).toContain('bg-green-50');
+    expect(html).toContain('>Paid<');
+  });
+
+  it('leaves the staff row white when the payment stopped part way', () => {
+    const html = render('none', HALF, true);
+    expect(rowClass(html)).not.toContain('bg-green-50');
+    expect(html).toContain('3h 00m of 8h 00m paid');
+  });
+
+  it('never tints a staff row when the settlement read failed, even on a settled shift', () => {
+    // showPaidMarks=false is the failed-read case: no pill, and no tint
+    // either, because a green row is the same claim as the word.
+    const html = render('none', WHOLE, false);
+    expect(rowClass(html)).not.toContain('bg-green-50');
+    expect(html).not.toContain('>Paid<');
+  });
+});
