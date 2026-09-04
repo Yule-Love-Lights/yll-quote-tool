@@ -1691,6 +1691,11 @@ describe('listInWorks — parallel fetch (#185)', () => {
         customerName: 'Awaiting Amy',
         lastActivityAt: '2026-07-20T10:00:00Z',
         needsLookReason: null,
+        // Row 502: mapInWorksRow now carries what backed the follow-up
+        // stamp, so the list can mark one that nothing corroborates. Null
+        // here because these fixtures predate the column, which is exactly
+        // the real-world case the UI stays silent about.
+        followedVia: null,
         isColorRequest: false,
       },
     ]);
@@ -1704,6 +1709,11 @@ describe('listInWorks — parallel fetch (#185)', () => {
         customerName: 'Handled Hank',
         lastActivityAt: '2026-07-21T09:00:00Z',
         needsLookReason: null,
+        // Row 502: mapInWorksRow now carries what backed the follow-up
+        // stamp, so the list can mark one that nothing corroborates. Null
+        // here because these fixtures predate the column, which is exactly
+        // the real-world case the UI stays silent about.
+        followedVia: null,
         isColorRequest: false,
       },
     ]);
