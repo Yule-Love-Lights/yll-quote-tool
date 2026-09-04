@@ -146,8 +146,17 @@ function ShiftRow({
         // is a branch and not a comment.
         'Closed by the midnight sweep — ask them what time they stopped'
       : 'Closed by the midnight sweep — tell the office what time you stopped';
+  // The self-view's paid mark, derived ONCE and read by both the pill and the
+  // row tint below (technical lens on PR #1219: two separate re-derivations
+  // of one fact is how a tint and its word drift apart). `paidMark` needs a
+  // trustworthy settlement read (showPaidMarks) and some money against the
+  // shift; `paidInFull` is the WHOLE shift covered, which tints the row
+  // green (Jason, 2026-09-04, from his own phone). A half-paid shift stays
+  // white and its pill says how much.
+  const paidMark = showPaidMarks && controls === 'none' && shift.settledSeconds > 0;
+  const paidInFull = paidMark && shift.settledSeconds >= shift.paidSeconds;
   return (
-    <li className="px-4 py-2.5 sm:px-5">
+    <li className={`px-4 py-2.5 sm:px-5${paidInFull ? ' bg-green-50' : ''}`}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         {/* The duration leads: it is the payroll fact. The clock times follow,
             and on a placeholder row they step back to grey, because a
@@ -212,9 +221,9 @@ function ShiftRow({
           {/* A record, not a control: the staff page cannot undo a payment,
               and the amount is never shown here (hours only — the office
               records what was paid, which is not always hours times a rate). */}
-          {showPaidMarks && controls === 'none' && shift.settledSeconds > 0 && (
+          {paidMark && (
             <Pill tone="neutral">
-              {shift.settledSeconds >= shift.paidSeconds
+              {paidInFull
                 ? 'Paid'
                 : // A payment can stop half way through a shift, and saying
                   // only "Paid" there would claim money that was never handed

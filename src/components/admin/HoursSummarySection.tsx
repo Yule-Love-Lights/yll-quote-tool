@@ -19,13 +19,6 @@ const fmtEtTime = (iso: string) =>
     minute: '2-digit',
   });
 
-const fmtEtDateTime = (iso: string) =>
-  new Date(iso).toLocaleString('en-US', {
-    timeZone: 'America/New_York',
-    dateStyle: 'short',
-    timeStyle: 'short',
-  });
-
 const SOURCE_LABEL: Record<string, string> = {
   office: 'web clock',
   telegram: 'Telegram',
@@ -38,25 +31,23 @@ const TD = 'px-4 py-3 whitespace-nowrap sm:px-5';
 
 export function HoursSummarySection({
   rows,
-  asOf,
   errors,
 }: {
   rows: PersonHours[];
-  asOf: string;
   errors: string[];
 }) {
-  const anyAutoClosed = rows.some((r) => r.autoClosed.count > 0);
   return (
+    // No subtitle and no "as of" footer (Jason, 2026-09-04, from his own
+    // device round): the "clocked, not paid" sentence the admin lens on PR
+    // #1176 asked for is kept, in the disclosure. The amber pills on the
+    // rows still say which totals the midnight sweep has inflated.
     <Card
       title="Hours"
-      // "Clocked", not "paid" (admin lens on PR #1176): nothing on this page
-      // is approved or paid, and this is the sentence an owner reads before
-      // the numbers, so it stays in the header rather than in the help.
-      subtitle="Clocked time: clock-in to clock-out, minus breaks. Nothing here is approved or paid."
       help={
         <>
           <p>
-            A shift counts on the day it started (New York time), and someone still clocked in
+            Clocked time: clock-in to clock-out, minus breaks. Nothing here is approved or paid. A
+            shift counts on the day it started (New York time), and someone still clocked in
             counts up to now. Rolling windows, today included.
           </p>
           {/* The fix path has to name a door that EXISTS for the row it is
@@ -78,14 +69,6 @@ export function HoursSummarySection({
         </>
       }
       flush
-      footer={
-        <p className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
-          As of {fmtEtDateTime(asOf)} ET.
-          {anyAutoClosed
-            ? ' Amber rows include hours the system closed at midnight; nothing here is approved or paid, and those totals are wrong until the shifts are corrected.'
-            : ''}
-        </p>
-      }
     >
       {errors.length > 0 && (
         <div className="px-4 pt-4 sm:px-5">

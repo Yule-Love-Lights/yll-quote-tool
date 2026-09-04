@@ -126,15 +126,33 @@ export function MyHoursSection({
         </div>
       )}
 
+      {/* No subtitle and no footnotes (Jason, 2026-09-04, reading it on his
+          phone): the page is the list. The two things those paragraphs
+          carried that still matter — what a green row means, and where a
+          wrong time gets fixed — live in the disclosure, one tap away, so
+          the door is still named without the page saying it every time. */}
       <Card
         title="Shifts"
-        subtitle="Your clocked time, day by day. This is a record of hours, not a payslip: it does not say what you have been paid."
         aside={<RangeTabs basePath={basePath} range={range} />}
+        // Named for the question a staffer actually brings here (staff lens
+        // on PR #1219): nobody looks under "how this is counted" for who
+        // fixes a wrong time.
+        helpLabel="How this works, and who fixes a wrong time"
         help={
-          <p>
-            A shift counts on the day it started (New York time), so a shift that ran past midnight
-            shows in full on the day it began.
-          </p>
+          <>
+            <p>
+              A shift counts on the day it started (New York time), so a shift that ran past
+              midnight shows in full on the day it began.
+            </p>
+            <p>
+              A green row marked Paid is one the office has recorded a payment against. Anything
+              unmarked has not been paid yet.
+            </p>
+            <p>
+              Something wrong? Ask the office to correct it — a time can only be changed by an
+              admin, and the change is recorded against your shift with their name on it.
+            </p>
+          </>
         }
         flush
       >
@@ -184,20 +202,6 @@ export function MyHoursSection({
           />
         )}
       </Card>
-
-      {days.length > 0 && settlementsReadable && (
-        <p className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
-          A shift marked <span className="font-medium text-gray-700">Paid</span> is one the office
-          has recorded a payment against. Anything unmarked has not been paid yet. This page does
-          not work out what you are owed — the office records what was actually paid, which is not
-          always hours times a rate.
-        </p>
-      )}
-
-      <p className="mt-3 text-xs" style={{ color: 'var(--op-text-dim)' }}>
-        Something wrong? Ask the office to correct it — a time can only be changed by an admin, and
-        the change is recorded against your shift with their name on it.
-      </p>
     </>
   );
 }
