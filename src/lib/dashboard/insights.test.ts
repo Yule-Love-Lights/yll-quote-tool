@@ -168,3 +168,44 @@ describe('insights — terminal statuses excluded from booked revenue (#110 W7-0
     expect(s.closeRatio).toBeNull();
   });
 });
+
+// The close ratio and the homepage conversion rate must cover the SAME quotes.
+// That is why they share reached() (WT-48) and, since 2026-09-04, the cooling
+// window too: a quote sent yesterday is undecided on both screens or neither.
+describe('computeInsightStats — the shared cooling window', () => {
+  const days = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+  it('leaves a quote sent inside the window out of the close ratio', () => {
+    const s = computeInsightStats(
+      [
+        makeQuote({ quote_sent_at: days(30), customer_approved_at: days(28) }),
+        makeQuote({ quote_sent_at: days(1) }),
+      ],
+      NOW,
+    );
+    // Counting the fresh one would read 1/2. It has not had a chance to answer.
+    expect(s.closeRatio).toBe(1);
+  });
+
+  it('agrees with computeKpis on the same quotes', async () => {
+    const { computeKpis } = await import('./metrics');
+    const quotes = [
+      makeQuote({ quote_sent_at: days(30), customer_approved_at: days(28) }),
+      makeQuote({ quote_sent_at: days(30) }),
+      makeQuote({ quote_sent_at: days(1) }),
+    ];
+    expect(computeInsightStats(quotes, NOW).closeRatio).toBe(computeKpis(quotes, NOW).conversionRate);
+  });
+
+  // Money and time-to-close are not ratios. A deal closed yesterday is real.
+  it('still counts a fresh win in booked total, job value and time to close', () => {
+    const s = computeInsightStats(
+      [makeQuote({ total: 4200, quote_sent_at: days(1), customer_approved_at: days(0) })],
+      NOW,
+    );
+    expect(s.totalBooked).toBe(4200);
+    expect(s.avgJobValue).toBe(4200);
+    expect(s.timeToCloseDays).not.toBeNull();
+    expect(s.closeRatio).toBeNull();
+  });
+});
