@@ -48,7 +48,7 @@
  * times are not, and every imported row says so in `manual_by`.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 function loadEnvLocal(): void {
@@ -81,12 +81,24 @@ const JASON = 'f883e4fe-6eed-4c60-8581-b72570f8fccd';
 /** Stamped on every imported shift, so nothing here is ever mistaken for a
  * real clock-in. Also the marker `--undo` finds them by. */
 const IMPORT_STAMP = 'imported from Time Tracker.xlsx (row 507)';
-/** Where the deleted rows are recorded before they are deleted.
+/**
+ * Where the deleted rows are recorded, before they are deleted.
+ *
+ * A NEW FILE EVERY TIME, stamped with the instant. The first version of this
+ * used one fixed name written from two places — the import's delete and
+ * `--undo` — so running the documented `--live` then `--live --undo` sequence
+ * silently overwrote the record of the first deletion with the second, which
+ * is the exact unrecoverable loss this whole mechanism exists to prevent. The
+ * delta-verify on PR #1215 found it in the fix for that same bug.
  *
  * Under the repo root only because that is where this is run from, and
- * .gitignore keeps it out of git: it holds real payroll rows and is a recovery
- * copy for a person, never source. Move it somewhere safe afterwards. */
-const BACKUP_PATH = resolve(process.cwd(), 'timesheet-import-deleted-shifts.json');
+ * .gitignore keeps the pattern out of git: these hold real payroll rows and
+ * are a recovery copy for a person, never source.
+ */
+function backupPathFor(now: Date): string {
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  return resolve(process.cwd(), `timesheet-import-deleted-${stamp}.json`);
+}
 
 type Db = NonNullable<ReturnType<typeof getSupabaseServiceClient>>;
 
@@ -152,7 +164,18 @@ export async function backupBeforeDeleting(
   label: string,
   shiftIds: readonly string[],
   shifts: readonly unknown[],
-): Promise<{ settlementIds: string[] }> {
+): Promise<{ settlementIds: string[]; backupPath: string }> {
+  // The caller handed us `shifts`; the read-back below only proves the FILE
+  // matches THAT. If the caller's own read came back short — a failed query
+  // silently yielding [] is the ordinary way this happens — the file would
+  // faithfully record nothing and the delete would proceed. So the count is
+  // checked against the ids we were asked to delete, which is the one number
+  // that cannot have come from the same failed read.
+  if (shifts.length !== shiftIds.length) {
+    throw new Error(
+      `backup: asked to delete ${shiftIds.length} shifts but handed ${shifts.length} rows to record. Nothing was deleted.`,
+    );
+  }
   const { data: lineRows, error: lineErr } = await db
     .from('shift_settlement_lines')
     .select('*')
@@ -171,13 +194,18 @@ export async function backupBeforeDeleting(
     settlements = stRows ?? [];
   }
 
-  const doc = { deletedAt: new Date().toISOString(), reason: label, shifts, settlements, lines };
-  writeFileSync(BACKUP_PATH, JSON.stringify(doc, null, 2));
+  const now = new Date();
+  const backupPath = backupPathFor(now);
+  if (existsSync(backupPath)) {
+    throw new Error(`backup: ${backupPath} already exists. Nothing was deleted.`);
+  }
+  const doc = { deletedAt: now.toISOString(), reason: label, shifts, settlements, lines };
+  writeFileSync(backupPath, JSON.stringify(doc, null, 2));
 
   // Read it BACK and check every population, not merely that the write
   // returned. A truncated or partial file is exactly the failure this exists
   // to prevent, and it looks like success from the writing side.
-  const check = JSON.parse(readFileSync(BACKUP_PATH, 'utf8')) as {
+  const check = JSON.parse(readFileSync(backupPath, 'utf8')) as {
     shifts: unknown[];
     settlements: unknown[];
     lines: unknown[];
@@ -190,9 +218,9 @@ export async function backupBeforeDeleting(
     throw new Error('The backup did not land intact, so NOTHING was deleted. Check the disk and re-run.');
   }
   console.log(
-    `  backed up ${shifts.length} shifts, ${settlements.length} settlements, ${lines.length} lines -> ${BACKUP_PATH}`,
+    `  backed up ${shifts.length} shifts, ${settlements.length} settlements, ${lines.length} lines -> ${backupPath}`,
   );
-  return { settlementIds };
+  return { settlementIds, backupPath };
 }
 
 /**
@@ -208,6 +236,7 @@ export async function backupBeforeDeleting(
  * state than a missing entry.
  */
 async function writeDeletionAudit(db: Db, shifts: readonly unknown[]): Promise<void> {
+  let written = 0;
   for (const raw of shifts) {
     const shift = raw as Record<string, unknown>;
     const { error } = await db.from('dashboard_activity').insert({
@@ -222,8 +251,11 @@ async function writeDeletionAudit(db: Db, shifts: readonly unknown[]): Promise<v
       },
     });
     if (error) console.error(`  audit entry for shift ${String(shift.id)} failed: ${error.message}`);
+    else written += 1;
   }
-  console.log(`  wrote ${shifts.length} audit entries`);
+  // The count of what LANDED. Reporting the attempted total would say "wrote
+  // 3 audit entries" over three failures.
+  console.log(`  wrote ${written} of ${shifts.length} audit entries`);
 }
 
 async function undo(db: Db): Promise<void> {
@@ -239,7 +271,12 @@ async function undo(db: Db): Promise<void> {
 
   // By the time anybody runs this, a REAL payment may have been recorded
   // against one of the imported shifts, so the record goes first here too.
-  const { data: fullShifts } = await db.from('shifts').select('*').in('id', ids);
+  // A failed read here yields [] and would "back up" nothing while reporting
+  // success, so the error is checked rather than shrugged at. The helper
+  // cross-checks the count too; both, because this is the last thing standing
+  // between somebody and a deleted payment.
+  const { data: fullShifts, error: readErr } = await db.from('shifts').select('*').in('id', ids);
+  if (readErr) throw new Error(`undo: reading the shifts to back up: ${readErr.message}`);
   const { settlementIds } = await backupBeforeDeleting(db, 'undo', ids, (fullShifts ?? []) as unknown[]);
 
   // Settlements first: a shift with a live payment line refuses to be deleted
@@ -252,6 +289,13 @@ async function undo(db: Db): Promise<void> {
   const { error: delError } = await db.from('shifts').delete().in('id', ids);
   if (delError) throw new Error(`undo: deleting shifts: ${delError.message}`);
   console.log(`  removed ${ids.length} imported shifts`);
+
+  // Same reason as the import path: the Manual changes panel promises a
+  // removed shift always leaves its entry, and undo bypasses the same guard.
+  // The fix round wired this into the import and forgot undo, which the
+  // delta-verify caught — the more dangerous of the two, since by the time
+  // anybody runs undo a REAL payment may have been recorded.
+  await writeDeletionAudit(db, (fullShifts ?? []) as unknown[]);
 }
 
 async function main(): Promise<void> {
@@ -534,9 +578,18 @@ async function main(): Promise<void> {
 // exercised on their own. The backup step in particular is a guarantee that
 // nothing else verifies, and a guarantee nobody has watched work is a
 // hypothesis — which is how it came to be half-written in the first place.
-const entry = process.argv[1] ?? '';
-const entryName = entry.split(/[\\/]/).pop() ?? '';
-if (entryName !== '' && import.meta.url.endsWith(entryName)) {
+// Run when invoked directly, so the helpers above stay importable and can be
+// exercised on their own. Matching on the basename WITH its extension made
+// this silently no-op when the script was invoked without `.ts` — exit 0, no
+// output, a live migration that looks like it ran and did nothing (delta-
+// verify on PR #1215). Comparing the extension-less stem fixes that, and the
+// fallback is to RUN: for a migration script, running when it should not have
+// is loud and recoverable, whereas silently doing nothing is neither.
+const entryStem = (process.argv[1] ?? '')
+  .split(/[\\/]/)
+  .pop()
+  ?.replace(/\.[cm]?[jt]s$/, '');
+if (!entryStem || import.meta.url.includes(`/${entryStem}.`)) {
   main().catch((err) => {
     console.error(err);
     process.exitCode = 1;
