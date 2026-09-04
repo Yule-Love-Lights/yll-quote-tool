@@ -104,6 +104,9 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       // every creation test dies on an unknown table — which is how these
       // tests proved the write is genuinely reached on both paths.
       rates: [] as Record<string, unknown>[],
+      // Fails the rate write ALONE, so the half-created-staff-member path can
+      // be exercised without also breaking the crew_members insert.
+      rateUpsertError: null as { message: string } | null,
     },
   },
 }));
@@ -169,6 +172,9 @@ function makeDb() {
       if (table === 'crew_member_rates') {
         const rateBuilder = {
           upsert: (payload: Record<string, unknown>) => {
+            if (stateRef.current.rateUpsertError) {
+              return Promise.resolve({ error: stateRef.current.rateUpsertError });
+            }
             const i = stateRef.current.rates.findIndex(
               (r) =>
                 r.crew_member_id === payload.crew_member_id &&
@@ -375,11 +381,13 @@ beforeEach(() => {
     updated: [],
     blockedDeleteIds: [],
     rates: [],
+    rateUpsertError: null,
   };
   dbRef.current = makeDb();
 });
 
 import {
+  createFieldCrewMember,
   ensureCrewSessionEpoch,
   getCrewMember,
   getCrewMemberByTelegramUserId,
@@ -781,6 +789,38 @@ describe('listLinkedAuthUserIds', () => {
     const ids = await listLinkedAuthUserIds();
     expect(ids.has('op-kelly')).toBe(true);
     expect(ids.size).toBe(1);
+  });
+});
+
+// Ledger row 506: a person's rate now lives in a HISTORY, and their
+// crew_members.base_rate_cents is derived from it. A staff member created
+// without a history row would have a rate on their row and no rate on any
+// DAY, so every hour they work would be unpayable — the feature dead for
+// exactly the people it was set up for.
+describe('seeding the rate history when a staff member is created', () => {
+  it('gives a new office staff member a first rate row, from far enough back to cover any shift', async () => {
+    await linkOfficeStaff({ authUserId: 'op-new', displayName: 'Fresh', baseRateCents: 2500 });
+    const seeded = stateRef.current.rates.filter((r) => r.rate_cents_per_hour === 2500);
+    expect(seeded).toHaveLength(1);
+    // A far-past day on purpose: a first row anchored to "when they were
+    // added" would leave any backdated or imported shift with no rate at all.
+    expect(seeded[0]!.effective_from).toBe('2000-01-01');
+  });
+
+  it('gives a new FIELD crew member one too — they clock in through the bot and still get paid', async () => {
+    await createFieldCrewMember({ displayName: 'Fresh Field', baseRateCents: 1800 });
+    expect(stateRef.current.rates.filter((r) => r.rate_cents_per_hour === 1800)).toHaveLength(1);
+  });
+
+  it('says the person WAS added when only the rate seed fails, and names where to finish it', async () => {
+    // The raw error would read as "adding them failed", so the office would
+    // try again and hit a duplicate name. Half-done has to say so.
+    stateRef.current.rateUpsertError = { message: 'connection reset' };
+    await expect(
+      createFieldCrewMember({ displayName: 'Half Done', baseRateCents: 1800 }),
+    ).rejects.toThrow(/Half Done was added, but their hourly rate could not be saved/);
+    // The person really is there, which is what makes that message true.
+    expect(stateRef.current.rows.some((r) => r.display_name === 'Half Done')).toBe(true);
   });
 });
 

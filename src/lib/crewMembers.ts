@@ -483,12 +483,29 @@ async function insertStaffRow(input: {
   // backdated by the office or imported later, may fall before their first
   // rate.
   if (staff.baseRateCents > 0) {
-    await setRateFrom({
-      crewMemberId: staff.id,
-      rateCentsPerHour: staff.baseRateCents,
-      effectiveFrom: RATE_HISTORY_EPOCH,
-      createdBy: 'staff row created',
-    });
+    try {
+      await setRateFrom({
+        crewMemberId: staff.id,
+        rateCentsPerHour: staff.baseRateCents,
+        effectiveFrom: RATE_HISTORY_EPOCH,
+        createdBy: 'staff row created',
+      });
+    } catch (err) {
+      // The PERSON exists at this point and the seed did not. Rethrowing the
+      // raw error would tell the office "adding them failed" when half of it
+      // succeeded, and they would try again and hit a duplicate name. So the
+      // message says what is actually true and where to finish it.
+      //
+      // Deliberately NOT unwound by deleting the person: they may already be
+      // referenced, and the recoverable state (a real staff member who
+      // cannot be paid until a rate is entered, which every rate screen says
+      // out loud) is far better than deleting a row that might not delete
+      // cleanly. The rate history screen renders exactly this case already.
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `${staff.displayName} was added, but their hourly rate could not be saved (${detail}). Open their time page and set the rate under Rate history — their hours cannot be paid until you do.`,
+      );
+    }
   }
   return staff;
 }
