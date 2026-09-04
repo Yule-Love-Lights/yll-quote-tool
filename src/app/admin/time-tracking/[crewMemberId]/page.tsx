@@ -15,10 +15,14 @@
 // adminVoidShift carry no is_office condition and never did, so no guard is
 // relaxed here — the rows were always writable, and had no screen.
 //
-// Deliberately NOT here: adding a shift from nothing for an office person.
-// adminCreateShift refuses that by name ('not-field-crew'), and lifting a
-// payroll guard is its own decision with its own review, not a side effect of
-// building a page. Ledger row for it, not a quiet change.
+// Adding a shift from nothing for an office person now lives here too (S61).
+// adminCreateShift used to refuse that by name ('not-field-crew'), reasoning
+// that an office row "would also be invisible on the review page afterward" —
+// this IS that review page, and it has shown office shifts since it shipped,
+// so the reason the refusal existed no longer holds. Ann (office) not
+// clocking in on 2026-08-24 is what surfaced there was no way to record her
+// hours anywhere. adminUpdateShiftTimes and adminVoidShift still carry no
+// is_office condition and never did, so nothing else here changes.
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
@@ -92,6 +96,9 @@ export default async function PersonTimePage({
       })
     : null;
   const basePath = `/admin/time-tracking/${encodeURIComponent(crewMemberId)}`;
+  // Resolved once, here, so the Add-a-shift default date and the rate
+  // history below it cannot land on different days.
+  const todayEt = etDayKey(new Date());
 
   if (!time.person) {
     return (
@@ -142,8 +149,10 @@ export default async function PersonTimePage({
         </div>
 
         <PersonHoursSection
+          crewMemberId={person.id}
           crewName={person.displayName}
           isOffice={person.isOffice}
+          active={person.active}
           days={time.days}
           range={time.range}
           totalSeconds={time.totalSeconds}
@@ -152,6 +161,7 @@ export default async function PersonTimePage({
           openShift={time.openShift}
           errors={time.errors}
           basePath={basePath}
+          todayEt={todayEt}
         />
 
         <ShiftPaySection
@@ -174,9 +184,10 @@ export default async function PersonTimePage({
           crewMemberId={person.id}
           crewName={person.displayName}
           rates={rates ?? []}
-          // Resolved HERE, with the same helper the rate maths uses, so the
-          // server render and the browser cannot land on different days.
-          todayEt={etDayKey(new Date())}
+          // Same value the Add-a-shift default date above uses (resolved
+          // once, at the top of this render), so the server render and the
+          // browser cannot land on different days.
+          todayEt={todayEt}
           readable={rates !== null}
         />
 

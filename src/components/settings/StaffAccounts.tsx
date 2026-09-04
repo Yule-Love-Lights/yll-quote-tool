@@ -251,13 +251,19 @@ export function StaffAccounts() {
     // on PR #1176; an earlier version of this comment claimed the roster was
     // the only one): the job-assignment roster (listActiveFieldCrew), whether
     // their shifts appear on the two clocks page (fleetDay.ts lists field
-    // shifts only), and whether an admin can add or fix their shifts by hand
-    // (adminCreateShift refuses office crew). It says nothing about their
-    // login or their own clock, because it changes neither.
+    // shifts only), and whether they show up in THAT page's quick-add
+    // dropdown (also fed by listActiveFieldCrew). Adding or correcting a
+    // shift by hand is NOT one of the three any more (it was, before S61):
+    // adminCreateShift used to refuse an office row outright, but
+    // /admin/time-tracking/[id] now offers the same add/edit/void controls
+    // for office and field alike, so moving someone to office only moves
+    // where you'd add their shift by hand, never whether you can. It says
+    // nothing about their login or their own clock, because it changes
+    // neither.
     const next = !row.isOffice;
     const message = next
-      ? `Move ${row.displayName} to office? They will no longer be offered when you assign crew to a job, their shifts will leave the two clocks page, and their shifts can no longer be added or corrected by hand there. Their login and their own clock are unchanged.`
-      : `Move ${row.displayName} to field crew? They will start being offered when you assign crew to a job, their shifts will appear on the two clocks page, and their shifts can be added or corrected by hand there. Their login and their own clock are unchanged.`;
+      ? `Move ${row.displayName} to office? They will no longer be offered when you assign crew to a job, and their shifts will leave the two clocks page (add or correct their shifts by hand on their own hours page instead). Their login and their own clock are unchanged.`
+      : `Move ${row.displayName} to field crew? They will start being offered when you assign crew to a job, and their shifts will appear on the two clocks page, including its quick-add form. Their login and their own clock are unchanged.`;
     if (!window.confirm(message)) return;
     void patchRow(
       row,
