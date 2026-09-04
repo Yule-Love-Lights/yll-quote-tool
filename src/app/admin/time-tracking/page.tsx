@@ -73,10 +73,7 @@ export default async function TimeTrackingPage() {
   return (
     <OperatorShell active="time">
       <main className="max-w-5xl mx-auto">
-        <PageHeader
-          title="Time tracking"
-          subtitle="Everyone's clocked hours and the time-exception queue. Only admins see this page."
-        />
+        <PageHeader title="Time tracking" subtitle="Only admins see this page." />
 
         <StatStrip>
           {/* All four flip on a failed read, not just the two that sum
@@ -122,7 +119,7 @@ export default async function TimeTrackingPage() {
           />
         </StatStrip>
 
-        <HoursSummarySection rows={hours.rows} asOf={hours.asOf} errors={hours.errors} />
+        <HoursSummarySection rows={hours.rows} errors={hours.errors} />
 
         <TimeExceptionsSection
           exceptions={exceptions}

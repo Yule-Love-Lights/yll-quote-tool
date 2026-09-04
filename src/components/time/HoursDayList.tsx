@@ -146,8 +146,19 @@ function ShiftRow({
         // is a branch and not a comment.
         'Closed by the midnight sweep — ask them what time they stopped'
       : 'Closed by the midnight sweep — tell the office what time you stopped';
+  // On the self-view a shift a payment has covered in full is tinted green
+  // (Jason, 2026-09-04, from his own phone), so the paid/unpaid split reads
+  // down the list without hunting for the pill. Same condition as the "Paid"
+  // pill below, so the tint and the word cannot disagree: it needs a
+  // trustworthy settlement read (showPaidMarks) and the WHOLE shift covered.
+  // A half-paid shift stays white and says so on its pill.
+  const paidInFull =
+    showPaidMarks &&
+    controls === 'none' &&
+    shift.settledSeconds > 0 &&
+    shift.settledSeconds >= shift.paidSeconds;
   return (
-    <li className="px-4 py-2.5 sm:px-5">
+    <li className={`px-4 py-2.5 sm:px-5${paidInFull ? ' bg-green-50' : ''}`}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         {/* The duration leads: it is the payroll fact. The clock times follow,
             and on a placeholder row they step back to grey, because a
