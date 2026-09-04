@@ -129,6 +129,103 @@ function readRows(jsonPath: string): TimesheetRow[] {
   });
 }
 
+/**
+ * Capture every row a shift deletion will destroy, and prove the file landed,
+ * BEFORE anything is deleted.
+ *
+ * THE SHIFTS ARE NOT THE ONLY THING THAT GOES. Deleting a shift means deleting
+ * the settlement lines pointing at it — the FK is NO ACTION, so Postgres
+ * refuses otherwise — and the settlements those lines belonged to. The first
+ * version of this script backed up the shifts ALONE while its own comment
+ * quoted the rule it was breaking: the record goes first, or the deletion does
+ * not happen. It destroyed the $1.00 settlement from Jason's first test of the
+ * payment model, and nothing anywhere held a copy. Both review lenses on
+ * PR #1215 found it independently.
+ *
+ * So the backup is taken here, once, for every path that deletes — the import
+ * AND `--undo`, which previously took no backup at all and is the more
+ * dangerous of the two: by the time anybody runs it, a REAL payment may have
+ * been recorded against one of the imported shifts.
+ */
+export async function backupBeforeDeleting(
+  db: Db,
+  label: string,
+  shiftIds: readonly string[],
+  shifts: readonly unknown[],
+): Promise<{ settlementIds: string[] }> {
+  const { data: lineRows, error: lineErr } = await db
+    .from('shift_settlement_lines')
+    .select('*')
+    .in('shift_id', shiftIds as string[]);
+  if (lineErr) throw new Error(`backup: reading settlement lines: ${lineErr.message}`);
+  const lines = (lineRows ?? []) as { settlement_id: string }[];
+  const settlementIds = [...new Set(lines.map((l) => l.settlement_id))];
+
+  let settlements: unknown[] = [];
+  if (settlementIds.length > 0) {
+    const { data: stRows, error: stErr } = await db
+      .from('shift_settlements')
+      .select('*')
+      .in('id', settlementIds);
+    if (stErr) throw new Error(`backup: reading settlements: ${stErr.message}`);
+    settlements = stRows ?? [];
+  }
+
+  const doc = { deletedAt: new Date().toISOString(), reason: label, shifts, settlements, lines };
+  writeFileSync(BACKUP_PATH, JSON.stringify(doc, null, 2));
+
+  // Read it BACK and check every population, not merely that the write
+  // returned. A truncated or partial file is exactly the failure this exists
+  // to prevent, and it looks like success from the writing side.
+  const check = JSON.parse(readFileSync(BACKUP_PATH, 'utf8')) as {
+    shifts: unknown[];
+    settlements: unknown[];
+    lines: unknown[];
+  };
+  if (
+    check.shifts.length !== shifts.length ||
+    check.settlements.length !== settlements.length ||
+    check.lines.length !== lines.length
+  ) {
+    throw new Error('The backup did not land intact, so NOTHING was deleted. Check the disk and re-run.');
+  }
+  console.log(
+    `  backed up ${shifts.length} shifts, ${settlements.length} settlements, ${lines.length} lines -> ${BACKUP_PATH}`,
+  );
+  return { settlementIds };
+}
+
+/**
+ * Leave the audit entry the Manual changes panel promises.
+ *
+ * Mirrors `writeManualAudit`'s shape in src/lib/shifts.ts exactly — same
+ * table, same action, same detail keys — so the existing panel renders these
+ * without knowing a script wrote them. The ACTOR names the script rather than
+ * a person, because nobody clicked anything.
+ *
+ * Best-effort and logged, never thrown: the rows are already gone by the time
+ * this runs, and failing the whole import over the audit would leave a worse
+ * state than a missing entry.
+ */
+async function writeDeletionAudit(db: Db, shifts: readonly unknown[]): Promise<void> {
+  for (const raw of shifts) {
+    const shift = raw as Record<string, unknown>;
+    const { error } = await db.from('dashboard_activity').insert({
+      actor: 'scripts/import-timesheet.ts (row 507 migration)',
+      action: 'shift-manual-void',
+      detail: {
+        shiftId: shift.id,
+        crewMemberId: shift.crew_member_id,
+        before: shift,
+        after: null,
+        note: 'Removed by the one-off timesheet import, on the instruction from the owner that these were test shifts and the spreadsheet is the source of truth. The full row is in the backup JSON written by that run.',
+      },
+    });
+    if (error) console.error(`  audit entry for shift ${String(shift.id)} failed: ${error.message}`);
+  }
+  console.log(`  wrote ${shifts.length} audit entries`);
+}
+
 async function undo(db: Db): Promise<void> {
   const { data, error } = await db
     .from('shifts')
@@ -140,13 +237,13 @@ async function undo(db: Db): Promise<void> {
   console.log(`Found ${ids.length} imported shifts.`);
   if (ids.length === 0) return;
 
+  // By the time anybody runs this, a REAL payment may have been recorded
+  // against one of the imported shifts, so the record goes first here too.
+  const { data: fullShifts } = await db.from('shifts').select('*').in('id', ids);
+  const { settlementIds } = await backupBeforeDeleting(db, 'undo', ids, (fullShifts ?? []) as unknown[]);
+
   // Settlements first: a shift with a live payment line refuses to be deleted
   // (FK NO ACTION), and that refusal is the point of the FK.
-  const { data: lines } = await db
-    .from('shift_settlement_lines')
-    .select('settlement_id')
-    .in('shift_id', ids);
-  const settlementIds = [...new Set((lines ?? []).map((l) => (l as { settlement_id: string }).settlement_id))];
   if (settlementIds.length > 0) {
     await db.from('shift_settlement_lines').delete().in('settlement_id', settlementIds);
     await db.from('shift_settlements').delete().in('id', settlementIds);
@@ -256,26 +353,43 @@ async function main(): Promise<void> {
   }
 
   // ---- 4. Record what is about to be destroyed, BEFORE destroying it.
-  writeFileSync(BACKUP_PATH, JSON.stringify({ deletedAt: new Date().toISOString(), shifts: toDelete }, null, 2));
-  const check = JSON.parse(readFileSync(BACKUP_PATH, 'utf8')) as { shifts: unknown[] };
-  if (check.shifts.length !== toDelete.length) {
-    throw new Error('The backup file did not land intact, so nothing was deleted.');
-  }
-  console.log(`\nBacked up ${toDelete.length} shifts to ${BACKUP_PATH}`);
-
   const deleteIds = toDelete.map((s) => String(s.id));
   if (deleteIds.length > 0) {
-    // Voided settlement lines still hold an FK on these shifts.
-    const { data: oldLines } = await db.from('shift_settlement_lines').select('settlement_id').in('shift_id', deleteIds);
-    const oldSettlements = [...new Set((oldLines ?? []).map((l) => (l as { settlement_id: string }).settlement_id))];
-    if (oldSettlements.length > 0) {
-      await db.from('shift_settlement_lines').delete().in('settlement_id', oldSettlements);
-      await db.from('shift_settlements').delete().in('id', oldSettlements);
-      console.log(`  removed ${oldSettlements.length} test settlement(s) attached to them`);
+    // The set is "everything not stamped as imported", which is correct but
+    // WIDE. Pin it to what the dry run printed rather than trusting somebody
+    // to have read that list: --expect-delete is required the moment there is
+    // anything to remove (technical lens on PR #1215).
+    const flag = process.argv.find((a) => a.startsWith('--expect-delete='));
+    const expected = flag ? Number(flag.split('=')[1]) : null;
+    if (expected === null) {
+      throw new Error(
+        `${deleteIds.length} existing shifts would be deleted. Re-run with --expect-delete=${deleteIds.length} once the list above is what you meant.`,
+      );
+    }
+    if (expected !== deleteIds.length) {
+      throw new Error(
+        `--expect-delete=${expected} but ${deleteIds.length} shifts match. The database moved since the dry run, so nothing was deleted.`,
+      );
+    }
+
+    const { settlementIds } = await backupBeforeDeleting(db, 'import: existing shifts', deleteIds, toDelete);
+    if (settlementIds.length > 0) {
+      await db.from('shift_settlement_lines').delete().in('settlement_id', settlementIds);
+      await db.from('shift_settlements').delete().in('id', settlementIds);
+      console.log(`  removed ${settlementIds.length} settlement(s) attached to them`);
     }
     const { error: dErr } = await db.from('shifts').delete().in('id', deleteIds);
     if (dErr) throw new Error(`deleting test shifts: ${dErr.message}`);
-    console.log(`  deleted ${deleteIds.length} test shifts`);
+    console.log(`  deleted ${deleteIds.length} shifts`);
+
+    // The Manual changes panel promises "a removed shift always leaves its
+    // entry". That promise is kept by `adminVoidShift`, which this bypasses,
+    // so without writing the entry here the one screen built to answer "what
+    // happened to this shift" would show nothing at all (admin lens on
+    // PR #1215). Written AFTER the delete on purpose: an entry describing a
+    // removal that did not happen is the worse lie, and unlike the UI path
+    // there is no user waiting on the result to be told it failed.
+    await writeDeletionAudit(db, toDelete);
   }
 
   // ---- 5. Create the imported shifts, keeping the id of each one.
@@ -416,7 +530,15 @@ async function main(): Promise<void> {
   console.log('OK: every paid day settled, every unpaid day still owing, nothing spilled.');
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exitCode = 1;
-});
+// Run only when invoked directly, so the helpers above can be imported and
+// exercised on their own. The backup step in particular is a guarantee that
+// nothing else verifies, and a guarantee nobody has watched work is a
+// hypothesis — which is how it came to be half-written in the first place.
+const entry = process.argv[1] ?? '';
+const entryName = entry.split(/[\\/]/).pop() ?? '';
+if (entryName !== '' && import.meta.url.endsWith(entryName)) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}
