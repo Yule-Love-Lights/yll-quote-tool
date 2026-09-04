@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
+import { visibleUnscheduled, type UnscheduledRow } from '@/lib/ops/scheduleView';
 
 /**
  * Dispatch / day view (P4P Phase 3).
@@ -102,7 +103,16 @@ export function ScheduleDay({
   const [date, setDate] = useState(initialDate ?? today());
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [capacity, setCapacity] = useState<DayCapacity | null>(null);
-  const [unscheduled, setUnscheduled] = useState<ScheduledJob[]>([]);
+  const [unscheduled, setUnscheduled] = useState<UnscheduledRow[]>([]);
+  // 25 keeps the page short, but everything must remain REACHABLE: with a
+  // backlog over 25 and no search, a hard cap makes the oldest jobs
+  // unbookable, because this component is the only place in the app that can
+  // put a job on the schedule (staff lens, PR #1210).
+  const [showAllUnscheduled, setShowAllUnscheduled] = useState(false);
+  const unscheduledView = visibleUnscheduled(
+    unscheduled,
+    showAllUnscheduled ? unscheduled.length : 25,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(0);
@@ -139,7 +149,7 @@ export function ScheduleDay({
           jobsByDate: Record<string, ScheduledJob[]>;
         };
         const unsched = unschedRes.ok
-          ? ((await unschedRes.json()) as { jobs: ScheduledJob[] })
+          ? ((await unschedRes.json()) as { jobs: UnscheduledRow[] })
           : { jobs: [] };
         if (cancelled) return;
         setJobs(day.jobsByDate[date] ?? []);
@@ -347,18 +357,47 @@ export function ScheduleDay({
           </section>
 
           <section>
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">
               Not scheduled yet ({unscheduled.length})
             </h3>
+            {/* The heading counts the WHOLE list while the rows below are
+                capped, so say which is on screen. Newest first, because the job
+                someone just created is the one they are looking for. */}
+            {unscheduledView.hidden > 0 && (
+              <p className="text-xs text-gray-500 mb-2">
+                Showing the {unscheduledView.shown.length} newest. {unscheduledView.hidden} older not shown.{' '}
+                <button
+                  type="button"
+                  className="underline font-medium"
+                  onClick={() => setShowAllUnscheduled(true)}
+                >
+                  Show all {unscheduled.length}
+                </button>
+              </p>
+            )}
+            {showAllUnscheduled && unscheduled.length > 25 && (
+              <p className="text-xs text-gray-500 mb-2">
+                Showing all {unscheduled.length}, newest first.{' '}
+                <button
+                  type="button"
+                  className="underline font-medium"
+                  onClick={() => setShowAllUnscheduled(false)}
+                >
+                  Show fewer
+                </button>
+              </p>
+            )}
             {unscheduled.length === 0 ? (
               <p className="text-sm text-gray-500">Everything open is on the calendar.</p>
             ) : (
               <ul className="text-sm divide-y divide-gray-100 border border-gray-200 rounded-md">
-                {unscheduled.slice(0, 25).map((j) => (
+                {unscheduledView.shown.map((j) => (
                   <li key={j.jobId} className="flex justify-between items-center px-3 py-1.5">
-                    <span>
+                    <span className="min-w-0 pr-2">
                       Job {j.jobNumber !== null ? `#${j.jobNumber}` : j.jobId.slice(0, 8)}
+                      {j.customerName && <span className="ml-2 text-gray-700">{j.customerName}</span>}
                       <span className="ml-2 text-xs text-gray-400">{j.status}</span>
+                      {j.address && <span className="block text-xs text-gray-500 truncate">{j.address}</span>}
                     </span>
                     <select
                       className="text-xs border border-gray-300 rounded px-2 py-1 disabled:opacity-50"
