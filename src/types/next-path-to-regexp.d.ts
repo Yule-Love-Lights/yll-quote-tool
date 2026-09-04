@@ -6,5 +6,10 @@
 // config's shape. Declaring the one function we call is what keeps that honest
 // without loosening types anywhere else.
 declare module 'next/dist/compiled/path-to-regexp' {
-  export function pathToRegexp(path: string): RegExp;
+  export interface PathToRegexpOptions {
+    sensitive?: boolean;
+    strict?: boolean;
+    delimiter?: string;
+  }
+  export function pathToRegexp(path: string, keys?: unknown[], options?: PathToRegexpOptions): RegExp;
 }
