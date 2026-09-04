@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BackIcon, DotsIcon, CameraIcon, EditIcon, MapFoldIcon, PersonIcon, PinIcon } from './icons';
 import PlacementMap from './PlacementMap';
 import { dollars, PrimaryButton, SC, Sheet, SHELL_MAX_PX } from './ui';
+import { dollarsToCents } from '@/lib/hourlyRate';
 import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 import { splitDuplicateSignals } from '@/components/admin/advertising/duplicateSignals';
 
@@ -35,7 +36,22 @@ export type DetailPlacement = {
   duplicates?: { id: string; status: string; workerName: string; reasons: string[] }[];
 };
 
-type Campaign = { id: string; name: string; kind: string; notes?: string | null; rateCents?: number };
+type Campaign = {
+  id: string;
+  name: string;
+  kind: string;
+  notes?: string | null;
+  rateCents?: number;
+  active?: boolean;
+  /** admin only: EVERY row pointing at this campaign, counted by the same
+   * function the server's delete guard uses, so the button and the guard can
+   * never disagree (staff lens HIGH: they did, and the button became a
+   * permanent dead end on any campaign with a voided photo).
+   *
+   * null means the count could not be read. Deleting is not offered then:
+   * the destructive control fails CLOSED when we do not know. */
+  placementTotal?: number | null;
+};
 
 const STATUS_CHIP: Record<DetailPlacement['status'], { text: string; bg: string; fg: string }> = {
   pending: { text: 'Pending', bg: '#F1EAD8', fg: '#3A423C' },
@@ -74,8 +90,14 @@ export default function CampaignDetailScreen({
   const [editOpen, setEditOpen] = useState(false);
   const [draftName, setDraftName] = useState(campaign.name);
   const [draftNotes, setDraftNotes] = useState(campaign.notes ?? '');
+  const [kind, setKind] = useState(campaign.kind);
+  const [draftKind, setDraftKind] = useState(campaign.kind);
+  const [rateCents, setRateCents] = useState(campaign.rateCents ?? 0);
+  const [draftRate, setDraftRate] = useState(((campaign.rateCents ?? 0) / 100).toFixed(2));
+  const [active, setActive] = useState(campaign.active ?? true);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [editNote, setEditNote] = useState<string | null>(null);
 
   const [tab, setTab] = useState<'description' | 'photos'>('photos');
   const [view, setView] = useState<'map' | 'photos'>('map');
@@ -111,35 +133,177 @@ export default function CampaignDetailScreen({
     };
   }, [placementsUrl, tick]);
 
+  // The photos still waiting to be reviewed, read from the feed this screen
+  // already refreshes after every accept and reject. It was a number seeded
+  // once at page load, which could silently suppress the re-pricing warning
+  // this sheet exists for while the crew were submitting live (staff lens
+  // HIGH).
+  const pendingNow = placements.filter(
+    (p) => (p.status === 'pending' || p.status === 'resubmitted') && !p.voidedAt,
+  ).length;
+
+  // The rate is compared as a NUMBER, the same way saveEdit decides what to
+  // send. Comparing the typed string instead made "0.3" look like a change
+  // from "0.30", which blocked Close and Delete while Save said there was
+  // nothing to save: a dead end you could only leave by reopening the sheet
+  // (delta-verify on the previous fix round). A rate that does not parse
+  // counts as a change, because it is something the admin has to resolve
+  // before anything else here makes sense.
+  const draftRateCents = dollarsToCents(draftRate);
+  const rateDiffers =
+    draftRateCents === null ? draftRate.trim() !== (rateCents / 100).toFixed(2) : draftRateCents !== rateCents;
+  const draftsDiffer =
+    draftName.trim() !== name || draftNotes.trim() !== notes.trim() || draftKind !== kind || rateDiffers;
+
   const openEdit = () => {
     setDraftName(name);
     setDraftNotes(notes);
+    setDraftKind(kind);
+    setDraftRate((rateCents / 100).toFixed(2));
     setEditError(null);
+    setEditNote(null);
     setEditOpen(true);
   };
 
-  const saveEdit = async () => {
-    if (!editUrl) return;
+  /** Every write to this campaign goes through here, so one place owns the
+   * error handling and one place takes the server's answer as the truth. */
+  const patchCampaign = async (body: Record<string, unknown>): Promise<boolean> => {
+    if (!editUrl) return false;
     setSaving(true);
     setEditError(null);
     try {
       const res = await fetch(editUrl, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaignId: campaign.id, name: draftName, notes: draftNotes }),
+        body: JSON.stringify({ campaignId: campaign.id, ...body }),
       });
-      const body = (await res.json().catch(() => ({}))) as { error?: string; campaign?: { name: string; notes: string | null } };
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        campaign?: { name: string; notes: string | null; kind: string; rateCents: number; active: boolean };
+      };
       if (!res.ok) {
-        setEditError(body.error ?? 'Could not save the campaign.');
-        return;
+        setEditError(payload.error ?? 'Could not save the campaign.');
+        return false;
       }
       // Take what the SERVER stored, not what was typed: it trims, and it
       // turns an empty description into null.
-      setName(body.campaign?.name ?? draftName.trim());
-      setNotes(body.campaign?.notes ?? '');
-      setEditOpen(false);
+      if (payload.campaign) {
+        setName(payload.campaign.name);
+        setNotes(payload.campaign.notes ?? '');
+        setKind(payload.campaign.kind);
+        setRateCents(payload.campaign.rateCents);
+        setActive(payload.campaign.active);
+      }
+      return true;
     } catch {
       setEditError('Could not save the campaign. Try again.');
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    setEditError(null);
+    setEditNote(null);
+    const nextRate = draftRateCents;
+    if (nextRate === null) {
+      setEditError('Enter the pay per accepted photo in dollars, like 0.30 or 2.50.');
+      return;
+    }
+
+    // Only what actually CHANGED is sent. Sending everything every time made
+    // a pure rename carry whatever rate this screen loaded with, which could
+    // silently overwrite somebody else's newer rate, and made an unrelated
+    // rename fail with a confusing message about the rate (technical and
+    // admin lenses, PR #1185).
+    const body: Record<string, unknown> = {};
+    if (draftName.trim() !== name) body.name = draftName;
+    if (draftNotes.trim() !== notes.trim()) body.notes = draftNotes;
+    if (draftKind !== kind) body.kind = draftKind;
+
+    if (nextRate !== rateCents) {
+      // A rate is stamped at the MOMENT a photo is accepted, so this
+      // re-prices everything still waiting. Naldo walked into exactly this:
+      // 39 photos moving from $97.50 to $11.70 with nothing saying so.
+      const lines = [`Change the pay from ${dollars(rateCents)} to ${dollars(nextRate)} per accepted photo?`];
+      if (pendingNow > 0) {
+        lines.push(
+          '',
+          `${pendingNow} photo${pendingNow === 1 ? ' is' : 's are'} still waiting to be reviewed on this campaign.`,
+          `Accepting them after this pays ${dollars(nextRate * pendingNow)} in total instead of ${dollars(rateCents * pendingNow)}.`,
+          '',
+          'Photos already accepted keep what they were paid. This cannot be undone once they are accepted.',
+        );
+      }
+      if (!window.confirm(lines.join('\n'))) return;
+      body.rateCents = nextRate;
+      // The rate this screen was showing. The server refuses if the stored
+      // rate is not that one, instead of obeying a screen that has been open
+      // while somebody else moved it.
+      body.expectedRateCents = rateCents;
+    }
+
+    if (Object.keys(body).length === 0) {
+      setEditNote('Nothing to save.');
+      return;
+    }
+
+    const ok = await patchCampaign(body);
+    if (ok) setEditOpen(false);
+  };
+
+  const toggleActive = async () => {
+    // Close and Delete act immediately while the fields above are saved by
+    // Save. Acting on one while the other holds typed edits threw those
+    // edits away with no warning (staff lens HIGH).
+    if (draftsDiffer) {
+      setEditError('Save or undo your changes above first, then close the campaign.');
+      return;
+    }
+    const closing = active;
+    const waiting = pendingNow;
+    const message = closing
+      ? `Close "${name}"? The crew stop seeing it and cannot add photos.${
+          waiting > 0
+            ? ` Its ${waiting} photo${waiting === 1 ? ' waiting for review stays' : 's waiting for review stay'}, and can still be accepted and paid.`
+            : ''
+        } You can reopen it any time.`
+      : `Reopen "${name}"? The crew will see it again and can add photos.`;
+    if (!window.confirm(message)) return;
+    const ok = await patchCampaign({ active: !active });
+    if (ok) setEditNote(closing ? 'Campaign closed.' : 'Campaign reopened.');
+  };
+
+  const removeCampaign = async () => {
+    if (!editUrl) return;
+    if (draftsDiffer) {
+      setEditError('Save or undo your changes above first, then delete the campaign.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete "${name}" for good? This is only possible because no photos point at it. It cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setEditError(null);
+    try {
+      const res = await fetch(editUrl, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: campaign.id }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setEditError(payload.error ?? 'Could not delete the campaign.');
+        return;
+      }
+      window.location.href = backHref;
+    } catch {
+      setEditError('Could not delete the campaign. Try again.');
     } finally {
       setSaving(false);
     }
@@ -551,21 +715,96 @@ export default function CampaignDetailScreen({
               placeholder="What this campaign is for, and anything the crew should know."
             />
           </label>
-          <p className="mt-3 text-sm" style={{ color: SC.muted }}>
-            The pay rate is set when a campaign is created and cannot be
-            changed anywhere yet. It decides what every future acceptance is
-            worth, so it needs its own control rather than riding along in a
-            rename.
-          </p>
+          <div className="mt-3">
+            <span className="block text-sm" style={{ color: SC.muted }}>
+              Type
+            </span>
+            <div className="mt-1 flex gap-2">
+              {(['yard_sign', 'door_hanger'] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setDraftKind(k)}
+                  className="flex-1 rounded-full border px-3 py-2.5 text-base font-medium"
+                  style={
+                    draftKind === k
+                      ? { background: SC.primary, borderColor: SC.primary, color: '#fff' }
+                      : { borderColor: '#DCD4BE', color: SC.text }
+                  }
+                >
+                  {k === 'yard_sign' ? 'Yard signs' : 'Door hangers'}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-sm" style={{ color: SC.muted }}>
+              Photos already taken keep the type they were taken under.
+            </p>
+          </div>
+
+          <label className="mt-3 block text-sm" style={{ color: SC.muted }}>
+            Pay per accepted photo ($)
+            <input
+              value={draftRate}
+              onChange={(e) => setDraftRate(e.target.value)}
+              inputMode="decimal"
+              placeholder="0.30"
+              className="mt-1 w-32 rounded-xl border px-4 py-3 text-lg"
+              style={{ borderColor: '#DCD4BE' }}
+            />
+          </label>
+          {pendingNow > 0 && (
+            <p className="mt-1 text-sm" style={{ color: '#8a6d1f' }}>
+              {pendingNow} photo{pendingNow === 1 ? ' is' : 's are'} still waiting to be reviewed. A photo is paid at
+              whatever the rate is when you accept it, so changing this changes what they are worth.
+            </p>
+          )}
           {editError && (
             <p className="mt-3 text-sm" style={{ color: SC.danger }}>
               {editError}
+            </p>
+          )}
+          {editNote && !editError && (
+            <p className="mt-3 text-sm" style={{ color: SC.ok }}>
+              {editNote}
             </p>
           )}
           <div className="mt-5">
             <PrimaryButton disabled={saving || !draftName.trim()} onClick={() => void saveEdit()}>
               {saving ? 'Saving…' : 'Save'}
             </PrimaryButton>
+          </div>
+
+          <div className="mt-5 border-t pt-4" style={{ borderColor: '#EFE9D8' }}>
+            <PrimaryButton tone="quiet" disabled={saving} onClick={() => void toggleActive()}>
+              {active ? 'Close this campaign' : 'Reopen this campaign'}
+            </PrimaryButton>
+            <p className="mt-1 text-sm" style={{ color: SC.muted }}>
+              {active
+                ? 'Takes effect straight away, without Save. Closing hides it from the crew and stops new photos. Every photo and every payment stays, and you can reopen it.'
+                : 'This campaign is closed. The crew cannot see it or add photos. Reopening takes effect straight away, without Save.'}
+            </p>
+
+            {campaign.placementTotal === null || campaign.placementTotal === undefined ? (
+              <p className="mt-4 text-sm" style={{ color: SC.muted }}>
+                Could not check whether anything points at this campaign, so deleting is not offered. Reload the
+                page to try again.
+              </p>
+            ) : campaign.placementTotal === 0 ? (
+              <div className="mt-4">
+                <PrimaryButton tone="danger" disabled={saving} onClick={() => void removeCampaign()}>
+                  Delete this campaign
+                </PrimaryButton>
+                <p className="mt-1 text-sm" style={{ color: SC.muted }}>
+                  Nothing points at this campaign, so nothing is lost. This cannot be undone.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-4 text-sm" style={{ color: SC.muted }}>
+                This campaign cannot be deleted: {campaign.placementTotal} photo
+                {(campaign.placementTotal ?? 0) === 1 ? '' : 's'} point at it, and that is somebody&apos;s work.
+                Close it instead.
+              </p>
+            )}
           </div>
         </div>
       </Sheet>
