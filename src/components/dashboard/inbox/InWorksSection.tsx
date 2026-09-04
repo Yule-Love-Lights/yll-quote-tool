@@ -242,39 +242,39 @@ export function combinedCompleteConfirmMessage(item: Pick<InWorksItem, 'needsLoo
 }
 
 /**
- * Whether an awaiting row is asking for something TODAY (Naldo, 2026-09-03).
+ * Whether a row is asking for something TODAY (Naldo, 2026-09-04).
  *
- * "In the works" rendered all 71 awaiting rows flat, and Naldo's complaint was
- * that the page looks full of work when most of it needs nothing yet. A row
- * earns its place by carrying one of the two tags a staffer already reads: the
- * amber quiet tag, or the blue reason tag.
+ * ONE test: has it been quiet longer than the threshold. Nothing else.
  *
- * MEASURED BEFORE BUILDING, and the number is worth keeping here because it
- * sets the expectation: with followUpDays at 3, fifty of those seventy-one rows
- * are ALREADY stale, so this hides about twenty-one. Naldo was shown that and
- * chose to keep the 3 day threshold rather than raise it, so the list gets
- * shorter without the tag changing meaning. If the page still reads as full,
- * the threshold is the lever, not this function.
+ * It used to be an OR: quiet, or carrying a reason tag, or a pending colour
+ * request. Naldo watched that land and cut it back himself, and his reasoning
+ * is the rule rather than a preference, so it belongs here: "we want to give
+ * them 3 days to get in contact with us, at minimum". A quote that went out
+ * this morning and a customer who wrote an hour ago are BOTH working exactly
+ * as intended, and putting them on the chase list said the opposite. The list
+ * exists to name the people nobody has come back to, and a reason tag on a
+ * fresh row is a fact about the row, not a job for today.
  *
- * The handled bucket needs no equivalent: its settled half has sat behind a
- * "Show Handled" toggle since #307, which is exactly this pattern already.
+ * WHAT THIS COSTS, stated because it is a real change and not free: a pending
+ * colour request no longer holds a fresh row on screen. Row 321 added that
+ * badge so a colour request could not be buried, and it is still not buried,
+ * it is delayed: the row returns on day three, and the request also shows on
+ * the quote page and the job page, which are where it gets actioned. Naldo was
+ * told this before it shipped.
+ *
+ * The threshold itself is the lever, not this function. It reads
+ * `dashboard.followUpDays` and is 3 today.
  */
-export function awaitingNeedsAttention(
-  item: Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason' | 'isColorRequest'>,
+export function needsAttentionNow(
+  item: Pick<InWorksItem, 'lastActivityAt'>,
   followUpDays: number,
   nowMs: number,
 ): boolean {
-  if (item.needsLookReason != null) return true;
-  // Row 321's badge is the third signal a row can carry, and it means a
-  // customer is waiting on a colour decision. Parking a fresh one would bury
-  // exactly what that badge was added to stop being buried, so it keeps the
-  // row on screen regardless of how recently anyone touched it. Found by
-  // reading every badge renderRow can draw rather than only the two Naldo
-  // named; the two he named are the two he SEES most, which is not the same
-  // list.
-  if (item.isColorRequest) return true;
   return isStale(item.lastActivityAt, followUpDays, new Date(nowMs));
 }
+
+/** Kept as the old name so nothing outside this file has to change. */
+export const awaitingNeedsAttention = needsAttentionNow;
 
 /** Split awaiting rows into what to show and what to park. PURE, order kept.
  *
@@ -282,13 +282,15 @@ export function awaitingNeedsAttention(
  *  text on record" marker. That is information about a stamp already made,
  *  not a job waiting to be done, and most stamps are manual, so treating it
  *  as an ask would park almost nothing and undo the point of this split. */
-export function splitAwaitingByAttention<
-  T extends Pick<InWorksItem, 'lastActivityAt' | 'needsLookReason' | 'isColorRequest'>,
->(items: T[], followUpDays: number, nowMs: number): { attention: T[]; parked: T[] } {
+export function splitAwaitingByAttention<T extends Pick<InWorksItem, 'lastActivityAt'>>(
+  items: T[],
+  followUpDays: number,
+  nowMs: number,
+): { attention: T[]; parked: T[] } {
   const attention: T[] = [];
   const parked: T[] = [];
   for (const item of items) {
-    (awaitingNeedsAttention(item, followUpDays, nowMs) ? attention : parked).push(item);
+    (needsAttentionNow(item, followUpDays, nowMs) ? attention : parked).push(item);
   }
   // Nothing is ever dropped: every row lands in exactly one of the two.
   return { attention, parked };
@@ -777,8 +779,20 @@ export function InWorksSection({
     followUpDays,
     nowMs,
   );
-  const needsLookItems = handledItems.filter((item) => item.needsLookReason != null);
-  const settledHandledItems = handledItems.filter((item) => item.needsLookReason == null);
+  // Naldo 2026-09-04: the same three-day gate applies here. "Quote unanswered"
+  // and "They wrote last" are the two reasons he named, and they render on this
+  // list as well as the awaiting one, so gating only one of them would leave
+  // the page half-changed and still full. A flagged row handled this morning
+  // waits its three days in the collapsed group below, keeping its badge, and
+  // comes back on day three.
+  const needsLookItems = handledItems.filter(
+    (item) => item.needsLookReason != null && needsAttentionNow(item, followUpDays, nowMs),
+  );
+  // Everything else handled: never flagged, or flagged and not yet due. Both
+  // mean "nothing to do today", which is what this collapsed group is for.
+  const settledHandledItems = handledItems.filter(
+    (item) => item.needsLookReason == null || !needsAttentionNow(item, followUpDays, nowMs),
+  );
 
   return (
     <section
@@ -792,7 +806,12 @@ export function InWorksSection({
       {awaitingItems.length > 0 && (
         <div className="mb-4">
           <p className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color: 'var(--op-text-2)' }}>
-            Awaiting their reply ({awaitingItems.length})
+            {/* Row 502 sibling follow-up: this counted EVERY awaiting row while
+                the list below renders only the ones wanting a chase, so the
+                heading read 71 above about 50 rows. A count has to describe
+                what is on screen; the parked rows carry their own count on
+                the expander below. */}
+            Awaiting their reply ({awaitingAttention.length})
             {typeof followUpsDue === 'number' && followUpsDue > 0 && (
               <span style={{ color: 'var(--op-text-2)' }}>
                 {' · '}
@@ -818,13 +837,25 @@ export function InWorksSection({
               the old wording ("nothing to do until they write back") would be
               exactly backwards about what is on screen. A guard and the copy
               that narrates it are one change. */}
-          <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            These have gone quiet or are flagged, so they want a chase. The rest are parked
-            below and come back on their own when they need you.
-          </p>
-          <ul className="space-y-2">
-            {awaitingAttention.map((item) => renderRow(item, 'awaiting'))}
-          </ul>
+          {/* Both are suppressed when nothing needs a chase, or the screen
+              says "these have gone quiet" above an empty list. Found while
+              writing the explainer: the heading-count fix turned that state
+              from invisible into reachable. */}
+          {awaitingAttention.length > 0 ? (
+            <>
+              <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
+                Nobody has come back to these in {followUpDays} days, so they want a chase. The
+                rest are not due yet and come back on their own.
+              </p>
+              <ul className="space-y-2">
+                {awaitingAttention.map((item) => renderRow(item, 'awaiting'))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
+              Nobody here needs chasing today.
+            </p>
+          )}
           {awaitingParked.length > 0 && (
             <div className="mt-3">
               {/* Same expander idiom as "Show Handled" below, deliberately: one
@@ -838,8 +869,8 @@ export function InWorksSection({
                 style={{ color: 'var(--op-text-2)' }}
               >
                 {parkedExpanded
-                  ? `Hide ${awaitingParked.length} not needing anything yet`
-                  : `Show ${awaitingParked.length} not needing anything yet`}
+                  ? `Hide ${awaitingParked.length} not due yet`
+                  : `Show ${awaitingParked.length} not due yet`}
               </button>
               {parkedExpanded && (
                 <ul className="space-y-2 mt-2">

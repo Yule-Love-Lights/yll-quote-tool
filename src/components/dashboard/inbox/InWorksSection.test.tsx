@@ -23,7 +23,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }))
 
 import {
   InWorksSection,
-  awaitingNeedsAttention,
+  needsAttentionNow,
   splitAwaitingByAttention,
   withRowFlagSet,
   withRowFlagCleared,
@@ -73,7 +73,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
       { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: QUIET },
     ];
     const handled: InWorksItem[] = [
-      { ...baseItem, id: 'h1', customerName: 'Handled Customer', lastActivityAt: at(7_200_000), needsLookReason: 'Quote unanswered' },
+      { ...baseItem, id: 'h1', customerName: 'Handled Customer', lastActivityAt: QUIET, needsLookReason: 'Quote unanswered' },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={handled} followUpDays={3} nowMs={now} />,
@@ -145,7 +145,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
   // prior attempted action.
   it('a fresh render never shows a locked-button tooltip — unreachableActions always starts empty', () => {
     const handled: InWorksItem[] = [
-      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' },
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', lastActivityAt: QUIET, needsLookReason: 'They wrote last' },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
@@ -191,7 +191,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
 describe('InWorksSection (#307 — Needs a look split)', () => {
   it('a handled row with a needsLookReason renders under "Needs a look", not silently inside "Handled"', () => {
     const handled: InWorksItem[] = [
-      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'Quote unanswered' },
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', lastActivityAt: QUIET, needsLookReason: 'Quote unanswered' },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
@@ -227,7 +227,7 @@ describe('InWorksSection (#307 — Needs a look split)', () => {
 
   it('a mixed handled bucket splits: the flagged row\'s name appears (Needs a look renders expanded), the settled row\'s name does not (Handled starts collapsed)', () => {
     const handled: InWorksItem[] = [
-      { ...baseItem, id: 'h1', customerName: 'Flagged One', needsLookReason: 'They wrote last' },
+      { ...baseItem, id: 'h1', customerName: 'Flagged One', lastActivityAt: QUIET, needsLookReason: 'They wrote last' },
       { ...baseItem, id: 'h2', customerName: 'Settled One', needsLookReason: null },
     ];
     const html = renderToStaticMarkup(
@@ -397,7 +397,7 @@ describe('InWorksSection (#307 review fix 2 — evidenceIncomplete banner)', () 
 
   it('shows the incomplete-evidence note alongside a populated "Needs a look" list too', () => {
     const handled: InWorksItem[] = [
-      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' },
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', lastActivityAt: QUIET, needsLookReason: 'They wrote last' },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection
@@ -523,7 +523,11 @@ describe('retiresFollowUp (rows 309/430 — which action can retire a due follow
 // strip carried a COUNT; the pills that replaced it carry none. This is
 // listDueFollowUps' exact uncapped total, rendered beside the bucket heading.
 describe('the awaiting bucket shows how many follow-ups are due (PR #1005)', () => {
-  const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
+  // QUIET so the row actually renders: since 2026-09-03 this list shows only
+  // rows wanting a chase, and the heading counts what is on screen.
+  const awaiting: InWorksItem[] = [
+    { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: QUIET },
+  ];
 
   it('renders the due count beside the heading', () => {
     const html = renderToStaticMarkup(
@@ -617,7 +621,7 @@ describe('InWorksSection — a forwarded lead tells staff how to actually reach 
     channel: 'email',
     subject: LEAD_SUBJECT,
     preview: LEAD_PREVIEW,
-    needsLookReason: 'They wrote last',
+    needsLookReason: 'They wrote last', lastActivityAt: QUIET,
   };
 
   it('shows the number to call instead of "Reply in Gmail"', () => {
@@ -640,6 +644,7 @@ describe('InWorksSection — a forwarded lead tells staff how to actually reach 
       subject: 'Question about my quote',
       preview: 'Hi, can you call me on +15551234567?',
       needsLookReason: 'They wrote last',
+      lastActivityAt: QUIET,
     };
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[]} handled={[ordinary]} followUpDays={3} nowMs={now} />,
@@ -732,41 +737,52 @@ describe('withRowFollowedNow', () => {
 // live awaiting rows are already stale, so this parks about twenty-one. Naldo
 // was shown that and kept the 3 day threshold.
 
-describe('awaitingNeedsAttention', () => {
+describe('needsAttentionNow', () => {
   const NOW = Date.parse('2026-09-03T12:00:00.000Z');
   const quiet = { lastActivityAt: '2026-08-20T00:00:00.000Z', needsLookReason: null };
   const fresh = { lastActivityAt: '2026-09-03T09:00:00.000Z', needsLookReason: null };
 
   it('keeps a row that has gone quiet past the threshold', () => {
-    expect(awaitingNeedsAttention(quiet, 3, NOW)).toBe(true);
+    expect(needsAttentionNow(quiet, 3, NOW)).toBe(true);
   });
 
   it('parks a row that is neither quiet nor flagged', () => {
-    expect(awaitingNeedsAttention(fresh, 3, NOW)).toBe(false);
+    expect(needsAttentionNow(fresh, 3, NOW)).toBe(false);
   });
 
-  it('keeps a flagged row even when it is fresh, because the flag IS the ask', () => {
-    expect(awaitingNeedsAttention({ ...fresh, needsLookReason: 'Follow-up due' }, 3, NOW)).toBe(true);
+  it('parks a FLAGGED but fresh row, which reverses what this list used to do', () => {
+    // Naldo, 2026-09-04, watching the first version land: "we want to give them
+    // 3 days to get in contact with us, at minimum". A quote sent this morning
+    // is working as intended, and putting it on the chase list said otherwise.
+    expect(needsAttentionNow({ ...fresh, needsLookReason: 'Follow-up due' } as never, 3, NOW)).toBe(false);
+    expect(needsAttentionNow({ ...fresh, needsLookReason: 'Quote unanswered' } as never, 3, NOW)).toBe(false);
+    expect(needsAttentionNow({ ...fresh, needsLookReason: 'They wrote last' } as never, 3, NOW)).toBe(false);
   });
 
-  it('keeps a fresh row with a pending colour request, which row 321 exists to surface', () => {
-    // Caught in self-review, not by a failing test: the filter was written
-    // against the two tags Naldo named, and a row can carry a third. Parking a
-    // pending colour request would bury exactly what that badge was added to
-    // stop being buried, and the customer is waiting on a decision.
-    expect(awaitingNeedsAttention({ ...fresh, isColorRequest: true }, 3, NOW)).toBe(true);
+  it('shows that same flagged row once it passes the threshold', () => {
+    // Delayed, never dropped. This is the half that makes the gate safe.
+    expect(needsAttentionNow({ ...quiet, needsLookReason: 'Quote unanswered' } as never, 3, NOW)).toBe(true);
+  });
+
+  it('parks even a fresh colour request, which is a real cost Naldo accepted', () => {
+    // Reversed on 2026-09-04. Row 321 added that badge so a colour request
+    // could not be BURIED, and it still is not: the row returns on day three,
+    // and the request shows on the quote page and the job page, which are where
+    // it gets actioned. Delayed, not lost, and Naldo was told before it shipped.
+    expect(needsAttentionNow({ ...fresh, isColorRequest: true } as never, 3, NOW)).toBe(false);
+    expect(needsAttentionNow({ ...quiet, isColorRequest: true } as never, 3, NOW)).toBe(true);
   });
 
   it('parks a row with no activity date rather than guessing it is overdue', () => {
     // isStale returns false on null, and inheriting that is deliberate: a row
     // with no clock should not be presented as demanding attention today.
-    expect(awaitingNeedsAttention({ lastActivityAt: null, needsLookReason: null }, 3, NOW)).toBe(false);
+    expect(needsAttentionNow({ lastActivityAt: null }, 3, NOW)).toBe(false);
   });
 
   it('follows the configured threshold rather than a hardcoded one', () => {
     const eightDaysAgo = { lastActivityAt: '2026-08-26T12:00:00.000Z', needsLookReason: null };
-    expect(awaitingNeedsAttention(eightDaysAgo, 3, NOW)).toBe(true);
-    expect(awaitingNeedsAttention(eightDaysAgo, 30, NOW)).toBe(false);
+    expect(needsAttentionNow(eightDaysAgo, 3, NOW)).toBe(true);
+    expect(needsAttentionNow(eightDaysAgo, 30, NOW)).toBe(false);
   });
 });
 
@@ -778,10 +794,11 @@ describe('splitAwaitingByAttention', () => {
     { id: 'flagged', lastActivityAt: '2026-09-03T09:00:00.000Z', needsLookReason: 'Follow-up due' },
   ];
 
-  it('shows the quiet and the flagged, parks the fresh', () => {
+  it('shows only what has passed the threshold, whatever tags it carries', () => {
     const { attention, parked } = splitAwaitingByAttention(rows, 3, NOW);
-    expect(attention.map((r) => r.id)).toEqual(['quiet', 'flagged']);
-    expect(parked.map((r) => r.id)).toEqual(['fresh']);
+    expect(attention.map((r) => r.id)).toEqual(['quiet']);
+    // 'flagged' is fresh, so it parks now despite its blue tag.
+    expect(parked.map((r) => r.id)).toEqual(['fresh', 'flagged']);
   });
 
   it('never drops a row: the two halves always account for every input', () => {
@@ -794,11 +811,11 @@ describe('splitAwaitingByAttention', () => {
   });
 
   it('keeps the order it was given inside each half', () => {
-    const many = [rows[0], rows[2], { ...rows[0], id: 'quiet2' }];
+    const many = [rows[0], { ...rows[0], id: 'quiet2' }, { ...rows[0], id: 'quiet3' }];
     expect(splitAwaitingByAttention(many, 3, NOW).attention.map((r) => r.id)).toEqual([
       'quiet',
-      'flagged',
       'quiet2',
+      'quiet3',
     ]);
   });
 });
@@ -828,18 +845,44 @@ describe('InWorksSection — the parked rows are collapsed, not gone', () => {
     expect(html).not.toContain('Fresh Customer');
   });
 
+  it('does not claim rows have gone quiet when none are shown', () => {
+    // The heading-count fix made this state reachable: with everything parked
+    // the section rendered "these have gone quiet" above an empty list.
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Nobody here needs chasing today');
+    expect(html).not.toContain('want a chase');
+    expect(html).toContain('Show 1 not due yet');
+  });
+
+  it('counts what is on SCREEN, not every awaiting row', () => {
+    // Shipped wrong in #1198 and caught while writing the explainer: the
+    // heading counted every awaiting row while the list rendered only the ones
+    // wanting a chase, so it read "(2)" above one row. A count above a list has
+    // to describe that list; the parked rows carry their own count below.
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[quiet, fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Awaiting their reply (1)');
+    expect(html).not.toContain('Awaiting their reply (2)');
+  });
+
   it('says how many are parked, so nothing silently disappears', () => {
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[quiet, fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
     );
-    expect(html).toContain('Show 1 not needing anything yet');
+    expect(html).toContain('Show 1 not due yet');
   });
 
   it('offers no expander at all when nothing is parked', () => {
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[quiet]} handled={[]} followUpDays={3} nowMs={NOW} />,
     );
-    expect(html).not.toContain('not needing anything yet');
+    // Asserted on the BUTTON, not the bare phrase: the blurb above the list
+    // legitimately says "not due yet" when rows are shown, so a loose check
+    // would fail on correct output rather than on a missing expander.
+    expect(html).not.toMatch(/Show \d+ not due yet/);
   });
 
   it('stops claiming there is nothing to do, which is now backwards', () => {
@@ -851,6 +894,65 @@ describe('InWorksSection — the parked rows are collapsed, not gone', () => {
     );
     expect(html).not.toContain('nothing to do until they write back');
     expect(html).toContain('want a chase');
+  });
+});
+
+describe('InWorksSection — the three-day gate applies to "Needs a look" too', () => {
+  // Naldo named "Quote unanswered" and "They wrote last" specifically, and both
+  // render on THIS list as well as the awaiting one. Gating only the awaiting
+  // list would have left the page half-changed and still full.
+  //
+  // Both of these were written because a mutation probe SURVIVED: removing the
+  // gate here, and removing the matching clause that keeps the row in Handled,
+  // each passed the whole file. The second is the dangerous one, because a row
+  // excluded from both lists is gone from the screen entirely.
+  const NOW = Date.parse('2026-09-04T12:00:00.000Z');
+  const freshFlagged: InWorksItem = {
+    ...baseItem,
+    id: 'h-fresh',
+    customerName: 'Fresh Flagged Customer',
+    lastActivityAt: '2026-09-04T09:00:00.000Z',
+    needsLookReason: 'Quote unanswered',
+  };
+  const staleFlagged: InWorksItem = {
+    ...baseItem,
+    id: 'h-stale',
+    customerName: 'Stale Flagged Customer',
+    lastActivityAt: '2026-08-20T09:00:00.000Z',
+    needsLookReason: 'Quote unanswered',
+  };
+
+  it('keeps a flagged row out of "Needs a look" until it is due', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[freshFlagged]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).not.toContain('Needs a look');
+    expect(html).not.toContain('Fresh Flagged Customer');
+  });
+
+  it('still COUNTS that row under Handled, so it is delayed and not lost', () => {
+    // The whole safety of the gate rests on this. Handled starts collapsed, so
+    // the row itself is not in the markup; its presence shows in the count.
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[freshFlagged]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Show Handled (1)');
+  });
+
+  it('shows the same row under "Needs a look" once it passes three days', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[staleFlagged]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Needs a look (1)');
+    expect(html).toContain('Stale Flagged Customer');
+  });
+
+  it('splits a mixed bucket by the clock, not by the flag', () => {
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={[freshFlagged, staleFlagged]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Needs a look (1)');
+    expect(html).toContain('Show Handled (1)');
   });
 });
 
