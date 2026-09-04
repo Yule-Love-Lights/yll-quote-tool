@@ -26,6 +26,21 @@ beforeEach(() => {
 });
 
 describe('POST /api/dashboard/followed', () => {
+  // Row 502 (Naldo, 2026-09-03): this route IS the bare button. A stamp from
+  // here has nothing recorded behind it, and until now looked identical in the
+  // log to one backed by a real call or a sent reply. Pinned as its own test
+  // because the value is a constant: nothing else fails if it silently drifts
+  // to 'call', and the row would then claim corroboration that never existed.
+  it("records the stamp as manual, because nothing here corroborates it", async () => {
+    await POST(req({ itemId: ITEM }));
+    expect(store.markItemFollowed.mock.calls[0][3]?.via).toBe('manual');
+  });
+
+  it('still says manual on the restamp path, which is the same bare button', async () => {
+    await POST(req({ itemId: ITEM, again: true }));
+    expect(store.markItemFollowed.mock.calls[0][3]?.via).toBe('manual');
+  });
+
   it('does NOT restamp by default, so a duplicate click cannot move the waiting clock', () => {
     return POST(req({ itemId: ITEM })).then(() => {
       const opts = store.markItemFollowed.mock.calls[0][3];

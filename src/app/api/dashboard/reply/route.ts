@@ -164,7 +164,10 @@ export async function POST(req: NextRequest) {
   // itself was never touched by the failed write, so if it was really
   // 'handled'/'unresponded' before this call, this guard still succeeds
   // normally — also correct, not a second failure to handle.)
-  await markItemFollowed(itemId, operator.id, new Date(), { allowRestamp: true });
+  // Row 502: a sent reply is corroborated BY CONSTRUCTION, because the
+  // message exists. Recording that keeps it apart from the bare button, which
+  // is the whole point: before this the two were indistinguishable in the log.
+  await markItemFollowed(itemId, operator.id, new Date(), { allowRestamp: true, via: 'reply' });
 
   // Finding 1 + fix round 2: `resolved` reports whether markItemHandledLocal's
   // CAS actually landed. `ok` stays true unconditionally — the send above is

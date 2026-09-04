@@ -36,6 +36,7 @@ import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity }
 import { leadForwardsAnsweredBy } from './leadForward';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
+import { rowsClearedByOutbound } from './outboundClearsContact';
 import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
@@ -606,6 +607,79 @@ async function clearLeadForwardsAnsweredBy(
 }
 
 /**
+ * Reaching a customer clears their OTHER open rows (Naldo, 2026-09-03).
+ *
+ * Sibling of clearLeadForwardsAnsweredBy above, and deliberately WIDER: that
+ * one matches an outbound against the phone or email the ROW ITSELF names,
+ * because a merged contact's stray phone once false-triggered it. This one
+ * matches on the contact, which is what Naldo chose after being shown that
+ * exact tradeoff, because the case it exists for is a customer answered on a
+ * completely different row.
+ *
+ * The rule is pure and lives in outboundClearsContact.ts. Everything here is
+ * the database around it, and it copies the sibling's shape on purpose: read
+ * the candidates, decide with the pure rule, write with the open status
+ * re-asserted in the WHERE clause so a person's decision in the gap wins, and
+ * report only the rows the write actually changed.
+ */
+async function clearContactRowsAnsweredBy(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  contactId: string,
+  touch: NormalizedTouch,
+  originItemId: string | null,
+  now: Date,
+): Promise<{ id: string; from: { status: string; wasFollowed: boolean } }[]> {
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('id, status, last_message_at, last_inbound_at, followed_up_at')
+    .eq('contact_id', contactId)
+    .eq('status', 'unresponded');
+  if (error || !data) {
+    // Say so, for the reason the sibling says so: a swallowed failure here
+    // makes the whole feature permanently inert with no signal anywhere.
+    console.error('[inbox] outbound contact clear: candidate read failed:', error?.message);
+    return [];
+  }
+
+  const raw = data as {
+    id: string;
+    status: string;
+    last_message_at: string | null;
+    last_inbound_at: string | null;
+    followed_up_at: string | null;
+  }[];
+  const ids = rowsClearedByOutbound(
+    raw.map((r) => ({
+      id: r.id,
+      status: r.status,
+      lastMessageAt: r.last_message_at ? new Date(r.last_message_at) : null,
+      lastInboundAt: r.last_inbound_at ? new Date(r.last_inbound_at) : null,
+    })),
+    { at: touch.lastMessageAt, originItemId },
+  );
+  if (ids.length === 0) return [];
+
+  const priorById = new Map(
+    raw.filter((r) => ids.includes(r.id)).map((r) => [r.id, { status: r.status, wasFollowed: !!r.followed_up_at }]),
+  );
+
+  const { data: updated, error: updErr } = await sb
+    .from('inbox_items')
+    .update({ status: 'handled', handled_by: null, handled_at: now.toISOString(), updated_at: now.toISOString() })
+    .in('id', ids)
+    .eq('status', 'unresponded')
+    .select('id');
+  if (updErr) {
+    console.error('[inbox] outbound contact clear: update failed:', updErr.message);
+    return [];
+  }
+  return ((updated ?? []) as { id: string }[]).map((r) => ({
+    id: r.id,
+    from: priorById.get(r.id) ?? { status: 'unresponded', wasFollowed: false },
+  }));
+}
+
+/**
  * Ingest one normalized touch: resolve identity, upsert the contact + item
  * idempotently (UNIQUE(source, external_id)), and log activity. Returns the
  * notifyLevel so the caller can fire an escalation email if a level was crossed.
@@ -704,7 +778,19 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
   // touch's own write, so a failure here cannot cost us the touch.
   if (isAnsweredByDirection(touch.direction)) {
     const cleared = await clearLeadForwardsAnsweredBy(sb, touch, now);
-    for (const { id: clearedId, from } of cleared) {
+    // 4b. Naldo, 2026-09-03: and every OTHER open row for this same customer.
+    // Wider than 4 on purpose (contact rather than message), because the case
+    // it exists for is a customer answered on a different row entirely: an
+    // email replied to in a new thread, a colour change actioned on a quotetool
+    // row. See clearContactRowsAnsweredBy for the tradeoff he was shown and
+    // accepted, and outboundClearsContact.ts for the guard that keeps it safe.
+    //
+    // Runs only when we know WHICH customer, and after the touch's own write,
+    // so a failure here can never cost us the touch.
+    const contactCleared = contactId
+      ? await clearContactRowsAnsweredBy(sb, contactId, touch, itemId, now)
+      : [];
+    for (const { id: clearedId, from } of [...cleared, ...contactCleared]) {
       if (clearedId === itemId) continue; // never log the row we just wrote twice
       await sb.from('dashboard_activity').insert({
         actor: 'system',
@@ -718,7 +804,18 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
         // state the row came out of. The first cut used `autoResolved` and no
         // `from`, so the explanation was write-only and a Reverse would have
         // guessed (premerge staff lens, 2026-09-02).
-        detail: { auto: true, reason: 'lead_forward_answered_by_outbound', from, outboundSource: touch.source },
+        detail: {
+          auto: true,
+          // Which rule fired, not a blanket label: a Reverse and any later
+          // audit need to tell the message-level forwarded-lead clear apart
+          // from the wider contact-level one, because they have different
+          // false-positive shapes.
+          reason: cleared.some((c) => c.id === clearedId)
+            ? 'lead_forward_answered_by_outbound'
+            : 'contact_answered_by_outbound',
+          from,
+          outboundSource: touch.source,
+        },
       });
     }
   }
@@ -1233,7 +1330,8 @@ async function recordActionFailed(
  *  ActivityLog actually renders — see AUTO_REASON_LABEL there. A bespoke key
  *  would have been written and read by nobody, which the pre-merge staff lens
  *  caught it being in the first cut of this change. */
-export type FollowedVia = 'call';
+export type { FollowedVia } from './followBacking';
+import { DEFAULT_FOLLOWED_VIA, type FollowedVia } from './followBacking';
 
 /** The `detail.reason` value a call-driven follow-up carries. Must stay in step
  *  with AUTO_REASON_LABEL in ActivityLog.tsx, which turns it into words. */
@@ -1528,7 +1626,15 @@ export async function markItemFollowed(
   const from = await priorStateOf(sb, itemId);
   let query = sb
     .from('inbox_items')
-    .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
+    .update({
+      followed_up_at: now.toISOString(),
+      // Row 502: record WHAT backed this stamp, so the row itself can say
+      // whether anything corroborates it. A caller passing nothing records
+      // 'manual', the honest reading and the one that fails closed: a future
+      // path that forgets to say cannot arrive looking backed.
+      followed_via: (opts?.via ?? DEFAULT_FOLLOWED_VIA) satisfies FollowedVia,
+      updated_at: now.toISOString(),
+    })
     .eq('id', itemId)
     .in('status', ['unresponded', 'handled']);
   if (!allowRestamp) {
@@ -3353,6 +3459,9 @@ export type InWorksItem = {
   // fire. Non-null is the single displayed reason — see needsLookReason's own
   // doc comment for why only one shows when a row trips more than one rule.
   needsLookReason: string | null;
+  /** What backed the follow-up stamp: call, reply, manual, or null for a
+   *  stamp written before the column existed. See followBacking.ts. */
+  followedVia?: string | null;
   /** Row 321: true when this item both LOOKS like a colour request (a
    *  `quotetool` item whose external_id carries the `:color-request` suffix)
    *  AND its backing quote still carries a LIVE
@@ -3394,7 +3503,7 @@ export type InWorksResult =
 // not do. #268's fix round found that and deliberately left it, documented, as
 // a follow-up needing this change. This is that follow-up.
 const IN_WORKS_SELECT =
-  'id, source, external_id, channel, subject, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+  'id, source, external_id, channel, subject, preview, followed_up_at, followed_via, handled_at, status, dashboard_contacts ( display_name )';
 
 // #307: the 'handled' bucket alone also needs direction (rule b) to compute
 // "Needs a look" — the 'awaiting' bucket's query stays on the narrower
@@ -3421,6 +3530,7 @@ function mapInWorksRow(
       subject: (row.subject as string | null) ?? null,
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
+      followedVia: (row.followed_via as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
       // Row 321 fix-round FIX 1: shape AND liveness, for BOTH buckets now
       // that external_id is selected on both — see isLiveColorRequestItem's
