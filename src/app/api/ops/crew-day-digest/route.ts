@@ -35,21 +35,21 @@ export async function GET(req: NextRequest) {
   }
 
   const date = businessToday();
-  const { groups, unassigned, errors, jobCount } = await getCrewDay(date);
+  const { jobs, errors } = await getCrewDay(date);
   // errors go into the MESSAGE, not just this response: a read failure that
   // only shows up in JSON nobody watches is how a busy day gets announced as
   // "nothing on the schedule" (technical and staff lenses converged here).
-  const message = crewDayDigestMessage(date, groups, unassigned, errors);
+  const message = crewDayDigestMessage(date, jobs, errors);
   await notifyTelegramAudience('crew', message);
 
   return NextResponse.json({
     ok: true,
     date,
-    crewCount: groups.length,
-    // DISTINCT jobs: a job with two crew is listed under both of them, so
-    // summing the groups double-counts it.
-    jobCount,
-    unassignedCount: unassigned.length,
+    jobCount: jobs.length,
+    // Distinct people on the day, so the log line says how many were dispatched
+    // without re-deriving it from a message nobody parses.
+    crewCount: new Set(jobs.flatMap((j) => j.crew)).size,
+    unassignedCount: jobs.filter((j) => j.crew.length === 0).length,
     // Surfaced, not swallowed: a partial read still sends, and the response
     // says what was incomplete so a bad day is visible in the cron log.
     errors,
