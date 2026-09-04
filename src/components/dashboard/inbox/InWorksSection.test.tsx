@@ -523,7 +523,11 @@ describe('retiresFollowUp (rows 309/430 — which action can retire a due follow
 // strip carried a COUNT; the pills that replaced it carry none. This is
 // listDueFollowUps' exact uncapped total, rendered beside the bucket heading.
 describe('the awaiting bucket shows how many follow-ups are due (PR #1005)', () => {
-  const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
+  // QUIET so the row actually renders: since 2026-09-03 this list shows only
+  // rows wanting a chase, and the heading counts what is on screen.
+  const awaiting: InWorksItem[] = [
+    { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: QUIET },
+  ];
 
   it('renders the due count beside the heading', () => {
     const html = renderToStaticMarkup(
@@ -826,6 +830,29 @@ describe('InWorksSection — the parked rows are collapsed, not gone', () => {
     );
     expect(html).toContain('Quiet Customer');
     expect(html).not.toContain('Fresh Customer');
+  });
+
+  it('does not claim rows have gone quiet when none are shown', () => {
+    // The heading-count fix made this state reachable: with everything parked
+    // the section rendered "these have gone quiet" above an empty list.
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Nobody here needs chasing today');
+    expect(html).not.toContain('want a chase');
+    expect(html).toContain('Show 1 not needing anything yet');
+  });
+
+  it('counts what is on SCREEN, not every awaiting row', () => {
+    // Shipped wrong in #1198 and caught while writing the explainer: the
+    // heading counted every awaiting row while the list rendered only the ones
+    // wanting a chase, so it read "(2)" above one row. A count above a list has
+    // to describe that list; the parked rows carry their own count below.
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[quiet, fresh]} handled={[]} followUpDays={3} nowMs={NOW} />,
+    );
+    expect(html).toContain('Awaiting their reply (1)');
+    expect(html).not.toContain('Awaiting their reply (2)');
   });
 
   it('says how many are parked, so nothing silently disappears', () => {
