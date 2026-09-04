@@ -14,15 +14,21 @@
 // approval control. The Pay section below it is phase 3 and is where money
 // lives on this page.
 
-import Link from 'next/link';
-
 import { HoursDayList, fmtTime, sourceLabel } from '@/components/time/HoursDayList';
 import { AddPersonShiftForm } from '@/components/admin/ManualShiftEditor';
 import { ShiftPayPanel, VoidSettlementButton, type PayableShift } from '@/components/admin/ShiftPayPanel';
+import {
+  Card,
+  EmptyState,
+  ErrorNote,
+  Pill,
+  RangeTabs,
+  SectionLabel,
+  WarnNote,
+} from '@/components/time/timeUi';
 import { dollars, type PayableRemainder, type ShiftSettlement } from '@/lib/shiftSettlements';
 import { formatHours } from '@/lib/hoursSummary';
 import {
-  RANGE_KEYS,
   rangeFromDay,
   rangeLabel,
   type PersonDay,
@@ -87,69 +93,74 @@ export function PersonHoursSection({
    * and the rate history below it cannot land on different days. */
   todayEt: string;
 }) {
+  const notices = errors.length > 0 || openShift !== null || autoClosed.count > 0;
   return (
-    <section className="mb-10">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-        <h2 className="text-lg font-semibold text-gray-900">Hours</h2>
-        <nav className="flex flex-wrap gap-1 text-xs">
-          {RANGE_KEYS.map((key) => (
-            <Link
-              key={key}
-              href={`${basePath}?range=${key}`}
-              aria-current={key === range ? 'page' : undefined}
-              className={
-                key === range
-                  ? 'rounded-full bg-gray-900 px-3 py-1 font-medium text-white'
-                  : 'rounded-full border border-gray-300 px-3 py-1 text-gray-600'
-              }
-            >
-              {rangeLabel(key)}
-            </Link>
-          ))}
-        </nav>
-      </div>
-
-      <p className="text-sm text-gray-500 mb-4">
-        Clocked time, day by day, with what has been paid for marked on each row. A shift counts
-        on the day it started (New York time) and is never split across midnight, so an overnight
-        shift shows in full on the day it began.
-      </p>
-
-      {errors.length > 0 && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          <p className="font-medium">Some of this record could not be read, so it is incomplete.</p>
-          <ul className="list-disc pl-5 mt-1">
-            {errors.map((e, i) => (
-              <li key={i}>{e}</li>
-            ))}
-          </ul>
+    <Card
+      title="Hours"
+      subtitle={
+        <>
+          <span className="font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+            {formatHours(totalSeconds)}
+          </span>{' '}
+          across {shiftCount} {shiftCount === 1 ? 'shift' : 'shifts'},{' '}
+          {rangeLabel(range).toLowerCase()}
+        </>
+      }
+      aside={<RangeTabs basePath={basePath} range={range} />}
+      help={
+        <p>
+          Clocked time, day by day, with what has been paid for marked on each row. A shift counts
+          on the day it started (New York time) and is never split across midnight, so an
+          overnight shift shows in full on the day it began.
+        </p>
+      }
+      flush
+      // For a day nobody clocked in at all — not a shift to correct, one
+      // that never got typed. Used to be field crew only (adminCreateShift
+      // refused an office row outright); lifted in S61 once this page gave
+      // office shifts the same edit/void/audit trail field shifts already
+      // had, which was the whole reason the office refusal existed. Hidden
+      // for an inactive person: the server refuses that regardless, and a
+      // form that can only ever come back with a refusal is worse than no
+      // form.
+      footer={
+        active && (
+          <AddPersonShiftForm
+            crewMemberId={crewMemberId}
+            crewName={crewName}
+            defaultDate={todayEt}
+            visibleFromDay={rangeFromDay(range)}
+          />
+        )
+      }
+    >
+      {notices && (
+        <div className="space-y-2 px-4 py-4 sm:px-5">
+          {errors.length > 0 && (
+            <ErrorNote
+              title="Some of this record could not be read, so it is incomplete."
+              items={errors}
+            />
+          )}
+          {openShift && (
+            <p className="text-sm text-green-800">
+              Clocked in since {fmtTime(openShift.clockInAt)} ({sourceLabel(openShift.source)}),
+              still counting
+            </p>
+          )}
+          {autoClosed.count > 0 && (
+            <WarnNote>
+              {autoClosed.count} closed by the midnight sweep, {formatHours(autoClosed.seconds)} of
+              this total
+            </WarnNote>
+          )}
         </div>
       )}
 
-      <div className="mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-        <span className="text-sm text-gray-700">
-          <span className="font-semibold tabular-nums">{formatHours(totalSeconds)}</span> over{' '}
-          {rangeLabel(range).toLowerCase()}
-        </span>
-        <span className="text-sm text-gray-500 tabular-nums">
-          {shiftCount} {shiftCount === 1 ? 'shift' : 'shifts'}
-        </span>
-        {openShift && (
-          <span className="text-sm text-green-800">
-            Clocked in since {fmtTime(openShift.clockInAt)} ({sourceLabel(openShift.source)}), still
-            counting
-          </span>
-        )}
-        {autoClosed.count > 0 && (
-          <span className="text-sm text-amber-800">
-            {autoClosed.count} closed by the midnight sweep, {formatHours(autoClosed.seconds)} of
-            this total
-          </span>
-        )}
-      </div>
-
       {days.length === 0 ? (
-        <p className="text-sm text-gray-500">No shifts in this range.</p>
+        <div className="p-4 sm:p-5">
+          <EmptyState>No shifts in this range.</EmptyState>
+        </div>
       ) : (
         <HoursDayList
           days={days}
@@ -158,24 +169,7 @@ export function PersonHoursSection({
           evidenceFor={(day) => evidenceHrefFor(isOffice, day)}
         />
       )}
-
-      {/* For a day nobody clocked in at all — not a shift to correct, one
-          that never got typed. Used to be field crew only (adminCreateShift
-          refused an office row outright); lifted in S61 once this page gave
-          office shifts the same edit/void/audit trail field shifts already
-          had, which was the whole reason the office refusal existed. Hidden
-          for an inactive person: the server refuses that regardless, and a
-          form that can only ever come back with a refusal is worse than no
-          form. */}
-      {active && (
-        <AddPersonShiftForm
-          crewMemberId={crewMemberId}
-          crewName={crewName}
-          defaultDate={todayEt}
-          visibleFromDay={rangeFromDay(range)}
-        />
-      )}
-    </section>
+    </Card>
   );
 }
 
@@ -234,30 +228,54 @@ export function ShiftPaySection({
     }));
 
   return (
-    <section className="mb-10">
-      <h2 className="text-lg font-semibold text-gray-900 mb-1">Pay</h2>
-      <p className="text-sm text-gray-500 mb-4">
-        You pay {crewName} however you normally do, then record the amount here. The tool does not
-        work out what to pay — it takes what you actually handed over and marks off that many
-        hours, oldest first. Anything the money does not reach stays unpaid and carries over to
-        the next payment. A shift a payment has touched is locked until that payment is undone.
-      </p>
-
+    <Card
+      title="Pay"
+      subtitle={`Record what you actually handed ${crewName}; the tool marks off that many hours, oldest first.`}
+      helpLabel="How a payment is applied"
+      help={
+        <p>
+          You pay {crewName} however you normally do, then record the amount here. The tool does
+          not work out what to pay — it takes what you actually handed over and marks off that
+          many hours, oldest first. Anything the money does not reach stays unpaid and carries
+          over to the next payment. A shift a payment has touched is locked until that payment is
+          undone.
+        </p>
+      }
+    >
       {!settlementsReadable ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          Payments could not be read, so nothing can be recorded here right now. The hours above
-          are still correct; reload in a moment.
-        </div>
+        <ErrorNote
+          items={[
+            'Payments could not be read, so nothing can be recorded here right now. The hours above are still correct; reload in a moment.',
+          ]}
+        />
       ) : (
         <>
-          <div className="mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
-            <span className="text-sm text-gray-700">
-              <span className="font-semibold tabular-nums">{dollars(settledCents)}</span> recorded
-              as paid, all time
-            </span>
-            <span className="text-sm text-gray-500 tabular-nums">
-              {payable.length} unpaid {payable.length === 1 ? 'shift' : 'shifts'}, all time
-            </span>
+          <div className="mb-4 grid grid-cols-2 gap-3">
+            <div
+              className="rounded-md border px-3 py-2.5"
+              style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg)' }}
+            >
+              <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+                Recorded as paid, all time
+              </div>
+              <div className="text-lg font-semibold tabular-nums" style={{ color: 'var(--op-text)' }}>
+                {dollars(settledCents)}
+              </div>
+            </div>
+            <div
+              className="rounded-md border px-3 py-2.5"
+              style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg)' }}
+            >
+              <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+                Unpaid {payable.length === 1 ? 'shift' : 'shifts'}, all time
+              </div>
+              <div
+                className="text-lg font-semibold tabular-nums"
+                style={{ color: payable.length > 0 ? '#92400e' : 'var(--op-text)' }}
+              >
+                {payable.length}
+              </div>
+            </div>
           </div>
 
           {/* A payment stuck half-undone: its shifts were released but the
@@ -265,10 +283,12 @@ export function ShiftPaySection({
               covering nothing. It is already excluded from the total above;
               this says how to finish it. */}
           {halfUndone.length > 0 && (
-            <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              {halfUndone.length === 1 ? 'One payment was' : `${halfUndone.length} payments were`}{' '}
-              only half undone: the shifts were released but the record still reads as live, so it
-              is not counted above. Press Undo on it again to finish.
+            <div className="mb-4">
+              <WarnNote>
+                {halfUndone.length === 1 ? 'One payment was' : `${halfUndone.length} payments were`}{' '}
+                only half undone: the shifts were released but the record still reads as live, so
+                it is not counted above. Press Undo on it again to finish.
+              </WarnNote>
             </div>
           )}
 
@@ -283,25 +303,30 @@ export function ShiftPaySection({
             crewName={crewName}
             payable={payable}
           />
-          <p className="mt-2 text-xs text-gray-500">
+          <p className="mt-2 text-xs" style={{ color: 'var(--op-text-dim)' }}>
             Every unpaid shift is listed here, however old — the range above changes the hours
             table, not this. A payment is always spent oldest first.
           </p>
 
-          <h3 className="text-sm font-semibold text-gray-900 mt-6 mb-2">Payments recorded</h3>
+          <SectionLabel>Payments recorded</SectionLabel>
           {settlements.length === 0 ? (
-            <p className="text-sm text-gray-500">Nothing recorded yet.</p>
+            <EmptyState>Nothing recorded yet.</EmptyState>
           ) : (
-            <ul className="rounded-md border border-gray-200 divide-y divide-gray-100">
+            <ul
+              className="divide-y divide-gray-100 rounded-md border"
+              style={{ borderColor: 'var(--op-border)' }}
+            >
               {settlements.map((st) => {
                 const liveLines = st.lines.filter((l) => !l.voidedAt);
                 return (
-                  <li key={st.id} className={`px-3 py-2 ${st.voidedAt ? 'text-gray-400' : ''}`}>
-                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <span className="text-sm font-medium tabular-nums">
+                  <li key={st.id} className={`px-3 py-2.5 ${st.voidedAt ? 'opacity-60' : ''}`}>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="text-base font-semibold tabular-nums text-gray-900">
                         {dollars(st.totalCents)}
                       </span>
-                      <span className="text-xs">{st.method}</span>
+                      <Pill tone="neutral" nowrap>
+                        {st.method}
+                      </Pill>
                       <span className="text-xs text-gray-400">{fmtDateTime(st.paidAt)} ET</span>
                       {st.paidBy && <span className="text-xs text-gray-400">by {st.paidBy}</span>}
                       <span className="text-xs text-gray-500">
@@ -339,10 +364,10 @@ export function ShiftPaySection({
                           )}
                       </span>
                       {st.voidedAt ? (
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium">
+                        <Pill tone="neutral">
                           Undone{st.voidedBy ? ` by ${st.voidedBy}` : ''}
                           {st.voidReason ? `: ${st.voidReason}` : ''}
-                        </span>
+                        </Pill>
                       ) : (
                         <span className="ml-auto">
                           <VoidSettlementButton
@@ -354,7 +379,7 @@ export function ShiftPaySection({
                         </span>
                       )}
                     </div>
-                    {st.note && <p className="text-xs text-gray-500 mt-1">{st.note}</p>}
+                    {st.note && <p className="mt-1 text-xs text-gray-500">{st.note}</p>}
                   </li>
                 );
               })}
@@ -362,7 +387,7 @@ export function ShiftPaySection({
           )}
         </>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -371,6 +396,13 @@ const ACTION_LABEL: Record<ShiftAuditEntry['action'], string> = {
   'shift-manual-edit': 'Times corrected',
   'shift-manual-void': 'Shift removed',
   'shift-manual-void-aborted': 'Removal called off — nothing was removed',
+};
+
+const ACTION_TONE: Record<ShiftAuditEntry['action'], 'green' | 'blue' | 'red' | 'neutral'> = {
+  'shift-manual-create': 'green',
+  'shift-manual-edit': 'blue',
+  'shift-manual-void': 'red',
+  'shift-manual-void-aborted': 'neutral',
 };
 
 function timePair(pair: { clockInAt: string | null; clockOutAt: string | null } | null): string {
@@ -396,43 +428,56 @@ export function ShiftAuditSection({
   partial: boolean;
 }) {
   return (
-    <section>
-      <h2 className="text-lg font-semibold text-gray-900 mb-1">Manual changes</h2>
-      {/* NOT "every time" (admin lens on PR #1178). The audit row for a
-          create or an edit is written best-effort — shifts.ts logs a failed
-          insert and carries on, because the shift itself is still on screen
-          and recoverable — so a change can land with no entry here. Only the
-          VOID path refuses to proceed without its entry. Copy that promised
-          completeness would make a missing entry read as "nobody touched
-          it", which is the opposite of the truth. */}
-      <p className="text-sm text-gray-500 mb-4">
-        Changes made by hand to this person&apos;s shifts: added, corrected or removed. The clock
-        itself is not listed here — only office edits. A removal cannot be recorded here and go
-        ahead anyway, so a removed shift always leaves its entry, and that entry is the only
-        surviving record of what the shift said. An add or a correction is recorded on a
-        best-effort basis, so a gap here means it was not recorded, which is not the same as it
-        not having happened.
-      </p>
-
+    <Card
+      title="Manual changes"
+      subtitle="Changes made by hand to this person's shifts: added, corrected or removed."
+      helpLabel="What is and is not recorded here"
+      help={
+        // NOT "every time" (admin lens on PR #1178). The audit row for a
+        // create or an edit is written best-effort — shifts.ts logs a failed
+        // insert and carries on, because the shift itself is still on screen
+        // and recoverable — so a change can land with no entry here. Only the
+        // VOID path refuses to proceed without its entry. Copy that promised
+        // completeness would make a missing entry read as "nobody touched
+        // it", which is the opposite of the truth.
+        <p>
+          The clock itself is not listed here — only office edits. A removal cannot be recorded
+          here and go ahead anyway, so a removed shift always leaves its entry, and that entry is
+          the only surviving record of what the shift said. An add or a correction is recorded on
+          a best-effort basis, so a gap here means it was not recorded, which is not the same as
+          it not having happened.
+        </p>
+      }
+      flush
+      footer={
+        partial && (
+          <p className="text-xs" style={{ color: 'var(--op-text-dim)' }}>
+            One or more called-off removals could not be tied to a person, so they are not listed
+            here. That happens when the shift they referred to was later removed outright; the
+            full list lives in the activity table.
+          </p>
+        )
+      }
+    >
       {entries.length === 0 ? (
-        <div className="rounded-md border border-gray-200 bg-white px-3 py-6 text-center">
-          <p className="text-sm text-gray-500">No manual changes to this person&apos;s time.</p>
+        <div className="p-4 sm:p-5">
+          <EmptyState>No manual changes to this person&apos;s time.</EmptyState>
         </div>
       ) : (
-        <ul className="rounded-md border border-gray-200 bg-white divide-y divide-gray-100">
+        <ul className="divide-y divide-gray-100">
           {entries.map((e) => (
-            <li key={e.id} className="px-3 py-2">
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span className="text-sm font-medium text-gray-900">{ACTION_LABEL[e.action]}</span>
+            <li key={e.id} className="px-4 py-3 sm:px-5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Pill tone={ACTION_TONE[e.action]}>{ACTION_LABEL[e.action]}</Pill>
                 <span className="text-xs text-gray-500">by {e.actor}</span>
                 <span className="text-xs text-gray-400">{fmtDateTime(e.at)} ET</span>
               </div>
               {e.action === 'shift-manual-void-aborted' ? (
-                <p className="text-sm text-gray-600 mt-1">
+                <p className="mt-1.5 text-sm text-gray-600">
                   The shift stayed on payroll{e.reason ? ` (${e.reason})` : ''}.
                 </p>
               ) : (
-                <p className="text-sm text-gray-600 mt-1 tabular-nums">
+                <p className="mt-1.5 text-sm text-gray-600 tabular-nums">
                   {e.before && <>was {timePair(e.before)}</>}
                   {e.before && e.after && <span className="text-gray-400"> · </span>}
                   {e.after ? <>now {timePair(e.after)}</> : e.before ? <>now removed</> : null}
@@ -444,21 +489,11 @@ export function ShiftAuditSection({
                   field carrying that explanation was never rendered — so the
                   promise was false for exactly the rows that needed it most
                   (admin lens, S61 session review). */}
-              {e.note && (
-                <p className="text-xs text-gray-500 mt-1">{e.note}</p>
-              )}
+              {e.note && <p className="mt-1 text-xs text-gray-500">{e.note}</p>}
             </li>
           ))}
         </ul>
       )}
-
-      {partial && (
-        <p className="mt-2 text-xs text-gray-500">
-          One or more called-off removals could not be tied to a person, so they are not listed
-          here. That happens when the shift they referred to was later removed outright; the full
-          list lives in the activity table.
-        </p>
-      )}
-    </section>
+    </Card>
   );
 }

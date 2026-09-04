@@ -9,10 +9,16 @@
 //
 // Extracted from PersonHoursSections.tsx for time-tracking plan phase 4. The
 // row markup is unchanged from phase 2 apart from the `controls` mode.
+//
+// S62 restyled the rows (one continuous list with a tinted band per day, the
+// duration leading, the meta text quiet) and changed nothing about WHAT a
+// row says: every string here is the one the tests pin, and the placeholder
+// / sweep / paid logic is byte-for-byte the S61 logic.
 
 import Link from 'next/link';
 
 import { EditShiftTimes, VoidShiftButton } from '@/components/admin/ManualShiftEditor';
+import { Pill, pillClass } from '@/components/time/timeUi';
 import { formatHours } from '@/lib/hoursSummary';
 import type { PersonDay, PersonShift } from '@/lib/personHours';
 
@@ -124,6 +130,7 @@ function ShiftRow({
 }) {
   const open = shift.clockOutAt === null;
   const autoClosed = shift.closeSource === 'system';
+  const placeholder = hasPlaceholderTimes(shift.manualBy);
   // A swept shift that an admin has since typed over keeps `close_source:
   // 'system'` forever, so the badge kept asking for a correction that had
   // already been made — seen live on a real row, sitting directly above its
@@ -140,124 +147,134 @@ function ShiftRow({
         'Closed by the midnight sweep — ask them what time they stopped'
       : 'Closed by the midnight sweep — tell the office what time you stopped';
   return (
-    <li className="px-3 py-2">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
-          {fmtTime(shift.clockInAt)} – {open ? 'still open' : fmtTime(shift.clockOutAt as string)}
-        </span>
-        <span className="text-sm tabular-nums text-gray-700 whitespace-nowrap">
-          {formatHours(shift.paidSeconds)}
-        </span>
-        {/* A break shorter than half a minute rounds to "0m", and "after 0m
-            of breaks" reads as a bug rather than as a 13-second break — which
-            is a real row in prod, seen on this page during the phase 2
-            browser check. Say it in words below the rounding floor. */}
-        {shift.breakSeconds > 0 && (
-          <span className="text-xs text-gray-500 whitespace-nowrap">
-            {shift.breakSeconds >= 30
-              ? `after ${formatHours(shift.breakSeconds)} of breaks`
-              : 'after a break under a minute long'}
+    <li className="px-4 py-2.5 sm:px-5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        {/* The duration leads: it is the payroll fact. The clock times follow,
+            and on a placeholder row they step back to grey, because a
+            precise-looking 9:00 AM that nobody punched should not read like
+            one that somebody did. */}
+        <span className="flex items-baseline gap-3 whitespace-nowrap">
+          <span className="text-sm font-semibold tabular-nums text-gray-900">
+            {formatHours(shift.paidSeconds)}
           </span>
-        )}
-        <span className="text-xs text-gray-400 whitespace-nowrap">
-          {hasPlaceholderTimes(shift.manualBy) ? (
-            'imported from a timesheet'
-          ) : (
-            <>
-              in: {sourceLabel(shift.source)}
-              {shift.closeSource ? ` · out: ${sourceLabel(shift.closeSource)}` : ''}
-            </>
+          <span
+            className={`text-sm tabular-nums ${placeholder ? 'text-gray-400' : 'text-gray-700'}`}
+          >
+            {fmtTime(shift.clockInAt)} – {open ? 'still open' : fmtTime(shift.clockOutAt as string)}
+          </span>
+        </span>
+
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
+          {/* A break shorter than half a minute rounds to "0m", and "after 0m
+              of breaks" reads as a bug rather than as a 13-second break — which
+              is a real row in prod, seen on this page during the phase 2
+              browser check. Say it in words below the rounding floor. */}
+          {shift.breakSeconds > 0 && (
+            <span className="whitespace-nowrap">
+              {shift.breakSeconds >= 30
+                ? `after ${formatHours(shift.breakSeconds)} of breaks`
+                : 'after a break under a minute long'}
+            </span>
+          )}
+          <span className="whitespace-nowrap text-gray-400">
+            {placeholder ? (
+              'imported from a timesheet'
+            ) : (
+              <>
+                in: {sourceLabel(shift.source)}
+                {shift.closeSource ? ` · out: ${sourceLabel(shift.closeSource)}` : ''}
+              </>
+            )}
+          </span>
+          {placeholder && <Pill nowrap>start time approximate</Pill>}
+          {open && (
+            <Pill tone="green" nowrap>
+              Clocked in now
+            </Pill>
+          )}
+          {/* NOT nowrap. This is the longest string on the row and the list
+              around it clips overflow, so at 375px a non-wrapping badge is
+              CLIPPED rather than pushed — measured on the live page at 385px
+              of text inside a 359px card, losing the last 55 pixels
+              mid-sentence ("...tell the office what time you"). The clip also
+              means a page-level overflow check reports zero, so nothing but
+              looking would have caught it. Pre-existing on the admin page
+              since phase 2; fixed in phase 4 for both, since both read this
+              row. */}
+          {autoClosed &&
+            (evidenceHref && !corrected ? (
+              <Link href={evidenceHref} className={`${pillClass('amber')} underline`}>
+                Closed by the midnight sweep — check the van&apos;s day
+              </Link>
+            ) : (
+              <Pill tone="amber">{sweepNote}</Pill>
+            ))}
+          {/* A record, not a control: the staff page cannot undo a payment,
+              and the amount is never shown here (hours only — the office
+              records what was paid, which is not always hours times a rate). */}
+          {showPaidMarks && controls === 'none' && shift.settledSeconds > 0 && (
+            <Pill tone="neutral">
+              {shift.settledSeconds >= shift.paidSeconds
+                ? 'Paid'
+                : // A payment can stop half way through a shift, and saying
+                  // only "Paid" there would claim money that was never handed
+                  // over. The rest has rolled over to the next payment.
+                  `${formatHours(shift.settledSeconds)} of ${formatHours(shift.paidSeconds)} paid`}
+            </Pill>
+          )}
+          {/* Not on a placeholder row: its stamp is the import's own name,
+              which "imported from a timesheet" already says, and 142 of one
+              person's rows carrying "typed by imported from Time
+              Tracker.xlsx (row 507)" was most of what made the page unreadable
+              (S62). A real manual edit keeps its "typed by". */}
+          {shift.manualBy && !placeholder && (
+            <span className="text-gray-400">typed by {actorLabel(shift.manualBy, controls)}</span>
           )}
         </span>
-        {hasPlaceholderTimes(shift.manualBy) && (
-          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-            start time approximate
-          </span>
-        )}
-        {open && (
-          <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-800 whitespace-nowrap">
-            Clocked in now
-          </span>
-        )}
-        {/* NOT whitespace-nowrap. This is the longest string on the row and
-            the day card around it is `overflow-hidden`, so at 375px a
-            non-wrapping badge is CLIPPED rather than pushed — measured on the
-            live page at 385px of text inside a 359px card, losing the last 55
-            pixels mid-sentence ("...tell the office what time you"). The clip
-            also means a page-level overflow check reports zero, so nothing
-            but looking would have caught it. Pre-existing on the admin page
-            since phase 2; fixed here for both, since both read this row. */}
-        {autoClosed &&
-          (evidenceHref && !corrected ? (
-            <Link
-              href={evidenceHref}
-              className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 underline"
-            >
-              Closed by the midnight sweep — check the van&apos;s day
-            </Link>
-          ) : (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
-              {sweepNote}
-            </span>
-          ))}
-        {/* A record, not a control: the staff page cannot undo a payment, and
-            the amount is never shown here (hours only — the office records
-            what was paid, which is not always hours times a rate). */}
-        {showPaidMarks && controls === 'none' && shift.settledSeconds > 0 && (
-          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-            {shift.settledSeconds >= shift.paidSeconds
-              ? 'Paid'
-              : // A payment can stop half way through a shift, and saying
-                // only "Paid" there would claim money that was never handed
-                // over. The rest has rolled over to the next payment.
-                `${formatHours(shift.settledSeconds)} of ${formatHours(shift.paidSeconds)} paid`}
-          </span>
-        )}
-        {shift.manualBy && (
-          <span className="text-xs text-gray-400">typed by {actorLabel(shift.manualBy, controls)}</span>
-        )}
+
         {controls === 'admin' && (
-        <span className="ml-auto inline-flex items-center gap-3">
-          {/* A paid shift is locked (ledger row 459): shifts.ts refuses both
-              the edit and the void. Showing the controls anyway would be a
-              door into a refusal, so the row says what is true and names the
-              way out — undoing the payment releases it. The guard and the
-              copy that narrates it are one change. */}
-          {shift.settlementId ? (
-            <span className="text-xs text-gray-500">
-              {/* A payment can now cover PART of a shift, and a bare "Paid"
-                  on a row that is half covered claims money that was never
-                  handed over for it. Seen live on a real row during the
-                  browser check. The LOCK is unconditional either way: any
-                  live payment refuses an edit. */}
-              {shift.settledSeconds > 0 && shift.settledSeconds < shift.paidSeconds
-                ? `${formatHours(shift.settledSeconds)} of this is paid — undo the payment below to change these times`
-                : 'Paid — undo the payment below to change these times'}
-            </span>
-          ) : (
-            <EditShiftTimes
-              shiftId={shift.id}
-              clockInAt={shift.clockInAt}
-              clockOutAt={shift.clockOutAt}
-            />
-          )}
-          {/* Only on rows the office TYPED: a shift the person clocked
-              themselves is their own record and is corrected, never erased.
-              This mirrors the FIRST of adminVoidShift's guards, not all of
-              them — the server also refuses a row carrying a break or job
-              segment, and that one is not mirrored here, so Remove can still
-              come back with a refusal an admin reads inline (technical lens
-              on PR #1178). Checking it client-side would mean shipping the
-              child rows to the page for a case that has never occurred. */}
-          {shift.removable && (
-            <VoidShiftButton
-              shiftId={shift.id}
-              crewName={crewName}
-              clockInAt={shift.clockInAt}
-              clockOutAt={shift.clockOutAt}
-            />
-          )}
-        </span>
+          <span className="ml-auto inline-flex items-center gap-3">
+            {/* A paid shift is locked (ledger row 459): shifts.ts refuses both
+                the edit and the void. Showing the controls anyway would be a
+                door into a refusal, so the row says what is true and names
+                the way out — undoing the payment releases it. The guard and
+                the copy that narrates it are one change. */}
+            {shift.settlementId ? (
+              <span className="text-xs text-gray-500">
+                {/* A payment can now cover PART of a shift, and a bare "Paid"
+                    on a row that is half covered claims money that was never
+                    handed over for it. Seen live on a real row during the
+                    browser check. The LOCK is unconditional either way: any
+                    live payment refuses an edit. */}
+                {shift.settledSeconds > 0 && shift.settledSeconds < shift.paidSeconds
+                  ? `${formatHours(shift.settledSeconds)} of this is paid — undo the payment below to change these times`
+                  : 'Paid — undo the payment below to change these times'}
+              </span>
+            ) : (
+              <EditShiftTimes
+                shiftId={shift.id}
+                clockInAt={shift.clockInAt}
+                clockOutAt={shift.clockOutAt}
+              />
+            )}
+            {/* Only on rows the office TYPED: a shift the person clocked
+                themselves is their own record and is corrected, never erased.
+                This mirrors the FIRST of adminVoidShift's guards, not all of
+                them — the server also refuses a row carrying a break or job
+                segment, and that one is not mirrored here, so Remove can
+                still come back with a refusal an admin reads inline
+                (technical lens on PR #1178). Checking it client-side would
+                mean shipping the child rows to the page for a case that has
+                never occurred. */}
+            {shift.removable && (
+              <VoidShiftButton
+                shiftId={shift.id}
+                crewName={crewName}
+                clockInAt={shift.clockInAt}
+                clockOutAt={shift.clockOutAt}
+              />
+            )}
+          </span>
         )}
       </div>
     </li>
@@ -269,6 +286,10 @@ function ShiftRow({
  * self-view so one row renderer serves both. The two pages differ in VOICE
  * and in what they may offer, never in how a shift is displayed — a second
  * copy of this loop is how the two would drift.
+ *
+ * Draws no frame of its own: the caller's Card provides it (`flush`), and
+ * each day is a tinted band followed by its rows, so 142 single-shift days
+ * read as one table rather than 142 boxes.
  */
 export function HoursDayList({
   days,
@@ -290,14 +311,22 @@ export function HoursDayList({
   evidenceFor: (day: string) => string | null;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="divide-y divide-gray-100">
       {days.map((d) => (
-        <div key={d.day} className="rounded-md border border-gray-200 overflow-hidden">
-          <div className="flex items-baseline justify-between bg-gray-50 px-3 py-2">
-            <h3 className="text-sm font-semibold text-gray-900">
+        <div key={d.day}>
+          <div
+            className="flex items-baseline justify-between px-4 py-1.5 sm:px-5"
+            style={{ background: 'var(--op-bg)' }}
+          >
+            <h3
+              className="text-xs font-semibold uppercase tracking-wide"
+              style={{ color: 'var(--op-text-2)' }}
+            >
               {d.day === 'unknown' ? 'Date unreadable' : fmtDayKey(d.day)}
             </h3>
-            <span className="text-sm tabular-nums text-gray-700">{formatHours(d.paidSeconds)}</span>
+            <span className="text-xs font-semibold tabular-nums" style={{ color: 'var(--op-text-2)' }}>
+              {formatHours(d.paidSeconds)}
+            </span>
           </div>
           <ul className="divide-y divide-gray-100">
             {d.shifts.map((s) => (

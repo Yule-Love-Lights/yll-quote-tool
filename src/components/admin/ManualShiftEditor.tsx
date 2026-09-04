@@ -17,6 +17,15 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import {
+  btnPrimary,
+  btnPrimaryStyle,
+  btnSecondary,
+  btnTextDanger,
+  btnTextQuiet,
+  inputClass,
+  labelClass,
+} from '@/components/time/timeUi';
 import { etInputToIso, isoToEtInput } from '@/lib/etClock';
 
 type CrewOption = { id: string; displayName: string };
@@ -139,6 +148,9 @@ export function AddShiftForm({ crew, defaultDate }: { crew: CrewOption[]; defaul
  * clock in Monday" actually thinks about the gap — one day, a start, an end.
  * Same confirm-then-POST shape as AddShiftForm above; same route, same
  * refusals.
+ *
+ * Draws no box of its own: it sits in the Hours card's footer band (S62), so
+ * the frame is the card's.
  */
 export function AddPersonShiftForm({
   crewMemberId,
@@ -193,46 +205,60 @@ export function AddPersonShiftForm({
   }
 
   return (
-    <div className="mt-4 rounded-lg border border-dashed border-gray-300 p-3 text-sm">
-      <p className="font-medium text-gray-900 mb-2">Add a shift for {crewName}</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="rounded border border-gray-300 px-2 py-1"
-        />
-        <input
-          type="time"
-          value={startTime}
-          onChange={(e) => setStartTime(e.target.value)}
-          className="rounded border border-gray-300 px-2 py-1"
-        />
-        <span className="text-gray-400">to</span>
-        <input
-          type="time"
-          value={endTime}
-          onChange={(e) => setEndTime(e.target.value)}
-          className="rounded border border-gray-300 px-2 py-1"
-        />
+    <div className="text-sm">
+      <p className="mb-2 font-semibold text-gray-900">Add a shift for {crewName}</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className={labelClass}>
+          Date
+          <span className="mt-1 block">
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className={inputClass}
+            />
+          </span>
+        </label>
+        <label className={labelClass}>
+          Start
+          <span className="mt-1 block">
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className={inputClass}
+            />
+          </span>
+        </label>
+        <label className={labelClass}>
+          End
+          <span className="mt-1 block">
+            <input
+              type="time"
+              value={endTime}
+              onChange={(e) => setEndTime(e.target.value)}
+              className={inputClass}
+            />
+          </span>
+        </label>
         <button
           type="button"
           onClick={submit}
           disabled={busy}
-          className="rounded px-3 py-1 font-medium text-white disabled:opacity-50"
-          style={{ background: 'var(--brand-evergreen-3)' }}
+          className={btnPrimary}
+          style={btnPrimaryStyle}
         >
           {busy ? 'Saving…' : 'Save'}
         </button>
       </div>
-      <p className="text-xs text-gray-400 mt-2">
+      <p className="mt-2 text-xs text-gray-500">
         Times are Eastern. Use this for a day nobody clocked in at all — a shift that started but
         was never corrected has its own Edit control on the row above. The entry is stamped with
         your name, logged, and {crewName} gets a Telegram note when linked.
       </p>
-      {error && <p className="text-xs text-red-700 mt-1">{error}</p>}
+      {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
       {saved && (
-        <p className="text-xs mt-1 text-green-800">
+        <p className="mt-1 text-xs text-green-800">
           Saved {fmtDay(saved.day)}.{' '}
           {saved.visible
             ? 'It is in the list above.'
@@ -306,43 +332,34 @@ export function EditShiftTimes({
 
   if (!open) {
     return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="text-xs underline text-gray-500"
-      >
+      <button type="button" onClick={() => setOpen(true)} className={btnSecondary}>
         Edit
       </button>
     );
   }
 
   return (
-    <span className="inline-flex flex-wrap items-center gap-1 text-xs">
+    <span className="inline-flex flex-wrap items-center gap-1.5 text-xs">
       <input
         type="datetime-local"
         value={inAt}
         onChange={(e) => setInAt(e.target.value)}
-        className="rounded border border-gray-300 px-1 py-0.5"
+        className={`${inputClass} px-1.5 py-0.5 text-xs`}
       />
       <span className="text-gray-400">to</span>
       <input
         type="datetime-local"
         value={outAt}
         onChange={(e) => setOutAt(e.target.value)}
-        className="rounded border border-gray-300 px-1 py-0.5"
+        className={`${inputClass} px-1.5 py-0.5 text-xs`}
       />
       {wasOpen && (
         <span className="text-gray-400">(leave the second time empty to keep it open)</span>
       )}
-      <button
-        type="button"
-        onClick={submit}
-        disabled={busy}
-        className="rounded border border-gray-300 px-2 py-0.5 font-medium text-gray-700 disabled:opacity-50"
-      >
+      <button type="button" onClick={submit} disabled={busy} className={btnSecondary}>
         {busy ? 'Saving…' : 'Save'}
       </button>
-      <button type="button" onClick={() => setOpen(false)} className="underline text-gray-500">
+      <button type="button" onClick={() => setOpen(false)} className={btnTextQuiet}>
         cancel
       </button>
       {error && <span className="text-red-700">{error}</span>}
@@ -422,7 +439,7 @@ The activity log keeps a record of what was removed, but the shift itself is gon
 
   return (
     <span className="inline-flex items-center gap-1 text-xs">
-      <button type="button" onClick={submit} disabled={busy} className="underline text-red-700 disabled:opacity-50">
+      <button type="button" onClick={submit} disabled={busy} className={btnTextDanger}>
         {busy ? 'Removing…' : 'Remove'}
       </button>
       {error && <span className="text-red-700">{error}</span>}

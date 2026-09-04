@@ -21,10 +21,11 @@ import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { TimeExceptionsSection } from '@/components/admin/TimeExceptionsSection';
 import { HoursSummarySection } from '@/components/admin/HoursSummarySection';
+import { PageHeader, StatStrip, StatTile } from '@/components/time/timeUi';
 import { getSessionRole } from '@/lib/auth/sessionRole';
 import { listTimeExceptions } from '@/lib/opsTimeExceptions';
 import { listActiveCrewMembers } from '@/lib/crewMembers';
-import { loadHoursSummary } from '@/lib/hoursSummary';
+import { formatHours, loadHoursSummary } from '@/lib/hoursSummary';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,22 +51,55 @@ export default async function TimeTrackingPage() {
   ]);
   const crewNames = new Map(crew.map((c) => [c.id, c.displayName]));
 
+  // The strip at the top is the same rows the table below shows, summed:
+  // nothing is read twice, so the two cannot disagree. It is HOURS, like the
+  // table — nothing on this page is approved or paid. When some rows could
+  // not be read the sums are short by exactly those rows, and the tile says
+  // so rather than presenting a smaller number as the whole.
+  const clockedIn = hours.rows.filter((r) => r.openShift);
+  const todaySeconds = hours.rows.reduce((s, r) => s + r.todaySeconds, 0);
+  const last7Seconds = hours.rows.reduce((s, r) => s + r.last7Seconds, 0);
+  const incomplete = hours.errors.length > 0;
+  const clockedInNames = clockedIn.map((r) => r.displayName);
+
   return (
     <OperatorShell active="time">
-      <main className="max-w-4xl mx-auto">
-        <div className="mb-6">
-          <p
-            className="text-xs font-semibold uppercase tracking-widest mb-1"
-            style={{ color: 'var(--brand-evergreen-3)' }}
-          >
-            Yule Love Lights
-          </p>
-          <h1 className="text-xl font-semibold text-gray-900">Time tracking</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Crew time data in one place. Only admins see this page. Today it holds everyone&apos;s
-            hours and the time-exception queue; more views land here as they are built.
-          </p>
-        </div>
+      <main className="max-w-5xl mx-auto">
+        <PageHeader
+          title="Time tracking"
+          subtitle="Everyone's clocked hours and the time-exception queue. Only admins see this page."
+        />
+
+        <StatStrip>
+          <StatTile
+            label="Clocked in now"
+            value={String(clockedIn.length)}
+            tone={clockedIn.length > 0 ? 'good' : 'muted'}
+            sub={
+              clockedInNames.length === 0
+                ? 'nobody on the clock'
+                : clockedInNames.length <= 3
+                  ? clockedInNames.join(', ')
+                  : `${clockedInNames.slice(0, 2).join(', ')} and ${clockedInNames.length - 2} more`
+            }
+          />
+          <StatTile
+            label="Today"
+            value={formatHours(todaySeconds)}
+            sub={incomplete ? 'incomplete — some rows failed to read' : 'all staff, still counting'}
+          />
+          <StatTile
+            label="Last 7 days"
+            value={formatHours(last7Seconds)}
+            sub={incomplete ? 'incomplete — some rows failed to read' : 'all staff, today included'}
+          />
+          <StatTile
+            label="Open exceptions"
+            value={String(exceptions.length)}
+            tone={exceptions.length > 0 ? 'warn' : 'muted'}
+            sub={exceptions.length > 0 ? 'need a human — see below' : 'nothing stuck'}
+          />
+        </StatStrip>
 
         <HoursSummarySection rows={hours.rows} asOf={hours.asOf} errors={hours.errors} />
 
